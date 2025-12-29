@@ -541,7 +541,7 @@ func startDNSListener(addr string) {
 	} else {
 		fmt.Println("Success")
 		fmt.Printf("UDP DNS listening on %s\n", addr)
-		defer udpLn.Close()
+		
 /*		go func() {
 			buf := make([]byte, 512 + 512) // EDNS0 buffer
 			for {
@@ -591,12 +591,16 @@ func startDNSListener(addr string) {
 //				time.Sleep(100 * time.Millisecond)  // Yield on success
 //			}
 //		}()
+		//defer udpLn.Close()
 		buf := make([]byte, 512 + 512)
 		go func() {
 			defer udpLn.Close()
+			
+			//TheFor:
 			for {
+				//udpLn.SetReadDeadline(time.Now().Add(3 * time.Second))
 				fmt.Println("in for...")
-				time.Sleep(1000 * time.Millisecond)  // Yield
+				//time.Sleep(1000 * time.Millisecond)  // Yield
 				select {
 				case <-ctx.Done():
 				    fmt.Println("quitting on shutdown...")
@@ -604,8 +608,12 @@ func startDNSListener(addr string) {
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
 					if err != nil {
+						
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-				        fmt.Println("error...")
+				        fmt.Println("udp error...",err)
+						
+						//time.Sleep(100 * time.Millisecond)
+						//break TheFor
 						continue
 					}
 					fmt.Println("new go routine for handling...")
@@ -640,9 +648,13 @@ func startDNSListener(addr string) {
 		fmt.Printf("TCP DNS listening on %s\n", addr)
 		defer tcpLn.Close()
 		go func() {
+			//TheFor:
 			for {
 				conn, err := tcpLn.Accept()
 				if err != nil {
+					fmt.Println("inTCP error...",err)
+					time.Sleep(100 * time.Millisecond)
+					//break TheFor
 					continue
 				}
 				go handleTCP(conn)

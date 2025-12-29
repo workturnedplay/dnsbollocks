@@ -1,7 +1,8 @@
 @echo off
-:: avoid https://github.com/golang/go/issues/51654
-set GOMAXPROCS=12
+@rem set GOMAXPROCS=12
 
 .\dns-proxy.exe
+@rem set CGO_ENABLED=1
+@rem go run -race main.go
 
 pause
