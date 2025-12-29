@@ -224,7 +224,39 @@ func loadConfig(path string) error {
 		config.CacheMinTTL = 60 // Min reasonable
 		fmt.Println("Warning: cache_min_ttl clamped to 60s")
 	}
+	
+	var upstreamHost string
+	if config.SNIHostname == "" {
+	    upstreamHost, err = hostFromURL(config.UpstreamURL)
+		if err != nil {
+		// handle parse error (return SERVFAIL or log)
+		fmt.Println("invalid upstream URL:", err)
+		return fmt.Errorf("invalid upstream URL: %w", err)
+	    }
+	} else {
+		upstreamHost=config.SNIHostname
+	}
+	
+		config.SNIHostname = upstreamHost
+		fmt.Println("Using upstream SNI hostname:",config.SNIHostname)
+	
+
 	return nil
+}
+
+
+// helper to return host (IP or hostname) from an URL
+func hostFromURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	host := u.Host
+	// Strip any port if present (e.g. "example.com:443" -> "example.com")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host, nil
 }
 
 func saveConfig(path string) error {
@@ -932,8 +964,8 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	resp := forwardToDoH(msg)
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
 		negResp := servfailResponse(msg)
-		// Cache negatives short
-		cacheStore.Set(key, negResp, 60*time.Second)
+		// Cache negatives short, don't cache if upstream failed, retry next time!
+		//cacheStore.Set(key, negResp, 60*time.Second)
 		return negResp
 	}
 
@@ -971,12 +1003,18 @@ func computeTTL(msg *dns.Msg) int {
 }
 
 func forwardToDoH(req *dns.Msg) *dns.Msg {
-	reqBytes, _ := req.Pack() // Ignore err
+	reqBytes, err := req.Pack()
+	if err != nil {
+		errorLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
+		fmt.Println("Failed to pack query for upstreaming it to DNS server: ",err)
+		return nil
+	}
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				dialer := &net.Dialer{Timeout: 3 * time.Second}
+				fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
 				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(upstreamIP, "443"))
 				if err != nil {
 					return nil, err
@@ -985,6 +1023,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 					ServerName:         config.SNIHostname,
 					InsecureSkipVerify: false,
 				})
+				
 				if err := tlsConn.HandshakeContext(ctx); err != nil {
 					conn.Close()
 					return nil, err
@@ -993,9 +1032,15 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			},
 		},
 	}
-	resp, err := client.Post(upstreamURL.String(), "application/dns-message", bytes.NewReader(reqBytes))
+	req2, _ := http.NewRequest("POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+req2.Header.Set("Content-Type", "application/dns-message")
+//req.Host = "dns9.quad9.net" // desired Host header
+req2.Host=config.SNIHostname
+resp, err := client.Do(req2)
+	//resp, err := client.Post(upstreamURL.String(), "application/dns-message", bytes.NewReader(reqBytes))
 	if err != nil {
 		errorLogger.Error("doh_post_failed", slog.Any("err", err))
+		fmt.Println("Failed to query upstream DNS server: ",err)
 		return nil
 	}
 	defer resp.Body.Close()
