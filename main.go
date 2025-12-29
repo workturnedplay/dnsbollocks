@@ -34,11 +34,11 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-//	"net/http/pprof" // For /debug/vars
+	//	"net/http/pprof" // For /debug/vars
 	"net/url"
 	"os"
 	"os/signal"
-//	"path/filepath"
+	//	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -54,21 +54,21 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS        string            `json:"listen_dns"`          // e.g., "127.0.0.1:53"
-	ListenDoH        string            `json:"listen_doh"`          // e.g., "127.0.0.1:443"
-	UIPort           int               `json:"ui_port"`             // 8080
-	UpstreamURL      string            `json:"upstream_url"`        // "https://9.9.9.9/dns-query"
-	SNIHostname      string            `json:"sni_hostname"`        // Optional ""
-	BlockMode        string            `json:"block_mode"`          // "nxdomain", "drop", "ip_block"
-	BlockIP          string            `json:"block_ip"`            // "0.0.0.0"
-	RateQPS          int               `json:"rate_qps"`            // 100
-	CacheMinTTL      int               `json:"cache_min_ttl,s"`     // 300s
-	CacheMaxEntries  int               `json:"cache_max_entries"`   // 10000
-	Whitelist        map[string][]Rule `json:"whitelist"`           // Per-type rules
-	ResponseBlacklist []string         `json:"response_blacklist"`  // CIDR e.g., "127.0.0.1/8"
-	LogQueries       string            `json:"log_queries"`         // "queries.log"
-	LogErrors        string            `json:"log_errors"`          // "errors.log"
-	LogMaxSizeMB     int               `json:"log_max_size_mb"`     // 1 for rotation
+	ListenDNS         string            `json:"listen_dns"`         // e.g., "127.0.0.1:53"
+	ListenDoH         string            `json:"listen_doh"`         // e.g., "127.0.0.1:443"
+	UIPort            int               `json:"ui_port"`            // 8080
+	UpstreamURL       string            `json:"upstream_url"`       // "https://9.9.9.9/dns-query"
+	SNIHostname       string            `json:"sni_hostname"`       // Optional ""
+	BlockMode         string            `json:"block_mode"`         // "nxdomain", "drop", "ip_block"
+	BlockIP           string            `json:"block_ip"`           // "0.0.0.0"
+	RateQPS           int               `json:"rate_qps"`           // 100
+	CacheMinTTL       int               `json:"cache_min_ttl,s"`    // 300s
+	CacheMaxEntries   int               `json:"cache_max_entries"`  // 10000
+	Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
+	ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
+	LogQueries        string            `json:"log_queries"`        // "queries.log"
+	LogErrors         string            `json:"log_errors"`         // "errors.log"
+	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
 }
 
 // Rule represents a whitelist rule.
@@ -80,25 +80,25 @@ type Rule struct {
 }
 
 // Globals.
-var dohCert tls.Certificate  // Loaded once for DoH listener
+var dohCert tls.Certificate // Loaded once for DoH listener
 var (
 	//dohSrv, uiSrv *http.Server
-	config          Config
-	upstreamIP      string
-	upstreamURL     *url.URL
-	queryLogger     *slog.Logger
-	errorLogger     *slog.Logger
-	cacheStore      *cache.Cache
-	globalLimiter   *rate.Limiter
-	clientLimiters  sync.Map // map[string]*rate.Limiter
-	whitelist       map[string][]Rule // type -> rules
-	ruleMutex       sync.RWMutex
-	recentBlocks    = make([]BlockedQuery, 0, 50) // For UI
-	blockMutex      sync.Mutex
-	stats           = expvar.NewInt("blocks") // Simple stats
+	config         Config
+	upstreamIP     string
+	upstreamURL    *url.URL
+	queryLogger    *slog.Logger
+	errorLogger    *slog.Logger
+	cacheStore     *cache.Cache
+	globalLimiter  *rate.Limiter
+	clientLimiters sync.Map          // map[string]*rate.Limiter
+	whitelist      map[string][]Rule // type -> rules
+	ruleMutex      sync.RWMutex
+	recentBlocks   = make([]BlockedQuery, 0, 50) // For UI
+	blockMutex     sync.Mutex
+	stats          = expvar.NewInt("blocks") // Simple stats
 	//listenerErrs    sync.WaitGroup
 	//listenerErrCh   = make(chan error, 3) // Collect bind errs
-	ctx, cancel     = context.WithCancel(context.Background())
+	ctx, cancel = context.WithCancel(context.Background())
 )
 
 type BlockedQuery struct {
@@ -158,32 +158,30 @@ func main() {
 	generateCertIfNeeded() // For DoH
 	fmt.Println("Cert checked/generated if needed")
 
-
-//	// Wait for listener errs and exit if critical
-//	go func() {
-//		listenerErrs.Wait()
-//		close(listenerErrCh)
-//		errCount := 0
-//		for err := range listenerErrCh { // Drains buffered + closed (nil after)
-//			if err != nil {
-//				errCount++
-//				fmt.Fprintf(os.Stderr, "Listener error %d: %v\n", errCount, err)
-//				errorLogger.Error("listener_failure", slog.Any("err", err))
-//			}
-//		}
-//		if errCount > 0 {
-//			fmt.Fprintf(os.Stderr, "Total %d listener errors - exiting (degraded mode not supported)\n", errCount)
-//			os.Exit(1)
-//		}
-//		fmt.Println("All listeners started successfully")
-//	}()
-
+	//	// Wait for listener errs and exit if critical
+	//	go func() {
+	//		listenerErrs.Wait()
+	//		close(listenerErrCh)
+	//		errCount := 0
+	//		for err := range listenerErrCh { // Drains buffered + closed (nil after)
+	//			if err != nil {
+	//				errCount++
+	//				fmt.Fprintf(os.Stderr, "Listener error %d: %v\n", errCount, err)
+	//				errorLogger.Error("listener_failure", slog.Any("err", err))
+	//			}
+	//		}
+	//		if errCount > 0 {
+	//			fmt.Fprintf(os.Stderr, "Total %d listener errors - exiting (degraded mode not supported)\n", errCount)
+	//			os.Exit(1)
+	//		}
+	//		fmt.Println("All listeners started successfully")
+	//	}()
 
 	// Sequential launches for ordered logging
 	fmt.Println("Launching listeners sequentially...")
-	startDNSListener(config.ListenDNS)  // Blocks until complete/fail
-	startDoHListener(config.ListenDoH)  // Blocks until complete/fail
-	go startWebUI(config.UIPort) // Concurrent server (blocks forever, but post-serial)
+	startDNSListener(config.ListenDNS) // Blocks until complete/fail
+	startDoHListener(config.ListenDoH) // Blocks until complete/fail
+	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
 
 	<-sigChan // Wait here - UI goroutine handles serving
 	fmt.Println("Shutdown signal received")
@@ -197,21 +195,21 @@ func loadConfig(path string) error {
 		fmt.Printf("Config file %s not found; using defaults\n", path)
 		// Defaults
 		config = Config{
-			ListenDNS:        "127.0.0.1:53",
-			ListenDoH:        "127.0.0.1:443",
-			UIPort:           8080,
-			UpstreamURL:      "https://9.9.9.9/dns-query",
-			SNIHostname:      "",
-			BlockMode:        "nxdomain",
-			BlockIP:          "0.0.0.0",
-			RateQPS:          100,
-			CacheMinTTL:      300,
-			CacheMaxEntries:  10000,
-			Whitelist:        make(map[string][]Rule),
+			ListenDNS:         "127.0.0.1:53",
+			ListenDoH:         "127.0.0.1:443",
+			UIPort:            8080,
+			UpstreamURL:       "https://9.9.9.9/dns-query",
+			SNIHostname:       "",
+			BlockMode:         "nxdomain",
+			BlockIP:           "0.0.0.0",
+			RateQPS:           100,
+			CacheMinTTL:       300,
+			CacheMaxEntries:   10000,
+			Whitelist:         make(map[string][]Rule),
 			ResponseBlacklist: []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16", "::1/128", "fc00::/7"},
-			LogQueries:       "queries.log",
-			LogErrors:        "errors.log",
-			LogMaxSizeMB:     4095, // Rotation threshold
+			LogQueries:        "queries.log",
+			LogErrors:         "errors.log",
+			LogMaxSizeMB:      4095, // Rotation threshold
 		}
 		if err := saveConfig(path); err != nil {
 			return fmt.Errorf("default config save failed: %w", err)
@@ -298,7 +296,7 @@ func loadWhitelist() {
 	for _, rules := range config.Whitelist {
 		for i := range rules {
 			if rules[i].ID == "" {
-				rules[i].ID = newUniqueID()  // Gen outside lock
+				rules[i].ID = newUniqueID() // Gen outside lock
 			}
 		}
 	}
@@ -364,24 +362,24 @@ func countRules(wl map[string][]Rule) int {
 }
 
 func newUniqueID() string {
-	fmt.Println("starts newUniqueID()");
+	fmt.Println("starts newUniqueID()")
 	existing := make(map[string]struct{})
-	fmt.Println("in newUniqueID() before RLock");
+	fmt.Println("in newUniqueID() before RLock")
 	ruleMutex.RLock()
-	fmt.Println("in newUniqueID() after RLock");
+	fmt.Println("in newUniqueID() after RLock")
 	for _, rs := range whitelist {
 		for _, r := range rs {
 			existing[r.ID] = struct{}{}
 		}
 	}
-	fmt.Println("in newUniqueID() before RUnlock");
+	fmt.Println("in newUniqueID() before RUnlock")
 	ruleMutex.RUnlock()
-	fmt.Println("in newUniqueID() after RUnlock");
+	fmt.Println("in newUniqueID() after RUnlock")
 
 	for i := 0; i < 10; i++ {
 		id := uuid.New().String()
 		if _, ok := existing[id]; !ok {
-			fmt.Println("exits newUniqueID() ret:", id);
+			fmt.Println("exits newUniqueID() ret:", id)
 			return id
 		}
 	}
@@ -428,43 +426,43 @@ func wildcardToRegex(pat string) (string, error) {
 	return "^" + pat + "$", nil
 }
 
-//func generateCertIfNeeded() {
-//	certFile := "cert.pem"
-//	keyFile := "key.pem"
-//	if _, err := os.Stat(certFile); os.IsNotExist(err) {
-//		fmt.Println("Generating self-signed cert for DoH...")
-//		if err := generateCert(certFile, keyFile); err != nil {
-//			errorLogger.Error("cert generation failed", slog.Any("err", err))
-//			os.Exit(1)
+//	func generateCertIfNeeded() {
+//		certFile := "cert.pem"
+//		keyFile := "key.pem"
+//		if _, err := os.Stat(certFile); os.IsNotExist(err) {
+//			fmt.Println("Generating self-signed cert for DoH...")
+//			if err := generateCert(certFile, keyFile); err != nil {
+//				errorLogger.Error("cert generation failed", slog.Any("err", err))
+//				os.Exit(1)
+//			}
+//			fmt.Println("Cert generated: Trust in clients (e.g., Firefox exception for 127.0.0.1)")
+//		} else {
+//			fmt.Println("Cert exists: Skipping generation")
 //		}
-//		fmt.Println("Cert generated: Trust in clients (e.g., Firefox exception for 127.0.0.1)")
-//	} else {
-//		fmt.Println("Cert exists: Skipping generation")
 //	}
-//}
 func generateCertIfNeeded() {
-    certFile := "cert.pem"
-    keyFile := "key.pem"
-    if _, err := os.Stat(certFile); os.IsNotExist(err) {
-        fmt.Println("Generating self-signed cert for DoH...")
-        if err := generateCert(certFile, keyFile); err != nil {
-            errorLogger.Error("cert generation failed", slog.Any("err", err))
-            os.Exit(1)
-        }
-        fmt.Println("Cert generated: Trust in clients (e.g., Firefox exception for 127.0.0.1)")
-    } else {
-        fmt.Println("Cert exists: Skipping generation")
-    }
+	certFile := "cert.pem"
+	keyFile := "key.pem"
+	if _, err := os.Stat(certFile); os.IsNotExist(err) {
+		fmt.Println("Generating self-signed cert for DoH...")
+		if err := generateCert(certFile, keyFile); err != nil {
+			errorLogger.Error("cert generation failed", slog.Any("err", err))
+			os.Exit(1)
+		}
+		fmt.Println("Cert generated: Trust in clients (e.g., Firefox exception for 127.0.0.1)")
+	} else {
+		fmt.Println("Cert exists: Skipping generation")
+	}
 
-    // Load cert/key into global for reuse
-    fmt.Print("Loading cert/key for DoH...")
-    var err error
-    dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
-    if err != nil {
-        errorLogger.Error("cert_load_failed", slog.Any("err", err))
-        os.Exit(1)
-    }
-    fmt.Println("Success - loaded into tls.Certificate")
+	// Load cert/key into global for reuse
+	fmt.Print("Loading cert/key for DoH...")
+	var err error
+	dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		errorLogger.Error("cert_load_failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+	fmt.Println("Success - loaded into tls.Certificate")
 }
 
 func generateCert(certFile, keyFile string) error {
@@ -480,11 +478,11 @@ func generateCert(certFile, keyFile string) error {
 		Subject: pkix.Name{
 			Organization: []string{"Local DNS Proxy"},
 		},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(365 * 24 * time.Hour * 10),
-		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(365 * 24 * time.Hour * 10),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
 	}
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
@@ -514,14 +512,14 @@ func generateCert(certFile, keyFile string) error {
 // Listeners...
 
 func startDNSListener(addr string) {
-//	listenerErrs.Add(1)
-//	defer listenerErrs.Done()
+	//	listenerErrs.Add(1)
+	//	defer listenerErrs.Done()
 	fmt.Printf("Starting DNS listener on %s...\n", addr)
 
 	// UDP
 	fmt.Print("  Attempting UDP bind...")
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53})
-/*	if err != nil {
+	/*	if err != nil {
 		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
@@ -531,71 +529,71 @@ func startDNSListener(addr string) {
 		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-//		select {  // Non-blocking send
-//		case listenerErrCh <- errors.New(errStr):
-//			default:  // Closed/dropped - log only
-//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
-//		}
+		//		select {  // Non-blocking send
+		//		case listenerErrCh <- errors.New(errStr):
+		//			default:  // Closed/dropped - log only
+		//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
+		//		}
 		//return
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
 		fmt.Printf("UDP DNS listening on %s\n", addr)
-		
-/*		go func() {
-			buf := make([]byte, 512 + 512) // EDNS0 buffer
-			for {
-				n, clientAddr, err := udpLn.ReadFromUDP(buf)
-				if err != nil {
-            // Optional: Log non-timeout errors
-            if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-                errorLogger.Warn("udp_read_error", slog.Any("err", err))
-            }
-            time.Sleep(100 * time.Millisecond)  // Yield on error (idle/transient)
-            continue
-        }
-				
-//				time.Sleep(time.Duration(2000) * time.Millisecond)
-//				// Set 1s deadline to yield on idle (breaks polling, else 100% cpu usage of 1 core).
-//        udpLn.SetReadDeadline(time.Now().Add(1 * time.Second))
-//
-//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
-//
-//				if err, ok := err.(net.Error); ok && err.Timeout() {
-//            continue  // Deadline hit—idle yield, no error
-//        }
-//				if err != nil {
-//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
-//					continue
-//				}
-				go handleUDP(buf[:n], clientAddr, udpLn)
-				time.Sleep(100 * time.Millisecond)  // Yield on success (post-process)
-			}
-		}()*/
-//		go func() {
-//			defer udpLn.Close()
-//			buf := make([]byte, 512 + 512)
-//			for {
-//				udpLn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))  // 100ms deadline
-//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
-//				if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-//					time.Sleep(100 * time.Millisecond)  // Double-yield on timeout
-//					continue
-//				}
-//				if err != nil {
-//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
-//					time.Sleep(100 * time.Millisecond)  // Yield on error
-//					continue
-//				}
-//				go handleUDP(buf[:n], clientAddr, udpLn)
-//				time.Sleep(100 * time.Millisecond)  // Yield on success
-//			}
-//		}()
+
+		/*		go func() {
+					buf := make([]byte, 512 + 512) // EDNS0 buffer
+					for {
+						n, clientAddr, err := udpLn.ReadFromUDP(buf)
+						if err != nil {
+		            // Optional: Log non-timeout errors
+		            if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		                errorLogger.Warn("udp_read_error", slog.Any("err", err))
+		            }
+		            time.Sleep(100 * time.Millisecond)  // Yield on error (idle/transient)
+		            continue
+		        }
+
+		//				time.Sleep(time.Duration(2000) * time.Millisecond)
+		//				// Set 1s deadline to yield on idle (breaks polling, else 100% cpu usage of 1 core).
+		//        udpLn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		//
+		//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
+		//
+		//				if err, ok := err.(net.Error); ok && err.Timeout() {
+		//            continue  // Deadline hit—idle yield, no error
+		//        }
+		//				if err != nil {
+		//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
+		//					continue
+		//				}
+						go handleUDP(buf[:n], clientAddr, udpLn)
+						time.Sleep(100 * time.Millisecond)  // Yield on success (post-process)
+					}
+				}()*/
+		//		go func() {
+		//			defer udpLn.Close()
+		//			buf := make([]byte, 512 + 512)
+		//			for {
+		//				udpLn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))  // 100ms deadline
+		//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
+		//				if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+		//					time.Sleep(100 * time.Millisecond)  // Double-yield on timeout
+		//					continue
+		//				}
+		//				if err != nil {
+		//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
+		//					time.Sleep(100 * time.Millisecond)  // Yield on error
+		//					continue
+		//				}
+		//				go handleUDP(buf[:n], clientAddr, udpLn)
+		//				time.Sleep(100 * time.Millisecond)  // Yield on success
+		//			}
+		//		}()
 		//defer udpLn.Close()
-		buf := make([]byte, 512 + 512)
+		buf := make([]byte, 512+512)
 		go func() {
 			defer udpLn.Close()
-			
+
 			//TheFor:
 			for {
 				//udpLn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -603,14 +601,14 @@ func startDNSListener(addr string) {
 				//time.Sleep(1000 * time.Millisecond)  // Yield
 				select {
 				case <-ctx.Done():
-				    fmt.Println("quitting on shutdown...")
-					return  // Quit on shutdown
+					fmt.Println("quitting on shutdown...")
+					return // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
 					if err != nil {
-						
+
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-				        fmt.Println("udp error...",err)
+						fmt.Println("udp error...", err)
 						errorLogger.Warn("udp_read_error", slog.Any("err", err))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
@@ -626,17 +624,17 @@ func startDNSListener(addr string) {
 	// TCP
 	fmt.Print("  Attempting TCP bind...")
 	//tcpLn *net.TCPListener
-//	tcpLn, err := net.ListenTCP("tcp", addr)
+	//	tcpLn, err := net.ListenTCP("tcp", addr)
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs
-if err != nil {
-	errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
+	if err != nil {
+		errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
-		errorLogger.Error(errStr) 
+		errorLogger.Error(errStr)
 		os.Exit(1)
-		}
-tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
-//if err != nil { /* handle */ }
-/*	if err != nil {
+	}
+	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
+	//if err != nil { /* handle */ }
+	/*	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
@@ -646,64 +644,64 @@ tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
 		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-//		select {  // Non-blocking send
-//		case listenerErrCh <- errors.New(errStr):
-//			default:  // Closed/dropped - log only
-//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
-//		}
+		//		select {  // Non-blocking send
+		//		case listenerErrCh <- errors.New(errStr):
+		//			default:  // Closed/dropped - log only
+		//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
+		//		}
 		//return
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
 		fmt.Printf("TCP DNS listening on %s\n", addr)
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
-go func() {
-    defer tcpLn.Close()
+		go func() {
+			defer tcpLn.Close()
 
-    // small buffer for accept errors backoff
-    var backoff time.Duration
+			// small buffer for accept errors backoff
+			var backoff time.Duration
 
-    for {
-        // allow Accept to be interruptible by context by using a deadline
-        tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+			for {
+				// allow Accept to be interruptible by context by using a deadline
+				tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 
-        conn, err := tcpLn.Accept()
-        if err != nil {
-            // if context canceled, exit cleanly
-            select {
-            case <-ctx.Done():
-                fmt.Println("quitting on shutdown...")
-                return
-            default:
-            }
+				conn, err := tcpLn.Accept()
+				if err != nil {
+					// if context canceled, exit cleanly
+					select {
+					case <-ctx.Done():
+						fmt.Println("quitting on shutdown...")
+						return
+					default:
+					}
 
-            // handle timeout-like errors (due to SetDeadline)
-            if ne, ok := err.(net.Error); ok && ne.Timeout() {
-                // reset backoff and continue
-                backoff = 0
-                continue
-            }
+					// handle timeout-like errors (due to SetDeadline)
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						// reset backoff and continue
+						backoff = 0
+						continue
+					}
 
-            // non-temporary error: log, backoff a bit to avoid hot loop, continue
-            fmt.Println("tcp accept error:", err)
-            errorLogger.Warn("tcp_accept_error", slog.Any("err", err))
+					// non-temporary error: log, backoff a bit to avoid hot loop, continue
+					fmt.Println("tcp accept error:", err)
+					errorLogger.Warn("tcp_accept_error", slog.Any("err", err))
 
-            if backoff == 0 {
-                backoff = 50 * time.Millisecond
-            } else if backoff < 1*time.Second {
-                backoff *= 2
-            }
-            time.Sleep(backoff)
-            continue
-        }
+					if backoff == 0 {
+						backoff = 50 * time.Millisecond
+					} else if backoff < 1*time.Second {
+						backoff *= 2
+					}
+					time.Sleep(backoff)
+					continue
+				}
 
-        // accepted a connection; handle in new goroutine
-        go func(c net.Conn) {
-            defer c.Close()
-            handleTCP(c)
-        }(conn)
-    }
-}()
+				// accepted a connection; handle in new goroutine
+				go func(c net.Conn) {
+					defer c.Close()
+					handleTCP(c)
+				}(conn)
+			}
+		}()
 
 	}
 	if udpLn == nil && tcpLn == nil {
@@ -721,7 +719,7 @@ func handleUDP(wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
 	if resp == nil {
 		return // Drop
 	}
-	pack, _ := resp.Pack() // Ignore err for brevity (rare)
+	pack, _ := resp.Pack()                 // Ignore err for brevity (rare)
 	_, _ = ln.WriteToUDP(pack, clientAddr) // Ignore write err
 }
 
@@ -804,36 +802,36 @@ func handleTCP(conn net.Conn) {
 //    }()
 //}
 func startDoHListener(addr string) {
-    fmt.Printf("Starting DoH listener on %s...\n", addr)
+	fmt.Printf("Starting DoH listener on %s...\n", addr)
 
-    mux := http.NewServeMux()
-    mux.HandleFunc("/dns-query", dohHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dns-query", dohHandler)
 
-    fmt.Print("  Attempting TLS bind...")
-    listener, err := tls.Listen("tcp", addr, &tls.Config{
-        MinVersion:   tls.VersionTLS12,
-        Certificates: []tls.Certificate{dohCert},  // Use loaded cert
-    })
-    if err != nil {
-        errStr := fmt.Sprintf("DoH listener failed on %s: %v", addr, err)
-        fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
-        errorLogger.Error(errStr)
-        os.Exit(1)  // Fail-fast serial
-    }
-    fmt.Println("Success")
-    fmt.Printf("DoH listening on %s\n", addr)
-
-    dohSrv := &http.Server{Handler: mux,
-				ReadTimeout:  30 * time.Second,  // Workaround for CPU/timer bug
-				    WriteTimeout: 30 * time.Second, // Optional, for responses
+	fmt.Print("  Attempting TLS bind...")
+	listener, err := tls.Listen("tcp", addr, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{dohCert}, // Use loaded cert
+	})
+	if err != nil {
+		errStr := fmt.Sprintf("DoH listener failed on %s: %v", addr, err)
+		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
+		errorLogger.Error(errStr)
+		os.Exit(1) // Fail-fast serial
 	}
-    go func() {
-        defer listener.Close()  // Graceful close on shutdown
-        if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-            errorLogger.Error("doh_serve_failed", slog.Any("err", err))
-        }
-    }()
-    fmt.Println("DoH server loop launched in goroutine - func returning")
+	fmt.Println("Success")
+	fmt.Printf("DoH listening on %s\n", addr)
+
+	dohSrv := &http.Server{Handler: mux,
+		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
+		WriteTimeout: 30 * time.Second, // Optional, for responses
+	}
+	go func() {
+		defer listener.Close() // Graceful close on shutdown
+		if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errorLogger.Error("doh_serve_failed", slog.Any("err", err))
+		}
+	}()
+	fmt.Println("DoH server loop launched in goroutine - func returning")
 }
 
 func dohHandler(w http.ResponseWriter, r *http.Request) {
@@ -1063,7 +1061,7 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 			goodExtra = append(goodExtra, rr)
 		}
 	}
-		msg.Answer = goodAnswer
+	msg.Answer = goodAnswer
 	msg.Extra = goodExtra
 	if len(msg.Answer) == 0 {
 		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
@@ -1133,9 +1131,34 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-/*func startWebUI(port int) {
+/*
+func startWebUI(port int) {
 //	listenerErrs.Add(1)
 //	defer listenerErrs.Done()
+
+		fmt.Printf("Starting web UI on 127.0.0.1:%d...\n", port)
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", statsHandler)
+		mux.HandleFunc("/rules", rulesHandler)
+		mux.HandleFunc("/blocks", blocksHandler)
+		mux.HandleFunc("/logs", logsHandler)
+		mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
+
+		fmt.Print("  Attempting UI bind...")
+		if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), mux); err != nil {
+			errStr := fmt.Sprintf("UI server failed on :%d: %v", port, err)
+			fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
+			errorLogger.Error(errStr)
+			//listenerErrCh <- errors.New(errStr)
+			os.Exit(1)
+		} else {
+			fmt.Println("Success")
+			fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port)
+		}
+	}
+*/
+func startWebUI(port int) {
 	fmt.Printf("Starting web UI on 127.0.0.1:%d...\n", port)
 
 	mux := http.NewServeMux()
@@ -1145,46 +1168,24 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	mux.HandleFunc("/logs", logsHandler)
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
-	fmt.Print("  Attempting UI bind...")
-	if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), mux); err != nil {
-		errStr := fmt.Sprintf("UI server failed on :%d: %v", port, err)
-		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		errStr := fmt.Sprintf("UI listener failed on :%d: %v", port, err)
+		fmt.Fprintln(os.Stderr, "  Attempting UI bind...Failed\n"+errStr)
 		errorLogger.Error(errStr)
-		//listenerErrCh <- errors.New(errStr)
-		os.Exit(1)
-	} else {
-		fmt.Println("Success")
-		fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port)
+		os.Exit(1) // Fail-fast serial
 	}
-}*/
-func startWebUI(port int) {
-    fmt.Printf("Starting web UI on 127.0.0.1:%d...\n", port)
+	fmt.Println("  Attempting UI bind...Success")
+	fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port)
 
-    mux := http.NewServeMux()
-    mux.HandleFunc("/", statsHandler)
-    mux.HandleFunc("/rules", rulesHandler)
-    mux.HandleFunc("/blocks", blocksHandler)
-    mux.HandleFunc("/logs", logsHandler)
-    mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
-
-    listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-    if err != nil {
-        errStr := fmt.Sprintf("UI listener failed on :%d: %v", port, err)
-        fmt.Fprintln(os.Stderr, "  Attempting UI bind...Failed\n"+errStr)
-        errorLogger.Error(errStr)
-        os.Exit(1)  // Fail-fast serial
-    }
-    fmt.Println("  Attempting UI bind...Success")
-    fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port)
-
-    uiSrv := &http.Server{Handler: mux}
-    go func() {
-        defer listener.Close()  // Graceful close
-        if err := uiSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-            errorLogger.Error("ui_serve_failed", slog.Any("err", err))
-        }
-    }()
-    fmt.Println("UI server loop launched - func returning")
+	uiSrv := &http.Server{Handler: mux}
+	go func() {
+		defer listener.Close() // Graceful close
+		if err := uiSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			errorLogger.Error("ui_serve_failed", slog.Any("err", err))
+		}
+	}()
+	fmt.Println("UI server loop launched - func returning")
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
