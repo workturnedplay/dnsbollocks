@@ -595,15 +595,20 @@ func startDNSListener(addr string) {
 		go func() {
 			defer udpLn.Close()
 			for {
+				fmt.Println("in for...")
+				time.Sleep(1000 * time.Millisecond)  // Yield
 				select {
 				case <-ctx.Done():
+				    fmt.Println("quitting on shutdown...")
 					return  // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
 					if err != nil {
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
+				        fmt.Println("error...")
 						continue
 					}
+					fmt.Println("new go routine for handling...")
 					go handleUDP(buf[:n], clientAddr, udpLn)
 				}
 			}
