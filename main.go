@@ -922,7 +922,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 
 	// Rate limit
 	gl := globalLimiter.Allow()
-	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 10)) // Per-client 10qps/10 burst
+	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst
 	cl := clIface.(*rate.Limiter)
 	if !gl || !cl.Allow() {
 		errorLogger.Warn("rate_limit_exceeded", slog.String("client", clientAddr))

@@ -16,6 +16,12 @@
         "pattern": "^example\\.com$",
         "is_regex": true,
         "enabled": true
+      },
+      {
+        "id": "9afe6009-6914-4e15-a2f1-d6717a8959ef",
+        "pattern": "^duckduckgo\\.com$",
+        "is_regex": true,
+        "enabled": true
       }
     ]
   },
