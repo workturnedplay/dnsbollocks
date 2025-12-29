@@ -3,7 +3,7 @@
   "listen_doh": "127.0.0.1:443",
   "ui_port": 8080,
   "upstream_url": "https://9.9.9.9/dns-query",
-  "sni_hostname": "dns9.quad9.net",
+  "sni_hostname": "9.9.9.9",
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
   "rate_qps": 100,

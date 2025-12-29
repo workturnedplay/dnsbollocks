@@ -1002,7 +1002,7 @@ func computeTTL(msg *dns.Msg) int {
 	return minTTL
 }
 
-func forwardToDoH(req *dns.Msg) *dns.Msg {
+/*func forwardToDoH(req *dns.Msg) *dns.Msg {
 	reqBytes, err := req.Pack()
 	if err != nil {
 		errorLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
@@ -1051,7 +1051,94 @@ resp, err := client.Do(req2)
 	upMsg := new(dns.Msg)
 	upMsg.Unpack(body)
 	return upMsg
+}*/
+func forwardToDoH(req *dns.Msg) *dns.Msg {
+	reqBytes, err := req.Pack()
+	if err != nil {
+		errorLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
+		fmt.Println("Failed to pack query for upstreaming it to DNS server:", err)
+		return nil
+	}
+
+	transport := &http.Transport{
+		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 3 * time.Second}
+			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443"))
+		},
+		// Use TLSClientConfig.ServerName for SNI (leave nil to use URL host).
+		TLSClientConfig: &tls.Config{
+			ServerName:         config.SNIHostname, // SNI hostname or "" to use URL host
+			InsecureSkipVerify: false,
+		},
+		Proxy: nil, // avoid proxy interference
+		ForceAttemptHTTP2:     true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+	}
+
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+	}
+
+	// Build request so we can set Host header to the desired hostname while dialing the IP.
+	req2, err := http.NewRequestWithContext(ctx /*context.Background()*/, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+	if err != nil {
+		errorLogger.Error("doh_newrequest_failed", slog.Any("err", err))
+		fmt.Println("Failed to create upstream request:", err)
+		return nil
+	}
+	req2.Header.Set("Content-Type", "application/dns-message")
+	// If you need the Host header to be the SNI hostname (common when dialing by IP), set it:
+	if config.SNIHostname != "" {
+		req2.Host = config.SNIHostname
+	}
+
+	resp, err := client.Do(req2)
+	if err != nil {
+		errorLogger.Error("doh_post_failed", slog.Any("err", err))
+		fmt.Println("Failed to query upstream DNS server:", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		errorLogger.Error("doh_readbody_failed", slog.Any("err", err))
+		return nil
+	}
+
+// debug: inspect HTTP response and first bytes when unpacking fails
+if resp.StatusCode != 200 {
+	errorLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
+	fmt.Println("Upstream HTTP status:", resp.Status)
 }
+ct := resp.Header.Get("Content-Type")
+if ct != "application/dns-message" {
+	errorLogger.Error("doh_upstream_content_type", slog.Any("content_type", ct))
+	fmt.Println("Upstream Content-Type:", ct)
+}
+if len(body) < 12 {
+	errorLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
+	fmt.Println("Upstream body too short:", len(body))
+}/* else {
+	// print first 200 bytes as hex and text (safe slice)
+	n := 200
+	if len(body) < n {
+		n = len(body)
+	}
+	fmt.Printf("Upstream body (hex, first %d): %x\n", n, body[:n])
+	fmt.Printf("Upstream body (text, first %d): %q\n", n, body[:n])
+}*/
+
+
+	upMsg := new(dns.Msg)
+	if err := upMsg.Unpack(body); err != nil {
+		errorLogger.Error("doh_unpack_failed", slog.Any("err", err))
+		return nil
+	}
+	return upMsg
+}
+
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
 	switch config.BlockMode {
