@@ -1,0 +1,30 @@
+{
+  "listen_dns": "127.0.0.1:53",
+  "listen_doh": "127.0.0.1:443",
+  "ui_port": 8080,
+  "upstream_url": "https://9.9.9.9/dns-query",
+  "sni_hostname": "",
+  "block_mode": "nxdomain",
+  "block_ip": "0.0.0.0",
+  "rate_qps": 100,
+  "cache_min_ttl": 300,
+  "cache_max_entries": 10000,
+  "whitelist": {
+    "A": [
+      {
+        "id": "b8054b2a-747d-4230-8531-5f5613d1a3d6",
+        "pattern": "^example\\.com$",
+        "is_regex": true,
+        "enabled": true
+      }
+    ]
+  },
+  "response_blacklist": [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "192.168.0.0/16"
+  ],
+  "log_queries": "queries.log",
+  "log_errors": "errors.log",
+  "log_max_size_mb": 0
+}
