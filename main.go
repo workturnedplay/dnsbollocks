@@ -69,7 +69,7 @@ type Config struct {
 	LogQueries        string            `json:"log_queries"`        // "queries.log"
 	LogErrors         string            `json:"log_errors"`         // "errors.log"
 	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
-	AllowRunAsAdmin bool `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
+	AllowRunAsAdmin   bool              `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
 }
 
 // Rule represents a whitelist rule.
@@ -211,7 +211,7 @@ func loadConfig(path string) error {
 			LogQueries:        "queries.log",
 			LogErrors:         "errors.log",
 			LogMaxSizeMB:      4095, // Rotation threshold
-			AllowRunAsAdmin: false,
+			AllowRunAsAdmin:   false,
 		}
 		if err := saveConfig(path); err != nil {
 			return fmt.Errorf("default config save failed: %w", err)
@@ -226,26 +226,24 @@ func loadConfig(path string) error {
 		config.CacheMinTTL = 60 // Min reasonable
 		fmt.Println("Warning: cache_min_ttl clamped to 60s")
 	}
-	
+
 	var upstreamHost string
 	if config.SNIHostname == "" {
-	    upstreamHost, err = hostFromURL(config.UpstreamURL)
+		upstreamHost, err = hostFromURL(config.UpstreamURL)
 		if err != nil {
-		// handle parse error (return SERVFAIL or log)
-		fmt.Println("invalid upstream URL:", err)
-		return fmt.Errorf("invalid upstream URL: %w", err)
-	    }
+			// handle parse error (return SERVFAIL or log)
+			fmt.Println("invalid upstream URL:", err)
+			return fmt.Errorf("invalid upstream URL: %w", err)
+		}
 	} else {
-		upstreamHost=config.SNIHostname
+		upstreamHost = config.SNIHostname
 	}
-	
-		config.SNIHostname = upstreamHost
-		fmt.Println("Using upstream SNI hostname:",config.SNIHostname)
-	
+
+	config.SNIHostname = upstreamHost
+	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
 
 	return nil
 }
-
 
 // helper to return host (IP or hostname) from an URL
 func hostFromURL(raw string) (string, error) {
@@ -575,35 +573,35 @@ func startDNSListener(addr string) {
 		fmt.Printf("UDP DNS listening on %s\n", addr)
 
 		/*		go func() {
-					buf := make([]byte, 512 + 512) // EDNS0 buffer
-					for {
-						n, clientAddr, err := udpLn.ReadFromUDP(buf)
-						if err != nil {
-		            // Optional: Log non-timeout errors
-		            if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-		                errorLogger.Warn("udp_read_error", slog.Any("err", err))
-		            }
-		            time.Sleep(100 * time.Millisecond)  // Yield on error (idle/transient)
-		            continue
-		        }
+							buf := make([]byte, 512 + 512) // EDNS0 buffer
+							for {
+								n, clientAddr, err := udpLn.ReadFromUDP(buf)
+								if err != nil {
+				            // Optional: Log non-timeout errors
+				            if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+				                errorLogger.Warn("udp_read_error", slog.Any("err", err))
+				            }
+				            time.Sleep(100 * time.Millisecond)  // Yield on error (idle/transient)
+				            continue
+				        }
 
-		//				time.Sleep(time.Duration(2000) * time.Millisecond)
-		//				// Set 1s deadline to yield on idle (breaks polling, else 100% cpu usage of 1 core).
-		//        udpLn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		//
-		//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
-		//
-		//				if err, ok := err.(net.Error); ok && err.Timeout() {
-		//            continue  // Deadline hit—idle yield, no error
-		//        }
-		//				if err != nil {
-		//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
-		//					continue
-		//				}
-						go handleUDP(buf[:n], clientAddr, udpLn)
-						time.Sleep(100 * time.Millisecond)  // Yield on success (post-process)
-					}
-				}()*/
+				//				time.Sleep(time.Duration(2000) * time.Millisecond)
+				//				// Set 1s deadline to yield on idle (breaks polling, else 100% cpu usage of 1 core).
+				//        udpLn.SetReadDeadline(time.Now().Add(1 * time.Second))
+				//
+				//				n, clientAddr, err := udpLn.ReadFromUDP(buf)
+				//
+				//				if err, ok := err.(net.Error); ok && err.Timeout() {
+				//            continue  // Deadline hit—idle yield, no error
+				//        }
+				//				if err != nil {
+				//					errorLogger.Warn("udp_read_error", slog.Any("err", err))
+				//					continue
+				//				}
+								go handleUDP(buf[:n], clientAddr, udpLn)
+								time.Sleep(100 * time.Millisecond)  // Yield on success (post-process)
+							}
+						}()*/
 		//		go func() {
 		//			defer udpLn.Close()
 		//			buf := make([]byte, 512 + 512)
@@ -649,11 +647,11 @@ func startDNSListener(addr string) {
 						continue
 					}
 					pid, exe, err := pidAndExeForUDP(clientAddr)
-if err != nil {
-fmt.Printf("clientAddr=%s couldn't get pid and exe name:%s\n", clientAddr, err)
-} else {
-fmt.Printf("clientAddr=%s pid=%d exe=%s\n", clientAddr, pid, exe)
-}
+					if err != nil {
+						fmt.Printf("clientAddr=%s couldn't get pid and exe name:%s\n", clientAddr, err)
+					} else {
+						fmt.Printf("clientAddr=%s pid=%d exe=%s\n", clientAddr, pid, exe)
+					}
 					//fmt.Println("new go routine for handling...",clientAddr, pidAndExeForUDP(clientAddr))
 					//pidAndExeForUDP(&clientAddr)
 					go handleUDP(buf[:n], clientAddr, udpLn)
@@ -1011,95 +1009,99 @@ func computeTTL(msg *dns.Msg) int {
 	return minTTL
 }
 
-/*func forwardToDoH(req *dns.Msg) *dns.Msg {
-	reqBytes, err := req.Pack()
-	if err != nil {
-		errorLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
-		fmt.Println("Failed to pack query for upstreaming it to DNS server: ",err)
-		return nil
-	}
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				dialer := &net.Dialer{Timeout: 3 * time.Second}
-				fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
-				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(upstreamIP, "443"))
-				if err != nil {
-					return nil, err
-				}
-				tlsConn := tls.Client(conn, &tls.Config{
-					ServerName:         config.SNIHostname,
-					InsecureSkipVerify: false,
-				})
-				
-				if err := tlsConn.HandshakeContext(ctx); err != nil {
-					conn.Close()
-					return nil, err
-				}
-				return tlsConn, nil
+/*
+	func forwardToDoH(req *dns.Msg) *dns.Msg {
+		reqBytes, err := req.Pack()
+		if err != nil {
+			errorLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
+			fmt.Println("Failed to pack query for upstreaming it to DNS server: ",err)
+			return nil
+		}
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					dialer := &net.Dialer{Timeout: 3 * time.Second}
+					fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
+					conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(upstreamIP, "443"))
+					if err != nil {
+						return nil, err
+					}
+					tlsConn := tls.Client(conn, &tls.Config{
+						ServerName:         config.SNIHostname,
+						InsecureSkipVerify: false,
+					})
+
+					if err := tlsConn.HandshakeContext(ctx); err != nil {
+						conn.Close()
+						return nil, err
+					}
+					return tlsConn, nil
+				},
 			},
-		},
-	}
-	req2, _ := http.NewRequest("POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+		}
+		req2, _ := http.NewRequest("POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+
 req2.Header.Set("Content-Type", "application/dns-message")
 //req.Host = "dns9.quad9.net" // desired Host header
 req2.Host=config.SNIHostname
 resp, err := client.Do(req2)
-	//resp, err := client.Post(upstreamURL.String(), "application/dns-message", bytes.NewReader(reqBytes))
-	if err != nil {
-		errorLogger.Error("doh_post_failed", slog.Any("err", err))
-		fmt.Println("Failed to query upstream DNS server: ",err)
-		return nil
+
+		//resp, err := client.Post(upstreamURL.String(), "application/dns-message", bytes.NewReader(reqBytes))
+		if err != nil {
+			errorLogger.Error("doh_post_failed", slog.Any("err", err))
+			fmt.Println("Failed to query upstream DNS server: ",err)
+			return nil
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil
+		}
+		upMsg := new(dns.Msg)
+		upMsg.Unpack(body)
+		return upMsg
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-	upMsg := new(dns.Msg)
-	upMsg.Unpack(body)
-	return upMsg
-}*/
+*/
 var (
-    dohClient    *http.Client
-    dohTransport *http.Transport
-    dohMu        sync.Mutex
+	dohClient    *http.Client
+	dohTransport *http.Transport
+	dohMu        sync.Mutex
 )
 
 // call once at startup or when upstream config changes
 func initDoHClient() { //upstreamIP, sni string) {
 	fmt.Println("starting initDoHClient()")
-    dohMu.Lock()
-    defer dohMu.Unlock()
+	dohMu.Lock()
+	defer dohMu.Unlock()
 	fmt.Println("past lock in initDoHClient()")
 
-    if dohTransport != nil {
-        dohTransport.CloseIdleConnections()
-    }
+	if dohTransport != nil {
+		dohTransport.CloseIdleConnections()
+	}
 
-    t := &http.Transport{
+	t := &http.Transport{
 		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
-        DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-            d := &net.Dialer{Timeout: 3 * time.Second}
-            return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443"))
-        },
-        TLSClientConfig:    &tls.Config{
-			ServerName: config.SNIHostname,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 3 * time.Second}
+			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443"))
+		},
+		TLSClientConfig: &tls.Config{
+			ServerName:         config.SNIHostname,
 			InsecureSkipVerify: false,
-			},
-        Proxy:               nil, // avoid proxy interference
-        ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-        IdleConnTimeout:     90 * time.Second,
-        MaxIdleConns:        100,
-        MaxIdleConnsPerHost: 10,
-    }
+		},
+		Proxy:               nil,  // avoid proxy interference
+		ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+	}
 
-    dohTransport = t
-    dohClient = &http.Client{
-        Timeout:   5 * time.Second, // overall per-request timeout
-        Transport: dohTransport,
-    }
+	dohTransport = t
+	dohClient = &http.Client{
+		Timeout:   5 * time.Second, // overall per-request timeout
+		Transport: dohTransport,
+	}
 	fmt.Println("ending initDoHClient()")
 }
 
@@ -1112,112 +1114,111 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		return nil
 	}
 
-// create request with supplied context so caller controls deadline/cancel
-    makeReq := func() (*http.Request, error) {
-        r, err := http.NewRequestWithContext(ctx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
-        if err != nil {
+	// create request with supplied context so caller controls deadline/cancel
+	makeReq := func() (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+		if err != nil {
 			errorLogger.Error("doh_newrequest_failed", slog.Any("err", err))
-		    fmt.Println("Failed to create upstream request:", err)
+			fmt.Println("Failed to create upstream request:", err)
 			return nil, err
-        }
-        r.Header.Set("Content-Type", "application/dns-message")
-        if config.SNIHostname != "" {
-            r.Host = config.SNIHostname
+		}
+		r.Header.Set("Content-Type", "application/dns-message")
+		if config.SNIHostname != "" {
+			r.Host = config.SNIHostname
 			fmt.Println("Using http header hostname:", r.Host)
-        }
-        return r, nil
-    }
+		}
+		return r, nil
+	}
 	//fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
 	var resp *http.Response
-    var attempt int
-    for attempt = 0; attempt < 2; attempt++ {
-        if dohClient == nil {
-            // defensive: initialize if not yet done (use current config)
-            initDoHClient()
-        }
+	var attempt int
+	for attempt = 0; attempt < 2; attempt++ {
+		if dohClient == nil {
+			// defensive: initialize if not yet done (use current config)
+			initDoHClient()
+		}
 
-        req2, err := makeReq()
-        if err != nil {
-            errorLogger.Error("doh_newrequest_failed", slog.Any("err", err))
-            fmt.Println("Failed to create upstream request:", err)
-            return nil
-        }
+		req2, err := makeReq()
+		if err != nil {
+			errorLogger.Error("doh_newrequest_failed", slog.Any("err", err))
+			fmt.Println("Failed to create upstream request:", err)
+			return nil
+		}
 
-        resp, err = dohClient.Do(req2)
-        if err == nil {
+		resp, err = dohClient.Do(req2)
+		if err == nil {
 			//success!
-            break
-        }
+			break
+		}
 
-        // decide if error is transient/retryable
-        // common retryable errors: temporary network errors, EOF, connection reset
-        var netErr net.Error
-        if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
-            errors.As(err, &netErr) && netErr.Temporary() {
-            // retry once
-            errorLogger.Error("doh_post_transient_error", slog.Any("err", err), slog.Int("attempt", attempt))
-			fmt.Println("doh_post_transient_error(retrying next tho!):",err)
-            // small backoff: sleep a bit but respect context
-            select {
-            case <-time.After(100 * time.Millisecond):
-            case <-ctx.Done():
-			    fmt.Println("doh sensed quit...")
-                return nil
-            }
-            continue
-        }
+		// decide if error is transient/retryable
+		// common retryable errors: temporary network errors, EOF, connection reset
+		var netErr net.Error
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+			errors.As(err, &netErr) && netErr.Temporary() {
+			// retry once
+			errorLogger.Error("doh_post_transient_error", slog.Any("err", err), slog.Int("attempt", attempt))
+			fmt.Println("doh_post_transient_error(retrying next tho!):", err)
+			// small backoff: sleep a bit but respect context
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-ctx.Done():
+				fmt.Println("doh sensed quit...")
+				return nil
+			}
+			continue
+		}
 
-        // non-retryable error
-        errorLogger.Error("doh_post_failed", slog.Any("err", err))
-        fmt.Println("Failed to query upstream DNS server:", err)
-        return nil
-    }
-
-    if resp == nil {
-        // last attempt produced no response (shouldn't happen), treat as failure
-        errorLogger.Error("doh_no_response")
-        return nil
-    }
-    defer resp.Body.Close()
-
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        errorLogger.Error("doh_readbody_failed", slog.Any("err", err))
-        return nil
-    }
-
-    // debug/log non-200 or unexpected content-type
-    if resp.StatusCode != 200 {
-        errorLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
-        fmt.Println("Upstream HTTP status:", resp.Status)
-    }
-    ct := resp.Header.Get("Content-Type")
-    if ct != "application/dns-message" {
-        errorLogger.Error("doh_upstream_content_type", slog.Any("content_type", ct))
-        fmt.Println("Upstream Content-Type:", ct)
-    }
-if len(body) < 12 {
-	errorLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
-	fmt.Println("Upstream body too short:", len(body))
-}
-    upMsg := new(dns.Msg)
-    if err := upMsg.Unpack(body); err != nil {
-        errorLogger.Error("doh_unpack_failed", slog.Any("err", err))
-        // log first bytes for debugging (already discussed)
-		// print first 200 bytes as hex and text (safe slice)
-	n := 200
-	if len(body) < n {
-		n = len(body)
+		// non-retryable error
+		errorLogger.Error("doh_post_failed", slog.Any("err", err))
+		fmt.Println("Failed to query upstream DNS server:", err)
+		return nil
 	}
-	fmt.Printf("Upstream body (hex, first %d): %x\n", n, body[:n])
-	fmt.Printf("Upstream body (text, first %d): %q\n", n, body[:n])
-        return nil
-    }
-    return upMsg
-	///////////////////////////////
-	
-}
 
+	if resp == nil {
+		// last attempt produced no response (shouldn't happen), treat as failure
+		errorLogger.Error("doh_no_response")
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		errorLogger.Error("doh_readbody_failed", slog.Any("err", err))
+		return nil
+	}
+
+	// debug/log non-200 or unexpected content-type
+	if resp.StatusCode != 200 {
+		errorLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
+		fmt.Println("Upstream HTTP status:", resp.Status)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/dns-message" {
+		errorLogger.Error("doh_upstream_content_type", slog.Any("content_type", ct))
+		fmt.Println("Upstream Content-Type:", ct)
+	}
+	if len(body) < 12 {
+		errorLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
+		fmt.Println("Upstream body too short:", len(body))
+	}
+	upMsg := new(dns.Msg)
+	if err := upMsg.Unpack(body); err != nil {
+		errorLogger.Error("doh_unpack_failed", slog.Any("err", err))
+		// log first bytes for debugging (already discussed)
+		// print first 200 bytes as hex and text (safe slice)
+		n := 200
+		if len(body) < n {
+			n = len(body)
+		}
+		fmt.Printf("Upstream body (hex, first %d): %x\n", n, body[:n])
+		fmt.Printf("Upstream body (text, first %d): %q\n", n, body[:n])
+		return nil
+	}
+	return upMsg
+	///////////////////////////////
+
+}
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
 	switch config.BlockMode {
