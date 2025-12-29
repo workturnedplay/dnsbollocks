@@ -611,7 +611,7 @@ func startDNSListener(addr string) {
 						
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
 				        fmt.Println("udp error...",err)
-						
+						errorLogger.Warn("udp_read_error", slog.Any("err", err))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
 						continue
@@ -625,7 +625,17 @@ func startDNSListener(addr string) {
 
 	// TCP
 	fmt.Print("  Attempting TCP bind...")
-	tcpLn, err := net.Listen("tcp", addr)
+	//tcpLn *net.TCPListener
+//	tcpLn, err := net.ListenTCP("tcp", addr)
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs
+if err != nil {
+	errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
+		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
+		errorLogger.Error(errStr) 
+		os.Exit(1)
+		}
+tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
+//if err != nil { /* handle */ }
 /*	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
@@ -646,20 +656,55 @@ func startDNSListener(addr string) {
 	} else {
 		fmt.Println("Success")
 		fmt.Printf("TCP DNS listening on %s\n", addr)
-		defer tcpLn.Close()
-		go func() {
-			//TheFor:
-			for {
-				conn, err := tcpLn.Accept()
-				if err != nil {
-					fmt.Println("inTCP error...",err)
-					time.Sleep(100 * time.Millisecond)
-					//break TheFor
-					continue
-				}
-				go handleTCP(conn)
-			}
-		}()
+		// caller provides ctx context.Context and tcpLn *net.TCPListener
+go func() {
+    defer tcpLn.Close()
+
+    // small buffer for accept errors backoff
+    var backoff time.Duration
+
+    for {
+        // allow Accept to be interruptible by context by using a deadline
+        tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+
+        conn, err := tcpLn.Accept()
+        if err != nil {
+            // if context canceled, exit cleanly
+            select {
+            case <-ctx.Done():
+                fmt.Println("quitting on shutdown...")
+                return
+            default:
+            }
+
+            // handle timeout-like errors (due to SetDeadline)
+            if ne, ok := err.(net.Error); ok && ne.Timeout() {
+                // reset backoff and continue
+                backoff = 0
+                continue
+            }
+
+            // non-temporary error: log, backoff a bit to avoid hot loop, continue
+            fmt.Println("tcp accept error:", err)
+            errorLogger.Warn("tcp_accept_error", slog.Any("err", err))
+
+            if backoff == 0 {
+                backoff = 50 * time.Millisecond
+            } else if backoff < 1*time.Second {
+                backoff *= 2
+            }
+            time.Sleep(backoff)
+            continue
+        }
+
+        // accepted a connection; handle in new goroutine
+        go func(c net.Conn) {
+            defer c.Close()
+            handleTCP(c)
+        }(conn)
+    }
+}()
+
 	}
 	if udpLn == nil && tcpLn == nil {
 		fmt.Println("Warning: No DNS listeners active—degraded mode")
