@@ -65,9 +65,9 @@ type Config struct {
 	CacheMinTTL       int               `json:"cache_min_ttl,s"`    // 300s
 	CacheMaxEntries   int               `json:"cache_max_entries"`  // 10000
 	Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
-  ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
-	WhitelistFile     string `json:"whitelist_file"`     // "query_whitelist.json"
-	BlacklistFile     string `json:"blacklist_file"`     // "response_blacklist.json"
+	ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
+	WhitelistFile     string            `json:"whitelist_file"`     // "query_whitelist.json"
+	BlacklistFile     string            `json:"blacklist_file"`     // "response_blacklist.json"
 	LogQueries        string            `json:"log_queries"`        // "queries.log"
 	LogErrors         string            `json:"log_errors"`         // "errors.log"
 	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
@@ -262,7 +262,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </html>
 `))
 
-
 func main() {
 	fmt.Println("DNS Proxy starting...")
 	flag.Parse() // For future flags
@@ -354,8 +353,8 @@ func loadConfig(path string) error {
 			CacheMaxEntries:   10000,
 			Whitelist:         make(map[string][]Rule),
 			ResponseBlacklist: []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16", "::1/128", "fc00::/7"},
-			WhitelistFile: "query_whitelist.json",
-			BlacklistFile: "response_blacklist.json",
+			WhitelistFile:     "query_whitelist.json",
+			BlacklistFile:     "response_blacklist.json",
 			LogQueries:        "queries.log",
 			LogErrors:         "errors.log",
 			LogMaxSizeMB:      4095, // Rotation threshold
@@ -1553,7 +1552,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	body := fmt.Sprintf("<p>Blocks: %s</p><p>Cache size: %d</p><p>Upstream IP: %s</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
 	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
-	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)})  // Raw HTML, no escape
+	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
@@ -1569,14 +1568,14 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					enabled = "No"
 				}
 				//body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><button>Edit</button></form></td></tr>",
-					//typ, rule.ID, rule.Pattern, enabled, rule.ID))
-//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><input type=hidden name=pattern value=\"%s\"><input type=hidden name=type value=\"%s\"><button>Edit</button></form></td></tr>",
-//				typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ))
-//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button onclick=\"editRule('%s', '%s', '%s', %t)\">Edit</button></td></tr>",
-//						typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
-body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button data-edit-id=\"%s\" data-edit-pattern=\"%s\" data-edit-type=\"%s\" data-edit-enabled=\"%t\">Edit</button></td></tr>",
-    typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
-			}//for
+				//typ, rule.ID, rule.Pattern, enabled, rule.ID))
+				//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><input type=hidden name=pattern value=\"%s\"><input type=hidden name=type value=\"%s\"><button>Edit</button></form></td></tr>",
+				//				typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ))
+				//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button onclick=\"editRule('%s', '%s', '%s', %t)\">Edit</button></td></tr>",
+				//						typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
+				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button data-edit-id=\"%s\" data-edit-pattern=\"%s\" data-edit-type=\"%s\" data-edit-enabled=\"%t\">Edit</button></td></tr>",
+					typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
+			} //for
 		}
 		body.WriteString("</table><form method=post action=/rules><input name=pattern placeholder=pattern><input name=type placeholder=A><button>Add</button></form>")
 		ruleMutex.RUnlock()
@@ -1590,52 +1589,53 @@ body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><t
 		id := r.FormValue("id") // For edit
 		enabledStr := r.FormValue("enabled")
 		enabledBool := enabledStr == "true"
-		if typ=="" {
-			typ="A"
+		if typ == "" {
+			//FIXME: when this happens, enabled is not true
+			typ = "A"
 		}
 		if pattern != "" && typ != "" {
 			var newID string
-        if id == "" {
-            newID = newUniqueID()  // Gen ID pre-lock (no nesting)
-        } else {
-            newID = id  // Edit uses existing
-        }
-        ruleMutex.Lock()
-        var newRule Rule
-        if id != "" {
-            // Edit: Find and update
-            for i, r := range config.Whitelist[typ] {
-                if r.ID == id {
-                    newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-                    config.Whitelist[typ][i] = newRule
-                    whitelist[typ][i] = newRule
-                    break
-                }
-            }
-        } else {
-            // Add
-            newRule = Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-            whitelist[typ] = append(whitelist[typ], newRule)
-        }
-//			ruleMutex.Lock()
-//			var newRule Rule
-//			if id != "" {
-//				// Edit: Find and update
-//				for i, r := range config.Whitelist[typ] {
-//					if r.ID == id {
-//						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: true}
-//						config.Whitelist[typ][i] = newRule
-//						whitelist[typ][i] = newRule
-//						break
-//					}
-//				}
-//			} else {
-//				// Add
-//				newRule = Rule{ID: newUniqueID(), Pattern: pattern, IsRegex: false, Enabled: true}
-//				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-//				whitelist[typ] = append(whitelist[typ], newRule)
-//			}
+			if id == "" {
+				newID = newUniqueID() // Gen ID pre-lock (no nesting)
+			} else {
+				newID = id // Edit uses existing
+			}
+			ruleMutex.Lock()
+			var newRule Rule
+			if id != "" {
+				// Edit: Find and update
+				for i, r := range config.Whitelist[typ] {
+					if r.ID == id {
+						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+						config.Whitelist[typ][i] = newRule
+						whitelist[typ][i] = newRule
+						break
+					}
+				}
+			} else {
+				// Add
+				newRule = Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+				whitelist[typ] = append(whitelist[typ], newRule)
+			}
+			//			ruleMutex.Lock()
+			//			var newRule Rule
+			//			if id != "" {
+			//				// Edit: Find and update
+			//				for i, r := range config.Whitelist[typ] {
+			//					if r.ID == id {
+			//						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: true}
+			//						config.Whitelist[typ][i] = newRule
+			//						whitelist[typ][i] = newRule
+			//						break
+			//					}
+			//				}
+			//			} else {
+			//				// Add
+			//				newRule = Rule{ID: newUniqueID(), Pattern: pattern, IsRegex: false, Enabled: true}
+			//				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+			//				whitelist[typ] = append(whitelist[typ], newRule)
+			//			}
 			ruleMutex.Unlock()
 			saveConfig("config.json")
 			fmt.Printf("Rule updated/added for %s: %s\n", typ, pattern)
@@ -1695,7 +1695,7 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	body := fmt.Sprintf("<h2>Logs (filtered by '%s')</h2><pre style=\"max-height:400px;overflow:auto;\">%s</pre>", domainFilter, strings.Join(filtered, "\n"))
 	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
-	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)})  // Raw HTML, no escape
+	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
 func shutdown() {
