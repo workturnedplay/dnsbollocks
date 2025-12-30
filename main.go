@@ -65,7 +65,9 @@ type Config struct {
 	CacheMinTTL       int               `json:"cache_min_ttl,s"`    // 300s
 	CacheMaxEntries   int               `json:"cache_max_entries"`  // 10000
 	Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
-	ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
+  ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
+	WhitelistFile     string `json:"whitelist_file"`     // "query_whitelist.json"
+	BlacklistFile     string `json:"blacklist_file"`     // "response_blacklist.json"
 	LogQueries        string            `json:"log_queries"`        // "queries.log"
 	LogErrors         string            `json:"log_errors"`         // "errors.log"
 	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
@@ -109,13 +111,157 @@ type BlockedQuery struct {
 }
 
 // Templates for UI (embedded).
-var uiTemplates = template.Must(template.New("").Parse(`
-<!DOCTYPE html><html><head><title>DNS Proxy UI</title></head><body>
+//var uiTemplates = template.Must(template.New("").Parse(`
+//<!DOCTYPE html><html><head><title>DNS Proxy UI</title></head><body>
+//<h1>DNS Proxy Control</h1>
+//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+//{{.Body}}
+//</body></html>
+//`))
+
+//var uiTemplates = template.Must(template.New("").Parse(`
+//<!DOCTYPE html><html><head><title>DNS Proxy UI</title><base href="/"></head><body>
+//<h1>DNS Proxy Control</h1>
+//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+//{{.Body}}
+//</body></html>
+//`))
+
+//var uiTemplates = template.Must(template.New("").Parse(`
+//<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
+//<h1>DNS Proxy Control</h1>
+//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+//{{.Body}}
+//</body></html>
+//`))
+/*var uiTemplates = template.Must(template.New("").Parse(`
+<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
 <h1>DNS Proxy Control</h1>
 <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
 {{.Body}}
+<script>
+// Inline JS for in-place rule editing (vanilla, no deps)
+document.addEventListener('DOMContentLoaded', function() {
+    const editButtons = document.querySelectorAll('button[onclick*="editRule"]');
+    editButtons.forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const row = this.closest('tr');
+            const cells = row.cells;
+            const typ = cells[0].textContent;
+            const id = cells[1].textContent;
+            const oldPattern = cells[2].textContent;
+            const enabled = cells[3].textContent === 'Yes';
+
+            // Hide row, show form
+            row.style.display = 'none';
+            const formHtml = `+"`"+`
+                <tr>
+                    <td>${typ}</td>
+                    <td>${id}</td>
+                    <td><input type="text" id="editPattern_$$ {id}" value=" $${oldPattern}" style="width:100%"></td>
+                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}> Enabled</label></td>
+                    <td>
+                        <form method="post" action="/rules" id="editForm_${id}">
+                            <input type="hidden" name="id" value="${id}">
+                            <input type="hidden" name="type" value="${typ}">
+                            <button type="submit">Save</button>
+                            <button type="button" onclick="cancelEdit('$$ {id}', ' $${oldPattern}', ${enabled})">Cancel</button>
+                        </form>
+                    </td>
+                </tr>
+            `+"`"+`;
+            row.insertAdjacentHTML('afterend', formHtml);
+            const form = document.getElementById(`+"`"+`editForm_${id}`+"`"+`);
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const newPattern = document.getElementById(`+"`"+`editPattern_${id}`+"`"+`).value;
+                const enabledChecked = document.getElementById(`+"`"+`editEnabled_${id}`+"`"+`).checked;
+                const formData = new FormData(form);
+                formData.append('pattern', newPattern);
+                formData.append('enabled', enabledChecked ? 'true' : 'false');
+                fetch('/rules', {method: 'POST', body: formData}).then(() => location.reload());
+            });
+        });
+    });
+    window.cancelEdit = function(id, oldPattern, enabled) {
+        const formRow = document.querySelector(`+"`"+`#editForm_${id}`+"`"+`).closest('tr');
+        formRow.remove();
+        const originalRow = formRow.previousElementSibling;
+        originalRow.style.display = '';
+    };
+});
+</script>
 </body></html>
+`)) */
+
+var uiTemplates = template.Must(template.New("").Parse(`
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DNS Proxy UI</title>
+  <meta charset="utf-8">
+  <base href="/">
+</head>
+<body>
+<h1>DNS Proxy Control</h1>
+<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+{{.Body}}
+
+<script>
+// Inline JS for in-place rule editing (vanilla, no deps)
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('button[data-edit-id]').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const row = this.closest('tr');
+            const typ = this.dataset.editType;
+            const id = this.dataset.editId;
+            const oldPattern = this.dataset.editPattern;
+            const enabled = this.dataset.editEnabled === 'true';
+            row.style.display = 'none';
+            const formHtml = (` + "`" + `
+                <tr>
+                    <td>${typ}</td>
+                    <td>${id}</td>
+                    <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
+                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}> Enabled</label></td>
+                    <td>
+                        <form method="post" action="/rules" id="editForm_${id}">
+                            <input type="hidden" name="id" value="${id}">
+                            <input type="hidden" name="type" value="${typ}">
+                            <button type="submit">Save</button>
+                            <button type="button" onclick="cancelEdit('${id}', '${oldPattern}', ${enabled})">Cancel</button>
+                        </form>
+                    </td>
+                </tr>
+            ` + "`" + `);
+            row.insertAdjacentHTML('afterend', formHtml);
+            const form = document.getElementById('editForm_' + id);
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const newPattern = document.getElementById('editPattern_' + id).value;
+                const enabledChecked = document.getElementById('editEnabled_' + id).checked;
+                const formData = new FormData(form);
+                formData.append('pattern', newPattern);
+                formData.append('enabled', enabledChecked ? 'true' : 'false');
+                fetch('/rules', {method: 'POST', body: formData}).then(() => location.reload()).catch(err => console.error('Save failed:', err));
+            });
+        });
+    });
+
+    window.cancelEdit = function(id, oldPattern, enabled) {
+        const formRow = document.querySelector('#editForm_' + id).closest('tr');
+        formRow.remove();
+        const originalRow = formRow.previousElementSibling;
+        if (originalRow) originalRow.style.display = '';
+    };
+});
+</script>
+</body>
+</html>
 `))
+
 
 func main() {
 	fmt.Println("DNS Proxy starting...")
@@ -208,11 +354,14 @@ func loadConfig(path string) error {
 			CacheMaxEntries:   10000,
 			Whitelist:         make(map[string][]Rule),
 			ResponseBlacklist: []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16", "::1/128", "fc00::/7"},
+			WhitelistFile: "query_whitelist.json",
+			BlacklistFile: "response_blacklist.json",
 			LogQueries:        "queries.log",
 			LogErrors:         "errors.log",
 			LogMaxSizeMB:      4095, // Rotation threshold
 			AllowRunAsAdmin:   false,
 		}
+
 		if err := saveConfig(path); err != nil {
 			return fmt.Errorf("default config save failed: %w", err)
 		}
@@ -1401,11 +1550,14 @@ func startWebUI(port int) {
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	body := fmt.Sprintf("<p>Blocks: %s</p><p>Cache size: %d</p><p>Upstream IP: %s</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
-	uiTemplates.Execute(w, struct{ Body string }{Body: body})
+	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
+	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)})  // Raw HTML, no escape
 }
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method == "GET" {
 		ruleMutex.RLock()
 		var body strings.Builder
@@ -1416,38 +1568,74 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				if !rule.Enabled {
 					enabled = "No"
 				}
-				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><button>Edit</button></form></td></tr>",
-					typ, rule.ID, rule.Pattern, enabled, rule.ID))
-			}
+				//body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><button>Edit</button></form></td></tr>",
+					//typ, rule.ID, rule.Pattern, enabled, rule.ID))
+//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method=post action=/rules><input type=hidden name=id value=\"%s\"><input type=hidden name=pattern value=\"%s\"><input type=hidden name=type value=\"%s\"><button>Edit</button></form></td></tr>",
+//				typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ))
+//				body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button onclick=\"editRule('%s', '%s', '%s', %t)\">Edit</button></td></tr>",
+//						typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
+body.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><button data-edit-id=\"%s\" data-edit-pattern=\"%s\" data-edit-type=\"%s\" data-edit-enabled=\"%t\">Edit</button></td></tr>",
+    typ, rule.ID, rule.Pattern, enabled, rule.ID, rule.Pattern, typ, rule.Enabled))
+			}//for
 		}
 		body.WriteString("</table><form method=post action=/rules><input name=pattern placeholder=pattern><input name=type placeholder=A><button>Add</button></form>")
 		ruleMutex.RUnlock()
-		uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
+		//uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
+		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 		return
 	}
 	if r.Method == "POST" {
 		pattern := r.FormValue("pattern")
 		typ := r.FormValue("type")
 		id := r.FormValue("id") // For edit
+		enabledStr := r.FormValue("enabled")
+		enabledBool := enabledStr == "true"
+		if typ=="" {
+			typ="A"
+		}
 		if pattern != "" && typ != "" {
-			ruleMutex.Lock()
-			var newRule Rule
-			if id != "" {
-				// Edit: Find and update
-				for i, r := range config.Whitelist[typ] {
-					if r.ID == id {
-						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: true}
-						config.Whitelist[typ][i] = newRule
-						whitelist[typ][i] = newRule
-						break
-					}
-				}
-			} else {
-				// Add
-				newRule = Rule{ID: newUniqueID(), Pattern: pattern, IsRegex: false, Enabled: true}
-				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-				whitelist[typ] = append(whitelist[typ], newRule)
-			}
+			var newID string
+        if id == "" {
+            newID = newUniqueID()  // Gen ID pre-lock (no nesting)
+        } else {
+            newID = id  // Edit uses existing
+        }
+        ruleMutex.Lock()
+        var newRule Rule
+        if id != "" {
+            // Edit: Find and update
+            for i, r := range config.Whitelist[typ] {
+                if r.ID == id {
+                    newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+                    config.Whitelist[typ][i] = newRule
+                    whitelist[typ][i] = newRule
+                    break
+                }
+            }
+        } else {
+            // Add
+            newRule = Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+            whitelist[typ] = append(whitelist[typ], newRule)
+        }
+//			ruleMutex.Lock()
+//			var newRule Rule
+//			if id != "" {
+//				// Edit: Find and update
+//				for i, r := range config.Whitelist[typ] {
+//					if r.ID == id {
+//						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: true}
+//						config.Whitelist[typ][i] = newRule
+//						whitelist[typ][i] = newRule
+//						break
+//					}
+//				}
+//			} else {
+//				// Add
+//				newRule = Rule{ID: newUniqueID(), Pattern: pattern, IsRegex: false, Enabled: true}
+//				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+//				whitelist[typ] = append(whitelist[typ], newRule)
+//			}
 			ruleMutex.Unlock()
 			saveConfig("config.json")
 			fmt.Printf("Rule updated/added for %s: %s\n", typ, pattern)
@@ -1457,6 +1645,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method == "GET" {
 		blockMutex.Lock()
 		var body strings.Builder
@@ -1467,7 +1656,8 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		body.WriteString("</ul>")
 		blockMutex.Unlock()
-		uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
+		//uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
+		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 		return
 	}
 	if r.Method == "POST" {
@@ -1488,6 +1678,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func logsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	domainFilter := r.URL.Query().Get("domain")
 	// Basic file read/filter stub
 	data, err := os.ReadFile(config.LogQueries)
@@ -1503,7 +1694,8 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	body := fmt.Sprintf("<h2>Logs (filtered by '%s')</h2><pre style=\"max-height:400px;overflow:auto;\">%s</pre>", domainFilter, strings.Join(filtered, "\n"))
-	uiTemplates.Execute(w, struct{ Body string }{Body: body})
+	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
+	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)})  // Raw HTML, no escape
 }
 
 func shutdown() {

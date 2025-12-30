@@ -22,6 +22,24 @@
         "pattern": "^duckduckgo\\.com$",
         "is_regex": true,
         "enabled": true
+      },
+      {
+        "id": "f0806c5a-7877-450a-afe9-8c52adaa3299",
+        "pattern": "^foo\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "244971eb-37d9-4db3-a892-2ccdb7b444d7",
+        "pattern": "shie.org",
+        "is_regex": false,
+        "enabled": true
+      },
+      {
+        "id": "609239aa-15a0-4aae-a410-c64225a33fe9",
+        "pattern": "exam.foo",
+        "is_regex": false,
+        "enabled": true
       }
     ]
   },
@@ -30,6 +48,8 @@
     "10.0.0.0/8",
     "192.168.0.0/16"
   ],
+  "whitelist_file": "",
+  "blacklist_file": "",
   "log_queries": "queries.log",
   "log_errors": "errors.log",
   "log_max_size_mb": 100,
