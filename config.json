@@ -13,32 +13,84 @@
     "A": [
       {
         "id": "b8054b2a-747d-4230-8531-5f5613d1a3d6",
-        "pattern": "^example\\.com$",
+        "pattern": "^\\^example\\\\\\.com\\$$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "b8054b2a-747d-4230-8531-5f5613d1a3d6",
+        "pattern": "^\\^example\\\\\\.com\\$$",
         "is_regex": true,
         "enabled": true
       },
       {
         "id": "9afe6009-6914-4e15-a2f1-d6717a8959ef",
-        "pattern": "^duckduckgo\\.com$",
+        "pattern": "^\\^duckduckgo\\\\\\.com\\$$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "a57d1651-050b-4696-9ea3-4b90b800e238",
+        "pattern": "^dd$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "a2aaaa63-5216-4cdc-bb7b-989979f50836",
+        "pattern": "^ddd$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "910ef620-7214-4f1b-ab00-feb24319be4a",
+        "pattern": "^ddd$",
         "is_regex": true,
         "enabled": true
       },
       {
         "id": "f0806c5a-7877-450a-afe9-8c52adaa3299",
-        "pattern": "^foo\\.org$",
+        "pattern": "foo.org",
+        "is_regex": false,
+        "enabled": true
+      },
+      {
+        "id": "2ab345b2-076e-4945-b6da-ba97c11a0a8f",
+        "pattern": "get",
+        "is_regex": false,
+        "enabled": true
+      }
+    ],
+    "CNAME": [],
+    "ISDN": [
+      {
+        "id": "4746456b-d2f3-4211-91fc-bdfadd5c5d5f",
+        "pattern": "^ddd$",
         "is_regex": true,
         "enabled": true
-      },
-      {
-        "id": "244971eb-37d9-4db3-a892-2ccdb7b444d7",
-        "pattern": "shie.org",
-        "is_regex": false,
-        "enabled": true
-      },
+      }
+    ],
+    "MX": [],
+    "NS": [
       {
         "id": "609239aa-15a0-4aae-a410-c64225a33fe9",
-        "pattern": "exam.foo",
-        "is_regex": false,
+        "pattern": "^\\^exam\\\\\\.foo\\$$",
+        "is_regex": true,
+        "enabled": true
+      }
+    ],
+    "RP": [
+      {
+        "id": "218405be-f17b-4211-ad1c-03c511505283",
+        "pattern": "^sdsdsa$",
+        "is_regex": true,
+        "enabled": true
+      }
+    ],
+    "TXT": [
+      {
+        "id": "79328795-debf-4e0e-9065-d8d2b4ab9cdb",
+        "pattern": "^fff$",
+        "is_regex": true,
         "enabled": true
       }
     ]
