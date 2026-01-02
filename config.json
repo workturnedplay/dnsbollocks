@@ -157,8 +157,8 @@
       },
       {
         "id": "9407beaa-5336-493e-b68d-b201b7efa0c4",
-        "pattern": "release-assets.githubusercontent.com",
-        "is_regex": false,
+        "pattern": "^release-assets\\.githubusercontent\\.com$",
+        "is_regex": true,
         "enabled": true
       }
     ]

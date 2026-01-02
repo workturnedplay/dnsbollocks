@@ -12,6 +12,7 @@ package main
 
 import (
 	//"runtime"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -910,7 +911,7 @@ func startDNSListener(addr string) {
 				//time.Sleep(1000 * time.Millisecond)  // Yield
 				select {
 				case <-ctx.Done():
-					fmt.Println("quitting on shutdown...")
+					fmt.Println("quitting on shutdown...") // to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
 					return // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
@@ -1907,5 +1908,11 @@ func shutdown() {
 	//uiSrv.Shutdown(ctx);
 	fmt.Println("webUI shutdown")
 	// Close log files (reopen on next run)
+	//sleep 1 sec to allow "quitting on shutdown" message to show.
+	select {
+	case <-time.After(1000 * time.Millisecond):
+	}
+	fmt.Print("Press Enter to exit...")
+	bufio.NewReader(os.Stdin).ReadBytes('\n')
 	os.Exit(0)
 }
