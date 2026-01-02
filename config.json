@@ -1,7 +1,7 @@
 {
   "listen_dns": "127.0.0.1:53",
   "listen_doh": "127.0.0.1:443",
-  "ui_port": 8080,
+  "ui_port": 3405,
   "upstream_url": "https://9.9.9.9/dns-query",
   "sni_hostname": "9.9.9.9",
   "block_mode": "nxdomain",
@@ -12,85 +12,59 @@
   "whitelist": {
     "A": [
       {
-        "id": "b8054b2a-747d-4230-8531-5f5613d1a3d6",
-        "pattern": "^\\^example\\\\\\.com\\$$",
-        "is_regex": true,
-        "enabled": true
-      },
-      {
-        "id": "b8054b2a-747d-4230-8531-5f5613d1a3d6",
-        "pattern": "^\\^example\\\\\\.com\\$$",
-        "is_regex": true,
-        "enabled": true
-      },
-      {
-        "id": "9afe6009-6914-4e15-a2f1-d6717a8959ef",
-        "pattern": "^\\^duckduckgo\\\\\\.com\\$$",
-        "is_regex": true,
-        "enabled": true
-      },
-      {
         "id": "a57d1651-050b-4696-9ea3-4b90b800e238",
-        "pattern": "^dd$",
+        "pattern": "^addons.mozilla.org$",
         "is_regex": true,
         "enabled": true
       },
       {
-        "id": "a2aaaa63-5216-4cdc-bb7b-989979f50836",
-        "pattern": "^ddd$",
+        "id": "58985f38-5448-4199-b181-c651caa60c78",
+        "pattern": "^aus5\\.mozilla\\.org$",
         "is_regex": true,
         "enabled": true
       },
       {
-        "id": "910ef620-7214-4f1b-ab00-feb24319be4a",
-        "pattern": "^ddd$",
+        "id": "cec0ef6f-33eb-42c6-aaf7-1d7f99504b77",
+        "pattern": "^download\\.mozilla\\.org$",
         "is_regex": true,
         "enabled": true
       },
       {
-        "id": "f0806c5a-7877-450a-afe9-8c52adaa3299",
-        "pattern": "foo.org",
+        "id": "c0e4df85-cfe3-4c4c-ab49-de079562499f",
+        "pattern": "^download-installer\\.cdn\\.mozilla\\.net$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "ee49d484-5672-451e-a8ff-7bbc18559bc5",
+        "pattern": "duck.ai",
         "is_regex": false,
         "enabled": true
       },
       {
-        "id": "2ab345b2-076e-4945-b6da-ba97c11a0a8f",
-        "pattern": "get",
+        "id": "28d98423-c49c-4545-b8d6-da040399309a",
+        "pattern": "duckduckgo.com",
         "is_regex": false,
         "enabled": true
       }
     ],
-    "CNAME": [],
-    "ISDN": [
+    "HTTPS": [
       {
-        "id": "4746456b-d2f3-4211-91fc-bdfadd5c5d5f",
-        "pattern": "^ddd$",
+        "id": "1b7eb256-ff9e-4cd9-968f-52286948648e",
+        "pattern": "^addons\\.mozilla\\.org$",
         "is_regex": true,
         "enabled": true
-      }
-    ],
-    "MX": [],
-    "NS": [
+      },
       {
-        "id": "609239aa-15a0-4aae-a410-c64225a33fe9",
-        "pattern": "^\\^exam\\\\\\.foo\\$$",
-        "is_regex": true,
+        "id": "dfec572f-d7a3-44ca-a3a6-d7ce7823c33a",
+        "pattern": "duckduckgo.com",
+        "is_regex": false,
         "enabled": true
-      }
-    ],
-    "RP": [
+      },
       {
-        "id": "218405be-f17b-4211-ad1c-03c511505283",
-        "pattern": "^sdsdsa$",
-        "is_regex": true,
-        "enabled": true
-      }
-    ],
-    "TXT": [
-      {
-        "id": "79328795-debf-4e0e-9065-d8d2b4ab9cdb",
-        "pattern": "^fff$",
-        "is_regex": true,
+        "id": "4ec24319-8a72-4f8e-a026-86b62c6359b1",
+        "pattern": "duck.ai",
+        "is_regex": false,
         "enabled": true
       }
     ]
@@ -98,7 +72,9 @@
   "response_blacklist": [
     "127.0.0.0/8",
     "10.0.0.0/8",
-    "192.168.0.0/16"
+    "192.168.0.0/16",
+    "169.176.0.0/16",
+    "0.0.0.0/8"
   ],
   "whitelist_file": "",
   "blacklist_file": "",
