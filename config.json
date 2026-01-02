@@ -37,33 +37,127 @@
       },
       {
         "id": "ee49d484-5672-451e-a8ff-7bbc18559bc5",
-        "pattern": "duck.ai",
-        "is_regex": false,
-        "enabled": true
-      },
-      {
-        "id": "28d98423-c49c-4545-b8d6-da040399309a",
-        "pattern": "duckduckgo.com",
-        "is_regex": false,
-        "enabled": true
-      }
-    ],
-    "HTTPS": [
-      {
-        "id": "1b7eb256-ff9e-4cd9-968f-52286948648e",
-        "pattern": "^addons\\.mozilla\\.org$",
+        "pattern": "^duck\\.ai$",
         "is_regex": true,
         "enabled": true
       },
       {
-        "id": "dfec572f-d7a3-44ca-a3a6-d7ce7823c33a",
-        "pattern": "duckduckgo.com",
-        "is_regex": false,
+        "id": "28d98423-c49c-4545-b8d6-da040399309a",
+        "pattern": "^duckduckgo\\.com$",
+        "is_regex": true,
         "enabled": true
       },
       {
-        "id": "4ec24319-8a72-4f8e-a026-86b62c6359b1",
-        "pattern": "duck.ai",
+        "id": "c6147dd6-ad26-47b3-a14d-c5373532e114",
+        "pattern": "^www\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "1a75f61a-59c5-4548-80ba-8a762fa8de3c",
+        "pattern": "^www\\.gstatic\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "cfd94a96-8dd1-4de2-8b2d-f00722c51181",
+        "pattern": "^learn\\.microsoft\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "da6cc673-8a00-40b4-b0be-8910ec88fd4a",
+        "pattern": "^download\\.sysinternals\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "32f57866-bb2f-4ef8-8747-6bdc8273fc8a",
+        "pattern": "^virustotal\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "7db61a54-2a60-43f5-a120-4901c971b8ae",
+        "pattern": "^www\\.virustotal\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "d6277011-4cd3-4b8f-9717-3058a2a79483",
+        "pattern": "^gmail\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "fbdc92fd-c726-4c95-968a-dba92b13abb1",
+        "pattern": "^www\\.gmail\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "36e0c083-35e6-4402-818d-00046df698d1",
+        "pattern": "^mail\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "94a0956a-228e-46ba-b789-739c94801d0f",
+        "pattern": "^accounts\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "333734a7-1202-405f-af5c-7dedbf4256f0",
+        "pattern": "^accounts\\.youtube\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "f9001ea3-6641-44c5-b924-572848a98640",
+        "pattern": "^keepassxc\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "fa69071a-bb07-447e-a850-40e5137cbfb4",
+        "pattern": "^github\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "a9fafd85-6ca7-4e7b-90fc-58dbaea21577",
+        "pattern": "^www\\.github\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "91685885-faef-4766-96cb-3f6e1b23870b",
+        "pattern": "^github\\.githubassets\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "ad7536cb-8921-4b6d-bf88-672c34a8cccb",
+        "pattern": "^avatars\\.githubusercontent\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "eb23202d-38c1-48ef-a37a-58532d998b66",
+        "pattern": "^raw\\.githubusercontent\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "c828f331-92ab-4a27-8c5d-67ea4dc2acb0",
+        "pattern": "^pgl\\.yoyo\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "9407beaa-5336-493e-b68d-b201b7efa0c4",
+        "pattern": "release-assets.githubusercontent.com",
         "is_regex": false,
         "enabled": true
       }

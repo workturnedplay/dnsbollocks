@@ -39,12 +39,12 @@ import (
 	"os"
 	"os/signal"
 	//	"path/filepath"
+	"html"
 	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"html"
 
 	"github.com/google/uuid"
 	"github.com/miekg/dns"
@@ -106,87 +106,86 @@ var (
 )
 
 var dnsTypes = []string{
-     "A",
-"A6",
-"AAAA",
-"AFSDB",
-"AMTRELAY",
-"ANY",
-"APL",
-"AVC",
-"AXFR",
-"CAA",
-"CDNSKEY",
-"CDS",
-"CERT",
-"CNAME",
-"CSYNC",
-"DHCID",
-"DLV",
-"DNAME",
-"DNSKEY",
-"DOA",
-"DS",
-"EUI48",
-"EUI64",
-"GPOS",
-"HINFO",
-"HIP",
-"HTTPS",
-"IPSECKEY",
-"ISDN",
-"IXFR",
-"KEY",
-"KX",
-"L32",
-"L64",
-"LOC",
-"LP",
-"MAILA",
-"MAILB",
-"MB",
-"MD",
-"MF",
-"MG",
-"MINFO",
-"MR",
-"MX",
-"NAPTR",
-"NID",
-"NINFO",
-"NS",
-"NSAP",
-"NSAP-PTR",
-"NSEC",
-"NSEC3",
-"NSEC3PARAM",
-"NULL",
-"NXT",
-"OPENPGPKEY",
-"OPT",
-"PTR",
-"PX",
-"RKEY",
-"RP",
-"RRSIG",
-"RT",
-"SIG",
-"SOA",
-"SPF",
-"SRV",
-"SSHFP",
-"SVCB",
-"TA",
-"TALINK",
-"TKEY",
-"TLSA",
-"TSIG",
-"TXT",
-"URI",
-"WKS",
-"X25",
-"ZONEMD",
-
+	"A",
+	"A6",
+	"AAAA",
+	"AFSDB",
+	"AMTRELAY",
+	"ANY",
+	"APL",
+	"AVC",
+	"AXFR",
+	"CAA",
+	"CDNSKEY",
+	"CDS",
+	"CERT",
+	"CNAME",
+	"CSYNC",
+	"DHCID",
+	"DLV",
+	"DNAME",
+	"DNSKEY",
+	"DOA",
+	"DS",
+	"EUI48",
+	"EUI64",
+	"GPOS",
+	"HINFO",
+	"HIP",
+	"HTTPS",
+	"IPSECKEY",
+	"ISDN",
+	"IXFR",
+	"KEY",
+	"KX",
+	"L32",
+	"L64",
+	"LOC",
+	"LP",
+	"MAILA",
+	"MAILB",
+	"MB",
+	"MD",
+	"MF",
+	"MG",
+	"MINFO",
+	"MR",
+	"MX",
+	"NAPTR",
+	"NID",
+	"NINFO",
+	"NS",
+	"NSAP",
+	"NSAP-PTR",
+	"NSEC",
+	"NSEC3",
+	"NSEC3PARAM",
+	"NULL",
+	"NXT",
+	"OPENPGPKEY",
+	"OPT",
+	"PTR",
+	"PX",
+	"RKEY",
+	"RP",
+	"RRSIG",
+	"RT",
+	"SIG",
+	"SOA",
+	"SPF",
+	"SRV",
+	"SSHFP",
+	"SVCB",
+	"TA",
+	"TALINK",
+	"TKEY",
+	"TLSA",
+	"TSIG",
+	"TXT",
+	"URI",
+	"WKS",
+	"X25",
+	"ZONEMD",
 }
 
 type BlockedQuery struct {
@@ -388,7 +387,7 @@ document.addEventListener('DOMContentLoaded', function() {
 //`))
 
 var uiTemplates = template.Must(template.New("").Parse(
-    `<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
+	`<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
     <h1>DNS Proxy Control</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     {{.Body}}
@@ -408,16 +407,16 @@ var uiTemplates = template.Must(template.New("").Parse(
                     <td>
                         <select name="type" id="editType_${id}">
                             ` + strings.Join(func() []string {
-        var opts []string
-        for _, t := range dnsTypes {
-            selected := ""
-//            if t == typ {
-//                selected = " selected"
-//            }
-            opts = append(opts, fmt.Sprintf("<option value=\"%s\"%s>%s</option>", t, selected, t))
-        }
-        return opts
-    }(), "") + `
+		var opts []string
+		for _, t := range dnsTypes {
+			selected := ""
+			//            if t == typ {
+			//                selected = " selected"
+			//            }
+			opts = append(opts, fmt.Sprintf("<option value=\"%s\"%s>%s</option>", t, selected, t))
+		}
+		return opts
+	}(), "") + `
                         </select>
                     </td>
                     <td>${id}</td>
@@ -506,7 +505,6 @@ func main() {
 
 	generateCertIfNeeded() // For DoH
 	fmt.Println("Cert checked/generated if needed")
-
 
 	// Sequential launches for ordered logging
 	fmt.Println("Launching listeners sequentially...")
@@ -1721,129 +1719,128 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 }*/
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method == "GET" {
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.Method == "GET" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-        ruleMutex.RLock()
-        defer ruleMutex.RUnlock()
+		ruleMutex.RLock()
+		defer ruleMutex.RUnlock()
 
-        var body strings.Builder
+		var body strings.Builder
 
-        // Table
-        body.WriteString("<h2>Whitelist Rules</h2>")
-        body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
+		// Table
+		body.WriteString("<h2>Whitelist Rules</h2>")
+		body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
 
-        for typ, rules := range whitelist {
-            for _, rule := range rules {
-                enabled := "Yes"
-                if !rule.Enabled {
-                    enabled = "No"
-                }
-                escapedPattern := html.EscapeString(rule.Pattern)
-                body.WriteString(fmt.Sprintf(
-                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"+
-                        "<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button>"+
-                        "</td></tr>",
-                    typ, rule.ID, escapedPattern, enabled,
-                    rule.ID, typ, escapedPattern, rule.Enabled,
-                ))
-            }
-        }
-        body.WriteString("</table>")
+		for typ, rules := range whitelist {
+			for _, rule := range rules {
+				enabled := "Yes"
+				if !rule.Enabled {
+					enabled = "No"
+				}
+				escapedPattern := html.EscapeString(rule.Pattern)
+				body.WriteString(fmt.Sprintf(
+					"<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"+
+						"<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button>"+
+						"</td></tr>",
+					typ, rule.ID, escapedPattern, enabled,
+					rule.ID, typ, escapedPattern, rule.Enabled,
+				))
+			}
+		}
+		body.WriteString("</table>")
 
-        // Add form
-        body.WriteString("<h2>Add New Rule</h2>")
-        body.WriteString("<form method=\"post\" action=\"/rules\">")
-        body.WriteString("<select name=\"type\">")
-        for _, t := range dnsTypes {
-            body.WriteString(fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
-        }
-        body.WriteString("</select> ")
-        body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
-        body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
-        body.WriteString("<button type=\"submit\">Add Rule</button>")
-        body.WriteString("</form>")
+		// Add form
+		body.WriteString("<h2>Add New Rule</h2>")
+		body.WriteString("<form method=\"post\" action=\"/rules\">")
+		body.WriteString("<select name=\"type\">")
+		for _, t := range dnsTypes {
+			body.WriteString(fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
+		}
+		body.WriteString("</select> ")
+		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
+		body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
+		body.WriteString("<button type=\"submit\">Add Rule</button>")
+		body.WriteString("</form>")
 
-        uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
-        return
-    }
+		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+		return
+	}
 
-    if r.Method == "POST" {
-        pattern := strings.TrimSpace(r.FormValue("pattern"))
-        typ := r.FormValue("type")
-        id := r.FormValue("id")
-        enabledStr := r.FormValue("enabled")
-        enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
+	if r.Method == "POST" {
+		pattern := strings.TrimSpace(r.FormValue("pattern"))
+		typ := r.FormValue("type")
+		id := r.FormValue("id")
+		enabledStr := r.FormValue("enabled")
+		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
-        if pattern == "" || typ == "" {
-            http.Error(w, "Pattern and type required", http.StatusBadRequest)
-            return
-        }
+		if pattern == "" || typ == "" {
+			http.Error(w, "Pattern and type required", http.StatusBadRequest)
+			return
+		}
 
+		if id != "" {
+			ruleMutex.Lock()
+			defer ruleMutex.Unlock()
+			// Edit: Find and update (search all types)
+			found := false
+		outerfor:
+			for oldTyp, rules := range config.Whitelist {
+				for i, rule := range rules {
+					if rule.ID == id {
+						// Remove from old type
+						config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+						whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+						found = true
+						break outerfor
+					}
+				}
+				if found {
+					panic("shouldn't be hit, else the break label is wrong!?")
+					break
+				}
+			}
+			if !found {
+				http.Error(w, "Rule not found", http.StatusNotFound)
+				return
+			}
 
-        if id != "" {
-						ruleMutex.Lock()
-						defer ruleMutex.Unlock()
-            // Edit: Find and update (search all types)
-            found := false
-						outerfor:
-            for oldTyp, rules := range config.Whitelist {
-                for i, rule := range rules {
-                    if rule.ID == id {
-                        // Remove from old type
-                        config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-                        whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-                        found = true
-                        break outerfor
-                    }
-                }
-                if found {
-									  panic("shouldn't be hit, else the break label is wrong!?")
-                    break
-                }
-            }
-            if !found {
-                http.Error(w, "Rule not found", http.StatusNotFound)
-                return
-            }
+			// Add to new type
+			newRule := Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+			if _, ok := config.Whitelist[typ]; !ok {
+				config.Whitelist[typ] = []Rule{}
+				whitelist[typ] = []Rule{}
+			}
+			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+			whitelist[typ] = append(whitelist[typ], newRule)
 
-            // Add to new type
-            newRule := Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-            if _, ok := config.Whitelist[typ]; !ok {
-                config.Whitelist[typ] = []Rule{}
-                whitelist[typ] = []Rule{}
-            }
-            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-            whitelist[typ] = append(whitelist[typ], newRule)
+			fmt.Printf("Rule edited: %s → %s (ID: %s, Enabled: %t)\n", id, pattern, id, enabledBool)
+		} else {
+			newID := newUniqueID()
+			ruleMutex.Lock()
+			defer ruleMutex.Unlock()
+			// Add new: Prevent duplicate (same type + pattern, case-insensitive)
+			lowerPattern := strings.ToLower(pattern)
+			for _, rule := range config.Whitelist[typ] {
+				if strings.ToLower(rule.Pattern) == lowerPattern {
+					http.Error(w, "Rule with this pattern already exists for type "+typ, http.StatusConflict)
+					return
+				}
+			}
 
-            fmt.Printf("Rule edited: %s → %s (ID: %s, Enabled: %t)\n", id, pattern, id, enabledBool)
-        } else {
-            newID := newUniqueID()
-						ruleMutex.Lock()
-						defer ruleMutex.Unlock()
-            // Add new: Prevent duplicate (same type + pattern, case-insensitive)
-            lowerPattern := strings.ToLower(pattern)
-            for _, rule := range config.Whitelist[typ] {
-                if strings.ToLower(rule.Pattern) == lowerPattern {
-                    http.Error(w, "Rule with this pattern already exists for type "+typ, http.StatusConflict)
-                    return
-                }
-            }
+			newRule := Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+			if _, ok := config.Whitelist[typ]; !ok {
+				config.Whitelist[typ] = []Rule{}
+				whitelist[typ] = []Rule{}
+			}
+			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+			whitelist[typ] = append(whitelist[typ], newRule)
 
-            newRule := Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-            if _, ok := config.Whitelist[typ]; !ok {
-                config.Whitelist[typ] = []Rule{}
-                whitelist[typ] = []Rule{}
-            }
-            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-            whitelist[typ] = append(whitelist[typ], newRule)
+			fmt.Printf("Rule added: %s (type: %s, ID: %s, Enabled: %t)\n", pattern, typ, newID, enabledBool)
+		}
 
-            fmt.Printf("Rule added: %s (type: %s, ID: %s, Enabled: %t)\n", pattern, typ, newID, enabledBool)
-        }
-
-        saveConfig("config.json")
-        http.Redirect(w, r, "/rules", http.StatusSeeOther)
-    }
+		saveConfig("config.json")
+		http.Redirect(w, r, "/rules", http.StatusSeeOther)
+	}
 }
 
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
