@@ -912,7 +912,7 @@ func startDNSListener(addr string) {
 				select {
 				case <-ctx.Done():
 					fmt.Println("quitting on shutdown...") // to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
-					return // Quit on shutdown
+					return                                 // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
 					if err != nil {
@@ -1399,22 +1399,22 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 
 // Globals for static data
 var (
-    // This runs once at startup
-    edeText = getBlockedString()
-    edeCode = dns.ExtendedErrorCodeBlocked
+	// This runs once at startup
+	edeText = getBlockedString()
+	edeCode = dns.ExtendedErrorCodeBlocked
 )
 
 func getBlockedString() string {
-    exePath, err := os.Executable()
-    if err != nil {
-        return "Blocked by proxy.exe"
-    }
+	exePath, err := os.Executable()
+	if err != nil {
+		return "Blocked by proxy.exe"
+	}
 	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
-    // You can also use time.DateOnly (2006-01-02) if you prefer
-    startTime := time.Now().Format("2006-01-02 15:04:05")
+	// You can also use time.DateOnly (2006-01-02) if you prefer
+	startTime := time.Now().Format("2006-01-02 15:04:05")
 
-    return "Blocked by " + exePath + " [Started: " + startTime + "]"
-    //return "Blocked by " + exePath
+	return "Blocked by " + exePath + " [Started: " + startTime + "]"
+	//return "Blocked by " + exePath
 }
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
@@ -1442,65 +1442,65 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	case "drop":
 		return nil
 	default:
-	    // fallback to nxdomain
+		// fallback to nxdomain
 		msg.SetRcode(msg, dns.RcodeNameError)
 	}
-	
+
 	msg.Authoritative = true
 	msg.RecursionAvailable = true
-	
+
 	// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
 	// 1. Manually build the EDE struct using the global variables
-    ede := &dns.EDNS0_EDE{
-        InfoCode:  edeCode,
-        ExtraText: edeText,
-    }
-	
-/*	// Get the absolute path to the running .exe
-	exePath, err := os.Executable()
-	if err != nil {
-		exePath = "proxy.exe" // Fallback
+	ede := &dns.EDNS0_EDE{
+		InfoCode:  edeCode,
+		ExtraText: edeText,
 	}
 
-	// Create the dynamic string
-	edeText := "Blocked by " + exePath
+	/*	// Get the absolute path to the running .exe
+		exePath, err := os.Executable()
+		if err != nil {
+			exePath = "proxy.exe" // Fallback
+		}
 
-	// Create the EDE option with the dynamic text
-	ede := &dns.EDNS0_EDE{
-		InfoCode:  dns.ExtendedErrorCodeBlocked,
-		ExtraText: edeText,
-	}*/
-	
+		// Create the dynamic string
+		edeText := "Blocked by " + exePath
+
+		// Create the EDE option with the dynamic text
+		ede := &dns.EDNS0_EDE{
+			InfoCode:  dns.ExtendedErrorCodeBlocked,
+			ExtraText: edeText,
+		}*/
+
 	// Re-allocate the OPT "envelope" but use the static EDE logic
-    opt := new(dns.OPT)
-    opt.Hdr.Name = "."
-    opt.Hdr.Rrtype = dns.TypeOPT
-	
-	// Logic: If the client asked for something specific, 
-    // we use 1232 as a "ceiling" to stay safe.
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+
+	// Logic: If the client asked for something specific,
+	// we use 1232 as a "ceiling" to stay safe.
 	//In DNS, the UDPSize you set in the OPT header (opt.SetUDPSize(1232)) isn't the size of the current packet—it's an advertisement to the other side saying, "I am capable of receiving packets up to this size."
 	// 1. Start with your "Ideal" safety limit (1232)
-    ourMax := uint16(1232)
+	ourMax := uint16(1232)
 
 	// 2. Check if the client specifically asked for less
-if clientOpt := msg.IsEdns0(); clientOpt != nil {
-    if clientOpt.UDPSize() < ourMax {
-        ourMax = clientOpt.UDPSize() // Respect the client's smaller limit
-    }
-}
+	if clientOpt := msg.IsEdns0(); clientOpt != nil {
+		if clientOpt.UDPSize() < ourMax {
+			ourMax = clientOpt.UDPSize() // Respect the client's smaller limit
+		}
+	}
 
-// 3. Set the advertised size
-opt.SetUDPSize(ourMax)
+	// 3. Set the advertised size
+	opt.SetUDPSize(ourMax)
 	// 1232 is the "EDNS0 Flag Day" recommended value
-    // It prevents IP fragmentation on modern networks
-    //opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
-	
+	// It prevents IP fragmentation on modern networks
+	//opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
+
 	opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
 	// You can reuse a global EDE struct here IF it is never modified
-    opt.Option = []dns.EDNS0{ede}
-    
+	opt.Option = []dns.EDNS0{ede}
+
 	msg.Extra = append(msg.Extra, opt)
-	
+
 	return msg
 }
 
@@ -1516,19 +1516,19 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 	}
 	var goodAnswer, goodExtra []dns.RR
 	for _, rr := range msg.Answer {
-        if keep, modifiedRR := processRR(rr, nets); keep {
-            goodAnswer = append(goodAnswer, modifiedRR)
-        }
-    }
-    for _, rr := range msg.Extra {
-        if keep, modifiedRR := processRR(rr, nets); keep {
-            goodExtra = append(goodExtra, modifiedRR)
-        }
-    }
+		if keep, modifiedRR := processRR(rr, nets); keep {
+			goodAnswer = append(goodAnswer, modifiedRR)
+		}
+	}
+	for _, rr := range msg.Extra {
+		if keep, modifiedRR := processRR(rr, nets); keep {
+			goodExtra = append(goodExtra, modifiedRR)
+		}
+	}
 
 	msg.Answer = goodAnswer
 	msg.Extra = goodExtra
-	
+
 	if len(msg.Answer) == 0 {
 		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
 		return nil
@@ -1537,45 +1537,49 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 }
 
 func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
-    switch r := rr.(type) {
-    case *dns.A:
-        if ipInNets(r.A, nets) { return false, nil }
-        return true, r
+	switch r := rr.(type) {
+	case *dns.A:
+		if ipInNets(r.A, nets) {
+			return false, nil
+		}
+		return true, r
 
-    case *dns.AAAA:
-        if ipInNets(r.AAAA, nets) { return false, nil }
-        return true, r
+	case *dns.AAAA:
+		if ipInNets(r.AAAA, nets) {
+			return false, nil
+		}
+		return true, r
 
-    // Look for HTTPS records (Type 65)
-    case *dns.HTTPS:
-        // Strip ipv4hint (Key 4) and ipv6hint (Key 6)
-        // This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
+	// Look for HTTPS records (Type 65)
+	case *dns.HTTPS:
+		// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
+		// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 		// Filter the SVCB/HTTPS parameters
-        newParams := []dns.SVCBKeyValue{}
-        for _, param := range r.Value {
-            k := param.Key()
+		newParams := []dns.SVCBKeyValue{}
+		for _, param := range r.Value {
+			k := param.Key()
 			// Key 4 = ipv4hint, Key 6 = ipv6hint
-                // We only keep keys that AREN'T hints
-            if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
-                newParams = append(newParams, param)
-            //} else {
-			//	fmt.Println("Dropping IP hint from the reply:", param);
+			// We only keep keys that AREN'T hints
+			if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
+				newParams = append(newParams, param)
+				//} else {
+				//	fmt.Println("Dropping IP hint from the reply:", param);
 				//fmt.Println("NOT Dropping IP hint from the reply:", param);
 				//newParams = append(newParams, param)
 			}
-        }
-        r.Value = newParams
-        return true, r
+		}
+		r.Value = newParams
+		return true, r
 
-    case *dns.RRSIG:
-        // Always drop signatures because we are modifying the RRsets they sign.
-        // A missing signature is better than a broken one.
-        return false, nil
+	case *dns.RRSIG:
+		// Always drop signatures because we are modifying the RRsets they sign.
+		// A missing signature is better than a broken one.
+		return false, nil
 
-    default:
-        // Keep other types (MX, TXT, CNAME, etc.)
-        return true, rr
-    }
+	default:
+		// Keep other types (MX, TXT, CNAME, etc.)
+		return true, rr
+	}
 }
 
 func ipInNets(ip net.IP, nets []*net.IPNet) bool {
