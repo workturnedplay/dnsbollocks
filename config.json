@@ -160,6 +160,210 @@
         "pattern": "^release-assets\\.githubusercontent\\.com$",
         "is_regex": true,
         "enabled": true
+      },
+      {
+        "id": "c92e9253-f4c8-42b6-af79-64e25dac52d8",
+        "pattern": "^workspace\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "50aac888-c111-453f-b6be-6a5d85fa1b79",
+        "pattern": "^fonts\\.gstatic\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "6572b8b0-be9c-4573-a101-f4b88fc644de",
+        "pattern": "^apis\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "3ca2cb8f-f585-4f33-b5ac-507a534f5eb4",
+        "pattern": "^fonts\\.googleapis\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "f786c901-2259-41cd-98db-b814571cc790",
+        "pattern": "^play\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "bbeb05e0-d4b9-4bdc-a2a1-8f733f1c6448",
+        "pattern": "^gds\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "dc83d40e-03a9-4996-833e-324e538cd5ae",
+        "pattern": "^ssl\\.gstatic\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "975c63ef-9259-4224-b1de-8209c08b9833",
+        "pattern": "^lh3\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "22cd4ccd-24f2-42d2-84da-f878373819c8",
+        "pattern": "^lh3\\.googleusercontent\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "463ad4a2-3b44-48f1-8697-a6236b4d9971",
+        "pattern": "^gemini\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "f6b9a9a4-d5c9-4d9f-b291-e948189bc35d",
+        "pattern": "^myactivity\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "8b1cd526-119d-4df3-bd68-98f28926c075",
+        "pattern": "^ogs\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "12c612a9-a0d3-49a7-b002-b4137c85ac74",
+        "pattern": "^push\\.clients6\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "00f8164f-1341-4981-96f3-e12602a0dbe9",
+        "pattern": "^drive-thirdparty\\.googleusercontent\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "7150ca26-c9a9-496e-998f-309a94cb4c31",
+        "pattern": "^bugzilla\\.mozilla\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "ade2e8f5-6303-4c2f-ab7b-dbc1b9453b7e",
+        "pattern": "^developer\\.mozilla\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "34f772d7-e4ed-40e8-ad7a-3b9f827a1adf",
+        "pattern": "^datatracker\\.ietf\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "392c55f8-8bb1-46d3-a5ae-2843d9c4ebfb",
+        "pattern": "^static\\.ietf\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "259dff36-cb35-4440-acd7-b9e6d31f2d46",
+        "pattern": "^cdn\\.statically\\.io$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "aad6ea8e-6af9-4919-b8a0-0839f669ec42",
+        "pattern": "^ublockorigin\\.github\\.io$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "1f098f80-6f09-41b6-b41a-62fb572ba621",
+        "pattern": "^cdn\\.jsdelivr\\.net$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "a02c1208-b41b-404a-bda7-9ce3751ba951",
+        "pattern": "^ublockorigin\\.pages\\.dev$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "6ecfb217-2d2d-439c-9b13-32771a2b6983",
+        "pattern": "^ublockorigin\\.github\\.io$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "26c34843-1806-4a47-8411-705b344f1b8c",
+        "pattern": "^malware-filter\\.gitlab\\.io$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "d61560f2-bd4d-4c2b-8b23-51c702f58696",
+        "pattern": "^curbengh\\.github\\.io$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "d3b6e218-8556-4ab3-84e5-dd2c52e53fc9",
+        "pattern": "^filters\\.adtidy\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "c220e93f-9a51-4fbb-88a1-b310e0f38a4d",
+        "pattern": "^secure\\.fanboy\\.co\\.nz$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "a8fe0029-e3b0-49cd-a7cb-ba46e74d385e",
+        "pattern": "^publicsuffix\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "61c9ee03-bb28-4c87-b5ee-3896be84bba2",
+        "pattern": "^winhelp2002\\.mvps\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "718493d7-956a-4379-a583-6f24bb4f63c1",
+        "pattern": "^someonewhocares\\.org$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "865f4008-1391-4a8e-bfe5-24a6340326e0",
+        "pattern": "^consent\\.google\\.com$",
+        "is_regex": true,
+        "enabled": true
+      },
+      {
+        "id": "c3ef518c-3189-40ed-b592-c0e1c46cfde2",
+        "pattern": "myaccount.google.com",
+        "is_regex": false,
+        "enabled": true
+      },
+      {
+        "id": "3bb08016-80a7-40db-8df0-ae6ea2d7cb28",
+        "pattern": "www.youtube.com",
+        "is_regex": false,
+        "enabled": true
+      },
+      {
+        "id": "b38a0e14-5df3-4079-921d-1f8b4ff6df8a",
+        "pattern": "googlevideo.com",
+        "is_regex": false,
+        "enabled": true
       }
     ]
   },

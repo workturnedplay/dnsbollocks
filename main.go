@@ -1202,8 +1202,8 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	resp := forwardToDoH(msg)
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
 		negResp := servfailResponse(msg)
-		// Cache negatives short, don't cache if upstream failed, retry next time!
-		//cacheStore.Set(key, negResp, 60*time.Second)
+		// Cache negatives short
+		cacheStore.Set(key, negResp, 10*time.Second)
 		return negResp
 	}
 
@@ -1302,7 +1302,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		r.Header.Set("Content-Type", "application/dns-message")
 		if config.SNIHostname != "" {
 			r.Host = config.SNIHostname
-			fmt.Println("Using http header hostname:", r.Host)
+			//fmt.Println("Using http header hostname:", r.Host)
 		}
 		return r, nil
 	}
