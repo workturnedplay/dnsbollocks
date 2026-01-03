@@ -1,7 +1,6 @@
 package main
 
 import (
-	
 	"bufio"
 	"bytes"
 	"context"
@@ -25,11 +24,11 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	
+
 	"net/url"
 	"os"
 	"os/signal"
-	
+
 	"html"
 	"regexp"
 	"strings"
@@ -77,7 +76,6 @@ type Rule struct {
 // Globals.
 var dohCert tls.Certificate // Loaded once for DoH listener
 var (
-	
 	config         Config
 	upstreamIP     string
 	upstreamURL    *url.URL
@@ -91,7 +89,7 @@ var (
 	recentBlocks   = make([]BlockedQuery, 0, 50) // For UI
 	blockMutex     sync.Mutex
 	stats          = expvar.NewInt("blocks") // Simple stats
-	
+
 	ctx, cancel = context.WithCancel(context.Background())
 )
 
@@ -682,7 +680,7 @@ func startDNSListener(addr string) {
 		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-		
+
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
@@ -694,14 +692,13 @@ func startDNSListener(addr string) {
 
 			//TheFor:
 			for {
-				
+
 				select {
 				case <-ctx.Done():
-				    // to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
+					// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
 					fmt.Println("quitting on shutdown...")
-					
-					
-					return                                 // Quit on shutdown
+
+					return // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
 					if err != nil {
@@ -719,8 +716,7 @@ func startDNSListener(addr string) {
 					} else {
 						fmt.Printf("clientAddr=%s pid=%d exe=%s\n", clientAddr, pid, exe)
 					}
-					
-					
+
 					go handleUDP(buf[:n], clientAddr, udpLn)
 				}
 			}
@@ -729,7 +725,7 @@ func startDNSListener(addr string) {
 
 	// TCP
 	fmt.Print("  Attempting TCP bind...")
-	
+
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs
 	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %s: %v", addr, err)
@@ -738,12 +734,12 @@ func startDNSListener(addr string) {
 		os.Exit(1)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
-	
+
 	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-		
+
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
@@ -1232,7 +1228,6 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 		ExtraText: edeText,
 	}
 
-
 	// Re-allocate the OPT "envelope" but use the static EDE logic
 	opt := new(dns.OPT)
 	opt.Hdr.Name = "."
@@ -1431,8 +1426,6 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
-
-
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1615,7 +1608,6 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 func shutdown() {
 	fmt.Println("Shutting down...")
 
-	
 	cacheStore.Flush()
 	fmt.Println("Cache flushed")
 
