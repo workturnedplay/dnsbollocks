@@ -1558,8 +1558,8 @@ func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
                 // We only keep keys that AREN'T hints
             if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
                 newParams = append(newParams, param)
-            } else {
-				fmt.Println("Dropping IP hint from the reply:", param);
+            //} else {
+			//	fmt.Println("Dropping IP hint from the reply:", param);
 				//fmt.Println("NOT Dropping IP hint from the reply:", param);
 				//newParams = append(newParams, param)
 			}
