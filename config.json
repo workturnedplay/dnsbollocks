@@ -349,20 +349,20 @@
       },
       {
         "id": "c3ef518c-3189-40ed-b592-c0e1c46cfde2",
-        "pattern": "myaccount.google.com",
-        "is_regex": false,
+        "pattern": "^myaccount\\.google\\.com$",
+        "is_regex": true,
         "enabled": true
       },
       {
         "id": "3bb08016-80a7-40db-8df0-ae6ea2d7cb28",
-        "pattern": "www.youtube.com",
-        "is_regex": false,
+        "pattern": "^www\\.youtube\\.com$",
+        "is_regex": true,
         "enabled": true
       },
       {
         "id": "b38a0e14-5df3-4079-921d-1f8b4ff6df8a",
-        "pattern": "googlevideo.com",
-        "is_regex": false,
+        "pattern": "^googlevideo\\.com$",
+        "is_regex": true,
         "enabled": true
       }
     ]
