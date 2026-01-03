@@ -1397,6 +1397,26 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 
 }
 
+// Globals for static data
+var (
+    // This runs once at startup
+    edeText = getBlockedString()
+    edeCode = dns.ExtendedErrorCodeBlocked
+)
+
+func getBlockedString() string {
+    exePath, err := os.Executable()
+    if err != nil {
+        return "Blocked by proxy.exe"
+    }
+	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
+    // You can also use time.DateOnly (2006-01-02) if you prefer
+    startTime := time.Now().Format("2006-01-02 15:04:05")
+
+    return "Blocked by " + exePath + " [Started: " + startTime + "]"
+    //return "Blocked by " + exePath
+}
+
 func blockResponse(msg *dns.Msg) *dns.Msg {
 	//in Go, implicit 'break' after each 'case'
 	switch config.BlockMode {
@@ -1425,8 +1445,62 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	    // fallback to nxdomain
 		msg.SetRcode(msg, dns.RcodeNameError)
 	}
+	
 	msg.Authoritative = true
 	msg.RecursionAvailable = true
+	
+	// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
+	// 1. Manually build the EDE struct using the global variables
+    ede := &dns.EDNS0_EDE{
+        InfoCode:  edeCode,
+        ExtraText: edeText,
+    }
+	
+/*	// Get the absolute path to the running .exe
+	exePath, err := os.Executable()
+	if err != nil {
+		exePath = "proxy.exe" // Fallback
+	}
+
+	// Create the dynamic string
+	edeText := "Blocked by " + exePath
+
+	// Create the EDE option with the dynamic text
+	ede := &dns.EDNS0_EDE{
+		InfoCode:  dns.ExtendedErrorCodeBlocked,
+		ExtraText: edeText,
+	}*/
+	
+	// Re-allocate the OPT "envelope" but use the static EDE logic
+    opt := new(dns.OPT)
+    opt.Hdr.Name = "."
+    opt.Hdr.Rrtype = dns.TypeOPT
+	
+	// Logic: If the client asked for something specific, 
+    // we use 1232 as a "ceiling" to stay safe.
+	//In DNS, the UDPSize you set in the OPT header (opt.SetUDPSize(1232)) isn't the size of the current packet—it's an advertisement to the other side saying, "I am capable of receiving packets up to this size."
+	// 1. Start with your "Ideal" safety limit (1232)
+    ourMax := uint16(1232)
+
+	// 2. Check if the client specifically asked for less
+if clientOpt := msg.IsEdns0(); clientOpt != nil {
+    if clientOpt.UDPSize() < ourMax {
+        ourMax = clientOpt.UDPSize() // Respect the client's smaller limit
+    }
+}
+
+// 3. Set the advertised size
+opt.SetUDPSize(ourMax)
+	// 1232 is the "EDNS0 Flag Day" recommended value
+    // It prevents IP fragmentation on modern networks
+    //opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
+	
+	opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
+	// You can reuse a global EDE struct here IF it is never modified
+    opt.Option = []dns.EDNS0{ede}
+    
+	msg.Extra = append(msg.Extra, opt)
+	
 	return msg
 }
 
