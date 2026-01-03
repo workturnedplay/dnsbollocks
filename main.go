@@ -1,17 +1,7 @@
-// Package main implements a local DNS proxy with whitelisting, DoH forwarding, caching, and web UI.
-// It listens on 127.0.0.1:53 (UDP/TCP) for plain DNS and 127.0.0.1:443 (HTTPS) for DoH.
-// Blocks by default; allows via config whitelist (per-type, with regex/wildcards).
-// Caches responses (including negatives), rate-limits queries (global/per-client), filters response IPs, logs to JSON files with rotation.
-// Web UI at 127.0.0.1:8080 for config edits, logs, and stats (/debug/vars).
-// Assumes no admin elevation; exits if detected on Windows.
-// Generates self-signed cert for DoH if missing (trust manually in clients like Firefox).
-// Handles edge cases: Port conflicts (degraded mode), invalid configs (defaults), concurrent races (mutexes), shutdown (graceful close).
-// Vendored for offline build; verbose for defensive programming.
-
 package main
 
 import (
-	//"runtime"
+	
 	"bufio"
 	"bytes"
 	"context"
@@ -35,11 +25,11 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	//	"net/http/pprof" // For /debug/vars
+	
 	"net/url"
 	"os"
 	"os/signal"
-	//	"path/filepath"
+	
 	"html"
 	"regexp"
 	"strings"
@@ -87,7 +77,7 @@ type Rule struct {
 // Globals.
 var dohCert tls.Certificate // Loaded once for DoH listener
 var (
-	//dohSrv, uiSrv *http.Server
+	
 	config         Config
 	upstreamIP     string
 	upstreamURL    *url.URL
@@ -101,8 +91,7 @@ var (
 	recentBlocks   = make([]BlockedQuery, 0, 50) // For UI
 	blockMutex     sync.Mutex
 	stats          = expvar.NewInt("blocks") // Simple stats
-	//listenerErrs    sync.WaitGroup
-	//listenerErrCh   = make(chan error, 3) // Collect bind errs
+	
 	ctx, cancel = context.WithCancel(context.Background())
 )
 
@@ -195,198 +184,6 @@ type BlockedQuery struct {
 	Time   time.Time `json:"time"`
 }
 
-// Templates for UI (embedded).
-//var uiTemplates = template.Must(template.New("").Parse(`
-//<!DOCTYPE html><html><head><title>DNS Proxy UI</title></head><body>
-//<h1>DNS Proxy Control</h1>
-//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-//{{.Body}}
-//</body></html>
-//`))
-
-//var uiTemplates = template.Must(template.New("").Parse(`
-//<!DOCTYPE html><html><head><title>DNS Proxy UI</title><base href="/"></head><body>
-//<h1>DNS Proxy Control</h1>
-//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-//{{.Body}}
-//</body></html>
-//`))
-
-//var uiTemplates = template.Must(template.New("").Parse(`
-//<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
-//<h1>DNS Proxy Control</h1>
-//<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-//{{.Body}}
-//</body></html>
-//`))
-/*var uiTemplates = template.Must(template.New("").Parse(`
-<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
-<h1>DNS Proxy Control</h1>
-<a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-{{.Body}}
-<script>
-// Inline JS for in-place rule editing (vanilla, no deps)
-document.addEventListener('DOMContentLoaded', function() {
-    const editButtons = document.querySelectorAll('button[onclick*="editRule"]');
-    editButtons.forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.preventDefault();
-            const row = this.closest('tr');
-            const cells = row.cells;
-            const typ = cells[0].textContent;
-            const id = cells[1].textContent;
-            const oldPattern = cells[2].textContent;
-            const enabled = cells[3].textContent === 'Yes';
-
-            // Hide row, show form
-            row.style.display = 'none';
-            const formHtml = `+"`"+`
-                <tr>
-                    <td>${typ}</td>
-                    <td>${id}</td>
-                    <td><input type="text" id="editPattern_$$ {id}" value=" $${oldPattern}" style="width:100%"></td>
-                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}> Enabled</label></td>
-                    <td>
-                        <form method="post" action="/rules" id="editForm_${id}">
-                            <input type="hidden" name="id" value="${id}">
-                            <input type="hidden" name="type" value="${typ}">
-                            <button type="submit">Save</button>
-                            <button type="button" onclick="cancelEdit('$$ {id}', ' $${oldPattern}', ${enabled})">Cancel</button>
-                        </form>
-                    </td>
-                </tr>
-            `+"`"+`;
-            row.insertAdjacentHTML('afterend', formHtml);
-            const form = document.getElementById(`+"`"+`editForm_${id}`+"`"+`);
-            form.addEventListener('submit', function(e) {
-                e.preventDefault();
-                const newPattern = document.getElementById(`+"`"+`editPattern_${id}`+"`"+`).value;
-                const enabledChecked = document.getElementById(`+"`"+`editEnabled_${id}`+"`"+`).checked;
-                const formData = new FormData(form);
-                formData.append('pattern', newPattern);
-                formData.append('enabled', enabledChecked ? 'true' : 'false');
-                fetch('/rules', {method: 'POST', body: formData}).then(() => location.reload());
-            });
-        });
-    });
-    window.cancelEdit = function(id, oldPattern, enabled) {
-        const formRow = document.querySelector(`+"`"+`#editForm_${id}`+"`"+`).closest('tr');
-        formRow.remove();
-        const originalRow = formRow.previousElementSibling;
-        originalRow.style.display = '';
-    };
-});
-</script>
-</body></html>
-`)) */
-
-//// In rulesHandler GET, before body.WriteString table
-//var typeOptions strings.Builder=crap()
-//func crap() strings.Builder {
-//var typeOptions strings.Builder
-//for _, t := range typeStrings {
-//    selected := ""
-//    if t == typ {
-//        selected = " selected"
-//    }
-//    typeOptions.WriteString(fmt.Sprintf("<option value=\"%s\"%s>%s</option>", t, selected, t))
-//}
-//return typeOptions
-//}
-//
-//var uiTemplates = template.Must(template.New("").Parse(
-//    `<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
-//    <h1>DNS Proxy Control</h1>
-//    <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-//    {{.Body}}
-//    <script>
-//    // Inline JS for in-place rule editing (vanilla, no deps)
-//    document.addEventListener('DOMContentLoaded', function() {
-//        document.querySelectorAll('button[data-edit-id]').forEach(btn => {
-//            btn.addEventListener('click', function(e) {
-//                e.preventDefault();
-//                const row = this.closest('tr');
-//                const typ = this.dataset.editType;
-//                const id = this.dataset.editId;
-//                const oldPattern = this.dataset.editPattern;
-//                const enabled = this.dataset.editEnabled === 'true';
-//                row.style.display = 'none';
-//                const formHtml = ` + "`" + `                <tr>
-//                    <td>
-//										<select name="type" id="editType_${id}">
-//    ` + typeOptions.String() + `
-//</select>
-//                    </td>
-//                    <td>${id}</td>
-//                    <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
-//                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}> Enabled</label></td>
-//                    <td>
-//                        <form method="post" action="/rules" id="editForm_${id}">
-//                            <input type="hidden" name="id" value="${id}">
-//                            <button type="submit">Save</button>
-//                            <button type="button" onclick="cancelEdit('${id}', '${oldPattern}', ${enabled})">Cancel</button>
-//                        </form>
-//                    </td>
-//                </tr>
-//            ` + "`" + `;
-//                row.insertAdjacentHTML('afterend', formHtml);
-//                const form = document.getElementById('editForm_' + id);
-//                form.addEventListener('submit', function(e) {
-//                    e.preventDefault();
-//                    const newPattern = document.getElementById('editPattern_' + id).value;
-//                    const enabledChecked = document.getElementById('editEnabled_' + id).checked;
-//                    const newType = document.getElementById('editType_' + id).value;
-//                    const formData = new FormData(form);
-//                    formData.append('pattern', newPattern);
-//                    formData.append('enabled', enabledChecked ? 'true' : 'false');
-//                    formData.append('type', newType);
-//                    fetch('/rules', {method: 'POST', body: formData}).then(() => location.reload()).catch(err => console.error('Save failed:', err));
-//                });
-//            });
-//        });
-//        window.cancelEdit = function(id, oldPattern, enabled) {
-//            const formRow = document.querySelector('#editForm_' + id).closest('tr');
-//            formRow.remove();
-//            const originalRow = formRow.previousElementSibling;
-//            if (originalRow) originalRow.style.display = '';
-//        };
-//    });
-//    </script>
-//    </body></html>`,
-//))
-//var uiTemplates = template.Must(template.New("ui").Parse(`
-//<!DOCTYPE html>
-//<html>
-//<head>
-//    <title>DNS Proxy UI</title>
-//    <meta charset="utf-8">
-//    <base href="/">
-//    <style>
-//        table { border-collapse: collapse; width: 100%; }
-//        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-//        th { background-color: #f0f0f0; }
-//        input[type=text] { width: 100%; box-sizing: border-box; }
-//        select { width: 100%; }
-//    </style>
-//</head>
-//<body>
-//    <h1>DNS Proxy Control</h1>
-//    <nav>
-//        <a href="/">Stats</a> |
-//        <a href="/rules">Whitelist Rules</a> |
-//        <a href="/blocks">Recent Blocks</a> |
-//        <a href="/logs">Logs</a> |
-//        <a href="/debug/vars">Debug Vars</a>
-//    </nav>
-//    <hr>
-//    {{.Body}}
-//    <script>
-//    // Inline JS for in-place editing remains here — see full version below
-//    </script>
-//</body>
-//</html>
-//`))
-
 var uiTemplates = template.Must(template.New("").Parse(
 	`<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
     <h1>DNS Proxy Control</h1>
@@ -410,6 +207,7 @@ var uiTemplates = template.Must(template.New("").Parse(
                             ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
+			//this is broken FIXME
 			selected := ""
 			//            if t == typ {
 			//                selected = " selected"
@@ -644,8 +442,8 @@ func rotateIfNeeded(path string, maxMB int) {
 func validateUpstream() error {
 	var err error
 	upstreamURL, err = url.Parse(config.UpstreamURL)
-	if err != nil || upstreamURL.Scheme != "https" { //|| upstreamURL.Path != "/dns-query" {
-		return errors.New("invalid upstream URL: must be similar to this: https://IP/dns-query")
+	if err != nil || upstreamURL.Scheme != "https" {
+		return errors.New("invalid upstream URL, must be similar to this: https://IP/dns-query However, while /dns-query is the \"well-known\" default DoH Path (or Template) used by many providers (like Google and Cloudflare), the RFC 8484 standard allows server operators to configure any path they choose to handle incoming DNS queries.")
 	}
 	upstreamIP = upstreamURL.Hostname() // Host for IP
 	if ip := net.ParseIP(upstreamIP); ip == nil {
@@ -842,7 +640,7 @@ func generateCert(certFile, keyFile string) error {
 		NotAfter:    time.Now().Add(365 * 24 * time.Hour * 10),
 		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, //FIXME: it's hardcoded
 	}
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
@@ -878,23 +676,13 @@ func startDNSListener(addr string) {
 
 	// UDP
 	fmt.Print("  Attempting UDP bind...")
-	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53})
-	/*	if err != nil {
-		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
-		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
-		errorLogger.Error(errStr)
-		listenerErrCh <- errors.New(errStr)
-	} else {*/
+	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}) //FIXME: hardcoded ip and port
+
 	if err != nil {
 		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-		//		select {  // Non-blocking send
-		//		case listenerErrCh <- errors.New(errStr):
-		//			default:  // Closed/dropped - log only
-		//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
-		//		}
-		//return
+		
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
@@ -906,12 +694,13 @@ func startDNSListener(addr string) {
 
 			//TheFor:
 			for {
-				//udpLn.SetReadDeadline(time.Now().Add(3 * time.Second))
-				//fmt.Println("in for...")
-				//time.Sleep(1000 * time.Millisecond)  // Yield
+				
 				select {
 				case <-ctx.Done():
-					fmt.Println("quitting on shutdown...") // to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
+				    // to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
+					fmt.Println("quitting on shutdown...")
+					
+					
 					return                                 // Quit on shutdown
 				default:
 					n, clientAddr, err := udpLn.ReadFromUDP(buf)
@@ -924,14 +713,14 @@ func startDNSListener(addr string) {
 						//break TheFor
 						continue
 					}
-					pid, exe, err := pidAndExeForUDP(clientAddr)
+					pid, exe, err := pidAndExeForUDP(clientAddr) //TODO: do this for TCP below too!
 					if err != nil {
 						fmt.Printf("clientAddr=%s couldn't get pid and exe name:%s\n", clientAddr, err)
 					} else {
 						fmt.Printf("clientAddr=%s pid=%d exe=%s\n", clientAddr, pid, exe)
 					}
-					//fmt.Println("new go routine for handling...",clientAddr, pidAndExeForUDP(clientAddr))
-					//pidAndExeForUDP(&clientAddr)
+					
+					
 					go handleUDP(buf[:n], clientAddr, udpLn)
 				}
 			}
@@ -940,8 +729,7 @@ func startDNSListener(addr string) {
 
 	// TCP
 	fmt.Print("  Attempting TCP bind...")
-	//tcpLn *net.TCPListener
-	//	tcpLn, err := net.ListenTCP("tcp", addr)
+	
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs
 	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %s: %v", addr, err)
@@ -950,23 +738,12 @@ func startDNSListener(addr string) {
 		os.Exit(1)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
-	//if err != nil { /* handle */ }
-	/*	if err != nil {
-		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
-		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
-		errorLogger.Error(errStr)
-		listenerErrCh <- errors.New(errStr)
-	} else {*/
+	
 	if err != nil {
 		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
-		//		select {  // Non-blocking send
-		//		case listenerErrCh <- errors.New(errStr):
-		//			default:  // Closed/dropped - log only
-		//			errorLogger.Warn("err_channel_closed", slog.String("msg", errStr))
-		//		}
-		//return
+		
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
@@ -1022,7 +799,7 @@ func startDNSListener(addr string) {
 
 	}
 	if udpLn == nil && tcpLn == nil {
-		fmt.Println("Warning: No DNS listeners active—degraded mode")
+		fmt.Println("Warning: No DNS listeners!")
 	}
 }
 
@@ -1393,7 +1170,6 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		return nil
 	}
 	return upMsg
-	///////////////////////////////
 
 }
 
@@ -1426,7 +1202,7 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 		ttl := uint32(300)
 		blockIP := net.ParseIP(config.BlockIP)
 		if blockIP == nil {
-			blockIP = net.IPv4(0, 0, 0, 0) // Default
+			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this!
 		}
 		if blockIP.To4() != nil { // A record
 			rr := new(dns.A)
@@ -1456,20 +1232,6 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 		ExtraText: edeText,
 	}
 
-	/*	// Get the absolute path to the running .exe
-		exePath, err := os.Executable()
-		if err != nil {
-			exePath = "proxy.exe" // Fallback
-		}
-
-		// Create the dynamic string
-		edeText := "Blocked by " + exePath
-
-		// Create the EDE option with the dynamic text
-		ede := &dns.EDNS0_EDE{
-			InfoCode:  dns.ExtendedErrorCodeBlocked,
-			ExtraText: edeText,
-		}*/
 
 	// Re-allocate the OPT "envelope" but use the static EDE logic
 	opt := new(dns.OPT)
@@ -1633,7 +1395,7 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 }
 
 func startWebUI(port int) {
-	fmt.Printf("Starting web UI on 127.0.0.1:%d...\n", port)
+	fmt.Printf("Starting web UI on 127.0.0.1:%d...\n", port) //FIXME: hardcoded IP
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", statsHandler)
@@ -1650,7 +1412,7 @@ func startWebUI(port int) {
 		os.Exit(1) // Fail-fast serial
 	}
 	fmt.Println("  Attempting UI bind...Success")
-	fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port)
+	fmt.Printf("Web UI listening on 127.0.0.1:%d (stats at /debug/vars)\n", port) //FIXME: hardcoded IP
 
 	uiSrv := &http.Server{Handler: mux}
 	go func() {
@@ -1669,167 +1431,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
-/*func rulesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    ruleMutex.RLock()
-    defer ruleMutex.RUnlock()
 
-    var body strings.Builder
-
-    // Table header
-    body.WriteString("<h2>Whitelist Rules</h2>")
-    body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
-
-    // Rules rows
-    for typ, rules := range whitelist {
-        for _, rule := range rules {
-            enabled := "Yes"
-            if !rule.Enabled {
-                enabled = "No"
-            }
-            body.WriteString(fmt.Sprintf(
-                "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"+
-                    "<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button>"+
-                    "</td></tr>",
-                typ, rule.ID, html.EscapeString(rule.Pattern), enabled,
-                rule.ID, typ, html.EscapeString(rule.Pattern), rule.Enabled,
-            ))
-        }
-    }
-    body.WriteString("</table>")
-
-    // Add new rule form with full type dropdown
-    body.WriteString("<h2>Add New Rule</h2>")
-    body.WriteString("<form method=\"post\" action=\"/rules\">")
-    body.WriteString("<select name=\"type\">")
-    for _, t := range dnsTypes {
-        body.WriteString(fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
-    }
-    body.WriteString("</select> ")
-    body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
-    body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
-    body.WriteString("<button type=\"submit\">Add Rule</button>")
-    body.WriteString("</form>")
-
-    // Execute template with dynamic body
-    uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
-    return
-}
-//	if r.Method == "POST" {
-//		pattern := r.FormValue("pattern")
-//		typ := r.FormValue("type")
-//		id := r.FormValue("id") // For edit
-//		enabledStr := r.FormValue("enabled")
-//		enabledBool := enabledStr == "true"
-//		if typ == "" {
-//			//FIXME: when this happens, enabled is not true
-//			typ = "A"
-//		}
-//		if pattern != "" && typ != "" {
-//			var newID string
-//			if id == "" {
-//				newID = newUniqueID() // Gen ID pre-lock (no nesting)
-//			} else {
-//				newID = id // Edit uses existing
-//			}
-//			ruleMutex.Lock()
-//			var newRule Rule
-//			if id != "" {
-//				// Edit: Find and update
-//				for i, r := range config.Whitelist[typ] {
-//					if r.ID == id {
-//						newRule = Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-//						config.Whitelist[typ][i] = newRule
-//						whitelist[typ][i] = newRule
-//						break
-//					}
-//				}
-//			} else {
-//				// Add
-//				newRule = Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-//				config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-//				whitelist[typ] = append(whitelist[typ], newRule)
-//			}
-//			ruleMutex.Unlock()
-//			saveConfig("config.json")
-//			fmt.Printf("Rule updated/added for %s: %s\n", typ, pattern)
-//		}
-//		http.Redirect(w, r, "/rules", http.StatusSeeOther)
-//	}
-	if r.Method == "POST" {
-    pattern := r.FormValue("pattern")
-    typ := r.FormValue("type")  // From select
-    id := r.FormValue("id")
-    enabledStr := r.FormValue("enabled")
-		enabledBool := enabledStr == "true" || enabledStr == "on"  // Checkbox sends "on" if checked
-    if pattern != "" && typ != "" {
-        if id != "" {
-						ruleMutex.Lock()
-						defer ruleMutex.Unlock()
-            // Edit: Find in old typ (assume typ param is new type; search all for old)
-            //oldTyp := typ  // Default to same if no change
-            found := false
-            for oldT, rs := range config.Whitelist {
-                for i, r := range rs {
-                    if r.ID == id {
-                        // Remove from old typ
-                        config.Whitelist[oldT] = append(rs[:i], rs[i+1:]...)
-                        whitelist[oldT] = append(rs[:i], rs[i+1:]...)
-                        found = true
-                        //oldTyp = oldT
-                        break
-                    }
-                }
-                if found {
-                    break
-                }
-            }
-            if !found {
-                //ruleMutex.Unlock()
-                http.Error(w, "Rule not found", http.StatusNotFound)
-                return
-            }
-            // Add/update in new typ
-            newRule := Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-            if _, ok := config.Whitelist[typ]; !ok {
-                config.Whitelist[typ] = []Rule{}
-                whitelist[typ] = []Rule{}
-            }
-            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-            whitelist[typ] = append(whitelist[typ], newRule)
-        } else {
-						newID := newUniqueID() //FIXME: ugly
-						ruleMutex.Lock()
-						defer ruleMutex.Unlock()
-//            // Add new
-//            newID := newUniqueID()
-//            newRule := Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-//            if _, ok := config.Whitelist[typ]; !ok {
-//                config.Whitelist[typ] = []Rule{}
-//                whitelist[typ] = []Rule{}
-//            }
-//            config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-//            whitelist[typ] = append(whitelist[typ], newRule)
-
-						// Add
-						//ruleMutex.Unlock()
-						//ruleMutex.Lock()
-						//defer ruleMutex.Unlock()
-						newRule := Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
-						if _, ok := config.Whitelist[typ]; !ok {
-								config.Whitelist[typ] = []Rule{}
-								whitelist[typ] = []Rule{}
-						}
-						config.Whitelist[typ] = append(config.Whitelist[typ], newRule)  // Single append
-						whitelist[typ] = append(whitelist[typ], newRule)              // Single append
-        }
-        saveConfig("config.json")
-        fmt.Printf("Rule updated/added for %s: %s (ID: %s, Enabled: %t)\n", typ, pattern, id, enabledBool)
-    }
-    http.Redirect(w, r, "/rules", http.StatusSeeOther)
-}//POST
-}*/
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
@@ -2006,18 +1608,17 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	body := fmt.Sprintf("<h2>Logs (filtered by '%s')</h2><pre style=\"max-height:400px;overflow:auto;\">%s</pre>", domainFilter, strings.Join(filtered, "\n"))
-	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
+
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
 func shutdown() {
 	fmt.Println("Shutting down...")
-	//dohSrv.Shutdown(ctx); //done differenly at start place
-	//dohCert=nil;
-	fmt.Println("DoH down...")
+
+	
 	cacheStore.Flush()
 	fmt.Println("Cache flushed")
-	//uiSrv.Shutdown(ctx);
+
 	fmt.Println("webUI shutdown")
 	// Close log files (reopen on next run)
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
@@ -2025,6 +1626,6 @@ func shutdown() {
 	case <-time.After(1000 * time.Millisecond):
 	}
 	fmt.Print("Press Enter to exit...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n')
+	bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
 	os.Exit(0)
 }
