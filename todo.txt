@@ -1,0 +1,3 @@
+* make it 'pause' even when errors happen, else i need to wrap it in a .bat!
+* show the IPs gotten from upstream in logs, even if cached, even if HTTPS dns type!(even tho stripped ipv4hint etc.)
+* hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!

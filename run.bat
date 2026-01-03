@@ -6,3 +6,4 @@
 
 @rem pause
 .\dns-proxy.exe
+pause

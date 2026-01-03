@@ -644,8 +644,8 @@ func rotateIfNeeded(path string, maxMB int) {
 func validateUpstream() error {
 	var err error
 	upstreamURL, err = url.Parse(config.UpstreamURL)
-	if err != nil || upstreamURL.Scheme != "https" || upstreamURL.Path != "/dns-query" {
-		return errors.New("invalid upstream URL: must be https://IP/dns-query")
+	if err != nil || upstreamURL.Scheme != "https" { //|| upstreamURL.Path != "/dns-query" {
+		return errors.New("invalid upstream URL: must be similar to this: https://IP/dns-query")
 	}
 	upstreamIP = upstreamURL.Hostname() // Host for IP
 	if ip := net.ParseIP(upstreamIP); ip == nil {
@@ -1398,10 +1398,11 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 }
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
+	//in Go, implicit 'break' after each 'case'
 	switch config.BlockMode {
 	case "nxdomain":
 		msg.SetRcode(msg, dns.RcodeNameError)
-	case "ip_block":
+	case "ip_block", "block_ip":
 		ttl := uint32(300)
 		blockIP := net.ParseIP(config.BlockIP)
 		if blockIP == nil {
@@ -1421,7 +1422,7 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	case "drop":
 		return nil
 	default:
-		return blockResponse(msg) // Recurse on invalid mode? No, fallback nxdomain
+	    // fallback to nxdomain
 		msg.SetRcode(msg, dns.RcodeNameError)
 	}
 	msg.Authoritative = true
@@ -1441,17 +1442,19 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 	}
 	var goodAnswer, goodExtra []dns.RR
 	for _, rr := range msg.Answer {
-		if keepRR(rr, nets) {
-			goodAnswer = append(goodAnswer, rr)
-		}
-	}
-	for _, rr := range msg.Extra {
-		if keepRR(rr, nets) {
-			goodExtra = append(goodExtra, rr)
-		}
-	}
+        if keep, modifiedRR := processRR(rr, nets); keep {
+            goodAnswer = append(goodAnswer, modifiedRR)
+        }
+    }
+    for _, rr := range msg.Extra {
+        if keep, modifiedRR := processRR(rr, nets); keep {
+            goodExtra = append(goodExtra, modifiedRR)
+        }
+    }
+
 	msg.Answer = goodAnswer
 	msg.Extra = goodExtra
+	
 	if len(msg.Answer) == 0 {
 		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
 		return nil
@@ -1459,15 +1462,46 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 	return msg
 }
 
-func keepRR(rr dns.RR, nets []*net.IPNet) bool {
-	switch r := rr.(type) {
-	case *dns.A:
-		return !ipInNets(r.A, nets)
-	case *dns.AAAA:
-		return !ipInNets(r.AAAA, nets)
-	default:
-		return true // Non-IP RRs pass (e.g., TXT, MX)
-	}
+func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
+    switch r := rr.(type) {
+    case *dns.A:
+        if ipInNets(r.A, nets) { return false, nil }
+        return true, r
+
+    case *dns.AAAA:
+        if ipInNets(r.AAAA, nets) { return false, nil }
+        return true, r
+
+    // Look for HTTPS records (Type 65)
+    case *dns.HTTPS:
+        // Strip ipv4hint (Key 4) and ipv6hint (Key 6)
+        // This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
+		// Filter the SVCB/HTTPS parameters
+        newParams := []dns.SVCBKeyValue{}
+        for _, param := range r.Value {
+            k := param.Key()
+			// Key 4 = ipv4hint, Key 6 = ipv6hint
+                // We only keep keys that AREN'T hints
+            if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
+                newParams = append(newParams, param)
+            } else {
+				fmt.Println("Dropping IP hint from the reply:", param);
+				//fmt.Println("NOT Dropping IP hint from the reply:", param);
+				//newParams = append(newParams, param)
+			}
+        }
+        r.Value = newParams
+        return true, r
+
+    case *dns.RRSIG:
+        // Always drop signatures because we are modifying the RRsets they sign.
+        // A missing signature is better than a broken one.
+        return false, nil
+
+    default:
+        // Keep other types (MX, TXT, CNAME, etc.)
+        return true, rr
+    }
 }
 
 func ipInNets(ip net.IP, nets []*net.IPNet) bool {
