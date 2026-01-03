@@ -100,7 +100,7 @@ func pidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 		entryIP := net.IPv4(ipb[0], ipb[1], ipb[2], ipb[3])
 
 		//fmt.Println("Checking:",entryIP,ip4, localPort, port)
-		//if entryIP.Equal(ip4) && localPort == port {
+
 		if localPort == port {
 			// treat 0.0.0.0 as wildcard match
 			if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip4) {
@@ -157,8 +157,3 @@ func exampleUsage() {
 		fmt.Printf("PID %d exe %s\n", pid, exe)
 	}
 }
-
-//func main() {
-//	// noop to satisfy package main; plug helper into your server code.
-//	_ = os.Args
-//}
