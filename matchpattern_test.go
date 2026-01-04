@@ -9,7 +9,10 @@ func TestMatchPattern(t *testing.T) {
 		want    bool
 	}{
 		{"example.com", "example.com", true},
+		{"example.co", "example.com", false},
+		{"example.com", "example.co", false},
 		{"*example.com", "example.com", true},
+		{"*example.com", ".example.com", false},
 		{"*example.com", "fexample.com", true},
 		{"*example.com", "fghexample.com", true},
 		{"?example.com", "fexample.com", true},
@@ -22,6 +25,7 @@ func TestMatchPattern(t *testing.T) {
 		{"*.example.com", "foo.bar.example.com", false},
 		{"**.example.com", "foo.bar.example.com", true},
 		{"**.example.com", "example.com", false},
+		{"**.example.com", ".example.com", false},
 		{"?", "a", true},
 		{"?", "ab", false},
 		{"!", ".", true},
@@ -30,6 +34,9 @@ func TestMatchPattern(t *testing.T) {
 		{"foo.?ar.com", "foo.bar.com", true},
 		{"foo.?ar.com", "foo.xar.com", true},
 		{"foo.?ar.com", "foo.xxar.com", false},
+		{"foo!?ar.com", "foo.bar.com", true},
+		{"foo!!ar.com", "foo.bar.com", true},
+		{"foo!!ar.com", "foodbar.com", true},
 		{"sdmntpr*.oaiusercontent.com", "sdmntpritalynorth.oaiusercontent.com", true },
 	}
 
