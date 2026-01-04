@@ -424,7 +424,7 @@ func loadConfig(path string) error {
 			ListenDoH:       "127.0.0.1:443",
 			UIPort:          8080,
 			UpstreamURL:     "https://9.9.9.9/dns-query",
-			SNIHostname:     "",
+			SNIHostname:     "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
 			BlockMode:       "nxdomain",
 			BlockIP:         "0.0.0.0",
 			RateQPS:         100,
