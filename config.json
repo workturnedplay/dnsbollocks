@@ -13,356 +13,536 @@
     "A": [
       {
         "id": "a57d1651-050b-4696-9ea3-4b90b800e238",
-        "pattern": "^addons.mozilla.org$",
-        "is_regex": true,
+        "pattern": "addons.mozilla.org",
         "enabled": true
       },
       {
         "id": "58985f38-5448-4199-b181-c651caa60c78",
-        "pattern": "^aus5\\.mozilla\\.org$",
-        "is_regex": true,
+        "pattern": "aus5.mozilla.org",
         "enabled": true
       },
       {
         "id": "cec0ef6f-33eb-42c6-aaf7-1d7f99504b77",
-        "pattern": "^download\\.mozilla\\.org$",
-        "is_regex": true,
+        "pattern": "download.mozilla.org",
         "enabled": true
       },
       {
         "id": "c0e4df85-cfe3-4c4c-ab49-de079562499f",
-        "pattern": "^download-installer\\.cdn\\.mozilla\\.net$",
-        "is_regex": true,
+        "pattern": "download-installer.cdn.mozilla.net",
         "enabled": true
       },
       {
         "id": "ee49d484-5672-451e-a8ff-7bbc18559bc5",
-        "pattern": "^duck\\.ai$",
-        "is_regex": true,
+        "pattern": "duck.ai",
         "enabled": true
       },
       {
         "id": "28d98423-c49c-4545-b8d6-da040399309a",
-        "pattern": "^duckduckgo\\.com$",
-        "is_regex": true,
+        "pattern": "duckduckgo.com",
         "enabled": true
       },
       {
         "id": "c6147dd6-ad26-47b3-a14d-c5373532e114",
-        "pattern": "^www\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "www.google.com",
         "enabled": true
       },
       {
         "id": "1a75f61a-59c5-4548-80ba-8a762fa8de3c",
-        "pattern": "^www\\.gstatic\\.com$",
-        "is_regex": true,
+        "pattern": "www.gstatic.com",
         "enabled": true
       },
       {
         "id": "cfd94a96-8dd1-4de2-8b2d-f00722c51181",
-        "pattern": "^learn\\.microsoft\\.com$",
-        "is_regex": true,
+        "pattern": "learn.microsoft.com",
         "enabled": true
       },
       {
         "id": "da6cc673-8a00-40b4-b0be-8910ec88fd4a",
-        "pattern": "^download\\.sysinternals\\.com$",
-        "is_regex": true,
+        "pattern": "download.sysinternals.com",
         "enabled": true
       },
       {
         "id": "32f57866-bb2f-4ef8-8747-6bdc8273fc8a",
-        "pattern": "^virustotal\\.com$",
-        "is_regex": true,
+        "pattern": "virustotal.com",
         "enabled": true
       },
       {
         "id": "7db61a54-2a60-43f5-a120-4901c971b8ae",
-        "pattern": "^www\\.virustotal\\.com$",
-        "is_regex": true,
+        "pattern": "www.virustotal.com",
         "enabled": true
       },
       {
         "id": "d6277011-4cd3-4b8f-9717-3058a2a79483",
-        "pattern": "^gmail\\.com$",
-        "is_regex": true,
+        "pattern": "gmail.com",
         "enabled": true
       },
       {
         "id": "fbdc92fd-c726-4c95-968a-dba92b13abb1",
-        "pattern": "^www\\.gmail\\.com$",
-        "is_regex": true,
+        "pattern": "www.gmail.com",
         "enabled": true
       },
       {
         "id": "36e0c083-35e6-4402-818d-00046df698d1",
-        "pattern": "^mail\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "mail.google.com",
         "enabled": true
       },
       {
         "id": "94a0956a-228e-46ba-b789-739c94801d0f",
-        "pattern": "^accounts\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "accounts.google.com",
         "enabled": true
       },
       {
         "id": "333734a7-1202-405f-af5c-7dedbf4256f0",
-        "pattern": "^accounts\\.youtube\\.com$",
-        "is_regex": true,
+        "pattern": "accounts.youtube.com",
         "enabled": true
       },
       {
         "id": "f9001ea3-6641-44c5-b924-572848a98640",
-        "pattern": "^keepassxc\\.org$",
-        "is_regex": true,
+        "pattern": "keepassxc.org",
         "enabled": true
       },
       {
         "id": "fa69071a-bb07-447e-a850-40e5137cbfb4",
-        "pattern": "^github\\.com$",
-        "is_regex": true,
+        "pattern": "github.com",
         "enabled": true
       },
       {
         "id": "a9fafd85-6ca7-4e7b-90fc-58dbaea21577",
-        "pattern": "^www\\.github\\.com$",
-        "is_regex": true,
+        "pattern": "www.github.com",
         "enabled": true
       },
       {
         "id": "91685885-faef-4766-96cb-3f6e1b23870b",
-        "pattern": "^github\\.githubassets\\.com$",
-        "is_regex": true,
+        "pattern": "github.githubassets.com",
         "enabled": true
       },
       {
         "id": "ad7536cb-8921-4b6d-bf88-672c34a8cccb",
-        "pattern": "^avatars\\.githubusercontent\\.com$",
-        "is_regex": true,
+        "pattern": "avatars.githubusercontent.com",
         "enabled": true
       },
       {
         "id": "eb23202d-38c1-48ef-a37a-58532d998b66",
-        "pattern": "^raw\\.githubusercontent\\.com$",
-        "is_regex": true,
+        "pattern": "raw.githubusercontent.com",
         "enabled": true
       },
       {
         "id": "c828f331-92ab-4a27-8c5d-67ea4dc2acb0",
-        "pattern": "^pgl\\.yoyo\\.org$",
-        "is_regex": true,
+        "pattern": "pgl.yoyo.org",
         "enabled": true
       },
       {
         "id": "9407beaa-5336-493e-b68d-b201b7efa0c4",
-        "pattern": "^release-assets\\.githubusercontent\\.com$",
-        "is_regex": true,
+        "pattern": "release-assets.githubusercontent.com",
         "enabled": true
       },
       {
         "id": "c92e9253-f4c8-42b6-af79-64e25dac52d8",
-        "pattern": "^workspace\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "workspace.google.com",
         "enabled": true
       },
       {
         "id": "50aac888-c111-453f-b6be-6a5d85fa1b79",
-        "pattern": "^fonts\\.gstatic\\.com$",
-        "is_regex": true,
+        "pattern": "fonts.gstatic.com",
         "enabled": true
       },
       {
         "id": "6572b8b0-be9c-4573-a101-f4b88fc644de",
-        "pattern": "^apis\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "apis.google.com",
         "enabled": true
       },
       {
         "id": "3ca2cb8f-f585-4f33-b5ac-507a534f5eb4",
-        "pattern": "^fonts\\.googleapis\\.com$",
-        "is_regex": true,
+        "pattern": "fonts.googleapis.com",
         "enabled": true
       },
       {
         "id": "f786c901-2259-41cd-98db-b814571cc790",
-        "pattern": "^play\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "play.google.com",
         "enabled": true
       },
       {
         "id": "bbeb05e0-d4b9-4bdc-a2a1-8f733f1c6448",
-        "pattern": "^gds\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "gds.google.com",
         "enabled": true
       },
       {
         "id": "dc83d40e-03a9-4996-833e-324e538cd5ae",
-        "pattern": "^ssl\\.gstatic\\.com$",
-        "is_regex": true,
+        "pattern": "ssl.gstatic.com",
         "enabled": true
       },
       {
         "id": "975c63ef-9259-4224-b1de-8209c08b9833",
-        "pattern": "^lh3\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "lh3.google.com",
         "enabled": true
       },
       {
         "id": "22cd4ccd-24f2-42d2-84da-f878373819c8",
-        "pattern": "^lh3\\.googleusercontent\\.com$",
-        "is_regex": true,
+        "pattern": "lh3.googleusercontent.com",
         "enabled": true
       },
       {
         "id": "463ad4a2-3b44-48f1-8697-a6236b4d9971",
-        "pattern": "^gemini\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "gemini.google.com",
         "enabled": true
       },
       {
         "id": "f6b9a9a4-d5c9-4d9f-b291-e948189bc35d",
-        "pattern": "^myactivity\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "myactivity.google.com",
         "enabled": true
       },
       {
         "id": "8b1cd526-119d-4df3-bd68-98f28926c075",
-        "pattern": "^ogs\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "ogs.google.com",
         "enabled": true
       },
       {
         "id": "12c612a9-a0d3-49a7-b002-b4137c85ac74",
-        "pattern": "^push\\.clients6\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "push.clients6.google.com",
         "enabled": true
       },
       {
         "id": "00f8164f-1341-4981-96f3-e12602a0dbe9",
-        "pattern": "^drive-thirdparty\\.googleusercontent\\.com$",
-        "is_regex": true,
+        "pattern": "drive-thirdparty.googleusercontent.com",
         "enabled": true
       },
       {
         "id": "7150ca26-c9a9-496e-998f-309a94cb4c31",
-        "pattern": "^bugzilla\\.mozilla\\.org$",
-        "is_regex": true,
+        "pattern": "bugzilla.mozilla.org",
         "enabled": true
       },
       {
         "id": "ade2e8f5-6303-4c2f-ab7b-dbc1b9453b7e",
-        "pattern": "^developer\\.mozilla\\.org$",
-        "is_regex": true,
+        "pattern": "developer.mozilla.org",
         "enabled": true
       },
       {
         "id": "34f772d7-e4ed-40e8-ad7a-3b9f827a1adf",
-        "pattern": "^datatracker\\.ietf\\.org$",
-        "is_regex": true,
+        "pattern": "datatracker.ietf.org",
         "enabled": true
       },
       {
         "id": "392c55f8-8bb1-46d3-a5ae-2843d9c4ebfb",
-        "pattern": "^static\\.ietf\\.org$",
-        "is_regex": true,
+        "pattern": "static.ietf.org",
         "enabled": true
       },
       {
         "id": "259dff36-cb35-4440-acd7-b9e6d31f2d46",
-        "pattern": "^cdn\\.statically\\.io$",
-        "is_regex": true,
+        "pattern": "cdn.statically.io",
         "enabled": true
       },
       {
         "id": "aad6ea8e-6af9-4919-b8a0-0839f669ec42",
-        "pattern": "^ublockorigin\\.github\\.io$",
-        "is_regex": true,
+        "pattern": "ublockorigin.github.io",
         "enabled": true
       },
       {
         "id": "1f098f80-6f09-41b6-b41a-62fb572ba621",
-        "pattern": "^cdn\\.jsdelivr\\.net$",
-        "is_regex": true,
+        "pattern": "cdn.jsdelivr.net",
         "enabled": true
       },
       {
         "id": "a02c1208-b41b-404a-bda7-9ce3751ba951",
-        "pattern": "^ublockorigin\\.pages\\.dev$",
-        "is_regex": true,
+        "pattern": "ublockorigin.pages.dev",
         "enabled": true
       },
       {
         "id": "6ecfb217-2d2d-439c-9b13-32771a2b6983",
-        "pattern": "^ublockorigin\\.github\\.io$",
-        "is_regex": true,
+        "pattern": "ublockorigin.github.io",
         "enabled": true
       },
       {
         "id": "26c34843-1806-4a47-8411-705b344f1b8c",
-        "pattern": "^malware-filter\\.gitlab\\.io$",
-        "is_regex": true,
+        "pattern": "malware-filter.gitlab.io",
         "enabled": true
       },
       {
         "id": "d61560f2-bd4d-4c2b-8b23-51c702f58696",
-        "pattern": "^curbengh\\.github\\.io$",
-        "is_regex": true,
+        "pattern": "curbengh.github.io",
         "enabled": true
       },
       {
         "id": "d3b6e218-8556-4ab3-84e5-dd2c52e53fc9",
-        "pattern": "^filters\\.adtidy\\.org$",
-        "is_regex": true,
+        "pattern": "filters.adtidy.org",
         "enabled": true
       },
       {
         "id": "c220e93f-9a51-4fbb-88a1-b310e0f38a4d",
-        "pattern": "^secure\\.fanboy\\.co\\.nz$",
-        "is_regex": true,
+        "pattern": "secure.fanboy.co.nz",
         "enabled": true
       },
       {
         "id": "a8fe0029-e3b0-49cd-a7cb-ba46e74d385e",
-        "pattern": "^publicsuffix\\.org$",
-        "is_regex": true,
+        "pattern": "publicsuffix.org",
         "enabled": true
       },
       {
         "id": "61c9ee03-bb28-4c87-b5ee-3896be84bba2",
-        "pattern": "^winhelp2002\\.mvps\\.org$",
-        "is_regex": true,
+        "pattern": "winhelp2002.mvps.org",
         "enabled": true
       },
       {
         "id": "718493d7-956a-4379-a583-6f24bb4f63c1",
-        "pattern": "^someonewhocares\\.org$",
-        "is_regex": true,
+        "pattern": "someonewhocares.org",
         "enabled": true
       },
       {
         "id": "865f4008-1391-4a8e-bfe5-24a6340326e0",
-        "pattern": "^consent\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "consent.google.com",
         "enabled": true
       },
       {
         "id": "c3ef518c-3189-40ed-b592-c0e1c46cfde2",
-        "pattern": "^myaccount\\.google\\.com$",
-        "is_regex": true,
+        "pattern": "myaccount.google.com",
         "enabled": true
       },
       {
         "id": "3bb08016-80a7-40db-8df0-ae6ea2d7cb28",
-        "pattern": "^www\\.youtube\\.com$",
-        "is_regex": true,
+        "pattern": "www.youtube.com",
         "enabled": true
       },
       {
         "id": "b38a0e14-5df3-4079-921d-1f8b4ff6df8a",
-        "pattern": "^googlevideo\\.com$",
-        "is_regex": true,
+        "pattern": "{*}.googlevideo.com",
+        "enabled": true
+      },
+      {
+        "id": "d0509112-6f53-4d72-98f2-1fcb1d941b15",
+        "pattern": "chatgpt.com",
+        "enabled": true
+      },
+      {
+        "id": "aaada99e-7d84-416b-9fef-3c4ea14c2c35",
+        "pattern": "ab.chatgpt.com",
+        "enabled": true
+      },
+      {
+        "id": "b7822b42-352b-4e61-8dbe-e4e8734b338e",
+        "pattern": "persistent.oaistatic.com",
+        "enabled": true
+      },
+      {
+        "id": "05187e8c-5471-4c9c-a45f-ef48a1a2d2a1",
+        "pattern": "cdn.openai.com",
+        "enabled": true
+      },
+      {
+        "id": "118d86a0-0849-4ea7-a50b-ad7ac53d4b24",
+        "pattern": "nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "39c5a671-cdd6-4336-91d3-46e2e600b86c",
+        "pattern": "my.nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "059d431d-612e-4292-ab4d-00d294297e00",
+        "pattern": "api.nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "1dc15f36-f6c5-4bb2-986e-3129ff5913b5",
+        "pattern": "{*}.test.nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "8ba73ae9-7b07-4c2e-998f-4b468549578c",
+        "pattern": "favicons.nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "55ca855f-5da2-4170-89d6-d333831e5f5f",
+        "pattern": "work.fife.usercontent.google.com",
+        "enabled": true
+      },
+      {
+        "id": "e9a10445-8b36-42b3-b16a-5fa17957e728",
+        "pattern": "waa-pa.clients6.google.com",
+        "enabled": true
+      },
+      {
+        "id": "e76a10c2-1072-43c5-82fc-37a3c24277a9",
+        "pattern": "signaler-pa.clients6.google.com",
+        "enabled": true
+      },
+      {
+        "id": "96d6f840-a303-422f-97bf-f521f5509348",
+        "pattern": "images.ctfassets.net",
+        "enabled": true
+      },
+      {
+        "id": "14227b03-3882-490c-ae8c-8430335f0a22",
+        "pattern": "auth.openai.com",
+        "enabled": true
+      },
+      {
+        "id": "03ed3a82-8add-4bde-97ff-e8ee2b6beaf0",
+        "pattern": "auth-cdn.oaistatic.com",
+        "enabled": true
+      },
+      {
+        "id": "68436541-e883-4874-a037-3c7e4cbc62e5",
+        "pattern": "realtime.chatgpt.com",
+        "enabled": true
+      },
+      {
+        "id": "03acc3db-7d2a-47c8-b08c-fb2d2bcdd592",
+        "pattern": "ws.chatgpt.com",
+        "enabled": true
+      },
+      {
+        "id": "f5f62ce9-5123-4872-95a9-90930107896b",
+        "pattern": "persistent.oaistatic.com",
+        "enabled": true
+      },
+      {
+        "id": "d2c7432e-5c78-4750-99cf-e1881242407d",
+        "pattern": "cdn.auth0.com",
+        "enabled": true
+      },
+      {
+        "id": "688a00d3-3822-46c1-997f-ba4c3b002660",
+        "pattern": "help.openai.com",
+        "enabled": true
+      },
+      {
+        "id": "49c73434-db50-4315-9d48-ca1361013bf2",
+        "pattern": "sentinel.openai.com",
+        "enabled": true
+      },
+      {
+        "id": "4cd0600e-2d6f-4e26-a2ca-3188adec2aa5",
+        "pattern": "challenges.cloudflare.com",
+        "enabled": true
+      },
+      {
+        "id": "738c950b-fdaf-456b-95e7-d678b0ac3762",
+        "pattern": "cdn.platform.openai.com",
+        "enabled": true
+      },
+      {
+        "id": "aa22065f-15a8-4602-ae36-82a31a3d4d8d",
+        "pattern": "i.ytimg.com",
+        "enabled": true
+      },
+      {
+        "id": "1b2fb197-9897-43cf-a610-33498d0f9efe",
+        "pattern": "sdmntpr{*}.oaiusercontent.com",
+        "enabled": true
+      },
+      {
+        "id": "1b2fb197-9897-43cf-a610-33498d0f9efe",
+        "pattern": "sdmntpr{*}.oaiusercontent.com",
+        "enabled": true
+      },
+      {
+        "id": "07ae7e86-0c52-43a8-bfa1-86a428fc1c4c",
+        "pattern": "encrypted-tbn2.gstatic.com",
+        "enabled": true
+      },
+      {
+        "id": "07ae7e86-0c52-43a8-bfa1-86a428fc1c4c",
+        "pattern": "encrypted-tbn2.gstatic.com",
+        "enabled": true
+      },
+      {
+        "id": "628867ff-da30-4e8f-a465-0f486d7e3d1d",
+        "pattern": "featureassets.org",
+        "enabled": true
+      },
+      {
+        "id": "ffe0b032-ce9f-4f9f-8c26-5c608628d683",
+        "pattern": "support.mozilla.org",
+        "enabled": true
+      },
+      {
+        "id": "e2184a03-5044-41d5-96c1-c61fb949ab40",
+        "pattern": "octocaptcha.com",
+        "enabled": true
+      },
+      {
+        "id": "1a667dda-f45f-497a-8ce5-a1ed87dfad9d",
+        "pattern": "octocaptcha-cdn.github.com",
+        "enabled": true
+      },
+      {
+        "id": "2ca8bec0-dedd-44fd-9249-a51bc697450c",
+        "pattern": "octocaptcha.githubassets.com",
+        "enabled": true
+      },
+      {
+        "id": "edd8ecd0-7095-4eec-90a7-787a68b23471",
+        "pattern": "github-api.arkoselabs.com",
+        "enabled": true
+      },
+      {
+        "id": "bbb6837c-d3e0-4b34-8701-88025c7f56dc",
+        "pattern": "docs.github.com",
+        "enabled": true
+      },
+      {
+        "id": "666ce1c0-b9ae-4fd0-bc75-6f1356d96097",
+        "pattern": "demo.arkoselabs.com",
+        "enabled": true
+      },
+      {
+        "id": "f74c9f27-b82a-4848-b71a-2d1fbb3ac2c1",
+        "pattern": "client-api.arkoselabs.com",
+        "enabled": true
+      },
+      {
+        "id": "ca41ff6c-c5e7-4b4c-91a1-1f9ac5f555c1",
+        "pattern": "api.github.com",
+        "enabled": true
+      },
+      {
+        "id": "d4211ad8-3ea5-45fb-a6e9-5447a7638ab2",
+        "pattern": "grc.sc",
+        "enabled": true
+      },
+      {
+        "id": "42d5d0f1-e94a-457f-bd89-01ea6c2aa7fb",
+        "pattern": "check.labs.greynoise.io",
+        "enabled": true
+      },
+      {
+        "id": "78afb5a3-fb52-433d-883a-80f0476a23fa",
+        "pattern": "jnn-pa.googleapis.com",
+        "enabled": true
+      },
+      {
+        "id": "6017e3ee-d5b2-445f-8c6c-17e680b57a64",
+        "pattern": "alive.github.com",
+        "enabled": true
+      },
+      {
+        "id": "6017e3ee-d5b2-445f-8c6c-17e680b57a64",
+        "pattern": "alive.github.com",
+        "enabled": true
+      },
+      {
+        "id": "f2060f77-62a6-4d16-8ada-688f051daefe",
+        "pattern": "link-ip.nextdns.io",
+        "enabled": true
+      },
+      {
+        "id": "fefd1026-4d05-4616-8fa5-530520cf1292",
+        "pattern": "www.apache.org",
+        "enabled": true
+      }
+    ],
+    "AAAA": [
+      {
+        "id": "21b89e99-e1d6-4c96-a3e8-18282a4a5ba8",
+        "pattern": "test-ipv6.nextdns.io",
+        "enabled": true
+      }
+    ],
+    "HTTPS": [
+      {
+        "id": "3e4333ec-83cf-4210-b82a-c06f88aab839",
+        "pattern": "blog.cloudflare.com",
         "enabled": true
       }
     ]
