@@ -40,41 +40,8 @@ import (
 	"github.com/patrickmn/go-cache"
 	"golang.org/x/sys/windows"
 	"golang.org/x/time/rate"
+)
 
-	"regexp"
-	"path/filepath")
-
-
-
-// expandFilePlaceholders replaces occurrences of {file:NAME} in an upstream URL
-// by reading the contents of the file NAME. If NAME is relative, it is resolved
-// relative to the directory containing configPath. The file contents are trimmed
-// of leading/trailing whitespace to avoid accidental newline insertion into URLs.
-func expandFilePlaceholders(upstream string, configPath string) (string, error) {
-	re := regexp.MustCompile(`\{file:([^}]+)\}`)
-	matches := re.FindAllStringSubmatch(upstream, -1)
-	if len(matches) == 0 {
-		return upstream, nil
-	}
-	baseDir := filepath.Dir(configPath)
-	result := upstream
-	for _, mm := range matches {
-		filename := mm[1]
-		var fullpath string
-		if filepath.IsAbs(filename) {
-			fullpath = filename
-		} else {
-			fullpath = filepath.Join(baseDir, filename)
-		}
-		b, err := os.ReadFile(fullpath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read placeholder file %q referenced in upstream_url: %w", filename, err)
-		}
-		cont := strings.TrimSpace(string(b))
-		result = strings.ReplaceAll(result, "{file:"+filename+"}", cont)
-	}
-	return result, nil
-}
 // Config holds the JSON configuration.
 type Config struct {
 	ListenDNS         string            `json:"listen_dns"`         // e.g., "127.0.0.1:53"
@@ -466,15 +433,6 @@ func loadConfig(path string) error {
 	if err := dec.Decode(&config); err != nil {
 		return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
 	}
-	// Expand {file:...} placeholders in UpstreamURL if present
-	if config.UpstreamURL != "" {
-		expanded, err := expandFilePlaceholders(config.UpstreamURL, path)
-		if err != nil {
-			return fmt.Errorf("config load: %w", err)
-		}
-		config.UpstreamURL = expanded
-	}
-
 	// Validate loaded config
 	if config.CacheMinTTL < 60 {
 		config.CacheMinTTL = 60 // Min reasonable
@@ -490,11 +448,7 @@ func loadConfig(path string) error {
 			return fmt.Errorf("invalid upstream URL: %w", err)
 		}
 	} else {
-		expanded, err := expandFilePlaceholders(config.SNIHostname, path)
-		if err != nil {
-			return fmt.Errorf("config load: %w", err)
-		}
-		upstreamHost = expanded
+		upstreamHost = config.SNIHostname
 	}
 
 	config.SNIHostname = upstreamHost
