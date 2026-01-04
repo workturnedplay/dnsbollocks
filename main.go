@@ -257,7 +257,7 @@ tr td {
 
 </style></head><body>
     <div class="container">
-    <h1>DNS Proxy Control</h1>
+    <h1>DNS Bollocks</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     {{.Body}}
     </div>
