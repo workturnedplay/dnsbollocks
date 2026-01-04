@@ -593,24 +593,24 @@ func countRules(wl map[string][]Rule) int {
 }
 
 func newUniqueID() string {
-	fmt.Println("starts newUniqueID()")
+	//fmt.Println("starts newUniqueID()")
 	existing := make(map[string]struct{})
-	fmt.Println("in newUniqueID() before RLock")
+	//fmt.Println("in newUniqueID() before RLock")
 	ruleMutex.RLock()
-	fmt.Println("in newUniqueID() after RLock")
+	//fmt.Println("in newUniqueID() after RLock")
 	for _, rs := range whitelist {
 		for _, r := range rs {
 			existing[r.ID] = struct{}{}
 		}
 	}
-	fmt.Println("in newUniqueID() before RUnlock")
+	//fmt.Println("in newUniqueID() before RUnlock")
 	ruleMutex.RUnlock()
-	fmt.Println("in newUniqueID() after RUnlock")
+	//fmt.Println("in newUniqueID() after RUnlock")
 
 	for i := 0; i < 10; i++ {
 		id := uuid.New().String()
 		if _, ok := existing[id]; !ok {
-			fmt.Println("exits newUniqueID() ret:", id)
+			//fmt.Println("exits newUniqueID() ret:", id)
 			return id
 		}
 	}
