@@ -86,3 +86,10 @@ Apache License 2.0
 Do whatever you want with it.  
 No warranty. No liability.
 
+## Third-party code
+
+This repository includes vendored third-party Go modules under the `vendor/` directory so it can be built without internet access.
+
+Those components are licensed under their respective licenses.
+Individual license texts and notices are preserved alongside the vendored code.
+

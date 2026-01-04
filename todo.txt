@@ -7,3 +7,4 @@
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
 * separate the whitelist and blacklist away from config.json
+* link to Tinywall in readme and to Go lang to install Go.
