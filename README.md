@@ -49,7 +49,7 @@ Without this, all DoH queries will fail.
 ### Why DoH instead of plain DNS in Firefox?
 
 On my system, the Windows `dnscache` (DNS Client) service is completely disabled.  
-Without it, Firefox cannot perform DNS lookups via the OS and all queries fail. Other tools (like `aria2c`) can still resolve names if a DNS IP is explicitly configured.
+Without it, Firefox cannot perform DNS lookups via the OS and all queries fail. Other tools (like `nslookup.exe`) can still resolve names if a DNS IP is explicitly configured or specified.
 
 Using DoH over TCP 443 avoids this problem entirely.
 
