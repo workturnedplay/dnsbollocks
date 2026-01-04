@@ -1525,13 +1525,17 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					enabled = "No"
 				}
 				escapedPattern := html.EscapeString(rule.Pattern)
-				body.WriteString(fmt.Sprintf(
-					"<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"+
-						"<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button><form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')"><input type="hidden" name="delete" value="1"><input type="hidden" name="id" value="%s"><input type="hidden" name="type" value="%s"><button type="submit">Delete</button></form>"+
-						"</td></tr>",
-					typ, rule.ID, escapedPattern, enabled,
-					rule.ID, typ, escapedPattern, rule.Enabled,
-				))
+				body.WriteString(fmt.Sprintf(`<tr><td>%s</td>
+<td>%s</td>
+<td>%s</td>
+<td>%s</td>
+<td><button data-edit-id="%s" data-edit-type="%s" data-edit-pattern="%s" data-edit-enabled="%t">Edit</button>
+<form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+  <input type="hidden" name="delete" value="1">
+  <input type="hidden" name="id" value="%s">
+  <input type="hidden" name="type" value="%s">
+  <button type="submit">Delete</button>
+</form></td>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
 			}
 		}
 		body.WriteString("</table>")
