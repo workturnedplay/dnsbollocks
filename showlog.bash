@@ -1,2 +1,0 @@
-tail -f queries.log
-
