@@ -8,5 +8,7 @@
   like in DoH Path only as: "{clientexe}"
 * separate the whitelist and blacklist away from config.json
 * link to Tinywall in readme and to Go lang to install Go.
-* add config key for that NOERROR AAAA block to run only if true
 * add more tests, lots more
+* make ipv4 hints in HTTPS removable only if a config key is true (default) ie. add that key
+* add a config key that allows all HTTPS dns type queries but strips their IP hints.
+
