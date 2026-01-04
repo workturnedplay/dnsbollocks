@@ -1,5 +1,5 @@
-//go:build windows || package || main
-// +build windows package main
+//go:build windows
+// +build windows
 
 
 // Copyright 2026 workturnedplay
