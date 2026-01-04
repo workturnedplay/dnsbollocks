@@ -66,10 +66,9 @@ type Config struct {
 
 // Rule represents a whitelist rule.
 type Rule struct {
-ID      string `json:"id"`
+	ID      string `json:"id"`
 	Pattern string `json:"pattern"`
 	Enabled bool   `json:"enabled"`
-
 }
 
 // Globals.
@@ -493,7 +492,7 @@ func loadWhitelist() {
 		for i := range rules {
 			fmt.Printf("  Rule %d: Pattern '%s', ID '%s'\n", i, rules[i].Pattern, rules[i].ID)
 			r := &rules[i]
-						fmt.Print("    Using simple wildcard-style pattern...")
+			fmt.Print("    Using simple wildcard-style pattern...")
 			r.Pattern = strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
 			fmt.Println("OK")
 			processed = append(processed, *r)
@@ -554,11 +553,6 @@ func newUniqueID() string {
 	}
 	panic("UUID collision limit reached—check RNG or storage")
 }
-
-
-
-
-
 
 func matchPattern(pattern, name string) bool {
 	pattern = strings.ToLower(pattern)
@@ -1579,9 +1573,9 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 					}
-				saveConfig("config.json")
-				http.Redirect(w, r, "/rules", http.StatusSeeOther)
-				return
+					saveConfig("config.json")
+					http.Redirect(w, r, "/rules", http.StatusSeeOther)
+					return
 				}
 			}
 			http.Error(w, "rule not found", http.StatusNotFound)

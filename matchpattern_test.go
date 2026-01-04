@@ -63,7 +63,7 @@ func TestMatchPattern(t *testing.T) {
 		{"foo!?ar.com", "foo.bar.com", true},
 		{"foo!!ar.com", "foo.bar.com", true},
 		{"foo!!ar.com", "foodbar.com", true},
-		{"sdmntpr*.oaiusercontent.com", "sdmntpritalynorth.oaiusercontent.com", true },
+		{"sdmntpr*.oaiusercontent.com", "sdmntpritalynorth.oaiusercontent.com", true},
 	}
 
 	for _, tt := range tests {
