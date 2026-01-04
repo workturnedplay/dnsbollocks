@@ -192,7 +192,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
         .btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
         .btn-edit { background: #0078d4; color: white; }
         .btn-del { background: #d83b01; color: white; margin-left: 5px; }
-        .btn-cancel { background: #444; color: white; }
+        .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
         .hidden { display: none; }
         input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
     </style></head><body>
@@ -1519,17 +1519,22 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					enabled = "No"
 				}
 				escapedPattern := html.EscapeString(rule.Pattern)
-				body.WriteString(fmt.Sprintf(`<tr><td>%s</td>
-<td>%s</td>
-<td>%s</td>
-<td>%s</td>
-<td><button data-edit-id="%s" data-edit-type="%s" data-edit-pattern="%s" data-edit-enabled="%t">Edit</button>
-<form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
-  <input type="hidden" name="delete" value="1">
-  <input type="hidden" name="id" value="%s">
-  <input type="hidden" name="type" value="%s">
-  <button type="submit">Delete</button>
-</form></td>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
+				body.WriteString(fmt.Sprintf(`
+        <tr>
+            <td>%s</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td class="actions">
+                <button class="btn btn-edit" data-edit-id="%s" data-edit-type="%s" data-edit-pattern="%s" data-edit-enabled="%t">Edit</button>
+                <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+                    <input type="hidden" name="delete" value="1">
+                    <input type="hidden" name="id" value="%s">
+                    <input type="hidden" name="type" value="%s">
+                    <button type="submit">Delete</button>
+                </form>
+            </td>
+        </tr>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
 			}
 		}
 		body.WriteString("</table>")
@@ -1573,6 +1578,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 					}
+					fmt.Printf("Rule deleted: %s (type: %s)\n", id, typ)
 					saveConfig("config.json")
 					http.Redirect(w, r, "/rules", http.StatusSeeOther)
 					return
