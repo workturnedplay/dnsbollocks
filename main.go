@@ -195,7 +195,27 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
         .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
         .hidden { display: none; }
         input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
-    </style></head><body>
+    
+        thead th {
+            position: sticky;
+            top: 0;
+            background: #1e1e1e;
+            z-index: 2;
+        }
+
+.actions {
+    white-space: nowrap;
+}
+.actions form {
+    display: inline;
+    margin: 0;
+}
+.actions button {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+</style></head><body>
     <div class="container">
     <h1>DNS Proxy Control</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
@@ -232,7 +252,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
                     </td>
                     <td>${id}</td>
                     <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
-                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}> Enabled</label></td>
+                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}></label></td>
                     <td>
                         <form method="post" action="/rules" id="editForm_${id}">
                             <input type="hidden" name="id" value="${id}">
@@ -1561,6 +1581,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("delete") == "1" {
 			id := r.FormValue("id")
 			typ := r.FormValue("type")
+
 			if id == "" || typ == "" {
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
@@ -1575,10 +1596,11 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					for j, wrr := range wr {
 						if wrr.ID == id {
 							whitelist[typ] = append(wr[:j], wr[j+1:]...)
+							fmt.Printf("Rule deleted: '%s' id:%s (type: %s)\n", wr[j].Pattern, id, typ)
 							break
 						}
 					}
-					fmt.Printf("Rule deleted: %s (type: %s)\n", id, typ)
+
 					saveConfig("config.json")
 					http.Redirect(w, r, "/rules", http.StatusSeeOther)
 					return
