@@ -420,18 +420,71 @@ func loadConfig(path string) error {
 		fmt.Printf("Config file %s not found; using defaults\n", path)
 		// Defaults
 		config = Config{
-			ListenDNS:         "127.0.0.1:53",
-			ListenDoH:         "127.0.0.1:443",
-			UIPort:            8080,
-			UpstreamURL:       "https://9.9.9.9/dns-query",
-			SNIHostname:       "",
-			BlockMode:         "nxdomain",
-			BlockIP:           "0.0.0.0",
-			RateQPS:           100,
-			CacheMinTTL:       300,
-			CacheMaxEntries:   10000,
-			Whitelist:         make(map[string][]Rule),
-			ResponseBlacklist: []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16", "::1/128", "fc00::/7"},
+			ListenDNS:       "127.0.0.1:53",
+			ListenDoH:       "127.0.0.1:443",
+			UIPort:          8080,
+			UpstreamURL:     "https://9.9.9.9/dns-query",
+			SNIHostname:     "",
+			BlockMode:       "nxdomain",
+			BlockIP:         "0.0.0.0",
+			RateQPS:         100,
+			CacheMinTTL:     300,
+			CacheMaxEntries: 10000,
+			Whitelist:       make(map[string][]Rule),
+			ResponseBlacklist: []string{
+				// IPv4 loopback – never valid for public hosts
+				"127.0.0.0/8",
+
+				// RFC1918 private networks
+				"10.0.0.0/8",
+				"172.16.0.0/12",
+				"192.168.0.0/16",
+
+				// IPv4 link-local (APIPA)
+				"169.254.0.0/16",
+
+				// "This network" / unspecified addresses
+				"0.0.0.0/8",
+
+				// Carrier-grade NAT (CGNAT)
+				"100.64.0.0/10",
+
+				// Documentation / example ranges (RFC 5737)
+				"192.0.2.0/24",
+				"198.51.100.0/24",
+				"203.0.113.0/24",
+
+				// Benchmarking / performance testing
+				"198.18.0.0/15",
+
+				// IPv4 multicast
+				"224.0.0.0/4",
+
+				// IPv4 reserved / future use
+				"240.0.0.0/4",
+
+				// Limited broadcast
+				"255.255.255.255/32",
+
+				// IPv6 loopback
+				"::1/128",
+
+				// IPv6 unique local addresses (private)
+				"fc00::/7",
+
+				// IPv6 link-local
+				"fe80::/10",
+
+				// IPv6 documentation range
+				"2001:db8::/32",
+
+				// IPv6 multicast
+				"ff00::/8",
+
+				// IPv6 unspecified
+				"::/128",
+			},
+
 			//FIXME: these two aren't used:
 			WhitelistFile: "query_whitelist.json",
 			BlacklistFile: "response_blacklist.json",
