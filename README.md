@@ -1,31 +1,88 @@
 # dnsbollocks
 
 Originally located here: https://github.com/workturnedplay/dnsbollocks  
-(unless you got it from a fork)  
-  
-This is AI generated <del>slop</del> Go language code which I run on win11 as a DNS proxy to act as a filter which blocks every DNS request by default unless whitelisted. The browser(Firefox) connects to it via DoH (in my case) as if connecting to a normal DoH DNS server and asks for the IPs for the hostnames it wants to connect to. The program will block these queries either by returning `NXDOMAIN` or an IP like `0.0.0.0`(ok in Windows, bad in Linux/Android as kernel points the packets to localhost) if the hostnames aren't in the whitelist(which you can edit by connecting to its webUI via the browser, or modify the config file and reload the program).  
+(unless you got it from a fork)
 
-It listens for plain DNS queries on UDP 53 and for DoH (dns over https) queries on TCP 443. By default, if not configured (in `config.json`) it uses localhost IP 127.0.0.1 to listen on and doesn't require Admin or elevation, on win11 to do this.  
-It also strips away the IP hints in the replies for DNS type `HTTPS` queries, even though at least Firefox 146.0.1 (at this time) doesn't use those to connect to if the A type record returned `NXDOMAIN` or `0.0.0.0`.  
+`dnsbollocks` is AI-assisted Go code that I run on Windows 11 as a local DNS proxy/filter.  
+Its core behavior is simple: **block every DNS request by default unless explicitly whitelisted**.
 
-# State
-It's working but it's a coding mess.
+Firefox connects to it via DoH (DNS over HTTPS), treating it like a normal DoH resolver. The browser asks for IPs for hostnames it wants to reach, and this program either allows or blocks those queries.
 
-# Usage
-Point Firefox to it like `about:config`:  
-`network.trr.mode`	`3` (try only DoH, no fallbacks)  
-`network.trr.custom_uri`	`https://127.0.0.1/dns-query`  
-`network.trr.default_provider_uri`	`https://127.0.0.1/dns-query`  
-`network.trr.uri`	`https://127.0.0.1/dns-query`  
-(probably overkill to set all 3 of these.)  
-Then load https://127.0.0.1 in Firefox and accept the self-signed certificate as an exception, otherwise all queries will fail due to this.  
-The reason I use it as DoH(443 TCP) not plain DNS(53 UDP) in Firefox is because I have `dnscache` aka `DNS Client` service in win11 disabled entirely and Firefox can't do any DNS lookups without it(they fail), for some reason, unlike other apps like aria2c which can(if an IP is set in LAN settings for it, like below).  
-If you want others (non-Firefox, like the OS itself, or aria2c) to use it, set `127.0.0.1` in LAN device's settings as the DNS (this will do plain DNS via port 53 UDP, didn't look into other settings like DoH, if they exist or even work without the `dnscache` service running)  
-  
-As a firewall I use TinyWall and set it to allow port TCP outgoing 443 for this exe, that allows it to forward request to the upstream DoH that you set in `config.json`, and set Firefox to allow TCP and UDP port 443 outgoing, which unfortunately means any IP outgoing will be allowed, a limitation of TinyWall (filters by port but ANY ip is allowed if port is allowed/matches). While using TinyWall, any allowing in Windows Firewall will not actually allow anything, TinyWall rules are the only rules in effect. The only downsite is that you can't allow only a specific IP, you implicitly allow all IPs, on the specified port (like 443).  
+If a hostname is not whitelisted, the proxy responds with either:
+- `NXDOMAIN`, or
+- `0.0.0.0`  
+  (this works on Windows; on Linux/Android it is usually bad because the kernel routes traffic to localhost)
 
+The whitelist can be edited via:
+- a small web UI exposed by the program, or
+- directly editing the config file and restarting/reloading
 
-# License
-TODO:
-Apache 2, GPL2, MIT
+## Protocols and behavior
+
+- Listens for **plain DNS** on UDP port 53
+- Listens for **DoH** on TCP port 443
+- By default (if not configured in `config.json`), it binds to `127.0.0.1`
+- On Windows 11, this does **not** require admin privileges or elevation
+
+For DNS queries of type `HTTPS`, the program strips IP hints from responses.  
+At least with Firefox 146.0.1 (at the time of writing), these hints are not used if the corresponding `A` record returns `NXDOMAIN` or `0.0.0.0`, but they are removed anyway.
+
+## State
+
+It works.  
+The code is a mess.
+
+## Usage (Firefox / DoH)
+
+In Firefox, open `about:config` and set:
+
+- `network.trr.mode` → `3` (DoH only, no fallback)
+- `network.trr.custom_uri` → `https://127.0.0.1/dns-query`
+- `network.trr.default_provider_uri` → `https://127.0.0.1/dns-query`
+- `network.trr.uri` → `https://127.0.0.1/dns-query`
+
+Setting all three URIs is probably overkill, but works.
+
+Then open https://127.0.0.1 in Firefox and accept the self-signed certificate exception.  
+Without this, all DoH queries will fail.
+
+### Why DoH instead of plain DNS in Firefox?
+
+On my system, the Windows `dnscache` (DNS Client) service is completely disabled.  
+Without it, Firefox cannot perform DNS lookups via the OS and all queries fail. Other tools (like `aria2c`) can still resolve names if a DNS IP is explicitly configured.
+
+Using DoH over TCP 443 avoids this problem entirely.
+
+## Using it system-wide
+
+If you want non-Firefox applications (or the OS itself) to use it:
+- Set `127.0.0.1` as the DNS server in your network adapter settings
+
+This uses plain DNS over UDP port 53.  
+DoH support for other apps or OS-level DoH was not explored.
+
+## Firewall notes (Windows)
+
+I use TinyWall as a firewall.
+
+- Allow outbound TCP port 443 for the `dnsbollocks` executable  
+  (this allows forwarding queries to the upstream DoH server defined in `config.json`)
+- Allow Firefox outbound TCP and UDP port 443
+
+A limitation of TinyWall is that rules are port-based only.  
+If a port is allowed, **any IP** is implicitly allowed for that port.
+
+When TinyWall is active, Windows Firewall rules are ignored; only TinyWall rules apply.
+
+## Requirements
+
+You need `go.exe` of Go language to compile this code into a standalone exe.  
+No internet required if you have Go already installed.  
+
+## License
+
+Apache License 2.0
+
+Do whatever you want with it.  
+No warranty. No liability.
 
