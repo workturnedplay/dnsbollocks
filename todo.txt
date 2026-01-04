@@ -9,3 +9,4 @@
 * separate the whitelist and blacklist away from config.json
 * link to Tinywall in readme and to Go lang to install Go.
 * add config key for that NOERROR AAAA block to run only if true
+* add more tests, lots more

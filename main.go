@@ -76,6 +76,9 @@ type Config struct {
 	LogErrors         string            `json:"log_errors"`         // "errors.log"
 	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
 	AllowRunAsAdmin   bool              `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
+	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
+	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
+	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
 }
 
 // Rule represents a whitelist rule.
@@ -429,12 +432,15 @@ func loadConfig(path string) error {
 			CacheMaxEntries:   10000,
 			Whitelist:         make(map[string][]Rule),
 			ResponseBlacklist: []string{"127.0.0.0/8", "10.0.0.0/8", "192.168.0.0/16", "::1/128", "fc00::/7"},
-			WhitelistFile:     "query_whitelist.json",
-			BlacklistFile:     "response_blacklist.json",
-			LogQueries:        "queries.log",
-			LogErrors:         "errors.log",
-			LogMaxSizeMB:      4095, // Rotation threshold
-			AllowRunAsAdmin:   false,
+			//FIXME: these two aren't used:
+			WhitelistFile: "query_whitelist.json",
+			BlacklistFile: "response_blacklist.json",
+
+			LogQueries:              "queries.log",
+			LogErrors:               "errors.log",
+			LogMaxSizeMB:            4095, // Rotation threshold
+			AllowRunAsAdmin:         false,
+			BlockAAAAasEmptyNoError: true,
 		}
 
 		if err := saveConfig(path); err != nil {
@@ -1346,7 +1352,12 @@ func getBlockedString() string {
 func blockResponse(msg *dns.Msg) *dns.Msg {
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
-	if len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && config.BlockMode == "nxdomain" {
+	// if you don't do this then, when you run the following in git-bash (git for windows's bash terminal):
+	// $ ssh -T git@github.com
+	// ssh: Could not resolve hostname github.com: Name or service not known
+	// because win11 service "DNS Client" aka "dnscache" does two AAAA queries to us which we reply with NXDOMAIN and it stops.
+	// if we reply with NOERROR and empty like this here, then it will try a third query as A which succeeds (if it's in the whitelist)
+	if config.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && config.BlockMode == "nxdomain" {
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
 		resp.Rcode = dns.RcodeSuccess
