@@ -30,7 +30,6 @@ import (
 	"os/signal"
 
 	"html"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,10 +66,10 @@ type Config struct {
 
 // Rule represents a whitelist rule.
 type Rule struct {
-	ID      string `json:"id"`
+ID      string `json:"id"`
 	Pattern string `json:"pattern"`
-	IsRegex bool   `json:"is_regex"`
 	Enabled bool   `json:"enabled"`
+
 }
 
 // Globals.
@@ -183,10 +182,26 @@ type BlockedQuery struct {
 }
 
 var uiTemplates = template.Must(template.New("").Parse(
-	`<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/"></head><body>
+	`<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/">
+    <style>
+body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
+        .container { max-width: 1000px; margin: auto; }
+        h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
+        .btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
+        .btn-edit { background: #0078d4; color: white; }
+        .btn-del { background: #d83b01; color: white; margin-left: 5px; }
+        .btn-cancel { background: #444; color: white; }
+        .hidden { display: none; }
+        input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
+    </style></head><body>
+    <div class="container">
     <h1>DNS Proxy Control</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     {{.Body}}
+    </div>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('button[data-edit-id]').forEach(btn => {
@@ -346,8 +361,10 @@ func loadConfig(path string) error {
 		}
 		return nil
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("config unmarshal failed: %w", err)
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&config); err != nil {
+		return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
 	}
 	// Validate loaded config
 	if config.CacheMinTTL < 60 {
@@ -469,34 +486,11 @@ func loadWhitelist() {
 		fmt.Printf("Processing type '%s' with %d rules...\n", typ, len(rules))
 		var processed []Rule
 		for i := range rules {
-			fmt.Printf("  Rule %d: Pattern '%s', IsRegex %t, ID '%s'\n", i, rules[i].Pattern, rules[i].IsRegex, rules[i].ID)
+			fmt.Printf("  Rule %d: Pattern '%s', ID '%s'\n", i, rules[i].Pattern, rules[i].ID)
 			r := &rules[i]
-			if !r.IsRegex {
-				fmt.Print("    Converting wildcard to regex...")
-				regexPat, err := wildcardToRegex(r.Pattern)
-				if err != nil {
-					errMsg := fmt.Sprintf("invalid wildcard for '%s': %v", r.Pattern, err)
-					fmt.Fprintln(os.Stderr, errMsg)
-					errorLogger.Error("invalid_wildcard", slog.String("pattern", r.Pattern), slog.Any("err", err))
-					loadErr = true
-					continue
-				}
-				r.Pattern = regexPat
-				r.IsRegex = true
-				fmt.Println("Success")
-			} else {
-				fmt.Println("    IsRegex true - skipping conversion")
-			}
-			// Validate regex (no RLock needed - inside write lock)
-			fmt.Print("    Compiling regex...")
-			if _, err := regexp.Compile(r.Pattern); err != nil {
-				errMsg := fmt.Sprintf("invalid regex for '%s': %v", r.Pattern, err)
-				fmt.Fprintln(os.Stderr, errMsg)
-				errorLogger.Error("invalid_regex", slog.String("pattern", r.Pattern), slog.Any("err", err))
-				loadErr = true
-				continue
-			}
-			fmt.Println("Success")
+						fmt.Print("    Using simple wildcard-style pattern...")
+			r.Pattern = strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
+			fmt.Println("OK")
 			processed = append(processed, *r)
 		}
 		// Dedup by ID within type (keep first occurrence)
@@ -556,45 +550,88 @@ func newUniqueID() string {
 	panic("UUID collision limit reached—check RNG or storage")
 }
 
-func wildcardToRegex(pat string) (string, error) {
-	// Convert: exact -> ^pat$; *.dom -> ^[^.]+\\.dom$; *dom -> .*dom$
-	// Edge: Empty pat -> ^$; invalid chars escaped
-	if pat == "" {
-		return "^$", nil
-	}
-	pat = strings.ReplaceAll(pat, "\\", "\\\\") // Escape backslashes
-	pat = strings.ReplaceAll(pat, ".", "\\.")
-	pat = strings.ReplaceAll(pat, "$", "\\$")
-	pat = strings.ReplaceAll(pat, "^", "\\^")
-	pat = strings.ReplaceAll(pat, "(", "\\(")
-	pat = strings.ReplaceAll(pat, ")", "\\)")
-	pat = strings.ReplaceAll(pat, "[", "\\[")
-	pat = strings.ReplaceAll(pat, "]", "\\]")
 
-	if strings.HasPrefix(pat, "*") && strings.HasSuffix(pat, "*") {
-		pat = strings.Trim(pat, "*")
-		return "^.*" + pat + ".*$", nil
-	}
-	if strings.HasPrefix(pat, "*") {
-		pat = strings.TrimPrefix(pat, "*")
-		return "^.*" + pat + "$", nil
-	}
-	if strings.HasSuffix(pat, "*") {
-		pat = strings.TrimSuffix(pat, "*")
-		return "^" + pat + ".*$", nil
-	}
-	if strings.Contains(pat, "*") {
-		// Subdomain wildcard: *.dom -> ^[^.]+\\.dom$
-		parts := strings.Split(pat, ".")
-		for i, p := range parts {
-			if p == "*" {
-				parts[i] = "[^.]+"
-			}
+
+func matchPattern(pattern, name string) bool {
+	pattern = strings.ToLower(pattern)
+	name = strings.ToLower(name)
+
+	// Handle ** wildcard (cross-label)
+	if strings.Contains(pattern, "**") {
+		parts := strings.SplitN(pattern, "**", 2)
+		prefix := parts[0]
+		suffix := ""
+		if len(parts) == 2 {
+			suffix = parts[1]
 		}
-		return "^" + strings.Join(parts, "\\.") + "$", nil
+
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			return false
+		}
+		if suffix != "" && !strings.HasSuffix(name, suffix) {
+			return false
+		}
+
+		// Require at least one label where ** crosses a dot
+		if prefix == "" && strings.HasPrefix(suffix, ".") {
+			return len(name) > len(suffix)
+		}
+		if suffix == "" && strings.HasSuffix(prefix, ".") {
+			return len(name) > len(prefix)
+		}
+		return true
 	}
-	return "^" + pat + "$", nil
+
+	return recursiveMatch(pattern, name)
 }
+
+func recursiveMatch(pattern, name string) bool {
+	for len(pattern) > 0 {
+		switch pattern[0] {
+		case '*':
+			// Match zero or more chars, but not dot
+			for i := 0; i <= len(name); i++ {
+				if i < len(name) && name[i] == '.' {
+					if recursiveMatch(pattern[1:], name[i:]) {
+						return true
+					}
+					break
+				}
+				if recursiveMatch(pattern[1:], name[i:]) {
+					return true
+				}
+			}
+			return false
+
+		case '?':
+			// Match exactly one non-dot
+			if len(name) == 0 || name[0] == '.' {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+
+		case '!':
+			// Match exactly one char, including dot
+			if len(name) == 0 {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+
+		default:
+			if len(name) == 0 || pattern[0] != name[0] {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+		}
+	}
+	return len(name) == 0
+}
+
+
+
 
 func generateCertIfNeeded() {
 	certFile := "cert.pem"
@@ -942,8 +979,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		if !rule.Enabled {
 			continue
 		}
-		re, _ := regexp.Compile(rule.Pattern)
-		if re.MatchString(domain) {
+		if matchPattern(rule.Pattern, domain) {
 			matchedID = rule.ID
 			matched = true
 			break
@@ -1513,7 +1549,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Add to new type
-			newRule := Rule{ID: id, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+			newRule := Rule{ID: id, Pattern: pattern, Enabled: enabledBool}
 			if _, ok := config.Whitelist[typ]; !ok {
 				config.Whitelist[typ] = []Rule{}
 				whitelist[typ] = []Rule{}
@@ -1535,7 +1571,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			newRule := Rule{ID: newID, Pattern: pattern, IsRegex: false, Enabled: enabledBool}
+			newRule := Rule{ID: newID, Pattern: pattern, Enabled: enabledBool}
 			if _, ok := config.Whitelist[typ]; !ok {
 				config.Whitelist[typ] = []Rule{}
 				whitelist[typ] = []Rule{}
@@ -1572,7 +1608,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		typ := r.FormValue("type")
 		if domain != "" && typ != "" {
 			// Add rule for typ
-			newRule := Rule{ID: newUniqueID(), Pattern: domain, IsRegex: false, Enabled: true}
+			newRule := Rule{ID: newUniqueID(), Pattern: domain, Enabled: true}
 			ruleMutex.Lock()
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
