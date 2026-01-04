@@ -215,6 +215,33 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
     vertical-align: middle;
 }
 
+
+/* --- UI stability fixes --- */
+table {
+  border-collapse: collapse;
+}
+thead th {
+  position: sticky;
+  top: 0;
+  background: #222;
+  z-index: 3;
+}
+.actions {
+  white-space: nowrap;
+}
+.actions form {
+  display: inline;
+  margin: 0;
+}
+.actions button {
+  display: inline-block;
+  vertical-align: middle;
+}
+/* Prevent edit row from changing height */
+tr td {
+  vertical-align: middle;
+}
+
 </style></head><body>
     <div class="container">
     <h1>DNS Proxy Control</h1>
