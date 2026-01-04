@@ -215,7 +215,6 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
     vertical-align: middle;
 }
 
-
 /* --- UI stability fixes --- */
 table {
   border-collapse: collapse;
@@ -324,7 +323,24 @@ tr td {
         };
     });
     </script>
-    </body></html>`,
+    
+<script>
+// Preserve scroll position across form submits / reloads
+(function() {
+  const key = "scrollY";
+  window.addEventListener("beforeunload", function () {
+    try { sessionStorage.setItem(key, window.scrollY); } catch(e) {}
+  });
+  window.addEventListener("load", function () {
+    try {
+      const y = sessionStorage.getItem(key);
+      if (y !== null) window.scrollTo(0, parseInt(y, 10));
+    } catch(e) {}
+  });
+})();
+</script>
+
+</body></html>`,
 ))
 
 func main() {
