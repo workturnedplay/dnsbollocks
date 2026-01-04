@@ -5,5 +5,5 @@
 @rem go run -race main.go
 
 @rem pause
-.\dns-proxy.exe
+.\dnsbollocks.exe
 pause
