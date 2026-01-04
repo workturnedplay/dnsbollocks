@@ -1114,11 +1114,15 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 
 	// Cache (edge: Negative responses cached short)
 	key := domain + ":" + qtype
+
 	if cachedIf, ok := cacheStore.Get(key); ok {
 		cached := cachedIf.(*dns.Msg)
-		// Assume go-cache TTL handles expiry
+		// Return a copy of cached response with the current query ID to avoid
+		// clients rejecting replies because of mismatched transaction IDs.
+		resp := cached.Copy()
+		resp.Id = msg.Id
 		logQuery(clientAddr, domain, qtype, "cache_hit", matchedID, nil)
-		return cached
+		return resp
 	}
 
 	// Forward
@@ -1340,6 +1344,21 @@ func getBlockedString() string {
 }
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
+	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
+	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
+	if len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && config.BlockMode == "nxdomain" {
+		resp := new(dns.Msg)
+		resp.SetReply(msg)
+		resp.Rcode = dns.RcodeSuccess
+		resp.Answer = []dns.RR{}
+		resp.Ns = []dns.RR{}
+		resp.Extra = []dns.RR{}
+		resp.Authoritative = true
+		resp.RecursionAvailable = true
+		// short TTL negative AAAA response is effectively encoded by empty answer; caching handled by caller
+		return resp
+	}
+
 	//in Go, implicit 'break' after each 'case'
 	switch config.BlockMode {
 	case "nxdomain":
@@ -1409,6 +1428,7 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	msg.Extra = append(msg.Extra, opt)
 
 	return msg
+
 }
 
 func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
