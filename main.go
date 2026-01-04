@@ -266,10 +266,15 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
             });
         });
         window.cancelEdit = function(id) {
-            const formRow = document.querySelector('#editForm_' + id).closest('tr');
-            formRow.remove();
-            const originalRow = formRow.previousElementSibling;
-            if (originalRow) originalRow.style.display = '';
+            const formElem = document.querySelector('#editForm_' + id);
+            if (!formElem) return;
+            const tr = formElem.closest('tr');
+            if (tr) tr.remove();
+            const originalBtn = document.querySelector('button[data-edit-id="' + id + '"]');
+            if (originalBtn) {
+                const originalRow = originalBtn.closest('tr');
+                if (originalRow) originalRow.style.display = '';
+            }
         };
     });
     </script>
@@ -552,27 +557,28 @@ func newUniqueID() string {
 
 
 
+
+
+
 func matchPattern(pattern, name string) bool {
 	pattern = strings.ToLower(pattern)
 	name = strings.ToLower(name)
 
-	// Handle ** wildcard (cross-label)
-	if strings.Contains(pattern, "**") {
-		parts := strings.SplitN(pattern, "**", 2)
+	// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
+	if strings.Contains(pattern, "{**}") {
+		parts := strings.SplitN(pattern, "{**}", 2)
 		prefix := parts[0]
 		suffix := ""
 		if len(parts) == 2 {
 			suffix = parts[1]
 		}
-
 		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			return false
 		}
 		if suffix != "" && !strings.HasSuffix(name, suffix) {
 			return false
 		}
-
-		// Require at least one label where ** crosses a dot
+		// If pattern is of form "{**}.suffix", require at least one label before suffix
 		if prefix == "" && strings.HasPrefix(suffix, ".") {
 			return len(name) > len(suffix)
 		}
@@ -582,14 +588,54 @@ func matchPattern(pattern, name string) bool {
 		return true
 	}
 
+	// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
+	if strings.Contains(pattern, "**") {
+		parts := strings.SplitN(pattern, "**", 2)
+		prefix := parts[0]
+		suffix := ""
+		if len(parts) == 2 {
+			suffix = parts[1]
+		}
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			return false
+		}
+		if suffix != "" && !strings.HasSuffix(name, suffix) {
+			return false
+		}
+		return true
+	}
+
+	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
 	return recursiveMatch(pattern, name)
 }
 
 func recursiveMatch(pattern, name string) bool {
 	for len(pattern) > 0 {
+		// Handle multi-char token {*}
+		if strings.HasPrefix(pattern, "{*}") {
+			// consume the token
+			pattern = pattern[3:]
+			// Match one or more chars (but not dot): we must ensure we don't consume dots.
+			// find max run of non-dot chars at start of name
+			max := 0
+			for j := 0; j < len(name) && name[j] != '.'; j++ {
+				max = j + 1
+			}
+			// must match at least one char
+			if max < 1 {
+				return false
+			}
+			for i := 1; i <= max; i++ {
+				if recursiveMatch(pattern, name[i:]) {
+					return true
+				}
+			}
+			return false
+		}
+
 		switch pattern[0] {
 		case '*':
-			// Match zero or more chars, but not dot
+			// Match zero or more chars, but stop at dot
 			for i := 0; i <= len(name); i++ {
 				if i < len(name) && name[i] == '.' {
 					if recursiveMatch(pattern[1:], name[i:]) {
@@ -604,7 +650,7 @@ func recursiveMatch(pattern, name string) bool {
 			return false
 
 		case '?':
-			// Match exactly one non-dot
+			// Match 1 char, NOT dot
 			if len(name) == 0 || name[0] == '.' {
 				return false
 			}
@@ -612,7 +658,7 @@ func recursiveMatch(pattern, name string) bool {
 			name = name[1:]
 
 		case '!':
-			// Match exactly one char, including dot
+			// Match 1 char, ANY (including dot)
 			if len(name) == 0 {
 				return false
 			}
@@ -620,6 +666,7 @@ func recursiveMatch(pattern, name string) bool {
 			name = name[1:]
 
 		default:
+			// Literal char match
 			if len(name) == 0 || pattern[0] != name[0] {
 				return false
 			}
@@ -629,10 +676,6 @@ func recursiveMatch(pattern, name string) bool {
 	}
 	return len(name) == 0
 }
-
-
-
-
 func generateCertIfNeeded() {
 	certFile := "cert.pem"
 	keyFile := "key.pem"
@@ -1484,7 +1527,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				escapedPattern := html.EscapeString(rule.Pattern)
 				body.WriteString(fmt.Sprintf(
 					"<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"+
-						"<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button>"+
+						"<button data-edit-id=\"%s\" data-edit-type=\"%s\" data-edit-pattern=\"%s\" data-edit-enabled=\"%t\">Edit</button><form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')"><input type="hidden" name="delete" value="1"><input type="hidden" name="id" value="%s"><input type="hidden" name="type" value="%s"><button type="submit">Delete</button></form>"+
 						"</td></tr>",
 					typ, rule.ID, escapedPattern, enabled,
 					rule.ID, typ, escapedPattern, rule.Enabled,
@@ -1511,6 +1554,36 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "POST" {
+		// Handle delete requests
+		if r.FormValue("delete") == "1" {
+			id := r.FormValue("id")
+			typ := r.FormValue("type")
+			if id == "" || typ == "" {
+				http.Error(w, "id and type required for delete", http.StatusBadRequest)
+				return
+			}
+			ruleMutex.Lock()
+			defer ruleMutex.Unlock()
+			rules := config.Whitelist[typ]
+			for i, rr := range rules {
+				if rr.ID == id {
+					config.Whitelist[typ] = append(rules[:i], rules[i+1:]...)
+					wr := whitelist[typ]
+					for j, wrr := range wr {
+						if wrr.ID == id {
+							whitelist[typ] = append(wr[:j], wr[j+1:]...)
+							break
+						}
+					}
+				saveConfig("config.json")
+				http.Redirect(w, r, "/rules", http.StatusSeeOther)
+				return
+				}
+			}
+			http.Error(w, "rule not found", http.StatusNotFound)
+			return
+		}
+
 		pattern := strings.TrimSpace(r.FormValue("pattern"))
 		typ := r.FormValue("type")
 		id := r.FormValue("id")
