@@ -527,6 +527,14 @@ func loadConfig(path string) error {
 	config.SNIHostname = upstreamHost
 	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
 
+	// fail-fast if the response blacklist has malformed CIDR addresses
+	for _, cidr := range config.ResponseBlacklist {
+		_, _, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("invalid_cidr %s in response blacklist which is in the config file %s", cidr, path)
+		}
+	}
+
 	return nil
 }
 
@@ -1502,7 +1510,8 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 		if err == nil {
 			nets = append(nets, ipnet)
 		} else {
-			errorLogger.Warn("invalid_cidr", slog.String("cidr", cidr))
+			//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
+			errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "in blacklist reponse")
 		}
 	}
 	var goodAnswer, goodExtra []dns.RR
