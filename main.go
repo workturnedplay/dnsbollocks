@@ -38,10 +38,10 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-"regexp"
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 
 	"html"
 	"strings"
@@ -200,10 +200,11 @@ type BlockedQuery struct {
 /*
 NOTES:
 DNS query uses only the ASCII form:
- letters a–z
- digits 0–9
- hyphen -
- dot .
+
+	letters a–z
+	digits 0–9
+	hyphen -
+	dot .
 */
 var dnsNameRE = regexp.MustCompile(
 	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`,
@@ -443,9 +444,9 @@ func main() {
 func loadConfig(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		
+
 		if isAdmin() {
-			
+
 			return fmt.Errorf("Config file %q not found; refusing to create a new config file with defaults due to running as Admin!\n", path)
 		} else {
 			// not admin, auto create config file with defaults
@@ -655,7 +656,7 @@ func loadWhitelist() {
 	for _, rules := range config.Whitelist {
 		for i := range rules {
 			if rules[i].ID == "" {
-				nid:=newUniqueID() // Gen outside lock
+				nid := newUniqueID() // Gen outside lock
 				fmt.Println("Made new ID for a rule that missed one: ", nid)
 				rules[i].ID = nid
 			}
@@ -968,9 +969,9 @@ func startDNSListener(addr string) {
 					if err != nil {
 						fmt.Printf("clientAddr=%q couldn't get pid and exe name:%q\n", clientAddr, err)
 					} else {
-						adminNeeded:=""
+						adminNeeded := ""
 						if exe == "" {
-							adminNeeded=" (you need to run as admin to see this particular exe path because it's a program that your user didn't start, tho it's likely dnscache aka DNS Client service)"
+							adminNeeded = " (you need to run as admin to see this particular exe path because it's a program that your user didn't start, tho it's likely dnscache aka DNS Client service)"
 						}
 						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, adminNeeded)
 					}
@@ -1440,7 +1441,7 @@ var (
 func getBlockedString() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		exePath="DNSbollocks"
+		exePath = "DNSbollocks"
 	}
 	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
 	// You can also use time.DateOnly (2006-01-02) if you prefer
