@@ -38,7 +38,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-
+"regexp"
 	"net/url"
 	"os"
 	"os/signal"
@@ -197,8 +197,27 @@ type BlockedQuery struct {
 	Time   time.Time `json:"time"`
 }
 
+/*
+NOTES:
+DNS query uses only the ASCII form:
+ letters a–z
+ digits 0–9
+ hyphen -
+ dot .
+*/
+var dnsNameRE = regexp.MustCompile(
+	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`,
+)
+
+func IsValidDNSName(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	return dnsNameRE.MatchString(s)
+}
+
 var uiTemplates = template.Must(template.New("").Parse(
-	`<!DOCTYPE html><html><head><title>DNS Proxy UI</title><meta charset="utf-8"><base href="/">
+	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
     <style>
 body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
         .container { max-width: 1000px; margin: auto; }
@@ -260,7 +279,7 @@ tr td {
 
 </style></head><body>
     <div class="container">
-    <h1>DNS Bollocks</h1>
+    <h1>DNSbollocks</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     {{.Body}}
     </div>
@@ -282,12 +301,8 @@ tr td {
                             ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
-			//this is broken FIXME
-			selected := ""
-			//            if t == typ {
-			//                selected = " selected"
-			//            }
-			opts = append(opts, fmt.Sprintf("<option value=\"%s\"%s>%s</option>", t, selected, t))
+			//dnsTypes is from code not user input, can use %s here.
+			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
 		}
 		return opts
 	}(), "") + `
@@ -306,6 +321,17 @@ tr td {
                 </tr>
                 ` + "`" + `;
                 row.insertAdjacentHTML('afterend', formHtml);
+				const select = document.getElementById('editType_' + id);
+				if (select) {
+					select.value = typ;
+					// Guard: detect impossible / stale / corrupted types
+					if (![...select.options].some(o => o.value === typ)) {
+						console.warn(
+							'Unknown DNS type for rule',
+							{ id, typ, known: [...select.options].map(o => o.value) }
+						);
+					}
+				}
                 const form = document.getElementById('editForm_' + id);
                 form.addEventListener('submit', function(e) {
                     e.preventDefault();
@@ -361,7 +387,7 @@ tr td {
 ))
 
 func main() {
-	fmt.Println("DNS Proxy starting...")
+	fmt.Println("DNSbollocks starting...")
 	flag.Parse() // For future flags
 	configPath := "config.json"
 	if len(os.Args) > 1 {
@@ -376,7 +402,7 @@ func main() {
 	if err := loadConfig(configPath); err != nil {
 		log.Fatal("Config load failed:", err)
 	}
-	fmt.Printf("Config loaded from %s\n", configPath)
+	fmt.Printf("Config loaded from %q\n", configPath)
 
 	if !config.AllowRunAsAdmin && isAdmin() {
 		log.Println("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
@@ -397,7 +423,7 @@ func main() {
 	if err := validateUpstream(); err != nil {
 		log.Fatal("Upstream validation failed:", err)
 	}
-	fmt.Printf("Upstream validated: %s (IP: %s)\n", config.UpstreamURL, upstreamIP)
+	fmt.Printf("Upstream validated: %q (IP: %q)\n", config.UpstreamURL, upstreamIP)
 
 	generateCertIfNeeded() // For DoH
 	fmt.Println("Cert checked/generated if needed")
@@ -417,7 +443,15 @@ func main() {
 func loadConfig(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("Config file %s not found; using defaults\n", path)
+		
+		if isAdmin() {
+			
+			return fmt.Errorf("Config file %q not found; refusing to create a new config file with defaults due to running as Admin!\n", path)
+		} else {
+			// not admin, auto create config file with defaults
+			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
+			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", path)
+		}
 		// Defaults
 		config = Config{
 			ListenDNS:       "127.0.0.1:53",
@@ -531,7 +565,7 @@ func loadConfig(path string) error {
 	for _, cidr := range config.ResponseBlacklist {
 		_, _, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("invalid_cidr %s in response blacklist which is in the config file %s", cidr, path)
+			return fmt.Errorf("invalid_cidr %q in response blacklist which is in the config file %q", cidr, path)
 		}
 	}
 
@@ -595,9 +629,9 @@ func rotateIfNeeded(path string, maxMB int) {
 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
 		old := path + ".old"
 		if err := os.Rename(path, old); err != nil {
-			fmt.Fprintf(os.Stderr, "Log rotation failed for %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "Log rotation failed for %q: %v\n", path, err)
 		} else {
-			fmt.Printf("Rotated log %s to %s (size exceeded %dMB)\n", path, old, maxMB)
+			fmt.Printf("Rotated log %q to %q (size exceeded %dMB)\n", path, old, maxMB)
 		}
 	}
 }
@@ -621,7 +655,9 @@ func loadWhitelist() {
 	for _, rules := range config.Whitelist {
 		for i := range rules {
 			if rules[i].ID == "" {
-				rules[i].ID = newUniqueID() // Gen outside lock
+				nid:=newUniqueID() // Gen outside lock
+				fmt.Println("Made new ID for a rule that missed one: ", nid)
+				rules[i].ID = nid
 			}
 		}
 	}
@@ -631,10 +667,10 @@ func loadWhitelist() {
 	loadErr := false
 	fmt.Printf("Whitelist config has %d types\n", len(config.Whitelist))
 	for typ, rules := range config.Whitelist {
-		fmt.Printf("Processing type '%s' with %d rules...\n", typ, len(rules))
+		fmt.Printf("Processing type %q with %d rules...\n", typ, len(rules))
 		var processed []Rule
 		for i := range rules {
-			fmt.Printf("  Rule %d: Pattern '%s', ID '%s'\n", i, rules[i].Pattern, rules[i].ID)
+			fmt.Printf("  Rule %d: Pattern %q, ID %q\n", i, rules[i].Pattern, rules[i].ID)
 			r := &rules[i]
 			fmt.Print("    Using simple wildcard-style pattern...")
 			r.Pattern = strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
@@ -652,7 +688,7 @@ func loadWhitelist() {
 		}
 		processed = deduped
 		whitelist[typ] = processed
-		fmt.Printf("Type '%s' processed: %d valid rules\n", typ, len(processed))
+		fmt.Printf("Type %q processed: %d valid rules\n", typ, len(processed))
 	}
 	if loadErr {
 		fmt.Println("Warning: Some whitelist rules skipped due to errors")
@@ -850,7 +886,7 @@ func generateCert(certFile, keyFile string) error {
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			Organization: []string{"Local DNS Proxy"},
+			Organization: []string{"DNSbollocks ie. Local DNS Proxy"},
 		},
 		NotBefore:   time.Now(),
 		NotAfter:    time.Now().Add(365 * 24 * time.Hour * 10),
@@ -888,21 +924,21 @@ func generateCert(certFile, keyFile string) error {
 func startDNSListener(addr string) {
 	//	listenerErrs.Add(1)
 	//	defer listenerErrs.Done()
-	fmt.Printf("Starting DNS listener on %s...\n", addr)
+	fmt.Printf("Starting DNS listener on %q...\n", addr)
 
 	// UDP
 	fmt.Print("  Attempting UDP bind...")
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}) //FIXME: hardcoded ip and port
 
 	if err != nil {
-		errStr := fmt.Sprintf("UDP bind failed on %s: %v", addr, err)
+		errStr := fmt.Sprintf("UDP bind failed on %q: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
 
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
-		fmt.Printf("UDP DNS listening on %s\n", addr)
+		fmt.Printf("UDP DNS listening on %q\n", addr)
 
 		buf := make([]byte, 512+512)
 		go func() {
@@ -930,9 +966,13 @@ func startDNSListener(addr string) {
 					}
 					pid, exe, err := pidAndExeForUDP(clientAddr) //TODO: do this for TCP below too!
 					if err != nil {
-						fmt.Printf("clientAddr=%s couldn't get pid and exe name:%s\n", clientAddr, err)
+						fmt.Printf("clientAddr=%q couldn't get pid and exe name:%q\n", clientAddr, err)
 					} else {
-						fmt.Printf("clientAddr=%s pid=%d exe=%s\n", clientAddr, pid, exe)
+						adminNeeded:=""
+						if exe == "" {
+							adminNeeded=" (you need to run as admin to see this particular exe path because it's a program that your user didn't start, tho it's likely dnscache aka DNS Client service)"
+						}
+						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, adminNeeded)
 					}
 
 					go handleUDP(buf[:n], clientAddr, udpLn)
@@ -946,7 +986,7 @@ func startDNSListener(addr string) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs
 	if err != nil {
-		errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %s: %v", addr, err)
+		errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %q: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
 		os.Exit(1)
@@ -954,14 +994,14 @@ func startDNSListener(addr string) {
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
 
 	if err != nil {
-		errStr := fmt.Sprintf("TCP bind failed on %s: %v", addr, err)
+		errStr := fmt.Sprintf("TCP bind failed on %q: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
 
 		os.Exit(1)
 	} else {
 		fmt.Println("Success")
-		fmt.Printf("TCP DNS listening on %s\n", addr)
+		fmt.Printf("TCP DNS listening on %q\n", addr)
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		go func() {
 			defer tcpLn.Close()
@@ -1063,7 +1103,7 @@ func handleTCP(conn net.Conn) {
 }
 
 func startDoHListener(addr string) {
-	fmt.Printf("Starting DoH listener on %s...\n", addr)
+	fmt.Printf("Starting DoH listener on %q...\n", addr)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", dohHandler)
@@ -1074,13 +1114,13 @@ func startDoHListener(addr string) {
 		Certificates: []tls.Certificate{dohCert}, // Use loaded cert
 	})
 	if err != nil {
-		errStr := fmt.Sprintf("DoH listener failed on %s: %v", addr, err)
+		errStr := fmt.Sprintf("DoH listener failed on %q: %v", addr, err)
 		fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		errorLogger.Error(errStr)
 		os.Exit(1) // Fail-fast serial
 	}
 	fmt.Println("Success")
-	fmt.Printf("DoH listening on %s\n", addr)
+	fmt.Printf("DoH listening on %q\n", addr)
 
 	dohSrv := &http.Server{Handler: mux,
 		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
@@ -1400,14 +1440,13 @@ var (
 func getBlockedString() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		return "Blocked by proxy.exe"
+		exePath="DNSbollocks"
 	}
 	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
 	// You can also use time.DateOnly (2006-01-02) if you prefer
 	startTime := time.Now().Format("2006-01-02 15:04:05")
 
-	return "Blocked by " + exePath + " [Started: " + startTime + "]"
-	//return "Blocked by " + exePath
+	return fmt.Sprintf("Blocked by %q [which was started on %q]", exePath, startTime)
 }
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
@@ -1664,7 +1703,7 @@ func startWebUI(port int) {
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	body := fmt.Sprintf("<p>Blocks: %s</p><p>Cache size: %d</p><p>Upstream IP: %s</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
+	body := fmt.Sprintf("<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
 	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
@@ -1691,16 +1730,16 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				escapedPattern := html.EscapeString(rule.Pattern)
 				body.WriteString(fmt.Sprintf(`
         <tr>
-            <td>%s</td>
-            <td>%s</td>
-            <td>%s</td>
-            <td>%s</td>
+            <td>%q</td>
+            <td>%q</td>
+            <td>%q</td>
+            <td>%q</td>
             <td class="actions">
-                <button class="btn btn-edit" data-edit-id="%s" data-edit-type="%s" data-edit-pattern="%s" data-edit-enabled="%t">Edit</button>
+                <button class="btn btn-edit" data-edit-id=%q data-edit-type=%q data-edit-pattern=%q data-edit-enabled="%t">Edit</button>
                 <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
                     <input type="hidden" name="delete" value="1">
-                    <input type="hidden" name="id" value="%s">
-                    <input type="hidden" name="type" value="%s">
+                    <input type="hidden" name="id" value=%q>
+                    <input type="hidden" name="type" value=%q>
                     <button type="submit">Delete</button>
                 </form>
             </td>
@@ -1714,7 +1753,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 		body.WriteString("<form method=\"post\" action=\"/rules\">")
 		body.WriteString("<select name=\"type\">")
 		for _, t := range dnsTypes {
-			body.WriteString(fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
+			body.WriteString(fmt.Sprintf("<option value=%q>%s</option>", t, t))
 		}
 		body.WriteString("</select> ")
 		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
@@ -1746,7 +1785,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					for j, wrr := range wr {
 						if wrr.ID == id {
 							whitelist[typ] = append(wr[:j], wr[j+1:]...)
-							fmt.Printf("Rule deleted: '%s' id:%s (type: %s)\n", wr[j].Pattern, id, typ)
+							fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", wr[j].Pattern, id, typ)
 							break
 						}
 					}
@@ -1806,7 +1845,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 
-			fmt.Printf("Rule edited: %s → %s (ID: %s, Enabled: %t)\n", id, pattern, id, enabledBool)
+			fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, pattern, id, enabledBool)
 		} else {
 			newID := newUniqueID()
 			ruleMutex.Lock()
@@ -1828,7 +1867,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 
-			fmt.Printf("Rule added: %s (type: %s, ID: %s, Enabled: %t)\n", pattern, typ, newID, enabledBool)
+			fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", pattern, typ, newID, enabledBool)
 		}
 
 		saveConfig("config.json")
@@ -1843,7 +1882,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		var body strings.Builder
 		body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
 		for _, b := range recentBlocks {
-			body.WriteString(fmt.Sprintf("<li>%s (%s) <form method=post action=/blocks><input type=hidden name=domain value=\"%s\"><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
+			body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
 				b.Domain, b.Type, b.Domain, b.Domain))
 		}
 		body.WriteString("</ul>")
@@ -1863,7 +1902,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			whitelist[typ] = append(whitelist[typ], newRule)
 			ruleMutex.Unlock()
 			saveConfig("config.json")
-			fmt.Printf("Quick unblock added for %s (%s)\n", domain, typ)
+			fmt.Printf("Quick unblock added for %q (%q)\n", domain, typ)
 		}
 		http.Redirect(w, r, "/blocks", http.StatusSeeOther)
 	}
@@ -1885,7 +1924,7 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, line)
 		}
 	}
-	body := fmt.Sprintf("<h2>Logs (filtered by '%s')</h2><pre style=\"max-height:400px;overflow:auto;\">%s</pre>", domainFilter, strings.Join(filtered, "\n"))
+	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
 
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
