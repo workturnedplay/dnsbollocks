@@ -430,6 +430,7 @@ func main() {
 	generateCertIfNeeded() // For DoH
 	fmt.Println("Cert checked/generated if needed")
 
+	initDoHClient()
 	// Sequential launches for ordered logging
 	fmt.Println("Launching listeners sequentially...")
 	startDNSListener(config.ListenDNS) // Blocks until complete/fail
@@ -972,7 +973,8 @@ func startDNSListener(addr string) {
 					} else {
 						adminNeeded := ""
 						if exe == "" {
-							adminNeeded = " (you need to run as admin to see this particular exe path because it's a program that your user didn't start, tho it's likely dnscache aka DNS Client service)"
+							adminNeeded = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
+							// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
 						}
 						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, adminNeeded)
 					}
@@ -1284,6 +1286,12 @@ var (
 
 // call once at startup or when upstream config changes
 func initDoHClient() { //upstreamIP, sni string) {
+	//What this function does is purely preparatory. You are assembling a plan for future connections, not executing one.
+	//Here’s why nothing goes on the network yet:
+	//The http.Transport you create is just configuration.
+	//DialContext is a callback, not an action. Go stores that function and promises to call it later only when a request actually needs a connection.
+	//CloseIdleConnections() is the only thing here that might touch sockets — and even then, only previously established idle ones. If this is the first init, or if no DoH requests were ever made, there’s nothing to close and nothing goes out.
+	//http.Client and http.Transport are blueprints, not engines.
 	fmt.Println("starting initDoHClient()")
 	dohMu.Lock()
 	defer dohMu.Unlock()
