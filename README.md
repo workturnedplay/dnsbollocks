@@ -9,9 +9,12 @@ Its core behavior is simple: **block every DNS request by default unless explici
 Firefox connects to it via DoH (DNS over HTTPS), treating it like a normal DoH resolver. The browser asks for IPs for hostnames it wants to reach, and this program either allows or blocks those queries.
 
 If a hostname is not whitelisted, the proxy responds with either:
-- `NXDOMAIN`, or
+- `NXDOMAIN`
+  (good for any OS, exception when AAAA returns this and requester won't try A next eg. ssh.exe via git for Windows, but for this there's the `NOERRORi` empty reply for AAAA queries which makes it try A next, this feature is already set in `config.json` by default, as `block_aaaa_as_empty_noerror` to `true`)
 - `0.0.0.0`  
   (this works on Windows; on Linux/Android it is usually bad because the kernel routes traffic to localhost)
+- am IP of your choosing, but it applies to all queries
+- drop aka ignore the query (only leads to timeouts)
 
 The whitelist can be edited via:
 - a small web UI exposed by the program, or
