@@ -331,6 +331,7 @@ tr td {
 							'Unknown DNS type for rule',
 							{ id, typ, known: [...select.options].map(o => o.value) }
 						);
+						select.selectedIndex = 0;
 					}
 				}
                 const form = document.getElementById('editForm_' + id);
