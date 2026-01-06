@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package dnsbollocks
 
 import (
 	"encoding/binary"
@@ -44,7 +44,8 @@ var (
 
 // pidAndExeForUDP returns (pid, exePath, error).
 // clientAddr should be the remote UDP address observed on the server side (e.g., 127.0.0.1:49936).
-func pidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
+func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
+	//capital P in PidAndExeForUDP means exported, apparently!
 	if clientAddr == nil {
 		return 0, "", errors.New("nil clientAddr")
 	}
@@ -164,7 +165,7 @@ func exampleUsage() {
 	// n, clientAddr, err := udpLn.ReadFromUDP(buf)
 	// then:
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 49936}
-	pid, exe, err := pidAndExeForUDP(clientAddr)
+	pid, exe, err := PidAndExeForUDP(clientAddr)
 	if err != nil {
 		fmt.Println("lookup failed:", err)
 	} else {

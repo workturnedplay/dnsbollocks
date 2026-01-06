@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package dnsbollocks
+
+//import "dnsbollocks/internal/dnsbollocks"
 
 import (
 	"bufio"
@@ -388,7 +390,7 @@ tr td {
 </body></html>`,
 ))
 
-func main() {
+func OldMain() {
 	fmt.Println("DNSbollocks starting...")
 	flag.Parse() // For future flags
 	configPath := "config.json"
@@ -967,7 +969,7 @@ func startDNSListener(addr string) {
 						//break TheFor
 						continue
 					}
-					pid, exe, err := pidAndExeForUDP(clientAddr) //TODO: do this for TCP below too!
+					pid, exe, err := PidAndExeForUDP(clientAddr) //TODO: do this for TCP below too!
 					if err != nil {
 						fmt.Printf("clientAddr=%q couldn't get pid and exe name:%q\n", clientAddr, err)
 					} else {
@@ -1248,6 +1250,9 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Filter
 	filtered := filterResponse(resp, config.ResponseBlacklist)
 	if filtered == nil {
+		logQuery(clientAddr, domain, qtype, 
+		"blockedByUpstream", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+		"", nil)
 		return blockResponse(msg)
 	}
 
@@ -1560,18 +1565,24 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 			nets = append(nets, ipnet)
 		} else {
 			//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
-			errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "in blacklist reponse")
+			errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
 		}
 	}
 	var goodAnswer, goodExtra []dns.RR
 	for _, rr := range msg.Answer {
 		if keep, modifiedRR := processRR(rr, nets); keep {
 			goodAnswer = append(goodAnswer, modifiedRR)
+			//fmt.Println("Good inAnswer:",rr)
+		} else {
+			fmt.Println("Dropped inAnswer from upstream due to containing blocked ip:",rr)
 		}
 	}
 	for _, rr := range msg.Extra {
 		if keep, modifiedRR := processRR(rr, nets); keep {
 			goodExtra = append(goodExtra, modifiedRR)
+			//fmt.Println("Good inExtra:",rr)
+		} else {
+			fmt.Println("Dropped inExtra from upstream due to containing blocked ip:",rr)
 		}
 	}
 
@@ -1579,12 +1590,16 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 	msg.Extra = goodExtra
 
 	if len(msg.Answer) == 0 {
+		//logQuery(clientAddr, msg.Question[0].Name, qtype, "blockedbyUpstream", "", nil)
 		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
 		return nil
+//	} else {
+//		fmt.Println("Non0 answer:", msg.Answer)
 	}
 	return msg
 }
 
+//filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
 	switch r := rr.(type) {
 	case *dns.A:
@@ -1601,6 +1616,7 @@ func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
 
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
+	//TODO: make this configurable in config.json so only if 'true' do this:
 		// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 		// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 		// Filter the SVCB/HTTPS parameters
@@ -1838,7 +1854,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				if found {
 					panic("shouldn't be hit, else the break label is wrong!?")
-					break
+					//break
 				}
 			}
 			if !found {

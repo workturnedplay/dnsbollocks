@@ -23,5 +23,5 @@ cd
 
 @rem %~dp0 already has the end \ but adding another one for visibility:
 @echo on
-%~dp0\dnsbollocks.exe
+%~dp0\bin\dnsbollocks.exe
 pause
