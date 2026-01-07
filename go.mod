@@ -7,6 +7,7 @@ require (
 	github.com/miekg/dns v1.1.68
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	golang.org/x/sys v0.39.0
+	golang.org/x/term v0.37.0
 	golang.org/x/time v0.14.0
 )
 

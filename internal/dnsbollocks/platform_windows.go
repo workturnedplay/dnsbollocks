@@ -20,7 +20,6 @@ package dnsbollocks
 //import "dnsbollocks/internal/dnsbollocks"
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -58,6 +57,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/patrickmn/go-cache"
 	"golang.org/x/sys/windows"
+	"golang.org/x/term"
 	"golang.org/x/time/rate"
 )
 
@@ -114,7 +114,12 @@ var (
 )
 
 var dnsTypes = []string{
+	//most used first
 	"A",
+	"AAAA",  // dup on purpose
+	"HTTPS", // dup on purpose
+	"MX",    // dup on purpose
+	"NS",    // dup on purpose
 	"A6",
 	"AAAA",
 	"AFSDB",
@@ -261,7 +266,7 @@ const noScriptWarningHTML = `
   ">
     JavaScript is disabled.
     <br>
-    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname withing allowable chars or byte limits?) 
+    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname withing allowable chars or byte limits?)
   </div>
 </noscript>
 `
@@ -281,7 +286,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0;
         .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
         .hidden { display: none; }
         input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
-    
+
         thead th {
             position: sticky;
             top: 0;
@@ -418,7 +423,7 @@ tr td {
         };
     });
     </script>
-    
+
 <script>
 // Preserve scroll position across form submits / reloads
 (function() {
@@ -1827,7 +1832,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 		body.WriteString("<form method=\"post\" action=\"/rules\">")
 		body.WriteString("<select name=\"type\">")
 		for _, t := range dnsTypes {
-			body.WriteString(fmt.Sprintf("<option value=%q>%s</option>", t, t))
+			fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
 		}
 		body.WriteString("</select> ")
 		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
@@ -2029,7 +2034,24 @@ func shutdown() {
 	// Close log files (reopen on next run)
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
 	time.Sleep(1000 * time.Millisecond)
-	fmt.Print("Press Enter to exit...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
+	waitAnyKey()
+	//fmt.Print("Press Enter to exit...")
+	//bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
 	os.Exit(0)
+}
+
+func waitAnyKey() {
+	fmt.Print("Press any key to exit...")
+
+	fd := int(os.Stdin.Fd())
+
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return // or log, or fail loudly — your call
+	}
+	defer term.Restore(fd, oldState)
+
+	var buf [1]byte
+	os.Stdin.Read(buf[:])
+	fmt.Println()
 }
