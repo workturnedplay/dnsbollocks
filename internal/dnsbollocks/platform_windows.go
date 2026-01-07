@@ -71,7 +71,7 @@ type Config struct {
 	BlockMode         string            `json:"block_mode"`         // "nxdomain", "drop", "ip_block"
 	BlockIP           string            `json:"block_ip"`           // "0.0.0.0"
 	RateQPS           int               `json:"rate_qps"`           // 100
-	CacheMinTTL       int               `json:"cache_min_ttl,s"`    // 300s
+	CacheMinTTL       int               `json:"cache_min_ttl"`      // 300s
 	CacheMaxEntries   int               `json:"cache_max_entries"`  // 10000
 	Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
 	ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
@@ -210,6 +210,13 @@ DNS query uses only the ASCII form:
 	digits 0–9
 	hyphen -
 	dot .
+
+What this enforces:
+
+	Labels don’t start or end with -
+	Labels ≤ 63 chars
+	Total length ≤ 253 chars
+	ASCII-only DNS reality
 */
 var dnsNameRE = regexp.MustCompile(
 	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`,
@@ -221,6 +228,43 @@ func IsValidDNSName(s string) bool {
 	}
 	return dnsNameRE.MatchString(s)
 }
+
+// SanitizeDomainInput removes any characters not explicitly allowed.
+// Safe for logs and DNS-related handling.
+func SanitizeDomainInput(input string) (sanitized string, modified bool) {
+	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!"
+
+	var b strings.Builder
+	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
+
+	for _, r := range input {
+		if strings.ContainsRune(allowed, r) {
+			b.WriteRune(r)
+		}
+	}
+
+	sanitized = b.String()
+	modified = sanitized != input
+	// Uses named returns — do not return explicit values. like: return "something", modified
+	return
+}
+
+const noScriptWarningHTML = `
+<noscript>
+  <div style="
+    padding: 10px;
+    margin-bottom: 12px;
+    border: 1px solid #cc0000;
+    background: #ffeeee;
+    color: #660000;
+    font-weight: bold;
+  ">
+    JavaScript is disabled.
+    <br>
+    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname withing allowable chars or byte limits?) 
+  </div>
+</noscript>
+`
 
 var uiTemplates = template.Must(template.New("").Parse(
 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
@@ -283,7 +327,8 @@ tr td {
   vertical-align: middle;
 }
 
-</style></head><body>
+</style></head><body>` +
+		noScriptWarningHTML + `
     <div class="container">
     <h1>DNSbollocks</h1>
     <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
@@ -307,7 +352,7 @@ tr td {
                             ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
-			//dnsTypes is from code not user input, can use %s here.
+			//dnsTypes is from our Go code not user input, can use %s here. Also puting user input here would be bad for this templating too!
 			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
 		}
 		return opts
@@ -1253,9 +1298,9 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Filter
 	filtered := filterResponse(resp, config.ResponseBlacklist)
 	if filtered == nil {
-		logQuery(clientAddr, domain, qtype, 
-		"blockedByUpstream", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-		"", nil)
+		logQuery(clientAddr, domain, qtype,
+			"blockedByUpstream", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+			"", nil)
 		return blockResponse(msg)
 	}
 
@@ -1577,7 +1622,7 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 			goodAnswer = append(goodAnswer, modifiedRR)
 			//fmt.Println("Good inAnswer:",rr)
 		} else {
-			fmt.Println("Dropped inAnswer from upstream due to containing blocked ip:",rr)
+			fmt.Println("Dropped inAnswer from upstream due to containing blocked ip:", rr)
 		}
 	}
 	for _, rr := range msg.Extra {
@@ -1585,7 +1630,7 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 			goodExtra = append(goodExtra, modifiedRR)
 			//fmt.Println("Good inExtra:",rr)
 		} else {
-			fmt.Println("Dropped inExtra from upstream due to containing blocked ip:",rr)
+			fmt.Println("Dropped inExtra from upstream due to containing blocked ip:", rr)
 		}
 	}
 
@@ -1596,13 +1641,13 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 		//logQuery(clientAddr, msg.Question[0].Name, qtype, "blockedbyUpstream", "", nil)
 		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
 		return nil
-//	} else {
-//		fmt.Println("Non0 answer:", msg.Answer)
+		//	} else {
+		//		fmt.Println("Non0 answer:", msg.Answer)
 	}
 	return msg
 }
 
-//filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
+// filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
 	switch r := rr.(type) {
 	case *dns.A:
@@ -1619,7 +1664,7 @@ func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
 
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
-	//TODO: make this configurable in config.json so only if 'true' do this:
+		//TODO: make this configurable in config.json so only if 'true' do this:
 		// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 		// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 		// Filter the SVCB/HTTPS parameters
@@ -1921,7 +1966,23 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "POST" {
-		domain := r.FormValue("domain")
+		//domain := r.FormValue("domain")
+		raw := r.FormValue("domain")
+
+		sanitized, modified := SanitizeDomainInput(raw)
+
+		if modified || !IsValidDNSName(sanitized) {
+			//TODO:
+			// re-render form with:
+			// - error message
+			// - escaped original raw input
+			lastEditedPatternEscaped := template.HTMLEscapeString(raw)
+			fmt.Printf("Invalid domain, raw: %q\n sanitized: %q\n modified: %t\n escaped: %q", raw, sanitized, modified, lastEditedPatternEscaped)
+			return
+		}
+		domain := sanitized
+
+		// accept sanitized
 		typ := r.FormValue("type")
 		if domain != "" && typ != "" {
 			// Add rule for typ
@@ -1967,9 +2028,7 @@ func shutdown() {
 	fmt.Println("webUI shutdown")
 	// Close log files (reopen on next run)
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
-	select {
-	case <-time.After(1000 * time.Millisecond):
-	}
+	time.Sleep(1000 * time.Millisecond)
 	fmt.Print("Press Enter to exit...")
 	bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
 	os.Exit(0)
