@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	proxyserver := "127.0.0.1:53" // Change if your proxy is on a different port
+	proxyserver := "127.0.0.1:53"          // Change if your proxy is on a different port
 	targetDomain := "blog.cloudflare.com." // Note the trailing dot
 
 	c := new(dns.Client)
@@ -16,12 +16,12 @@ func main() {
 
 	m := new(dns.Msg)
 	m.SetQuestion(targetDomain, dns.TypeA)
-	
+
 	// Add an OPT record to the request to tell the proxy we support EDNS
 	m.SetEdns0(1232, false)
 
 	fmt.Printf("Querying %s for %s...\n", proxyserver, targetDomain)
-	
+
 	res, _, err := c.Exchange(m, proxyserver)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -53,10 +53,15 @@ func main() {
 
 func edeCodeToString(code uint16) string {
 	switch code {
-	case 15: return "Blocked"
-	case 16: return "Censored"
-	case 17: return "Filtered"
-	case 18: return "Prohibited"
-	default: return "Other/Unknown"
+	case 15:
+		return "Blocked"
+	case 16:
+		return "Censored"
+	case 17:
+		return "Filtered"
+	case 18:
+		return "Prohibited"
+	default:
+		return "Other/Unknown"
 	}
 }
