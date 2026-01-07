@@ -11,8 +11,8 @@
 * add more tests, lots more
 * make ipv4 hints in HTTPS removable only if a config key is true (default) ie. add that key
 * add a config key that allows all HTTPS dns type queries but strips their IP hints.
-* run both at build time:
-  * get staticcheck in, see(private to me chat): https://chatgpt.com/c/695bbad2-99c8-832c-8876-e8a7219ae052
+//* run both at build time:
+  //(it's part of golancgi-lint)* get staticcheck in, see(private to me chat): https://chatgpt.com/c/695bbad2-99c8-832c-8876-e8a7219ae052
   //* look into getting github.com/golangci/golangci-lint
 * fix rules being edited get duplicated (or overwrites old?)
 * fix rules with duplicated IDs existing in config and loaded at startup without complains or purging
