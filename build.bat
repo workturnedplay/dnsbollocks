@@ -16,7 +16,7 @@ golangci-lint run
 ::if errorlevel 1 goto :fail
 if errorlevel 1 (
     echo.
-    choice /c YN /m "golangci-lint found issues. Continue anyway?"
+    choice /c NY /m "golangci-lint found issues. Stop build?"
     if errorlevel 2 goto :fail
 )
 
