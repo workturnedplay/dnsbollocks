@@ -18,3 +18,5 @@
 * fix rules with duplicated IDs existing in config and loaded at startup without complains or purging
 * deleting/adding rules via webUI shouldn't reorder them randomly
 * make the EDE reply optional, setable from config!
+* see why Ctrl+Break key has weird behavior and needs 2 keys at press any key prompt and keeps the term in raw if terminate batch job is answered with Y ie. it's raw after our .exe exited!
+

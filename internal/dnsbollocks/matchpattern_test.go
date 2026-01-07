@@ -41,7 +41,7 @@ func TestMatchPattern(t *testing.T) {
 		{"*.example.com", "foo.bar.example.com", false},
 		{"**.example.com", "foo.bar.example.com", true},
 		{"**.example.com", "example.com", false},
-		{"**.example.com", ".example.com", true}, //should use {**} here as a user, footgun here.
+		{"**.example.com", ".example.com", true}, // should use {**} here as a user, footgun here.
 		{"{**}.example.com", "f.example.com", true},
 		{"{**}.example.com", "abc.def.example.com", true},
 		{"{**}.example.com", ".example.com", false},

@@ -1,4 +1,9 @@
 @echo off
+
+:: disallow Ctrl+break, no effect, it still prompts: Terminate batch job (Y/N)?
+break off
+:: ctrl+c is trapped by our .exe by putting the terminal in raw mode, thus this .bat won't sense it and ask to terminate batch job.
+
 setlocal EnableExtensions EnableDelayedExpansion
 
 @rem set GOMAXPROCS=12
@@ -31,7 +36,7 @@ echo Running %cmd%
 set "ec=%ERRORLEVEL%"
 
 if "!ec!"=="130" (
-    echo dnsbollocks exited with code 130 (sigint) — which to this bat file means we should be restarting it... (use alt+x to not do this next time)
+    echo "dnsbollocks exited with code 130 (sigint) - which to this bat file means we should be restarting it... (use alt+x to not do this next time)"
     goto run
 )
 

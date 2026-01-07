@@ -127,10 +127,10 @@ type keyEventRecord struct {
 }
 
 var (
-	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
-	procReadConsoleInputW    = kernel32.NewProc("ReadConsoleInputW")
-	procPeekConsoleInputW    = kernel32.NewProc("PeekConsoleInputW")
-	procFlushConsoleInputBuf = kernel32.NewProc("FlushConsoleInputBuffer")
+	kernel32              = syscall.NewLazyDLL("kernel32.dll")
+	procReadConsoleInputW = kernel32.NewProc("ReadConsoleInputW")
+	procPeekConsoleInputW = kernel32.NewProc("PeekConsoleInputW")
+	//procFlushConsoleInputBuf = kernel32.NewProc("FlushConsoleInputBuffer")
 )
 
 // // clearStdin reads and inspects console input events, returns true if any KeyDown was seen.
@@ -237,7 +237,6 @@ func ClearStdin() (hadKey bool) {
 	h := syscall.Handle(os.Stdin.Fd())
 
 	hadKey = false // be explicit
-	//var hadKey bool
 
 	for {
 		// Peek a single event (non-destructive, non-blocking).
@@ -287,48 +286,10 @@ func ClearStdin() (hadKey bool) {
 				}
 				// continue draining the rest
 				continue
-				// (or break early if you prefer)
-				// I prefer to break early because you already know result:
-				// return true
-				// but to leave queue empty, continue looping instead of returning.
-				// choose: break to return immediately, or continue to drain.
-				// We'll break and then optionally flush or return; here we'll break and
-				// drain none further (safe and fast).
-				//break
 			}
 		}
 		// otherwise keep looping until no events left
 	}
-
-	// // Optionally drain the rest without blocking: continue peeking+reading until none left.
-	// // If you broke early because you found a key and want to *also* clear anything else,
-	// // you can continue a second loop that consumes until Peek shows 0.
-	// // For safety and to avoid triggering FlushConsoleInputBuffer quirks, use peek+read drain:
-	// for {
-	// 	var peekRec inputRecord
-	// 	var peekCount uint32
-	// 	r1, _, _ := procPeekConsoleInputW.Call(
-	// 		uintptr(h),
-	// 		uintptr(unsafe.Pointer(&peekRec)),
-	// 		uintptr(1),
-	// 		uintptr(unsafe.Pointer(&peekCount)),
-	// 	)
-	// 	if r1 == 0 || peekCount == 0 {
-	// 		break
-	// 	}
-	// 	var rec inputRecord
-	// 	var read uint32
-	// 	r1, _, _ = procReadConsoleInputW.Call(
-	// 		uintptr(h),
-	// 		uintptr(unsafe.Pointer(&rec)),
-	// 		uintptr(1),
-	// 		uintptr(unsafe.Pointer(&read)),
-	// 	)
-	// 	if r1 == 0 || read == 0 {
-	// 		break
-	// 	}
-	// 	// ignore contents; we are draining
-	// }
 
 	return hadKey
 }
@@ -376,6 +337,7 @@ func ClearStdin() (hadKey bool) {
 
 //import "golang.org/x/sys/windows"
 
+// WithConsoleEventRaw
 func WithConsoleEventRaw(fn func()) {
 	h := windows.Handle(os.Stdin.Fd())
 
