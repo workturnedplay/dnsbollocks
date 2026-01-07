@@ -1,7 +1,15 @@
 @echo off
 
-:: disallow Ctrl+break, no effect, it still prompts: Terminate batch job (Y/N)?
-break off
+:: (nope:)disallow Ctrl+break, no effect, it still prompts: Terminate batch job (Y/N)?
+::break off
+::so, break off:
+::Does not disable Ctrl+Break
+::Does not prevent interruption
+::Does not affect Ctrl+C at all
+::Only controls whether Ctrl+Break sets the internal BREAK flag
+::That flag is checked by certain batch commands (FOR, COPY, etc.) to decide whether to abort early.
+
+
 :: ctrl+c is trapped by our .exe by putting the terminal in raw mode, thus this .bat won't sense it and ask to terminate batch job.
 
 setlocal EnableExtensions EnableDelayedExpansion
