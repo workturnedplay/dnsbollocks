@@ -11,6 +11,15 @@ echo Running go vet...
 go vet -mod=vendor ./...
 if errorlevel 1 goto :fail
 
+echo Running golangci-lint
+golangci-lint run
+::if errorlevel 1 goto :fail
+if errorlevel 1 (
+    echo.
+    choice /c YN /m "golangci-lint found issues. Continue anyway?"
+    if errorlevel 2 goto :fail
+)
+
 go.exe build -mod=vendor -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail
 
