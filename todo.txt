@@ -17,3 +17,4 @@
 * fix rules being edited get duplicated (or overwrites old?)
 * fix rules with duplicated IDs existing in config and loaded at startup without complains or purging
 * deleting/adding rules via webUI shouldn't reorder them randomly
+* make the EDE reply optional, setable from config!

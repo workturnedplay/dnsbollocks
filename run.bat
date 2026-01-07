@@ -1,4 +1,6 @@
 @echo off
+setlocal EnableExtensions EnableDelayedExpansion
+
 @rem set GOMAXPROCS=12
 
 @rem set CGO_ENABLED=1
@@ -22,6 +24,20 @@ cd
 @rem .\dnsbollocks.exe
 
 @rem %~dp0 already has the end \ but adding another one for visibility:
-@echo on
-%~dp0\bin\dnsbollocks.exe
+:run
+set cmd="%~dp0\bin\dnsbollocks.exe"
+echo Running %cmd%
+%cmd%
+set "ec=%ERRORLEVEL%"
+
+if "!ec!"=="130" (
+    echo dnsbollocks exited with code 130 (sigint) — which to this bat file means we should be restarting it... (use alt+x to not do this next time)
+    goto run
+)
+
+if "!ec!"=="0" (
+    echo dnsbollocks finished successfully.
+) else (
+    echo dnsbollocks exited with error code !ec!
+)
 pause

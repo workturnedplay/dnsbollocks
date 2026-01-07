@@ -492,10 +492,25 @@ func OldMain() {
 	startDoHListener(config.ListenDoH) // Blocks until complete/fail
 	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
 
+	go watchKeys(
+		func() {
+			if err := loadConfig(configPath); err != nil {
+				log.Println("Config reload failed:", err)
+			} else {
+				log.Println("Config reloaded successfully")
+			}
+		},
+		func() {
+			fmt.Println("Shutdown signal received, clean exit.")
+			cancel()
+			shutdown(0) // clean exit
+		},
+	)
+
 	<-sigChan // Wait here - UI goroutine handles serving
-	fmt.Println("Shutdown signal received")
-	cancel() // Cancel context for graceful close
-	shutdown()
+	fmt.Println("Shutdown signal received, SIGINT exit.")
+	cancel()      // Cancel context for graceful close
+	shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
 }
 
 func loadConfig(path string) error {
@@ -2024,12 +2039,12 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 }
 
-func shutdown() {
+func shutdown(exitCode int) {
 	fmt.Println("Shutting down...")
 
 	cacheStore.Flush()
 	fmt.Println("Cache flushed")
-
+	//TODO: webUI shutdown
 	fmt.Println("webUI shutdown")
 	// Close log files (reopen on next run)
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
@@ -2037,21 +2052,84 @@ func shutdown() {
 	waitAnyKey()
 	//fmt.Print("Press Enter to exit...")
 	//bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
-	os.Exit(0)
+	os.Exit(exitCode)
 }
 
 func waitAnyKey() {
-	fmt.Print("Press any key to exit...")
-
 	fd := int(os.Stdin.Fd())
+
+	// Skip waiting if stdin isn't a terminal
+	if !term.IsTerminal(fd) {
+		// don't wait if eg. echo foo | program.exe
+		return
+	}
+
+	fmt.Print("Press any key to exit...")
 
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
+		fmt.Print("couldn't make the terminal raw, bailing!")
 		return // or log, or fail loudly — your call
 	}
 	defer term.Restore(fd, oldState)
 
-	var buf [1]byte
-	os.Stdin.Read(buf[:])
+	if ClearStdin() { // OS-specific
+		fmt.Print("(clrbuf)...")
+	}
+
+	done := make(chan struct{}, 1)
+
+	go func() {
+		ReadKeySequence() // OS-specific
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	fmt.Println()
+}
+
+func watchKeys(reloadFn func(), cleanExitFn func()) {
+	fd := int(os.Stdin.Fd())
+
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return
+	}
+	defer term.Restore(fd, oldState)
+
+	buf := make([]byte, 3)
+
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		// Ctrl+X (0x18)
+		if buf[0] == 0x18 {
+			fmt.Println("\nCtrl+X detected → clean exit")
+			cleanExitFn()
+		}
+
+		// Ctrl+R (0x12)
+		if buf[0] == 0x12 {
+			fmt.Println("\nCtrl+R detected → reloading config")
+			reloadFn()
+		}
+
+		// Alt+X / Alt+R → ESC + key
+		if buf[0] == 0x1b && n >= 2 {
+			switch buf[1] {
+			case 'x', 'X':
+				fmt.Println("\nAlt+X detected → clean exit")
+				cleanExitFn()
+			case 'r', 'R':
+				fmt.Println("\nAlt+R detected → reloading config")
+				reloadFn()
+			}
+		}
+	}
 }
