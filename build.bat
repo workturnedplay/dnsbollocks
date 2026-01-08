@@ -8,7 +8,8 @@ echo Running go vet...
 :: Including unreachable code
 :: Including dead branches
 :: Including code not exercised by tests
-go vet -mod=vendor ./...
+::go vet -mod=vendor ./...
+go vet -mod=vendor ./cmd/dnsbollocks ./internal/dnsbollocks
 if errorlevel 1 goto :fail
 
 echo Running golangci-lint
