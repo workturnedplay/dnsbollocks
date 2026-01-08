@@ -493,14 +493,16 @@ func OldMain() {
 	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
 
 	go watchKeys(
-		func() {
+		func() { // Ctrl+R
 			if err := loadConfig(configPath); err != nil {
 				log.Println("Config reload failed:", err)
 			} else {
-				log.Println("Config reloaded successfully")
+				log.Println("Config reloaded successfully but beware that it's meant to work only for reloading whitelist changes!")
 			}
+			loadWhitelist()
+			fmt.Println("Whitelist reloaded")
 		},
-		func() {
+		func() { // alt+x etc.
 			fmt.Println("Shutdown signal received, clean exit.")
 			cancel()
 			shutdown(0) // clean exit
