@@ -135,9 +135,18 @@ func showDialog(ch chan Decision) {
 		0, 0, 0, 0,
 	)
 
+	// ptrstatic, _ := syscall.UTF16PtrFromString("STATIC")
+	// textLabel, _, _ = procCreateWindowExW.Call(
+	// 	0, uintptr(ptrstatic),
+	// 	syscall.StringToUTF16Ptr("Allow DNS request to example.com?"),
+	// 	WS_CHILD|WS_VISIBLE,
+	// 	10, 10, 330, 40,
+	// 	hwnd, 0, 0, 0,
+	// )
 	textLabel, _, _ = procCreateWindowExW.Call(
-		0, syscall.StringToUTF16Ptr("STATIC"),
-		syscall.StringToUTF16Ptr("Allow DNS request to example.com?"),
+		0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("STATIC"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Allow DNS request to example.com?"))),
 		WS_CHILD|WS_VISIBLE,
 		10, 10, 330, 40,
 		hwnd, 0, 0, 0,
@@ -170,8 +179,10 @@ func showDialog(ch chan Decision) {
 func createButton(parent uintptr, text string, x, y, w, h int32, id Decision) uintptr {
 	btn, _, _ := procCreateWindowExW.Call(
 		0,
-		syscall.StringToUTF16Ptr("BUTTON"),
-		syscall.StringToUTF16Ptr(text),
+		// syscall.StringToUTF16Ptr("BUTTON"),
+		// syscall.StringToUTF16Ptr(text),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("BUTTON"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))),
 		WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		parent, uintptr(id), 0, 0,
