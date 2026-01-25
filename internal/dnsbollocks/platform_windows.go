@@ -1628,6 +1628,12 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 }
 
 func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
+	if msg == nil {
+		errorLogger.Error("msg was nil, unexpected bad programming/code ;p")
+		//return nil //un
+		panic("unreachable1, or the logger is broken")
+	}
+
 	nets := make([]*net.IPNet, 0, len(blacklists))
 	for _, cidr := range blacklists {
 		_, ipnet, err := net.ParseCIDR(cidr)
@@ -1636,6 +1642,7 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 		} else {
 			//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
 			errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
+			panic("unreachable2, or the logger is broken")
 		}
 	}
 	var goodAnswer, goodExtra []dns.RR
@@ -1659,9 +1666,15 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 	msg.Answer = goodAnswer
 	msg.Extra = goodExtra
 
-	if len(msg.Answer) == 0 {
+	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
+	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
 		//logQuery(clientAddr, msg.Question[0].Name, qtype, "blockedbyUpstream", "", nil)
-		errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
+		//errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
+		if len(msg.Question) > 0 {
+			errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
+		} else {
+			errorLogger.Warn("response_filtered_all", slog.String("domain", "unknown"))
+		}
 		return nil
 		//	} else {
 		//		fmt.Println("Non0 answer:", msg.Answer)
