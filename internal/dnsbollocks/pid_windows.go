@@ -40,6 +40,10 @@ var (
 	procGetExtendedUdpTable  = modiphlpapi.NewProc("GetExtendedUdpTable")
 	modkernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procQueryFullProcessName = modkernel32.NewProc("QueryFullProcessImageNameW")
+
+	procCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
+	procProcess32First           = kernel32.NewProc("Process32FirstW")
+	procProcess32Next            = kernel32.NewProc("Process32NextW")
 )
 
 // pidAndExeForUDP returns (pid, exePath, error).
@@ -120,7 +124,11 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 			// treat 0.0.0.0 as wildcard match
 			if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip4) {
 				// found PID
-				exe, _ := exePathFromPID(owningPid)
+				exe, err := exePathFromPID(owningPid)
+				if err != nil {
+					// got error due to permissions needed? this will work:
+					exe = getProcessName(owningPid)
+				}
 				return owningPid, exe, nil
 			}
 		}
@@ -157,6 +165,27 @@ func exePathFromPID(pid uint32) (string, error) {
 	// Normalize: make backslashes single and trim
 	path = strings.TrimSpace(path)
 	return path, nil
+}
+
+func getProcessName(pid uint32) string {
+	// TH32CS_SNAPPROCESS = 0x00000002
+	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(0x00000002, 0)
+	if snapshot == uintptr(windows.InvalidHandle) {
+		return "unknown"
+	}
+	defer windows.CloseHandle(windows.Handle(snapshot))
+
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+
+	ret, _, _ := procProcess32First.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	for ret != 0 {
+		if entry.ProcessID == pid {
+			return windows.UTF16ToString(entry.ExeFile[:])
+		}
+		ret, _, _ = procProcess32Next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	}
+	return "not found"
 }
 
 // Example usage: call right after ReadFromUDP

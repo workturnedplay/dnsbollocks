@@ -1043,12 +1043,19 @@ func startDNSListener(addr string) {
 					if err != nil {
 						fmt.Printf("clientAddr=%q couldn't get pid and exe name:%q\n", clientAddr, err)
 					} else {
-						adminNeeded := ""
-						if exe == "" {
-							adminNeeded = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
-							// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
+						appendedInfo := ""
+						if isAdmin() {
+							if exe == "C:\\Windows\\System32\\svchost.exe" {
+								appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
+							}
+						} else {
+							//not running as Admin already
+							if exe == "svchost.exe" {
+								appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
+								// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
+							}
 						}
-						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, adminNeeded)
+						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, appendedInfo)
 					}
 
 					go handleUDP(buf[:n], clientAddr, udpLn)
