@@ -1,5 +1,6 @@
 //go:build windows
 
+// XXX: yes this works too, here: //revive:disable:var-naming
 package main
 
 import (
