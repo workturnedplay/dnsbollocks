@@ -461,7 +461,7 @@ func OldMain() {
 	}
 	fmt.Printf("Config loaded from %q\n", configPath)
 
-	if !config.AllowRunAsAdmin && isAdmin() {
+	if !config.AllowRunAsAdmin && isAdmin {
 		log.Println("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
 		os.Exit(1)
 	}
@@ -519,9 +519,9 @@ func loadConfig(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 
-		if isAdmin() {
+		if isAdmin {
 
-			return fmt.Errorf("Config file %q not found; refusing to create a new config file with defaults due to running as Admin!\n", path)
+			return fmt.Errorf("Config file %q not found; refusing to create a new config file with defaults due to running as Admin! because you're likely just in the wrong dir like system32\n", path)
 		} else {
 			// not admin, auto create config file with defaults
 			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
@@ -672,12 +672,19 @@ func saveConfig(path string) error {
 	return nil
 }
 
-func isAdmin() bool {
-	// Windows: Use latest x/sys API for elevation check.
+var isAdmin bool // Package level
+func init() {
+	// This runs automatically before main()
 	token := windows.GetCurrentProcessToken()
-	elevated := token.IsElevated() // Single bool return
-	return elevated
+	isAdmin = token.IsElevated()
 }
+
+// func isAdmin() bool {
+// 	// Windows: Use latest x/sys API for elevation check.
+// 	token := windows.GetCurrentProcessToken()
+// 	elevated := token.IsElevated() // Single bool return
+// 	return elevated
+// }
 
 func initLogging(qpath, epath string) {
 	// Rotation stub: Rename if > max size
@@ -1043,19 +1050,37 @@ func startDNSListener(addr string) {
 					if err != nil {
 						fmt.Printf("clientAddr=%q couldn't get pid and exe name:%q\n", clientAddr, err)
 					} else {
-						appendedInfo := ""
-						if isAdmin() {
-							if exe == "C:\\Windows\\System32\\svchost.exe" {
-								appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
-							}
-						} else {
+						var appendedInfo string
+						if !isAdmin {
+							// 	if exe == "C:\\Windows\\System32\\svchost.exe" {
+							// 		appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
+							// 	}
+							// } else {
 							//not running as Admin already
 							if exe == "svchost.exe" {
-								appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
+								//appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
+								appendedInfo = " (exe path seen only when Admin)"
 								// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
 							}
 						}
-						fmt.Printf("clientAddr=%q pid=%d exe=%q%s\n", clientAddr, pid, exe, appendedInfo)
+
+						//this works even if non-Admin
+						names, err := GetServiceNamesFromPID(pid)
+						//serviceInfo := 	if err!=nil { "one" } else {"two"}
+						//fmt.Sprintf("%d service(s): %v", len(names), names)
+						var serviceInfo string
+
+						if err != nil {
+							// If there was an error querying the SCM
+							serviceInfo = fmt.Sprintf("(error getting service info: '%v')", err)
+						} else if len(names) == 0 {
+							// If the PID exists but has no services (not a service host)
+							serviceInfo = "0 services for this pid"
+						} else {
+							// Success: "2 service(s): [Dnscache LanmanWorkstation]"
+							serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
+						}
+						fmt.Printf("clientAddr=%q pid=%d exe=%q %s%s\n", clientAddr, pid, exe, serviceInfo, appendedInfo)
 					}
 
 					go handleUDP(buf[:n], clientAddr, udpLn)

@@ -46,7 +46,7 @@ var (
 	procProcess32Next            = kernel32.NewProc("Process32NextW")
 )
 
-// pidAndExeForUDP returns (pid, exePath, error).
+// pidAndExeForUDP returns (pid, exePath_or_exeName, error).
 // clientAddr should be the remote UDP address observed on the server side (e.g., 127.0.0.1:49936).
 func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	//capital P in PidAndExeForUDP means exported, apparently!
@@ -126,7 +126,7 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 				// found PID
 				exe, err := exePathFromPID(owningPid)
 				if err != nil {
-					// got error due to permissions needed? this will work:
+					// got error due to permissions needed for abs. path? this will work but it's just the .exe:
 					exe = getProcessName(owningPid)
 				}
 				return owningPid, exe, nil
@@ -186,6 +186,71 @@ func getProcessName(pid uint32) string {
 		ret, _, _ = procProcess32Next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
 	}
 	return "not found"
+}
+
+func GetServiceNamesFromPID(targetPID uint32) ([]string, error) {
+	// 1. Open the Service Control Manager
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_ENUMERATE_SERVICE)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseServiceHandle(scm)
+
+	var bytesNeeded, servicesReturned uint32
+	var resumeHandle uint32
+
+	// 2. First call to get the required buffer size
+	// We use SC_ENUM_PROCESS_INFO (level 0) to get PID data
+	windows.EnumServicesStatusEx(
+		scm,
+		windows.SC_ENUM_PROCESS_INFO,
+		windows.SERVICE_WIN32,
+		windows.SERVICE_STATE_ALL,
+		nil,
+		0,
+		&bytesNeeded,
+		&servicesReturned,
+		&resumeHandle,
+		nil,
+	)
+
+	if bytesNeeded == 0 {
+		return nil, fmt.Errorf("could not determine buffer size")
+	}
+
+	// 3. Allocate buffer and call again
+	buffer := make([]byte, bytesNeeded)
+	err = windows.EnumServicesStatusEx(
+		scm,
+		windows.SC_ENUM_PROCESS_INFO,
+		windows.SERVICE_WIN32,
+		windows.SERVICE_STATE_ALL,
+		&buffer[0],
+		uint32(len(buffer)),
+		&bytesNeeded,
+		&servicesReturned,
+		&resumeHandle,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Parse the results
+	var serviceNames []string
+	// The results are an array of ENUM_SERVICE_STATUS_PROCESS structures
+	entrySize := unsafe.Sizeof(windows.ENUM_SERVICE_STATUS_PROCESS{})
+
+	for i := uint32(0); i < servicesReturned; i++ {
+		data := (*windows.ENUM_SERVICE_STATUS_PROCESS)(unsafe.Pointer(&buffer[uintptr(i)*entrySize]))
+
+		// Check if this service belongs to our target PID
+		if data.ServiceStatusProcess.ProcessId == targetPID {
+			serviceNames = append(serviceNames, windows.UTF16PtrToString(data.ServiceName))
+		}
+	}
+
+	return serviceNames, nil
 }
 
 // Example usage: call right after ReadFromUDP
