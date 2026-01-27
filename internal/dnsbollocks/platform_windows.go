@@ -675,16 +675,17 @@ func saveConfig(path string) error {
 var isAdmin bool // Package level
 func init() {
 	// This runs automatically before main()
-	token := windows.GetCurrentProcessToken()
-	isAdmin = token.IsElevated()
+	// token := windows.GetCurrentProcessToken()
+	// isAdmin = token.IsElevated()
+	isAdmin = isAdminNow()
 }
 
-// func isAdmin() bool {
-// 	// Windows: Use latest x/sys API for elevation check.
-// 	token := windows.GetCurrentProcessToken()
-// 	elevated := token.IsElevated() // Single bool return
-// 	return elevated
-// }
+func isAdminNow() bool {
+	// Windows: Use latest x/sys API for elevation check.
+	token := windows.GetCurrentProcessToken()
+	elevated := token.IsElevated() // Single bool return
+	return elevated
+}
 
 func initLogging(qpath, epath string) {
 	// Rotation stub: Rename if > max size
@@ -2141,15 +2142,15 @@ func waitAnyKeyIfInteractive() {
 			if ClearStdin() { // OS-specific
 				fmt.Print("(clrbuf2).")
 			}
-
 		})
 		done <- struct{}{}
 	}()
 
-	select {
-	case <-done:
-		//case <-ctx.Done():  // this bypasses the key wait!
-	}
+	// select {
+	// case <-done:
+	// 	//case <-ctx.Done():  // this bypasses the key wait!
+	// }
+	<-done // blocks until a value is received from the channel.
 	fmt.Println()
 }
 
