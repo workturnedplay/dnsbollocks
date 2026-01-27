@@ -2143,7 +2143,7 @@ func waitAnyKeyIfInteractive() {
 				fmt.Print("(clrbuf2).")
 			}
 		})
-		done <- struct{}{}
+		done <- struct{}{} // Empty structs occupy zero bytes and are commonly used for signals where no data is needed.
 	}()
 
 	// select {
