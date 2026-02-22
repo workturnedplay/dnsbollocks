@@ -1331,19 +1331,27 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Cache (edge: Negative responses cached short)
 	key := domain + ":" + qtype
 
+	//fmt.Printf("checking '%s' key in cache\n", key)
 	if cachedIf, ok := cacheStore.Get(key); ok {
 		cached := cachedIf.(*dns.Msg)
 		// Return a copy of cached response with the current query ID to avoid
 		// clients rejecting replies because of mismatched transaction IDs.
 		resp := cached.Copy()
 		resp.Id = msg.Id
-		logQuery(clientAddr, domain, qtype, "cache_hit", matchedID, nil)
+		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
+		ips := extractIPs(resp)
+		logQuery(clientAddr, domain, qtype, "cache_hit", matchedID, ips)
 		return resp
 	}
 
 	// Forward
 	resp := forwardToDoH(msg)
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
+		ips := []string{} //{"NXDOMAIN"}
+		if resp != nil {
+			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
+		}
+		logQuery(clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips)
 		negResp := servfailResponse(msg)
 		// Cache negatives short
 		cacheStore.Set(key, negResp, 10*time.Second)
@@ -1353,10 +1361,16 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Filter
 	filtered := filterResponse(resp, config.ResponseBlacklist)
 	if filtered == nil {
+		ips := extractIPs(filtered)
 		logQuery(clientAddr, domain, qtype,
-			"blockedByUpstream", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			"", nil)
-		return blockResponse(msg)
+			"blockedByUpstream_ORIGINAL", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+			"", ips)
+		blocked := blockResponse(msg)
+		ips = extractIPs(blocked)
+		logQuery(clientAddr, domain, qtype,
+			"blockedByUpstream_RETURNEDMODIFIED", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+			"", ips)
+		return blocked
 	}
 
 	// Cache with clamped TTL
@@ -1932,7 +1946,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 
-					saveConfig("config.json")
+					saveConfig("config.json") //FIXME: make sure all saveConfig calls succeed or log the failure! not just here.
 					http.Redirect(w, r, "/rules", http.StatusSeeOther)
 					return
 				}
@@ -2039,7 +2053,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		sanitized, modified := SanitizeDomainInput(raw)
 
-		if modified || !IsValidDNSName(sanitized) {
+		if modified || !IsValidDNSName(sanitized) { //TODO: check if this is valid upon querying too!
 			//TODO:
 			// re-render form with:
 			// - error message
