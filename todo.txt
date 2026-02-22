@@ -6,7 +6,7 @@
   * or like: {file:id.key}
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
-* separate the whitelist and blacklist away from config.json
+* separate the whitelist and blacklist away from config.json because for example config.json may be marked as read-only (permissions wise) and the white/black list allowed to be modified!
 * link to Tinywall in readme and to Go lang to install Go.
 * add more tests, lots more
 * make ipv4 hints in HTTPS removable only if a config key is true (default) ie. add that key
