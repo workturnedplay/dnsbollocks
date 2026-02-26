@@ -1,6 +1,6 @@
 module dnsbollocks
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/google/uuid v1.6.0
@@ -17,4 +17,4 @@ require (
 	golang.org/x/tools v0.42.0 // indirect
 )
 
-require golang.org/x/net v0.50.0 // indirect; indirect (for miekg/dns)
+require golang.org/x/net v0.51.0 // indirect; indirect (for miekg/dns)
