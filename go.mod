@@ -1,4 +1,4 @@
-module dnsbollocks
+module github.com/workturnedplay/dnsbollocks
 
 go 1.26.0
 
