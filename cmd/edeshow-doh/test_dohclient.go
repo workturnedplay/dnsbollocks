@@ -47,6 +47,9 @@ func main() {
 			TLSClientConfig: &tls.Config{
 				RootCAs:            caCertPool,
 				InsecureSkipVerify: false, // Verified against your cert.pem
+				//ServerName:         "127.0.0.2", // fails(because server cert has .1), good.
+				//ServerName: "127.0.0.1", // works, good.
+				//not specifying ServerName uses the one from the cert.
 			},
 		},
 	}

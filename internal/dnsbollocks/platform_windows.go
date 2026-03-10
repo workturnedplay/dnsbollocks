@@ -45,6 +45,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 
 	"html"
@@ -936,20 +937,103 @@ func recursiveMatch(pattern, name string) bool {
 func generateCertIfNeeded() {
 	certFile := "cert.pem"
 	keyFile := "key.pem"
-	if _, err := os.Stat(certFile); os.IsNotExist(err) {
-		fmt.Println("Generating self-signed cert for DoH...")
-		if err := generateCert(certFile, keyFile); err != nil {
+	needsRegen := false
+
+	var err error
+	// Extract the host/IP from the config to put it in the cert
+	host, _, err := net.SplitHostPort(config.ListenDoH)
+	if err != nil {
+		host = config.ListenDoH // Fallback if no port present
+	}
+	//In Go, net.ParseIP is a strict parser. It does not perform DNS lookups; it only checks if the string is a valid IPv4 or IPv6 literal. If you pass it "localhost", it returns nil.
+	currentIP := net.ParseIP(host)
+	// 2. Check if cert exists and is still valid for this IP
+	certBytes, err := os.ReadFile(certFile)
+	if err != nil {
+		// File missing or unreadable
+		fmt.Printf("Cert file %s doesn't exist, err: '%v'", certFile, err) // no \n
+		needsRegen = true
+	} else {
+		// Parse the PEM
+		block, _ := pem.Decode(certBytes)
+		if block == nil {
+			fmt.Printf("Cert file %s had empty decoded block.", certFile) // no \n
+			needsRegen = true
+		} else {
+			cert, err2 := x509.ParseCertificate(block.Bytes)
+			if err2 != nil {
+				fmt.Printf("Cert file %s failed parsing, err: '%v'", certFile, err2) // no \n
+				needsRegen = true
+			} else {
+				// Check if the current IP is in the cert's SAN list
+				// found := false
+				// for _, ip := range cert.IPAddresses {
+				// 	if ip.Equal(currentIP) {
+				// 		found = true
+				// 		break
+				// 	}
+				// }
+				// if !found {
+				// 	fmt.Printf("Cert IP mismatch (found %v, want %v) for cert file %s", cert.IPAddresses, currentIP, certFile) // no \n
+				// 	needsRegen = true
+				// }
+
+				found := false
+				parsedIP := net.ParseIP(host)
+
+				if parsedIP != nil {
+					// Check IP list
+					for _, ip := range cert.IPAddresses {
+						if ip.Equal(parsedIP) {
+							found = true
+							break
+						}
+					}
+				} else {
+					// Check DNS list
+					for _, name := range cert.DNSNames {
+						if name == host {
+							found = true
+							break
+						}
+					}
+				}
+
+				if !found {
+					fmt.Printf("Cert identity mismatch (want %s)", host) // no \n
+					needsRegen = true
+				}
+			}
+		}
+	}
+
+	// 3. Regen if necessary
+	if needsRegen {
+		fmt.Printf(". Triggering regen...\nGenerating self-signed cert(files: %s and %s) for DoH at %s...\n", certFile, keyFile, host)
+		if err = generateCert(certFile, keyFile, host); err != nil {
+			//FIXME: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
+			fmt.Printf("Cert generation failed, err: '%v'", err)
 			errorLogger.Error("cert generation failed", slog.Any("err", err))
 			os.Exit(1)
 		}
-		fmt.Println("Cert generated: Trust in clients (e.g., Firefox exception for 127.0.0.1)")
+		fmt.Printf("Cert generated: Trust in clients (e.g., Firefox exception for %s)\n", currentIP)
 	} else {
-		fmt.Println("Cert exists: Skipping generation")
+		fmt.Printf("Existing cert is valid for %s. Skipping generation.\n", host)
 	}
+	// if _, err = os.Stat(certFile); os.IsNotExist(err) {
+	// 	fmt.Println("Generating self-signed cert for DoH...")
+	// 	if err = generateCert(certFile, keyFile, host); err != nil {
+	// 		errorLogger.Error("cert generation failed", slog.Any("err", err))
+	// 		os.Exit(1)
+	// 	}
+	// 	fmt.Printf("Cert generated: Trust in clients (e.g., Firefox exception for %s)\n", currentIP)
+	// } else {
+	// 	fmt.Println("Cert exists: Skipping generation")
+	// }
 
 	// Load cert/key into global for reuse
 	fmt.Print("Loading cert/key for DoH...")
-	var err error
+
 	dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		errorLogger.Error("cert_load_failed", slog.Any("err", err))
@@ -958,7 +1042,8 @@ func generateCertIfNeeded() {
 	fmt.Println("Success - loaded into tls.Certificate")
 }
 
-func generateCert(certFile, keyFile string) error {
+// 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
+func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 	// From crypto/tls/generate_cert.go; edge: Ensure unique serial, valid for 10y
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -966,7 +1051,7 @@ func generateCert(certFile, keyFile string) error {
 	}
 	serial := big.NewInt(0)
 	serial.SetString(uuid.New().String(), 16) // Unique serial
-	template := x509.Certificate{
+	certTemplate := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			Organization: []string{"DNSbollocks ie. Local DNS Proxy"},
@@ -975,23 +1060,36 @@ func generateCert(certFile, keyFile string) error {
 		NotAfter:    time.Now().Add(365 * 24 * time.Hour * 10),
 		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, //FIXME: it's hardcoded
+		//IPAddresses: []net.IP{net.ParseIP(host)},
 	}
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+
+	// Try parsing as IP first (no network lookup)
+	if ip := net.ParseIP(host); ip != nil {
+		certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
+	} else {
+		// If not an IP, treat it as a DNS hostname (e.g., "localhost")
+		certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &priv.PublicKey, priv)
 	if err != nil {
 		return fmt.Errorf("cert create failed: %w", err)
 	}
 
-	certOut, err := os.Create(certFile)
+	// not this way: #nosec G304
+	certOut, err := os.Create(filepath.Clean(certFileNameNoPath))
 	if err != nil {
 		return fmt.Errorf("cert write failed: %w", err)
 	}
 	defer certOut.Close()
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+	if err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
 		return fmt.Errorf("pem encode cert failed: %w", err)
 	}
 
-	keyOut, err := os.Create(keyFile)
+	//keyOut, err := os.Create(keyFile)
+	// 2. Fix the Key Permissions: Replace os.Create(keyFile) with this:
+	// not this way: #nosec G304
+	keyOut, err := os.OpenFile(filepath.Clean(keyFileNameNoPath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("key write failed: %w", err)
 	}
@@ -1011,7 +1109,13 @@ func startDNSListener(addr string) {
 
 	// UDP
 	fmt.Print("  Attempting UDP bind...")
-	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}) //FIXME: hardcoded ip and port
+	// Assuming addr is a string like "127.0.0.1:53"
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid udp address %s: %v\n", addr, err)
+		os.Exit(1)
+	}
+	udpLn, err := net.ListenUDP("udp", udpAddr)
 
 	if err != nil {
 		errStr := fmt.Sprintf("UDP bind failed on %q: %v", addr, err)
@@ -1837,6 +1941,7 @@ func startWebUI(port int) {
 	mux.HandleFunc("/logs", logsHandler)
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
+	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		errStr := fmt.Sprintf("UI listener failed on :%d: %v", port, err)
@@ -1854,7 +1959,8 @@ func startWebUI(port int) {
 			errorLogger.Error("ui_serve_failed", slog.Any("err", err))
 		}
 	}()
-	fmt.Println("UI server loop launched - func returning")
+	fmt.Println("UI server loop launched")
+	fmt.Println("Use Ctrl+X to clean exit, but Ctrl+C works too. Ctrl+R to reload config without exiting.")
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
