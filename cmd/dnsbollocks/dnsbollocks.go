@@ -14,7 +14,7 @@
 
 package main
 
-import "dnsbollocks/internal/dnsbollocks"
+import "github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
 
 func main() {
 	dnsbollocks.OldMain()

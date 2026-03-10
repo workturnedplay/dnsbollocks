@@ -3,8 +3,8 @@
 package main
 
 import (
-	"dnsbollocks/internal/dnsbollocks"
 	"fmt"
+	"github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
 	"os"
 	"time"
 
