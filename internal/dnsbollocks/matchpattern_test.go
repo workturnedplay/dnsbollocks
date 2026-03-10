@@ -80,6 +80,45 @@ func TestMatchPattern(t *testing.T) {
 		{"foo!!ar.com", "foo.bar.com", true},
 		{"foo!!ar.com", "foodbar.com", true},
 		{"sdmntpr*.oaiusercontent.com", "sdmntpritalynorth.oaiusercontent.com", true},
+		{"*abc", "abc", true},
+		{"*abc", "xabc", true},
+		{"*abc", "xxabc", true},
+		{"*abc", "abx", false},
+		{"*ab*c", "abxc", true},
+		{"*ab*c", "abxxc", true},
+		{"*ab*c", "ac", false},
+		{"a{*}b", "ab", false},
+		{"a{*}b", "axb", true},
+		{"a{*}b", "axxb", true},
+		{"a{*}b", "a.b", false},
+		{"**abc", "abc", true},
+		{"**abc", "xabc", true},
+		{"**abc", "xxabc", true},
+
+		{"abc*", "abc", true},
+		{"abc*", "abcd", true},
+		{"abc*", "ab", false},
+
+		{"?abc", "xabc", true},
+		{"?abc", "abc", false},
+		{"abc?", "abcd", true},
+		{"abc?", "abc", false},
+
+		{"!?a", ".ba", true},
+		{"!?a", "bba", true},
+		{"!?a", "ba", false},
+
+		{"{**}a", "a", true},
+		{"{**}a", "ba", true},
+		{"{**}a", ".a", true},
+
+		//TODO: maybe support unicode in the rules on file but convert them to punycode on load, so they won't match here anyway
+		//{"?bc", "ábc", true},
+		//{"??c", "ábc", true},
+		{"?bc", "abc", true},
+
+		{"abcd", "abc", false},
+		{"abcd*", "abc", false},
 	}
 
 	for _, tt := range tests {

@@ -2303,6 +2303,8 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 		if buf[0] == 0x12 {
 			fmt.Println("\nCtrl+R detected → reloading config")
 			//_ = term.Restore(fd, oldState)
+			// NO restore needed here because we want to stay in Raw mode
+			// to catch the next keypress after the reload.
 			reloadFn()
 		}
 
