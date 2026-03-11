@@ -840,85 +840,46 @@ func matchPattern(pattern, name string) bool {
 	//pattern = strings.ToLower(pattern)//XXX: must be already lowercase
 	//name = strings.ToLower(name)//XXX: must be already lowercase
 
-	// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
-
-	// if strings.Contains(pattern, "{**}") {
-	// 	parts := strings.SplitN(pattern, "{**}", 2)
-	// 	prefix := parts[0]
-	// 	suffix := ""
-	// 	if len(parts) == 2 {
-	// 		suffix = parts[1]
-	// 	}
-	// 	if prefix != "" && !strings.HasPrefix(name, prefix) {
-	// 		return false
-	// 	}
-	// 	if suffix != "" && !strings.HasSuffix(name, suffix) {
-	// 		return false
-	// 	}
-	// 	// If pattern is of form "{**}.suffix", require at least one label before suffix
-	// 	if prefix == "" && strings.HasPrefix(suffix, ".") {
-	// 		return len(name) > len(suffix)
-	// 	}
-	// 	if suffix == "" && strings.HasSuffix(prefix, ".") {
-	// 		return len(name) > len(prefix)
-	// 	}
-	// 	return true
-	// }
-
-	//The no allocs variant:
-	idx := strings.Index(pattern, "{**}")
+	idx := strings.Index(pattern, "**")
 	if idx != -1 {
-		prefix := pattern[:idx]
-		suffix := pattern[idx+4:]
+		if idx > 0 && idx+2 < len(pattern) &&
+			pattern[idx-1] == '{' && pattern[idx+2] == '}' {
+			// {**}
+			// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
+			//The no allocs variant:
+			prefix := pattern[:idx-1]
+			suffix := pattern[idx+3:]
 
-		if prefix != "" && !strings.HasPrefix(name, prefix) {
-			return false
+			if prefix != "" && !strings.HasPrefix(name, prefix) {
+				return false
+			}
+			if suffix != "" && !strings.HasSuffix(name, suffix) {
+				return false
+			}
+
+			if prefix == "" && strings.HasPrefix(suffix, ".") {
+				return len(name) > len(suffix)
+			}
+			if suffix == "" && strings.HasSuffix(prefix, ".") {
+				return len(name) > len(prefix)
+			}
+
+			return true
+		} else {
+			// **
+			// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
+			//The no allocs variant:
+			prefix := pattern[:idx]
+			suffix := pattern[idx+2:]
+
+			if prefix != "" && !strings.HasPrefix(name, prefix) {
+				return false
+			}
+			if suffix != "" && !strings.HasSuffix(name, suffix) {
+				return false
+			}
+			return true
 		}
-		if suffix != "" && !strings.HasSuffix(name, suffix) {
-			return false
-		}
-
-		if prefix == "" && strings.HasPrefix(suffix, ".") {
-			return len(name) > len(suffix)
-		}
-		if suffix == "" && strings.HasSuffix(prefix, ".") {
-			return len(name) > len(prefix)
-		}
-
-		return true
-	}
-
-	// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
-
-	// if strings.Contains(pattern, "**") {
-	// 	parts := strings.SplitN(pattern, "**", 2)
-	// 	prefix := parts[0]
-	// 	suffix := ""
-	// 	if len(parts) == 2 {
-	// 		suffix = parts[1]
-	// 	}
-	// 	if prefix != "" && !strings.HasPrefix(name, prefix) {
-	// 		return false
-	// 	}
-	// 	if suffix != "" && !strings.HasSuffix(name, suffix) {
-	// 		return false
-	// 	}
-	// 	return true
-	// }
-
-	//The no allocs variant:
-	idx = strings.Index(pattern, "**")
-	if idx != -1 {
-		prefix := pattern[:idx]
-		suffix := pattern[idx+2:]
-
-		if prefix != "" && !strings.HasPrefix(name, prefix) {
-			return false
-		}
-		if suffix != "" && !strings.HasSuffix(name, suffix) {
-			return false
-		}
-		return true
 	}
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
