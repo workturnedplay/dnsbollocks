@@ -818,42 +818,100 @@ func newUniqueID() string {
 	panic("UUID collision limit reached—check RNG or storage")
 }
 
+func isLowerASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
 func matchPattern(pattern, name string) bool {
-	pattern = strings.ToLower(pattern)
-	name = strings.ToLower(name)
+	if !isLowerASCII(pattern) {
+		panic("pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
+	}
+	if !isLowerASCII(name) {
+		panic("name was " + name + " which isn't lowercased, so bad coding somewhere!")
+	}
+
+	//pattern = strings.ToLower(pattern)//XXX: must be already lowercase
+	//name = strings.ToLower(name)//XXX: must be already lowercase
 
 	// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
-	if strings.Contains(pattern, "{**}") {
-		parts := strings.SplitN(pattern, "{**}", 2)
-		prefix := parts[0]
-		suffix := ""
-		if len(parts) == 2 {
-			suffix = parts[1]
-		}
+
+	// if strings.Contains(pattern, "{**}") {
+	// 	parts := strings.SplitN(pattern, "{**}", 2)
+	// 	prefix := parts[0]
+	// 	suffix := ""
+	// 	if len(parts) == 2 {
+	// 		suffix = parts[1]
+	// 	}
+	// 	if prefix != "" && !strings.HasPrefix(name, prefix) {
+	// 		return false
+	// 	}
+	// 	if suffix != "" && !strings.HasSuffix(name, suffix) {
+	// 		return false
+	// 	}
+	// 	// If pattern is of form "{**}.suffix", require at least one label before suffix
+	// 	if prefix == "" && strings.HasPrefix(suffix, ".") {
+	// 		return len(name) > len(suffix)
+	// 	}
+	// 	if suffix == "" && strings.HasSuffix(prefix, ".") {
+	// 		return len(name) > len(prefix)
+	// 	}
+	// 	return true
+	// }
+
+	//The no allocs variant:
+	idx := strings.Index(pattern, "{**}")
+	if idx != -1 {
+		prefix := pattern[:idx]
+		suffix := pattern[idx+4:]
+
 		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			return false
 		}
 		if suffix != "" && !strings.HasSuffix(name, suffix) {
 			return false
 		}
-		// If pattern is of form "{**}.suffix", require at least one label before suffix
+
 		if prefix == "" && strings.HasPrefix(suffix, ".") {
 			return len(name) > len(suffix)
 		}
 		if suffix == "" && strings.HasSuffix(prefix, ".") {
 			return len(name) > len(prefix)
 		}
+
 		return true
 	}
 
 	// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
-	if strings.Contains(pattern, "**") {
-		parts := strings.SplitN(pattern, "**", 2)
-		prefix := parts[0]
-		suffix := ""
-		if len(parts) == 2 {
-			suffix = parts[1]
-		}
+
+	// if strings.Contains(pattern, "**") {
+	// 	parts := strings.SplitN(pattern, "**", 2)
+	// 	prefix := parts[0]
+	// 	suffix := ""
+	// 	if len(parts) == 2 {
+	// 		suffix = parts[1]
+	// 	}
+	// 	if prefix != "" && !strings.HasPrefix(name, prefix) {
+	// 		return false
+	// 	}
+	// 	if suffix != "" && !strings.HasSuffix(name, suffix) {
+	// 		return false
+	// 	}
+	// 	return true
+	// }
+
+	//The no allocs variant:
+	idx = strings.Index(pattern, "**")
+	if idx != -1 {
+		prefix := pattern[:idx]
+		suffix := pattern[idx+2:]
+
 		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			return false
 		}
@@ -868,7 +926,7 @@ func matchPattern(pattern, name string) bool {
 }
 
 func recursiveMatch(pattern, name string) bool {
-	for len(pattern) > 0 {
+	for pattern != "" { //len(pattern) > 0 {
 		// Handle multi-char token {*}
 		if strings.HasPrefix(pattern, "{*}") {
 			// consume the token
@@ -934,6 +992,7 @@ func recursiveMatch(pattern, name string) bool {
 	}
 	return len(name) == 0
 }
+
 func generateCertIfNeeded() {
 	certFile := "cert.pem"
 	keyFile := "key.pem"
@@ -1389,8 +1448,8 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		return formerrResponse(msg)
 	}
 	q := msg.Question[0]
-	domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
-	if domain == "" { // Edge: Empty domain
+	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowecase it for matchPattern below! at least.
+	if domain == "" {                                          // Edge: Empty domain
 		return formerrResponse(msg)
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
@@ -2061,13 +2120,13 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pattern := strings.TrimSpace(r.FormValue("pattern"))
+		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern"))) //XXX: must be lowercased for matchPattern later on.
 		typ := r.FormValue("type")
 		id := r.FormValue("id")
 		enabledStr := r.FormValue("enabled")
 		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
-		if pattern == "" || typ == "" {
+		if patternLowercased == "" || typ == "" {
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
 		}
@@ -2099,7 +2158,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Add to new type
-			newRule := Rule{ID: id, Pattern: pattern, Enabled: enabledBool}
+			newRule := Rule{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 			if _, ok := config.Whitelist[typ]; !ok {
 				config.Whitelist[typ] = []Rule{}
 				whitelist[typ] = []Rule{}
@@ -2107,21 +2166,22 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 
-			fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, pattern, id, enabledBool)
+			fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
 		} else {
 			newID := newUniqueID()
 			ruleMutex.Lock()
 			defer ruleMutex.Unlock()
 			// Add new: Prevent duplicate (same type + pattern, case-insensitive)
-			lowerPattern := strings.ToLower(pattern)
+			//lowerPattern := strings.ToLower(pattern)
 			for _, rule := range config.Whitelist[typ] {
-				if strings.ToLower(rule.Pattern) == lowerPattern {
-					http.Error(w, "Rule with this pattern already exists for type "+typ, http.StatusConflict)
+				//if strings.ToLower(rule.Pattern) == lowerPattern {
+				if rule.Pattern /*already lowercase!*/ == patternLowercased {
+					http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
 					return
 				}
 			}
 
-			newRule := Rule{ID: newID, Pattern: pattern, Enabled: enabledBool}
+			newRule := Rule{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
 			if _, ok := config.Whitelist[typ]; !ok {
 				config.Whitelist[typ] = []Rule{}
 				whitelist[typ] = []Rule{}
@@ -2129,7 +2189,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 
-			fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", pattern, typ, newID, enabledBool)
+			fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
 		}
 
 		saveConfig("config.json")
@@ -2168,19 +2228,19 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("Invalid domain, raw: %q\n sanitized: %q\n modified: %t\n escaped: %q", raw, sanitized, modified, lastEditedPatternEscaped)
 			return
 		}
-		domain := sanitized
+		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
 
 		// accept sanitized
 		typ := r.FormValue("type")
-		if domain != "" && typ != "" {
+		if domainLowercased != "" && typ != "" {
 			// Add rule for typ
-			newRule := Rule{ID: newUniqueID(), Pattern: domain, Enabled: true}
+			newRule := Rule{ID: newUniqueID(), Pattern: domainLowercased, Enabled: true}
 			ruleMutex.Lock()
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 			ruleMutex.Unlock()
 			saveConfig("config.json")
-			fmt.Printf("Quick unblock added for %q (%q)\n", domain, typ)
+			fmt.Printf("Quick unblock added for %q (%q)\n", domainLowercased, typ)
 		}
 		http.Redirect(w, r, "/blocks", http.StatusSeeOther)
 	}

@@ -16,7 +16,10 @@
 
 package dnsbollocks
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
@@ -25,6 +28,7 @@ func TestMatchPattern(t *testing.T) {
 		want    bool
 	}{
 		{"example.com", "example.com", true},
+		{"exAmple.com", "exaMple.com", true}, //these will match because will be auto lowercased before compare!
 		{"example.co", "example.com", false},
 		{"example.com", "example.co", false},
 		{"*example.com", "example.com", true},
@@ -122,9 +126,13 @@ func TestMatchPattern(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := matchPattern(tt.pattern, tt.name); got != tt.want {
+		pat := strings.ToLower(tt.pattern)
+		//nam := tt.name // for testing
+		nam := strings.ToLower(tt.name)
+
+		if got := matchPattern(pat, nam); got != tt.want {
 			t.Fatalf("matchPattern(%q, %q) = %v, want %v",
-				tt.pattern, tt.name, got, tt.want)
+				pat, nam, got, tt.want)
 		}
 	}
 }
