@@ -33,7 +33,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"expvar"
-	"flag"
+
 	"fmt"
 	"html/template"
 	"io"
@@ -92,6 +92,87 @@ type Rule struct {
 	ID      string `json:"id"`
 	Pattern string `json:"pattern"`
 	Enabled bool   `json:"enabled"`
+}
+
+// DefaultConfig Every call produces a new map and slice backing array.
+// must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
+func DefaultConfig() Config {
+	return Config{
+		ListenDNS:       "127.0.0.1:53",
+		ListenDoH:       "127.0.0.1:443",
+		UIPort:          8080,
+		UpstreamURL:     "https://9.9.9.9/dns-query",
+		SNIHostname:     "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
+		BlockMode:       "nxdomain",
+		BlockIP:         "0.0.0.0",
+		RateQPS:         100,
+		CacheMinTTL:     300,
+		CacheMaxEntries: 10000,
+		Whitelist:       make(map[string][]Rule),
+		ResponseBlacklist: []string{
+			// IPv4 loopback – never valid for public hosts
+			"127.0.0.0/8",
+
+			// RFC1918 private networks
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+
+			// IPv4 link-local (APIPA)
+			"169.254.0.0/16",
+
+			// "This network" / unspecified addresses
+			"0.0.0.0/8",
+
+			// Carrier-grade NAT (CGNAT)
+			"100.64.0.0/10",
+
+			// Documentation / example ranges (RFC 5737)
+			"192.0.2.0/24",
+			"198.51.100.0/24",
+			"203.0.113.0/24",
+
+			// Benchmarking / performance testing
+			"198.18.0.0/15",
+
+			// IPv4 multicast
+			"224.0.0.0/4",
+
+			// IPv4 reserved / future use
+			"240.0.0.0/4",
+
+			// Limited broadcast
+			"255.255.255.255/32",
+
+			// IPv6 loopback
+			"::1/128",
+
+			// IPv6 unique local addresses (private)
+			"fc00::/7",
+
+			// IPv6 link-local
+			"fe80::/10",
+
+			// IPv6 documentation range
+			"2001:db8::/32",
+
+			// IPv6 multicast
+			"ff00::/8",
+
+			// IPv6 unspecified
+			"::/128",
+		},
+
+		//FIXME: these two aren't used:
+		WhitelistFile: "query_whitelist.json",
+		BlacklistFile: "response_blacklist.json",
+
+		LogQueries:              "queries.log",
+		LogErrors:               "errors.log",
+		LogMaxSizeMB:            4095, // Rotation threshold
+		AllowRunAsAdmin:         false,
+		BlockAAAAasEmptyNoError: true,
+	}
 }
 
 // Globals.
@@ -444,23 +525,25 @@ tr td {
 </body></html>`,
 ))
 
+const configFileName = "config.json"
+
 func OldMain() {
 	fmt.Println("DNSbollocks starting...")
-	flag.Parse() // For future flags
-	configPath := "config.json"
-	if len(os.Args) > 1 {
-		configPath = os.Args[1]
-	}
+	//flag.Parse() // For future flags
+
+	// if len(os.Args) > 1 {
+	// 	configPath = os.Args[1]
+	// }
 
 	// Signals setup FIRST: Catch interrupts from init onward
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	fmt.Println("Signal channel ready - Ctrl+C to shutdown gracefully")
 
-	if err := loadConfig(configPath); err != nil {
+	if err := loadConfig(); err != nil {
 		log.Fatal("Config load failed:", err)
 	}
-	fmt.Printf("Config loaded from %q\n", configPath)
+	fmt.Printf("Config loaded from %q\n", configFileName)
 
 	if !config.AllowRunAsAdmin && isAdmin {
 		log.Println("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
@@ -495,7 +578,7 @@ func OldMain() {
 
 	go watchKeys(
 		func() { // Ctrl+R
-			if err := loadConfig(configPath); err != nil {
+			if err := loadConfig(); err != nil {
 				log.Println("Config reload failed:", err)
 			} else {
 				log.Println("Config reloaded successfully but beware that it's meant to work only for reloading whitelist changes!")
@@ -516,104 +599,27 @@ func OldMain() {
 	shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
 }
 
-func loadConfig(path string) error {
-	data, err := os.ReadFile(path)
+func loadConfig() error {
+	data, err := os.ReadFile(configFileName)
 	if err != nil {
-
 		if isAdmin {
-
-			return fmt.Errorf("Config file %q not found; refusing to create a new config file with defaults due to running as Admin! because you're likely just in the wrong dir like system32\n", path)
+			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin! because you're likely just in the wrong dir like system32", configFileName)
 		} else {
 			// not admin, auto create config file with defaults
 			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
-			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", path)
+			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", configFileName)
 		}
 		// Defaults
-		config = Config{
-			ListenDNS:       "127.0.0.1:53",
-			ListenDoH:       "127.0.0.1:443",
-			UIPort:          8080,
-			UpstreamURL:     "https://9.9.9.9/dns-query",
-			SNIHostname:     "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
-			BlockMode:       "nxdomain",
-			BlockIP:         "0.0.0.0",
-			RateQPS:         100,
-			CacheMinTTL:     300,
-			CacheMaxEntries: 10000,
-			Whitelist:       make(map[string][]Rule),
-			ResponseBlacklist: []string{
-				// IPv4 loopback – never valid for public hosts
-				"127.0.0.0/8",
+		config = DefaultConfig()
 
-				// RFC1918 private networks
-				"10.0.0.0/8",
-				"172.16.0.0/12",
-				"192.168.0.0/16",
-
-				// IPv4 link-local (APIPA)
-				"169.254.0.0/16",
-
-				// "This network" / unspecified addresses
-				"0.0.0.0/8",
-
-				// Carrier-grade NAT (CGNAT)
-				"100.64.0.0/10",
-
-				// Documentation / example ranges (RFC 5737)
-				"192.0.2.0/24",
-				"198.51.100.0/24",
-				"203.0.113.0/24",
-
-				// Benchmarking / performance testing
-				"198.18.0.0/15",
-
-				// IPv4 multicast
-				"224.0.0.0/4",
-
-				// IPv4 reserved / future use
-				"240.0.0.0/4",
-
-				// Limited broadcast
-				"255.255.255.255/32",
-
-				// IPv6 loopback
-				"::1/128",
-
-				// IPv6 unique local addresses (private)
-				"fc00::/7",
-
-				// IPv6 link-local
-				"fe80::/10",
-
-				// IPv6 documentation range
-				"2001:db8::/32",
-
-				// IPv6 multicast
-				"ff00::/8",
-
-				// IPv6 unspecified
-				"::/128",
-			},
-
-			//FIXME: these two aren't used:
-			WhitelistFile: "query_whitelist.json",
-			BlacklistFile: "response_blacklist.json",
-
-			LogQueries:              "queries.log",
-			LogErrors:               "errors.log",
-			LogMaxSizeMB:            4095, // Rotation threshold
-			AllowRunAsAdmin:         false,
-			BlockAAAAasEmptyNoError: true,
-		}
-
-		if err := saveConfig(path); err != nil {
+		if err = saveConfig(); err != nil {
 			return fmt.Errorf("default config save failed: %w", err)
 		}
 		return nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&config); err != nil {
+	if err = dec.Decode(&config); err != nil {
 		return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
 	}
 	// Validate loaded config
@@ -641,7 +647,7 @@ func loadConfig(path string) error {
 	for _, cidr := range config.ResponseBlacklist {
 		_, _, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("invalid_cidr %q in response blacklist which is in the config file %q", cidr, path)
+			return fmt.Errorf("invalid_cidr %q in response blacklist which is in the config file %q", cidr, configFileName)
 		}
 	}
 
@@ -662,12 +668,12 @@ func hostFromURL(raw string) (string, error) {
 	return host, nil
 }
 
-func saveConfig(path string) error {
+func saveConfig() error {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(configFileName, data, 0600); err != nil {
 		return fmt.Errorf("config write failed: %w", err)
 	}
 	return nil
@@ -777,7 +783,7 @@ func loadWhitelist() {
 	if loadErr {
 		fmt.Println("Warning: Some whitelist rules skipped due to errors")
 	}
-	if err := saveConfig("config.json"); err != nil {
+	if err := saveConfig(); err != nil {
 		errMsg := fmt.Sprintf("save config after whitelist load: %v", err)
 		fmt.Fprintln(os.Stderr, errMsg)
 		errorLogger.Error("save_config_failed", slog.Any("err", err))
@@ -828,6 +834,100 @@ func isLowerASCII(s string) bool {
 	return true
 }
 
+type state struct {
+	p int
+	n int
+}
+
+// slower but correct
+func matchPattern2(pattern, name string) bool {
+	if !isLowerASCII(pattern) {
+		panic("pattern not lowercase")
+	}
+	if !isLowerASCII(name) {
+		panic("name not lowercase")
+	}
+
+	pLen := len(pattern)
+	nLen := len(name)
+
+	states := []state{{0, 0}}
+	seen := make(map[state]struct{}, 32)
+
+	for len(states) > 0 {
+		s := states[len(states)-1]
+		states = states[:len(states)-1]
+
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+
+		p := s.p
+		n := s.n
+
+		if p == pLen {
+			if n == nLen {
+				return true
+			}
+			continue
+		}
+
+		// {**}
+		if p+4 <= pLen && pattern[p:p+4] == "{**}" {
+			if n < nLen {
+				states = append(states, state{p, n + 1})
+				states = append(states, state{p + 4, n + 1})
+			}
+			continue
+		}
+
+		// {*}
+		if p+3 <= pLen && pattern[p:p+3] == "{*}" {
+			if n < nLen && name[n] != '.' {
+				states = append(states, state{p, n + 1})
+				states = append(states, state{p + 3, n + 1})
+			}
+			continue
+		}
+
+		// **
+		if p+2 <= pLen && pattern[p:p+2] == "**" {
+			if n < nLen {
+				states = append(states, state{p, n + 1})
+			}
+			states = append(states, state{p + 2, n})
+			continue
+		}
+
+		switch pattern[p] {
+
+		case '*':
+			if n < nLen && name[n] != '.' {
+				states = append(states, state{p, n + 1})
+			}
+			states = append(states, state{p + 1, n})
+
+		case '?':
+			if n < nLen && name[n] != '.' {
+				states = append(states, state{p + 1, n + 1})
+			}
+
+		case '!':
+			if n < nLen {
+				states = append(states, state{p + 1, n + 1})
+			}
+
+		default:
+			if n < nLen && pattern[p] == name[n] {
+				states = append(states, state{p + 1, n + 1})
+			}
+		}
+	}
+
+	return false
+}
+
 // it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
 func matchPattern(pattern, name string) bool {
 	if !isLowerASCII(pattern) {
@@ -840,53 +940,103 @@ func matchPattern(pattern, name string) bool {
 	//pattern = strings.ToLower(pattern)//XXX: must be already lowercase
 	//name = strings.ToLower(name)//XXX: must be already lowercase
 
-	idx := strings.Index(pattern, "**")
-	if idx != -1 {
-		if idx > 0 && idx+2 < len(pattern) &&
-			pattern[idx-1] == '{' && pattern[idx+2] == '}' {
-			// {**}
-			// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
-			//The no allocs variant:
-			prefix := pattern[:idx-1]
-			suffix := pattern[idx+3:]
+	// idx := strings.Index(pattern, "**")
+	// if idx != -1 {
+	// 	if idx > 0 && idx+2 < len(pattern) &&
+	// 		pattern[idx-1] == '{' && pattern[idx+2] == '}' {
+	// 		// {**}
+	// 		// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
+	// 		//The no allocs variant:
+	// 		prefix := pattern[:idx-1]
+	// 		suffix := pattern[idx+3:]
 
-			if prefix != "" && !strings.HasPrefix(name, prefix) {
-				return false
-			}
-			if suffix != "" && !strings.HasSuffix(name, suffix) {
-				return false
-			}
+	// 		if prefix != "" && !strings.HasPrefix(name, prefix) {
+	// 			return false
+	// 		}
+	// 		if suffix != "" && !strings.HasSuffix(name, suffix) {
+	// 			return false
+	// 		}
 
-			if prefix == "" && strings.HasPrefix(suffix, ".") {
-				return len(name) > len(suffix)
-			}
-			if suffix == "" && strings.HasSuffix(prefix, ".") {
-				return len(name) > len(prefix)
-			}
+	// 		if prefix == "" && strings.HasPrefix(suffix, ".") {
+	// 			return len(name) > len(suffix)
+	// 		}
+	// 		if suffix == "" && strings.HasSuffix(prefix, ".") {
+	// 			return len(name) > len(prefix)
+	// 		}
 
-			return true
-		} else {
-			// **
-			// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
-			//The no allocs variant:
-			prefix := pattern[:idx]
-			suffix := pattern[idx+2:]
+	// 		return true
+	// 	} else {
+	// 		// **
+	// 		// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
+	// 		//The no allocs variant:
+	// 		prefix := pattern[:idx]
+	// 		suffix := pattern[idx+2:]
 
-			if prefix != "" && !strings.HasPrefix(name, prefix) {
-				return false
-			}
-			if suffix != "" && !strings.HasSuffix(name, suffix) {
-				return false
-			}
-			return true
-		}
-	}
+	// 		if prefix != "" && !strings.HasPrefix(name, prefix) {
+	// 			return false
+	// 		}
+	// 		if suffix != "" && !strings.HasSuffix(name, suffix) {
+	// 			return false
+	// 		}
+	// 		return true
+	// 	}
+	// }
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
 	return recursiveMatch(pattern, name)
 }
 
-func recursiveMatch(pattern, name string) bool {
+func recursiveMatchOld(pattern, name string) bool {
+
+	if strings.HasPrefix(pattern, "{**}") {
+		pattern = pattern[4:]
+		// must consume at least 1 char including dot
+		if len(name) < 1 {
+			return false
+		}
+		for i := 1; i <= len(name); i++ {
+			if recursiveMatch(pattern, name[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	// if strings.HasPrefix(pattern, "{**}") {
+	// 	pattern = pattern[4:]
+	// 	if len(name) < 1 {
+	// 		return false
+	// 	}
+
+	// 	// Find the next literal in pattern after {**}
+	// 	nextLiteral := 0
+	// 	for nextLiteral < len(pattern) && strings.ContainsAny(string(pattern[nextLiteral]), "*?{}!") {
+	// 		nextLiteral++
+	// 	}
+	// 	// If no next literal, consume everything
+	// 	if nextLiteral == len(pattern) {
+	// 		return true
+	// 	}
+
+	// 	// Otherwise, try consuming 1..len(name) chars until the next literal matches
+	// 	for i := 1; i <= len(name); i++ {
+	// 		if recursiveMatch(pattern, name[i:]) {
+	// 			return true
+	// 		}
+	// 	}
+	// 	return false
+	// }
+
+	if strings.HasPrefix(pattern, "**") {
+		pattern = pattern[2:]
+		// can consume zero or more chars including dot
+		for i := 0; i <= len(name); i++ {
+			if recursiveMatch(pattern, name[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+
 	for pattern != "" { //len(pattern) > 0 {
 		// Handle multi-char token {*}
 		if strings.HasPrefix(pattern, "{*}") {
@@ -951,6 +1101,101 @@ func recursiveMatch(pattern, name string) bool {
 			name = name[1:]
 		}
 	}
+	return len(name) == 0
+}
+
+// recursiveMatch handles all tokens recursively.
+func recursiveMatch(pattern, name string) bool {
+	for len(pattern) > 0 {
+		switch {
+		case strings.HasPrefix(pattern, "{**}"):
+			// consume 1+ chars including dots
+			pattern = pattern[4:]
+			if len(name) < 1 {
+				return false
+			}
+			for i := 1; i <= len(name); i++ {
+				if recursiveMatch(pattern, name[i:]) {
+					return true
+				}
+			}
+			return false
+
+		case strings.HasPrefix(pattern, "**"):
+			// consume 0+ chars including dots
+			pattern = pattern[2:]
+			if len(name) == 0 {
+				return recursiveMatch(pattern, "")
+			}
+			for i := 0; i <= len(name); i++ {
+				if recursiveMatch(pattern, name[i:]) {
+					return true
+				}
+			}
+			return false
+
+		case strings.HasPrefix(pattern, "{*}"):
+			// consume 1+ chars, stop at dot
+			pattern = pattern[3:]
+			max := 0
+			for j := 0; j < len(name) && name[j] != '.'; j++ {
+				max = j + 1
+			}
+			if max < 1 {
+				return false
+			}
+			for i := 1; i <= max; i++ {
+				if recursiveMatch(pattern, name[i:]) {
+					return true
+				}
+			}
+			return false
+
+		case strings.HasPrefix(pattern, "*"):
+			// consume 0+ chars, stop at dot
+			pattern = pattern[1:]
+			if len(name) == 0 {
+				return recursiveMatch(pattern, "")
+			}
+			for i := 0; i <= len(name); i++ {
+				if i < len(name) && name[i] == '.' {
+					if recursiveMatch(pattern, name[i:]) {
+						return true
+					}
+					break
+				}
+				if recursiveMatch(pattern, name[i:]) {
+					return true
+				}
+			}
+			return false
+
+		case strings.HasPrefix(pattern, "?"):
+			// consume exactly 1 char, not dot
+			if len(name) == 0 || name[0] == '.' {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+
+		case strings.HasPrefix(pattern, "!"):
+			// consume exactly 1 char, any
+			if len(name) == 0 {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+
+		default:
+			// literal char match
+			if len(name) == 0 || pattern[0] != name[0] {
+				return false
+			}
+			pattern = pattern[1:]
+			name = name[1:]
+		}
+	}
+
 	return len(name) == 0
 }
 
@@ -2072,7 +2317,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 
-					saveConfig("config.json") //FIXME: make sure all saveConfig calls succeed or log the failure! not just here.
+					saveConfig() //FIXME: make sure all saveConfig calls succeed or log the failure! not just here.
 					http.Redirect(w, r, "/rules", http.StatusSeeOther)
 					return
 				}
@@ -2153,7 +2398,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
 		}
 
-		saveConfig("config.json")
+		saveConfig()
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	}
 }
@@ -2200,7 +2445,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 			whitelist[typ] = append(whitelist[typ], newRule)
 			ruleMutex.Unlock()
-			saveConfig("config.json")
+			saveConfig()
 			fmt.Printf("Quick unblock added for %q (%q)\n", domainLowercased, typ)
 		}
 		http.Redirect(w, r, "/blocks", http.StatusSeeOther)

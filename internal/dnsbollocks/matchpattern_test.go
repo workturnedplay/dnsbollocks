@@ -27,6 +27,15 @@ func TestMatchPattern(t *testing.T) {
 		name    string
 		want    bool
 	}{
+		/*
+			Token	Matches
+			*		0+ chars, stops at .
+			{*}		1+ chars, stops at .
+			**		0+ chars, includes .
+			{**}	1+ chars, includes .
+			?		exactly 1 char, not .
+			!		exactly 1 char, any char
+		*/
 		{"example.com", "example.com", true},
 		{"exAmple.com", "exaMple.com", true}, //these will match because will be auto lowercased before compare!
 		{"example.co", "example.com", false},
@@ -48,6 +57,19 @@ func TestMatchPattern(t *testing.T) {
 		{"**.example.com", ".example.com", true}, // should use {**} here as a user, footgun here.
 		{"{**}.example.com", "f.example.com", true},
 		{"{**}.example.com", "abc.def.example.com", true},
+		{"{**}.example.{**}", ".example.", false},
+		{"{**}example", ".example", true},
+		{"example{**}", "example.", true},
+		{"{**}example{**}", ".example.", true},
+		{"{**}.example.{**}", "abc.def.example.com", true}, // NEVERMIND: can't have dot before/after {**} because it eats it
+		{"{**}exa.mple{**}", "abc.def.exa.mple.com", true},
+		{"{**}example{**}", "abc.def.example.com", true},
+		{"**.example.**", "abc.def.example.com", true},
+		{"*example*", "abc.def.example.com", false},  // * doesn't include the dot(s)
+		{"**example**", "abc.def.example.com", true}, // but ** does!
+		{"**.example.**", "abc.def.example.com", true},
+		{"{**}.example.{**}", "abc.def.exapple.com", false},
+		{"{**}appl{**}", "abc.def.exapple.com", true},
 		{"{**}.example.com", ".example.com", false},
 		{"?", "a", true},
 		{"?", "ab", false},
@@ -112,7 +134,8 @@ func TestMatchPattern(t *testing.T) {
 		{"!?a", "bba", true},
 		{"!?a", "ba", false},
 
-		{"{**}a", "a", true},
+		{"{**}a", "a", false},
+		{"**a", "a", true},
 		{"{**}a", "ba", true},
 		{"{**}a", ".a", true},
 
