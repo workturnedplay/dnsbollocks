@@ -64,34 +64,346 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS         string            `json:"listen_dns"`         // e.g., "127.0.0.1:53"
-	ListenDoH         string            `json:"listen_doh"`         // e.g., "127.0.0.1:443"
-	UIPort            int               `json:"ui_port"`            // 8080
-	UpstreamURL       string            `json:"upstream_url"`       // "https://9.9.9.9/dns-query"
-	SNIHostname       string            `json:"sni_hostname"`       // Optional ""
-	BlockMode         string            `json:"block_mode"`         // "nxdomain", "drop", "ip_block"
-	BlockIP           string            `json:"block_ip"`           // "0.0.0.0"
-	RateQPS           int               `json:"rate_qps"`           // 100
-	CacheMinTTL       int               `json:"cache_min_ttl"`      // 300s
-	CacheMaxEntries   int               `json:"cache_max_entries"`  // 10000
-	Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
-	ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
-	WhitelistFile     string            `json:"whitelist_file"`     // "query_whitelist.json"
-	BlacklistFile     string            `json:"blacklist_file"`     // "response_blacklist.json"
-	LogQueries        string            `json:"log_queries"`        // "queries.log"
-	LogErrors         string            `json:"log_errors"`         // "errors.log"
-	LogMaxSizeMB      int               `json:"log_max_size_mb"`    // 1 for rotation
-	AllowRunAsAdmin   bool              `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
+	ListenDNS       string `json:"listen_dns"`        // e.g., "127.0.0.1:53"
+	ListenDoH       string `json:"listen_doh"`        // e.g., "127.0.0.1:443"
+	UIPort          int    `json:"ui_port"`           // 8080
+	UpstreamURL     string `json:"upstream_url"`      // "https://9.9.9.9/dns-query"
+	SNIHostname     string `json:"sni_hostname"`      // Optional ""
+	BlockMode       string `json:"block_mode"`        // "nxdomain", "drop", "ip_block"
+	BlockIP         string `json:"block_ip"`          // "0.0.0.0"
+	RateQPS         int    `json:"rate_qps"`          // 100
+	CacheMinTTL     int    `json:"cache_min_ttl"`     // 300s
+	CacheMaxEntries int    `json:"cache_max_entries"` // 10000
+	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
+	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
+	WhitelistFile   string `json:"whitelist_file"`     // "query_whitelist.json"
+	BlacklistFile   string `json:"blacklist_file"`     // "response_blacklist.json"
+	LogQueriesFile  string `json:"log_queries"`        // "queries.log"
+	LogErrorsFile   string `json:"log_errors"`         // "errors.log"
+	LogMaxSizeMB    int    `json:"log_max_size_mb"`    // 1 for rotation
+	AllowRunAsAdmin bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
 }
+
+// Near the other globals (after Config definition)
+var (
+	responseBlacklist   []*net.IPNet // parsed and ready-to-use form
+	responseBlacklistMu sync.RWMutex
+)
 
 // Rule represents a whitelist rule.
 type Rule struct {
 	ID      string `json:"id"`
 	Pattern string `json:"pattern"`
 	Enabled bool   `json:"enabled"`
+}
+
+// BlacklistFileFormat represents the strict on-disk structure of response_blacklist.json
+type BlacklistFileFormat struct {
+	ResponseBlacklist []string `json:"response_blacklist"`
+}
+
+// Call once during startup (inside loadConfig or after it)
+func loadResponseBlacklist() error {
+	blacklistFileName := config.BlacklistFile
+	if blacklistFileName == "" {
+		panic("dev. didn't set the default blacklist filename!")
+	}
+	blacklistFileName = filepath.Clean(config.BlacklistFile)
+
+	var shouldSave bool = false
+	var raw []string
+	data, err := os.ReadFile(blacklistFileName)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read blacklist %q: %w", blacklistFileName, err)
+		} else {
+			fmt.Printf("Blacklist file %q not found → using built-in defaults\n", blacklistFileName)
+			raw = DefaultResponseBlacklist() // see below
+			shouldSave = true
+		}
+	} else {
+		// read the existing ones
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		var file BlacklistFileFormat
+		if err = dec.Decode(&file); err != nil {
+			return fmt.Errorf("failed to parse blacklist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", blacklistFileName, err)
+		}
+		raw = file.ResponseBlacklist
+	}
+
+	parsed := make([]*net.IPNet, 0, len(raw))
+	// fail-fast if the response blacklist has malformed CIDR addresses
+	for _, cidr := range raw {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("invalid CIDR %q in %q: %w", cidr, blacklistFileName, err)
+		}
+		parsed = append(parsed, n)
+	}
+
+	// Optional: after parsing, clean up duplicates (just in case)
+	seen := make(map[string]struct{}, len(parsed))
+	deduped := parsed[:0]
+	for _, n := range parsed {
+		s := n.String()
+		if _, exists := seen[s]; !exists {
+			seen[s] = struct{}{}
+			deduped = append(deduped, n)
+		} else {
+			fmt.Printf("blacklisted %q is duplicate, removing it", s)
+			if !shouldSave {
+				shouldSave = true
+			}
+		}
+	}
+	dups := len(parsed) - len(deduped)
+	if dups > 0 {
+		fmt.Printf("Removed %d duplicate CIDRs from blacklist file %q\n", len(parsed)-len(deduped), blacklistFileName)
+		parsed = deduped
+	}
+
+	responseBlacklistMu.Lock()
+	responseBlacklist = parsed
+	responseBlacklistMu.Unlock()
+
+	fmt.Printf("Loaded %d CIDR entries (%d were dups) from %q\n", len(responseBlacklist), dups, blacklistFileName)
+	if shouldSave {
+		if err := saveResponseBlacklist(); err != nil {
+			return fmt.Errorf("failed to save blacklist file %q, err: %w", blacklistFileName, err)
+		} else {
+			fmt.Printf("Saved blacklist file %q\n", blacklistFileName)
+		}
+	}
+	return nil
+}
+
+func saveResponseBlacklist() error {
+	cidrs := GetResponseBlacklist()
+	jsonFileContents := BlacklistFileFormat{
+		ResponseBlacklist: cidrs,
+	}
+	data, err := json.MarshalIndent(jsonFileContents, "", "  ")
+	if err != nil {
+		return fmt.Errorf("blacklist marshal failed: %w", err)
+	}
+
+	blacklistFileName := config.BlacklistFile
+	if blacklistFileName == "" {
+		panic("bad coding: dev. didn't set the default blacklist filename!")
+	}
+	if err := os.WriteFile(blacklistFileName, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
+	} else {
+		fmt.Printf("Saved blacklist file %q\n", blacklistFileName)
+	}
+	return nil
+}
+
+// func saveAndSetResponseBlacklist(cidrs []string) error {
+// 	data, err := json.MarshalIndent(cidrs, "", "  ")
+// 	if err != nil {
+// 		return err
+// 	}
+// 	fname := config.BlacklistFile
+// 	if fname == "" {
+// 		panic("dev. didn't set the default blacklist filename!")
+// 	}
+// 	if err := os.WriteFile(fname, data, 0600); err != nil {
+// 		return fmt.Errorf("cannot write blacklist file %q: %w", fname, err)
+// 	}
+
+// 	parsed := make([]*net.IPNet, 0, len(cidrs))
+// 	for _, c := range cidrs {
+// 		_, n, err := net.ParseCIDR(c)
+// 		if err != nil {
+// 			return err // should not happen if we just saved it
+// 		}
+// 		parsed = append(parsed, n)
+// 	}
+
+// 	responseBlacklistMu.Lock()
+// 	responseBlacklist = parsed
+// 	responseBlacklistMu.Unlock()
+// 	return nil
+// }
+
+// Helper – returns current list (snapshot copy)
+func GetResponseBlacklist() []string {
+	responseBlacklistMu.RLock()
+	defer responseBlacklistMu.RUnlock()
+
+	out := make([]string, 0, len(responseBlacklist))
+	for _, n := range responseBlacklist {
+		out = append(out, n.String())
+	}
+	return out
+}
+
+// Helper – used in filterResponse / processRR
+func IsBlockedIP(ip net.IP) bool {
+	responseBlacklistMu.RLock()
+	defer responseBlacklistMu.RUnlock()
+
+	for _, n := range responseBlacklist {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func DefaultResponseBlacklist() []string {
+	return []string{
+		// IPv4 loopback – never valid for public hosts
+		"127.0.0.0/8",
+
+		// RFC1918 private networks
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+
+		// IPv4 link-local (APIPA)
+		"169.254.0.0/16",
+
+		// "This network" / unspecified addresses
+		"0.0.0.0/8",
+
+		// Carrier-grade NAT (CGNAT)
+		"100.64.0.0/10",
+
+		// Documentation / example ranges (RFC 5737)
+		"192.0.2.0/24",
+		"198.51.100.0/24",
+		"203.0.113.0/24",
+
+		// Benchmarking / performance testing
+		"198.18.0.0/15",
+
+		// IPv4 multicast
+		"224.0.0.0/4",
+
+		// IPv4 reserved / future use
+		"240.0.0.0/4",
+
+		// Limited broadcast
+		"255.255.255.255/32",
+
+		// IPv6 loopback
+		"::1/128",
+
+		// IPv6 unique local addresses (private)
+		"fc00::/7",
+
+		// IPv6 link-local
+		"fe80::/10",
+
+		// IPv6 documentation range
+		"2001:db8::/32",
+
+		// IPv6 multicast
+		"ff00::/8",
+
+		// IPv6 unspecified
+		"::/128",
+	}
+}
+
+func saveQueryWhitelist() error {
+	ruleMutex.RLock()
+	defer ruleMutex.RUnlock()
+
+	data, err := json.MarshalIndent(whitelist, "", "  ")
+	if err != nil {
+		return fmt.Errorf("whitelist marshal failed: %w", err)
+	}
+	if err := os.WriteFile(config.WhitelistFile, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write whitelist file %q: %w", config.WhitelistFile, err)
+	}
+	return nil
+}
+
+// Loads whitelist rules from dedicated file
+func loadQueryWhitelist() error {
+	path := config.WhitelistFile
+	if path == "" {
+		panic("dev. didn't set the default blacklist filename!")
+	}
+	path = filepath.Clean(config.WhitelistFile)
+
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		fmt.Printf("Whitelist file %q not found → starting with empty whitelist\n", path)
+		func() {
+			ruleMutex.Lock()
+			defer ruleMutex.Unlock()
+			whitelist = make(map[string][]Rule)
+		}() // lock released here
+		return saveQueryWhitelist() // create "empty" file; uses lock
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read whitelist file %q: %w", path, err)
+	}
+
+	var rulesByType map[string][]Rule
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err = dec.Decode(&rulesByType); err != nil {
+		return fmt.Errorf("failed to parse whitelist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", path, err)
+	}
+	var changed uint = 0
+
+	func() {
+		ruleMutex.Lock()
+		defer ruleMutex.Unlock()
+
+		whitelist = make(map[string][]Rule, len(rulesByType))
+		for typ, rules := range rulesByType {
+			var cleaned []Rule
+			for i := range rules {
+				r := &rules[i]
+				// XXX: it may not have an ID set at this point
+				if r.ID == "" {
+					nid := newUniqueID(rulesByType)
+					fmt.Println("Making new ID for rule that had none: ", nid)
+					r.ID = nid
+					changed++
+				}
+				new := strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
+				if new != r.Pattern {
+					r.Pattern = new
+					changed++
+				}
+				cleaned = append(cleaned, *r)
+			}
+			// // deduplicate by ID, unclear why'd I ever need this before?!
+			// seen := make(map[string]struct{})
+			// deduped := cleaned[:0]
+			// for _, r := range cleaned {
+			// 	if _, ok := seen[r.ID]; !ok {
+			// 		seen[r.ID] = struct{}{}
+			// 		deduped = append(deduped, r)
+			// 	}
+			// }
+			whitelist[typ] = cleaned
+		}
+
+		if countRules(rulesByType) != countRules(whitelist) {
+			panic("bad coding: lost some rules, shouldn't happen unless we dedupped- but we didn't")
+		}
+
+		fmt.Printf("Loaded %d types / %d rules from %q", len(whitelist), countRules(whitelist), path)
+	}() // lock released here
+	if changed > 0 {
+		fmt.Printf(" and had to change/normalize %d of them. Thus, saving file: %q\n", changed, path)
+		return saveQueryWhitelist() //uses lock!
+	} else {
+		fmt.Println()
+		return nil // no error
+	}
 }
 
 // DefaultConfig Every call produces a new map and slice backing array.
@@ -108,67 +420,15 @@ func DefaultConfig() Config {
 		RateQPS:         100,
 		CacheMinTTL:     300,
 		CacheMaxEntries: 10000,
-		Whitelist:       make(map[string][]Rule),
-		ResponseBlacklist: []string{
-			// IPv4 loopback – never valid for public hosts
-			"127.0.0.0/8",
-
-			// RFC1918 private networks
-			"10.0.0.0/8",
-			"172.16.0.0/12",
-			"192.168.0.0/16",
-
-			// IPv4 link-local (APIPA)
-			"169.254.0.0/16",
-
-			// "This network" / unspecified addresses
-			"0.0.0.0/8",
-
-			// Carrier-grade NAT (CGNAT)
-			"100.64.0.0/10",
-
-			// Documentation / example ranges (RFC 5737)
-			"192.0.2.0/24",
-			"198.51.100.0/24",
-			"203.0.113.0/24",
-
-			// Benchmarking / performance testing
-			"198.18.0.0/15",
-
-			// IPv4 multicast
-			"224.0.0.0/4",
-
-			// IPv4 reserved / future use
-			"240.0.0.0/4",
-
-			// Limited broadcast
-			"255.255.255.255/32",
-
-			// IPv6 loopback
-			"::1/128",
-
-			// IPv6 unique local addresses (private)
-			"fc00::/7",
-
-			// IPv6 link-local
-			"fe80::/10",
-
-			// IPv6 documentation range
-			"2001:db8::/32",
-
-			// IPv6 multicast
-			"ff00::/8",
-
-			// IPv6 unspecified
-			"::/128",
-		},
+		// Whitelist:         make(map[string][]Rule),
+		// ResponseBlacklist: DefaultResponseBlacklist(),
 
 		//FIXME: these two aren't used:
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
 
-		LogQueries:              "queries.log",
-		LogErrors:               "errors.log",
+		LogQueriesFile:          "queries.log",
+		LogErrorsFile:           "errors.log",
 		LogMaxSizeMB:            4095, // Rotation threshold
 		AllowRunAsAdmin:         false,
 		BlockAAAAasEmptyNoError: true,
@@ -551,15 +811,23 @@ func OldMain() {
 	}
 	fmt.Println("Non-elevated mode confirmed")
 
-	initLogging(config.LogQueries, config.LogErrors)
+	initLogging(config.LogQueriesFile, config.LogErrorsFile)
 	fmt.Println("Logging initialized")
 
 	cacheStore = cache.New(time.Hour, time.Hour) // Janitor every hour
 	fmt.Println("Cache initialized")
 	globalLimiter = rate.NewLimiter(rate.Limit(config.RateQPS), config.RateQPS)
 	fmt.Println("Rate limiter initialized")
-	loadWhitelist()
-	fmt.Println("Whitelist loaded")
+	// if err := loadQueryWhitelist(); err != nil {
+	// 	log.Fatal("Whitelist load failed:", err)
+	// } else {
+	// 	fmt.Println("Whitelist(used for queries only) loaded")
+	// }
+	// if err := loadResponseBlacklist(); err != nil {
+	// 	log.Fatal("Blacklist load failed:", err)
+	// } else {
+	// 	fmt.Println("Blacklist(used for responses only) loaded")
+	// }
 
 	if err := validateUpstream(); err != nil {
 		log.Fatal("Upstream validation failed:", err)
@@ -578,13 +846,22 @@ func OldMain() {
 
 	go watchKeys(
 		func() { // Ctrl+R
-			if err := loadConfig(); err != nil {
-				log.Println("Config reload failed:", err)
+			// if err := loadConfig(); err != nil {
+			// 	log.Fatal("Config reload failed:", err)
+			// } else {
+			// 	log.Println("Config reloaded successfully but beware that it's meant to work only for reloading whitelist and blacklist changes!")
+			// }
+			if err := loadQueryWhitelist(); err != nil {
+				log.Fatal("Whitelist reload failed:", err)
 			} else {
-				log.Println("Config reloaded successfully but beware that it's meant to work only for reloading whitelist changes!")
+				fmt.Println("Whitelist reloaded")
 			}
-			loadWhitelist()
-			fmt.Println("Whitelist reloaded")
+			if err := loadResponseBlacklist(); err != nil {
+				log.Fatal("Blacklist reload failed:", err)
+			} else {
+				fmt.Println("Blacklist reloaded")
+			}
+			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
 		func() { // alt+x etc.
 			fmt.Println("Shutdown signal received, clean exit.")
@@ -600,27 +877,30 @@ func OldMain() {
 }
 
 func loadConfig() error {
-	data, err := os.ReadFile(configFileName)
+	const cfgFname = configFileName
+	fmt.Printf("Loading config file %q\n", cfgFname)
+	var shouldSaveConfig = false
+	data, err := os.ReadFile(cfgFname)
 	if err != nil {
 		if isAdmin {
-			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin! because you're likely just in the wrong dir like system32", configFileName)
+			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
+				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
 		} else {
 			// not admin, auto create config file with defaults
 			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
-			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", configFileName)
+			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", cfgFname)
 		}
 		// Defaults
 		config = DefaultConfig()
 
-		if err = saveConfig(); err != nil {
-			return fmt.Errorf("default config save failed: %w", err)
+		shouldSaveConfig = true
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		//FIXME: any reload into existing config would race with other readers of config.* values, in theory, as this isn't mutex protected. But we don't reload config anyway, only the whitelist/blacklist which are mutexed.
+		if err = dec.Decode(&config); err != nil {
+			return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
 		}
-		return nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err = dec.Decode(&config); err != nil {
-		return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
 	}
 	// Validate loaded config
 	if config.CacheMinTTL < 60 {
@@ -643,15 +923,47 @@ func loadConfig() error {
 	config.SNIHostname = upstreamHost
 	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
 
-	// fail-fast if the response blacklist has malformed CIDR addresses
-	for _, cidr := range config.ResponseBlacklist {
-		_, _, err := net.ParseCIDR(cidr)
-		if err != nil {
-			return fmt.Errorf("invalid_cidr %q in response blacklist which is in the config file %q", cidr, configFileName)
-		}
+	if didClean := cleanFileName(&config.BlacklistFile, "blacklist_file"); didClean && !shouldSaveConfig {
+		shouldSaveConfig = true
+	}
+	if didClean := cleanFileName(&config.WhitelistFile, "whitelist_file"); didClean && !shouldSaveConfig {
+		shouldSaveConfig = true
+	}
+	if didClean := cleanFileName(&config.LogQueriesFile, "log_queries"); didClean && !shouldSaveConfig {
+		shouldSaveConfig = true
+	}
+	if didClean := cleanFileName(&config.LogErrorsFile, "log_errors"); didClean && !shouldSaveConfig {
+		shouldSaveConfig = true
 	}
 
+	// After decoding config
+	err = loadQueryWhitelist()
+	if err != nil {
+		return err
+	}
+	err = loadResponseBlacklist()
+	if err != nil {
+		return err
+	}
+
+	if shouldSaveConfig {
+		if err = saveConfig(); err != nil {
+			return fmt.Errorf("config save failed: %w", err)
+		}
+	}
 	return nil
+}
+
+func cleanFileName(what *string, description string) (didClean bool) {
+	cleanedFile := filepath.Clean(*what)
+	if cleanedFile != *what {
+		fmt.Printf("Cleaned %s filename from config file, before vs after: %q vs %q", description, *what, cleanedFile)
+		didClean = true
+		*what = cleanedFile
+	} else {
+		didClean = false
+	}
+	return
 }
 
 // helper to return host (IP or hostname) from an URL
@@ -695,6 +1007,11 @@ func isAdminNow() bool {
 }
 
 func initLogging(qpath, epath string) {
+	if qpath == "" || epath == "" {
+		panic("one of these is empty: '" + qpath + "','" + epath + "'")
+	}
+	qpath = filepath.Clean(qpath)
+	epath = filepath.Clean(epath)
 	// Rotation stub: Rename if > max size
 	rotateIfNeeded(qpath, config.LogMaxSizeMB)
 	rotateIfNeeded(epath, config.LogMaxSizeMB)
@@ -739,57 +1056,57 @@ func validateUpstream() error {
 	return nil
 }
 
-func loadWhitelist() {
-	fmt.Println("loadWhitelist() entered - starting")
-	// Gen IDs pre-lock to avoid nesting
-	for _, rules := range config.Whitelist {
-		for i := range rules {
-			if rules[i].ID == "" {
-				nid := newUniqueID() // Gen outside lock
-				fmt.Println("Made new ID for a rule that missed one: ", nid)
-				rules[i].ID = nid
-			}
-		}
-	}
-	ruleMutex.Lock()
-	defer ruleMutex.Unlock()
-	whitelist = make(map[string][]Rule)
-	loadErr := false
-	fmt.Printf("Whitelist config has %d types\n", len(config.Whitelist))
-	for typ, rules := range config.Whitelist {
-		fmt.Printf("Processing type %q with %d rules...\n", typ, len(rules))
-		var processed []Rule
-		for i := range rules {
-			fmt.Printf("  Rule %d: Pattern %q, ID %q\n", i, rules[i].Pattern, rules[i].ID)
-			r := &rules[i]
-			fmt.Print("    Using simple wildcard-style pattern...")
-			r.Pattern = strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
-			fmt.Println("OK")
-			processed = append(processed, *r)
-		}
-		// Dedup by ID within type (keep first occurrence)
-		seen := make(map[string]struct{})
-		deduped := processed[:0]
-		for _, r := range processed {
-			if _, ok := seen[r.ID]; !ok {
-				seen[r.ID] = struct{}{}
-				deduped = append(deduped, r)
-			}
-		}
-		processed = deduped
-		whitelist[typ] = processed
-		fmt.Printf("Type %q processed: %d valid rules\n", typ, len(processed))
-	}
-	if loadErr {
-		fmt.Println("Warning: Some whitelist rules skipped due to errors")
-	}
-	if err := saveConfig(); err != nil {
-		errMsg := fmt.Sprintf("save config after whitelist load: %v", err)
-		fmt.Fprintln(os.Stderr, errMsg)
-		errorLogger.Error("save_config_failed", slog.Any("err", err))
-	}
-	fmt.Printf("loadWhitelist() complete: %d types, %d total rules\n", len(whitelist), countRules(whitelist))
-}
+// func loadWhitelist() {
+// 	fmt.Println("loadWhitelist() entered - starting")
+// 	// Gen IDs pre-lock to avoid nesting
+// 	for _, rules := range config.Whitelist {
+// 		for i := range rules {
+// 			if rules[i].ID == "" {
+// 				nid := newUniqueID() // Gen outside lock
+// 				fmt.Println("Made new ID for a rule that missed one: ", nid)
+// 				rules[i].ID = nid
+// 			}
+// 		}
+// 	}
+// 	ruleMutex.Lock()
+// 	defer ruleMutex.Unlock()
+// 	whitelist = make(map[string][]Rule)
+// 	loadErr := false
+// 	fmt.Printf("Whitelist config has %d types\n", len(config.Whitelist))
+// 	for typ, rules := range config.Whitelist {
+// 		fmt.Printf("Processing type %q with %d rules...\n", typ, len(rules))
+// 		var processed []Rule
+// 		for i := range rules {
+// 			fmt.Printf("  Rule %d: Pattern %q, ID %q\n", i, rules[i].Pattern, rules[i].ID)
+// 			r := &rules[i]
+// 			fmt.Print("    Using simple wildcard-style pattern...")
+// 			r.Pattern = strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
+// 			fmt.Println("OK")
+// 			processed = append(processed, *r)
+// 		}
+// 		// Dedup by ID within type (keep first occurrence)
+// 		seen := make(map[string]struct{})
+// 		deduped := processed[:0]
+// 		for _, r := range processed {
+// 			if _, ok := seen[r.ID]; !ok {
+// 				seen[r.ID] = struct{}{}
+// 				deduped = append(deduped, r)
+// 			}
+// 		}
+// 		processed = deduped
+// 		whitelist[typ] = processed
+// 		fmt.Printf("Type %q processed: %d valid rules\n", typ, len(processed))
+// 	}
+// 	if loadErr {
+// 		fmt.Println("Warning: Some whitelist rules skipped due to errors")
+// 	}
+// 	if err := saveConfig(); err != nil {
+// 		errMsg := fmt.Sprintf("save config after whitelist load: %v", err)
+// 		fmt.Fprintln(os.Stderr, errMsg)
+// 		errorLogger.Error("save_config_failed", slog.Any("err", err))
+// 	}
+// 	fmt.Printf("loadWhitelist() complete: %d types, %d total rules\n", len(whitelist), countRules(whitelist))
+// }
 
 func countRules(wl map[string][]Rule) int {
 	total := 0
@@ -799,19 +1116,19 @@ func countRules(wl map[string][]Rule) int {
 	return total
 }
 
-func newUniqueID() string {
+func newUniqueID(alreadyHave map[string][]Rule) string {
 	//fmt.Println("starts newUniqueID()")
 	existing := make(map[string]struct{})
 	//fmt.Println("in newUniqueID() before RLock")
-	ruleMutex.RLock()
+	//ruleMutex.RLock()
 	//fmt.Println("in newUniqueID() after RLock")
-	for _, rs := range whitelist {
+	for _, rs := range alreadyHave {
 		for _, r := range rs {
 			existing[r.ID] = struct{}{}
 		}
 	}
 	//fmt.Println("in newUniqueID() before RUnlock")
-	ruleMutex.RUnlock()
+	//ruleMutex.RUnlock()
 	//fmt.Println("in newUniqueID() after RUnlock")
 
 	for i := 0; i < 10; i++ {
@@ -1309,6 +1626,11 @@ func generateCertIfNeeded() {
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
 func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
+	if certFileNameNoPath == "" || keyFileNameNoPath == "" {
+		panic("unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
+	}
+	certFileNameNoPath = filepath.Clean(certFileNameNoPath)
+	keyFileNameNoPath = filepath.Clean(keyFileNameNoPath)
 	// From crypto/tls/generate_cert.go; edge: Ensure unique serial, valid for 10y
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -1342,7 +1664,7 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 	}
 
 	// not this way: #nosec G304
-	certOut, err := os.Create(filepath.Clean(certFileNameNoPath))
+	certOut, err := os.Create(certFileNameNoPath)
 	if err != nil {
 		return fmt.Errorf("cert write failed: %w", err)
 	}
@@ -1353,8 +1675,8 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 
 	//keyOut, err := os.Create(keyFile)
 	// 2. Fix the Key Permissions: Replace os.Create(keyFile) with this:
-	// not this way: #nosec G304
-	keyOut, err := os.OpenFile(filepath.Clean(keyFileNameNoPath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// not this way: #nosec G304  but this way filepath.Clean(
+	keyOut, err := os.OpenFile(keyFileNameNoPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("key write failed: %w", err)
 	}
@@ -1728,7 +2050,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	}
 
 	// Filter
-	filtered := filterResponse(resp, config.ResponseBlacklist)
+	filtered := filterResponse(resp) //, responseBlacklist)
 	if filtered == nil {
 		ips := extractIPs(filtered)
 		logQuery(clientAddr, domain, qtype,
@@ -2043,27 +2365,27 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 
 }
 
-func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
+func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 	if msg == nil {
 		errorLogger.Error("msg was nil, unexpected bad programming/code ;p")
-		//return nil //un
 		panic("unreachable1, or the logger is broken")
 	}
 
-	nets := make([]*net.IPNet, 0, len(blacklists))
-	for _, cidr := range blacklists {
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err == nil {
-			nets = append(nets, ipnet)
-		} else {
-			//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
-			errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
-			panic("unreachable2, or the logger is broken")
-		}
-	}
+	// nets := make([]*net.IPNet, 0, len(blacklists))
+	// for _, cidr := range blacklists {
+	// 	_, ipnet, err := net.ParseCIDR(cidr)
+	// 	if err == nil {
+	// 		nets = append(nets, ipnet)
+	// 	} else {
+	// 		//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
+	// 		errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
+	// 		panic("unreachable2, or the logger is broken")
+	// 	}
+	// }
+
 	var goodAnswer, goodExtra []dns.RR
 	for _, rr := range msg.Answer {
-		if keep, modifiedRR := processRR(rr, nets); keep {
+		if keep, modifiedRR := processRR(rr); keep {
 			goodAnswer = append(goodAnswer, modifiedRR)
 			//fmt.Println("Good inAnswer:",rr)
 		} else {
@@ -2071,7 +2393,7 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 		}
 	}
 	for _, rr := range msg.Extra {
-		if keep, modifiedRR := processRR(rr, nets); keep {
+		if keep, modifiedRR := processRR(rr); keep {
 			goodExtra = append(goodExtra, modifiedRR)
 			//fmt.Println("Good inExtra:",rr)
 		} else {
@@ -2099,16 +2421,16 @@ func filterResponse(msg *dns.Msg, blacklists []string) *dns.Msg {
 }
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
-func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
+func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
 	switch r := rr.(type) {
 	case *dns.A:
-		if ipInNets(r.A, nets) {
+		if IsBlockedIP(r.A) {
 			return false, nil
 		}
 		return true, r
 
 	case *dns.AAAA:
-		if ipInNets(r.AAAA, nets) {
+		if IsBlockedIP(r.AAAA) {
 			return false, nil
 		}
 		return true, r
@@ -2146,14 +2468,14 @@ func processRR(rr dns.RR, nets []*net.IPNet) (bool, dns.RR) {
 	}
 }
 
-func ipInNets(ip net.IP, nets []*net.IPNet) bool {
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+// func ipInNets(ip net.IP, nets []*net.IPNet) bool {
+// 	for _, n := range nets {
+// 		if n.Contains(ip) {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 func extractIPs(msg *dns.Msg) []string {
 	var ips []string
@@ -2302,28 +2624,78 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
 			}
-			ruleMutex.Lock()
-			defer ruleMutex.Unlock()
-			rules := config.Whitelist[typ]
-			for i, rr := range rules {
-				if rr.ID == id {
-					config.Whitelist[typ] = append(rules[:i], rules[i+1:]...)
-					wr := whitelist[typ]
-					for j, wrr := range wr {
-						if wrr.ID == id {
-							whitelist[typ] = append(wr[:j], wr[j+1:]...)
-							fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", wr[j].Pattern, id, typ)
+			var deleted bool = false
+
+			//TODO: make proper delete rule function, heh.
+			func() {
+				ruleMutex.Lock()
+				defer ruleMutex.Unlock()
+
+				if rules, ok := whitelist[typ]; ok {
+					for i, rule := range rules {
+						if rule.ID == id {
+							// Copy the tail over the deleted element
+							copy(rules[i:], rules[i+1:])
+							// Shrink (zeroes the old last slot)
+							whitelist[typ] = rules[:len(rules)-1]
+							deleted = true
 							break
 						}
 					}
-
-					saveConfig() //FIXME: make sure all saveConfig calls succeed or log the failure! not just here.
-					http.Redirect(w, r, "/rules", http.StatusSeeOther)
-					return
 				}
+
+				// if rules, ok := whitelist[typ]; ok && len(rules) > 0 {
+				// 	for i := range rules {
+				// 		if rules[i].ID == id {
+				// 			// Move the last element into the hole, even if it is itself
+				// 			rules[i] = rules[len(rules)-1]
+				// 			// Shrink slice (zero the old last element for GC friendliness)
+				// 			whitelist[typ] = rules[:len(rules)-1]
+				// 			deleted = true
+				// 			break
+				// 		}
+				// 	}
+				// }
+
+				// if rules, ok := whitelist[typ]; ok {
+				// 	// all operations on 'rules' are known to be on a non-nil slice
+				// 	for i, rule := range rules {
+				// 		if rule.ID == id {
+				// 			whitelist[typ] = append(rules[:i], rules[i+1:]...)
+				// 			fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", rule.Pattern, id, typ)
+				// 			deleted = true
+				// 			break
+				// 		}
+				// 	}
+				// }
+
+				// rules := whitelist[typ]
+				// for _, rr := range rules {
+				// 	if rr.ID == id {
+				// 		//config.Whitelist[typ] = append(rules[:i], rules[i+1:]...)
+				// 		wr := whitelist[typ]
+				// 		for j, wrr := range wr {
+				// 			if wrr.ID == id {
+				// 				whitelist[typ] = append(wr[:j], wr[j+1:]...)
+				// 				fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", wr[j].Pattern, id, typ)
+				// 				deleted = true
+				// 				break
+				// 			}
+				// 		}
+
+				// 	}
+				// }
+			}() // lock released here
+			if deleted {
+				if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
+					log.Fatal("failed to save whitelist after rule deletion from webUI", err)
+				}
+				http.Redirect(w, r, "/rules", http.StatusSeeOther)
+				return
+			} else {
+				http.Error(w, "rule not found", http.StatusNotFound)
+				return
 			}
-			http.Error(w, "rule not found", http.StatusNotFound)
-			return
 		}
 
 		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern"))) //XXX: must be lowercased for matchPattern later on.
@@ -2337,68 +2709,75 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if id != "" {
+		func() {
 			ruleMutex.Lock()
 			defer ruleMutex.Unlock()
-			// Edit: Find and update (search all types)
-			found := false
-		outerfor:
-			for oldTyp, rules := range config.Whitelist {
-				for i, rule := range rules {
-					if rule.ID == id {
-						// Remove from old type
-						config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-						whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-						found = true
-						break outerfor
+
+			if id != "" {
+				// ruleMutex.Lock()
+				// defer ruleMutex.Unlock()
+				// Edit: Find and update (search all types)
+				found := false
+			outerfor:
+				for oldTyp, rules := range whitelist {
+					for i, rule := range rules {
+						if rule.ID == id {
+							// Remove from old type
+							//config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+							whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+							found = true
+							break outerfor
+						}
+					}
+					if found {
+						panic("shouldn't be hit, else the break label is wrong!?")
+						//break
 					}
 				}
-				if found {
-					panic("shouldn't be hit, else the break label is wrong!?")
-					//break
-				}
-			}
-			if !found {
-				http.Error(w, "Rule not found", http.StatusNotFound)
-				return
-			}
-
-			// Add to new type
-			newRule := Rule{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-			if _, ok := config.Whitelist[typ]; !ok {
-				config.Whitelist[typ] = []Rule{}
-				whitelist[typ] = []Rule{}
-			}
-			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-			whitelist[typ] = append(whitelist[typ], newRule)
-
-			fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
-		} else {
-			newID := newUniqueID()
-			ruleMutex.Lock()
-			defer ruleMutex.Unlock()
-			// Add new: Prevent duplicate (same type + pattern, case-insensitive)
-			//lowerPattern := strings.ToLower(pattern)
-			for _, rule := range config.Whitelist[typ] {
-				//if strings.ToLower(rule.Pattern) == lowerPattern {
-				if rule.Pattern /*already lowercase!*/ == patternLowercased {
-					http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
+				if !found {
+					http.Error(w, "Rule not found", http.StatusNotFound)
 					return
 				}
-			}
 
-			newRule := Rule{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
-			if _, ok := config.Whitelist[typ]; !ok {
-				config.Whitelist[typ] = []Rule{}
-				whitelist[typ] = []Rule{}
-			}
-			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-			whitelist[typ] = append(whitelist[typ], newRule)
+				// Add to new type
+				newRule := Rule{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+				// if _, ok := whitelist[typ]; !ok {
+				// 	//config.Whitelist[typ] = []Rule{}
+				// 	whitelist[typ] = []Rule{}
+				// }
+				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
 
-			fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
+				fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
+			} else {
+				// Add new: Prevent duplicate (same type + pattern, case-insensitive)
+				//lowerPattern := strings.ToLower(pattern)
+				for _, rule := range whitelist[typ] {
+					//if strings.ToLower(rule.Pattern) == lowerPattern {
+					if rule.Pattern /*already lowercase!*/ == patternLowercased {
+						http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
+						return
+					}
+				}
+
+				newID := newUniqueID(whitelist)
+				newRule := Rule{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
+				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
+				// 	whitelist[typ] = []Rule{}
+				// }
+				// // if whitelist[typ] == nil { // does the key for 'typ' not exist? OR it exists but has nil value
+				// // 	whitelist[typ] = []Rule{}
+				// // }
+				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+
+				fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
+			}
+		}() // lock released here
+
+		if err := /*uses lock!*/ saveQueryWhitelist(); err != nil {
+			log.Fatal("failed to save whitelist after rule add/edit from webUI", err)
 		}
-
-		saveConfig()
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	}
 }
@@ -2439,13 +2818,21 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		// accept sanitized
 		typ := r.FormValue("type")
 		if domainLowercased != "" && typ != "" {
-			// Add rule for typ
-			newRule := Rule{ID: newUniqueID(), Pattern: domainLowercased, Enabled: true}
-			ruleMutex.Lock()
-			config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-			whitelist[typ] = append(whitelist[typ], newRule)
-			ruleMutex.Unlock()
-			saveConfig()
+			func() { // anonymous function just for scoping defer
+				ruleMutex.Lock()
+				defer ruleMutex.Unlock()
+				// Add rule for typ
+				newRule := Rule{ID: newUniqueID(whitelist), // this can panic
+					Pattern: domainLowercased, Enabled: true}
+				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
+				// 	whitelist[typ] = []Rule{}
+				// }
+				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+			}() // lock released here
+			if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
+				errorLogger.Error("save_whitelist_failed_after_quick_unblock", slog.Any("err", err))
+				log.Fatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
+			}
 			fmt.Printf("Quick unblock added for %q (%q)\n", domainLowercased, typ)
 		}
 		http.Redirect(w, r, "/blocks", http.StatusSeeOther)
@@ -2456,7 +2843,7 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	domainFilter := r.URL.Query().Get("domain")
 	// Basic file read/filter stub
-	data, err := os.ReadFile(config.LogQueries)
+	data, err := os.ReadFile(config.LogQueriesFile)
 	if err != nil {
 		http.Error(w, "Log read failed", http.StatusInternalServerError)
 		return
