@@ -1,3 +1,6 @@
+# github.com/workturnedplay/wincoe v0.0.0
+## explicit; go 1.26.0
+github.com/workturnedplay/wincoe
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
