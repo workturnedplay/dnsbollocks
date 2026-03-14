@@ -2248,7 +2248,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Whitelist
 	ruleMutex.RLock()
 	rules := whitelist[qtype]
-	matchedID := ""
+	matchedID := "" // must be empty, used in 2 logical places, one's here.
 	matched := false
 	for _, rule := range rules {
 		if !rule.Enabled {
@@ -2303,18 +2303,18 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		return negResp
 	}
 
+	ips := extractIPs(resp) //before 'resp' gets mutated, and its IPs deleted.
 	// Filter
 	filtered := filterResponse(resp) //, responseBlacklist)
 	if filtered == nil {
-		ips := extractIPs(filtered)
 		logQuery(clientAddr, domain, qtype,
 			"blockedByUpstream_ORIGINAL", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			"", ips)
+			matchedID, ips)
 		blocked := blockResponse(msg)
 		ips = extractIPs(blocked)
 		logQuery(clientAddr, domain, qtype,
 			"blockedByUpstream_RETURNEDMODIFIED", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			"", ips)
+			matchedID, ips)
 		return blocked
 	}
 
@@ -2326,7 +2326,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	}
 	cacheStore.Set(key, filtered, expiry)
 
-	ips := extractIPs(filtered)
+	ips = extractIPs(filtered)
 	logQuery(clientAddr, domain, qtype, "forwarded", matchedID, ips)
 
 	return filtered
@@ -2615,6 +2615,7 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 
 }
 
+// mutates the passed arg
 func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 	if msg == nil {
 		panic("msg was nil, unexpected bad programming/code ;p")
@@ -2638,7 +2639,7 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 			goodAnswer = append(goodAnswer, modifiedRR)
 			//fmt.Println("Good inAnswer:",rr)
 		} else {
-			fmt.Println("Dropped inAnswer from upstream due to containing blocked ip:", rr)
+			mainLogger.Warn("Dropped inAnswer from upstream due to containing blocked ip", slog.Any("rr", rr))
 		}
 	}
 	for _, rr := range msg.Extra {
@@ -2670,6 +2671,7 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 }
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
+// mutates the passed arg!
 func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
 	switch r := rr.(type) {
 	case *dns.A:
@@ -2741,11 +2743,12 @@ func extractIPs(msg *dns.Msg) []string {
 
 // NEW: action-specific colors (only used for category=query lines)
 var queryActionColors = map[string]uint16{
-	"forwarded":           wincoe.FOREGROUND_GREEN,
-	"cache_hit":           wincoe.FOREGROUND_BRIGHT_YELLOW,
-	"blocked":             wincoe.FOREGROUND_BRIGHT_RED,
-	"rate_limit_exceeded": wincoe.FOREGROUND_RED,
-	"blockedByUpstream":   wincoe.FOREGROUND_BRIGHT_RED,
+	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
+	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
+	"blocked":                            wincoe.FOREGROUND_BRIGHT_RED,
+	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
+	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
+	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
 	// you can add more action → color mappings here
 	// unknown actions → fall back to level-based color
 }
