@@ -476,7 +476,7 @@ var levelToAttr = map[slog.Level]uint16{
 	slog.LevelDebug: wincoe.FOREGROUND_GRAY,   // dark grey
 	slog.LevelInfo:  wincoe.FOREGROUND_NORMAL, // normal / light grey (we actually restore original, but fallback)
 	slog.LevelWarn:  wincoe.FOREGROUND_BRIGHT_MAGENTA,
-	slog.LevelError: wincoe.FOREGROUND_BRIGHT_RED,
+	slog.LevelError: wincoe.FOREGROUND_RED,
 }
 
 // coloredConsoleHandler sets color before the inner TextHandler writes, then restores.
@@ -486,28 +486,29 @@ type coloredConsoleHandler struct {
 	hStdout  windows.Handle
 	origAttr uint16
 	useColor bool
+	mu       sync.Mutex
 }
 
 func newColoredConsoleHandler(level slog.Level) slog.Handler {
+	inner := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+		// ReplaceAttr can be extended later for timestamps, etc.
+	})
 	//hStdout := windows.Handle(wincoe.STD_OUTPUT_HANDLE) // BAD, won't work.
-	hStdout, err := windows.GetStdHandle(wincoe.STD_OUTPUT_HANDLE) //this will.
+	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) //this will.
 	if hStdout == windows.InvalidHandle || err != nil {
 		// No console → plain text fallback
 		mainLogger.Warn("failed to select console, falling back to plain text", slog.Any("err", err))
-		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+		//goto normalPlainTextHandler
+		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 
 	origAttr, err := wincoe.GetConsoleScreenBufferAttributes(hStdout) // your new helper
 	if err != nil {
 		// fallback
 		mainLogger.Warn("failed to select colored console, falling back to plain text", slog.Any("err", err))
-		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
-
-	inner := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-		// ReplaceAttr can be extended later for timestamps, etc.
-	})
 
 	return &coloredConsoleHandler{
 		inner:    inner,
@@ -515,6 +516,10 @@ func newColoredConsoleHandler(level slog.Level) slog.Handler {
 		origAttr: origAttr,
 		useColor: true,
 	}
+
+	// normalPlainTextHandler:
+	//
+	//	return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 }
 
 func (h *coloredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -523,26 +528,99 @@ func (h *coloredConsoleHandler) Enabled(ctx context.Context, level slog.Level) b
 
 func (h *coloredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.useColor {
-		color := levelToAttr[r.Level]
+		// ────────────────────────────────
+		//  Decide which color to use
+		// ────────────────────────────────
+
+		var color uint16
+		var isQuery bool
+		var action string
+
+		// Scan attributes once — look for category and action
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "category":
+				if a.Value.String() == "query" {
+					isQuery = true
+				}
+			case "action":
+				action = a.Value.String()
+			}
+			return true // keep scanning
+		})
+
+		if isQuery && action != "" {
+			// Query line → try to use action-based color
+			if c, ok := queryActionColors[action]; ok {
+				color = c
+			} else {
+				// unknown action → fall back to level-based color
+				color = levelToAttr[r.Level]
+				// if color == 0 {
+				// 	color = h.origAttr
+				// }
+			}
+		} else {
+			// Normal (non-query) log line → classic level-based coloring
+			color = levelToAttr[r.Level]
+			// if color == 0 {
+			// 	color = h.origAttr
+			// }
+		}
+		// color := levelToAttr[r.Level]
 		if color == 0 {
 			color = h.origAttr // safety
 		}
-		err := wincoe.SetConsoleTextAttribute(h.hStdout, color) // ignore error, worst case no color
-		if nil != err {
-			return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
-		}
-		defer func() {
-			_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr)
-		}()
+		// ────────────────────────────────
+		//  Apply the chosen color
+		// ────────────────────────────────
+		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		err := wincoe.SetConsoleTextAttribute(h.hStdout, color)
+		if err == nil {
+			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
+			// }
+			// Important: restore color AFTER writing — even on error paths
+			defer func() {
+				_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) //nolint:errcheck // because nothing to do with the error.
+			}()
+		} // ignore if couldn't set the text attribute/color!
 	}
 
 	writeErr := h.inner.Handle(ctx, r)
 
-	// if h.useColor {
-	// 	_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr)
-	// }
-	return writeErr
+	if writeErr != nil {
+		return fmt.Errorf("inner handler failed: %w", writeErr)
+	}
+	return nil
 }
+
+// // isQueryLine checks whether this record is one of our DNS query logs
+// func isQueryLine(r slog.Record) bool {
+// 	isQuery := false
+// 	r.Attrs(func(a slog.Attr) bool {
+// 		if a.Key == "category" && a.Value.String() == "query" {
+// 			isQuery = true
+// 			return false // early exit
+// 		}
+// 		return true
+// 	})
+// 	return isQuery
+// }
+
+// // getActionFromRecord extracts the "action" value if present
+// func getActionFromRecord(r slog.Record) string {
+// 	var action string
+// 	r.Attrs(func(a slog.Attr) bool {
+// 		if a.Key == "action" {
+// 			action = a.Value.String()
+// 			return false // early exit
+// 		}
+// 		return true
+// 	})
+// 	return action
+// }
 
 func (h *coloredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &coloredConsoleHandler{
@@ -2659,6 +2737,17 @@ func extractIPs(msg *dns.Msg) []string {
 		}
 	}
 	return ips
+}
+
+// NEW: action-specific colors (only used for category=query lines)
+var queryActionColors = map[string]uint16{
+	"forwarded":           wincoe.FOREGROUND_GREEN,
+	"cache_hit":           wincoe.FOREGROUND_BRIGHT_YELLOW,
+	"blocked":             wincoe.FOREGROUND_BRIGHT_RED,
+	"rate_limit_exceeded": wincoe.FOREGROUND_RED,
+	"blockedByUpstream":   wincoe.FOREGROUND_BRIGHT_RED,
+	// you can add more action → color mappings here
+	// unknown actions → fall back to level-based color
 }
 
 // func logQuery(client, domain, typ, action, ruleID string, ips []string) {
