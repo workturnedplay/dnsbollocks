@@ -72,7 +72,7 @@ if not exist "%cmd%" (
 )
 echo Running %cmd%
 echo Requesting elevation for %cmd%...
-powershell -Command "Start-Process -FilePath '%cmd%' -WorkingDirectory '%~dp0' -Verb RunAs"
+powershell -NoProfile -Command "Start-Process -FilePath '%cmd%' -WorkingDirectory '%~dp0' -Verb RunAs"
 ::powershell -Command "Start-Process cmd -ArgumentList '/k \"\"%cmd%\"\"' -Verb RunAs"
 rem %cmd%
 set "ec=%ERRORLEVEL%"
