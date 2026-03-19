@@ -56,6 +56,13 @@ if "!ec!" NEQ "0" (
   exit /b 1
 )
 
+if "!log_file!" NEQ "" (
+  if exist "!log_file!" (
+    echo Cleared log file: "!log_file!"
+    type nul > "!log_file!"
+  )
+)
+
 @rem %~dp0 already has the end \ but adding another one for visibility:
 :run
 :: this variant eats the "^" in the dir name:
@@ -85,5 +92,12 @@ if "!ec!"=="0" (
     echo "!exe_name!" finished successfully.
 ) else (
     echo "!exe_name!" exited with error code "!ec!"
+    if "!log_file!" NEQ "" (
+      if exist "!log_file!" (
+        echo ---- debug log file "!log_file!" echoed below ----
+        type "!log_file!"
+        echo ---- debug log file "!log_file!" echoed above ----
+      )
+    )
 )
 pause

@@ -54,9 +54,6 @@ if "!ec!" NEQ "0" (
   pause
   exit /b 1
 )
-::set | findstr exe_name
-::pause
-::exit
 
 @rem %~dp0 already has the end \ but adding another one for visibility:
 :run
