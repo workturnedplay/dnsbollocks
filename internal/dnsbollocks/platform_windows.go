@@ -426,10 +426,7 @@ func DefaultConfig() Config {
 		RateQPS:         100,
 		CacheMinTTL:     300,
 		CacheMaxEntries: 10000,
-		// Whitelist:         make(map[string][]Rule),
-		// ResponseBlacklist: DefaultResponseBlacklist(),
 
-		//FIXME: these two aren't used:
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
 
@@ -683,8 +680,10 @@ func (m multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (m multiHandler) Handle(ctx context.Context, r slog.Record) error {
 	var firstErr error
 	for _, h := range m.handlers {
-		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
-			firstErr = err // continue anyway
+		if h.Enabled(ctx, r.Level) {
+			if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+				firstErr = err // continue anyway
+			}
 		}
 	}
 	return firstErr
@@ -1405,8 +1404,9 @@ func newUniqueID(alreadyHave map[string][]Rule) string {
 	for try := 1; try <= 10; try++ {
 		id := uuid.New().String()
 		if _, ok := existing[id]; !ok {
-			mainLogger.Warn("attempted to make newUniqueID() which existed", slog.String("id", id), slog.Int("try", try))
 			return id
+		} else {
+			mainLogger.Warn("attempted to make newUniqueID() which existed", slog.String("id", id), slog.Int("try", try))
 		}
 	}
 	panic("UUID collision limit reached—check RNG or storage")
@@ -2299,7 +2299,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		logQuery(clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips)
 		negResp := servfailResponse(msg)
 		// Cache negatives short
-		cacheStore.Set(key, negResp, 10*time.Second)
+		cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		return negResp
 	}
 
