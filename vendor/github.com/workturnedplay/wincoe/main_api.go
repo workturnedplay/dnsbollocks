@@ -45,3 +45,6 @@ var FOREGROUND_BRIGHT_GREEN = consolecolors.FOREGROUND_BRIGHT_GREEN
 var ClearStdin = waitanykey.ClearStdin
 var WithConsoleEventRaw = waitanykey.WithConsoleEventRaw
 var ReadKeySequence = waitanykey.ReadKeySequence
+var WaitAnyKeyIfInteractive = waitanykey.WaitAnyKeyIfInteractive
+var WaitAnyKey = waitanykey.WaitAnyKey
+var IsStdinConsoleInteractive = waitanykey.IsStdinConsoleInteractive

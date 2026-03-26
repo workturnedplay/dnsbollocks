@@ -3170,69 +3170,21 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func shutdown(exitCode int) {
-	fmt.Println("Shutting down...")
+	mainLogger.Info("Shutting down...")
 
 	cacheStore.Flush()
-	fmt.Println("Cache flushed")
+	mainLogger.Debug("Cache flushed")
 	//TODO: webUI shutdown
-	fmt.Println("webUI shutdown")
+	mainLogger.Debug("webUI shutdown(fake)")
 	// Close log files (reopen on next run)
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
 	time.Sleep(1000 * time.Millisecond)
-	waitAnyKeyIfInteractive()
+	if !wincoe.WaitAnyKeyIfInteractive() {
+		mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
+	}
 	//bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
-	fmt.Println("exitting with exit code", exitCode)
+	mainLogger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 	os.Exit(exitCode)
-}
-
-func waitAnyKeyIfInteractive() {
-	fd := int(os.Stdin.Fd())
-
-	// Skip waiting if stdin isn't a terminal
-	if !term.IsTerminal(fd) {
-		// don't wait if eg. echo foo | program.exe
-		return
-	}
-
-	fmt.Print("Press any key to exit...")
-
-	// oldState, err := term.MakeRaw(fd)
-	// if err != nil {
-	// 	fmt.Print("couldn't make the terminal raw, bailing!")
-	// 	return // or log, or fail loudly — your call
-	// }
-	// defer term.Restore(fd, oldState)
-
-	var hadKey bool
-	wincoe.WithConsoleEventRaw(func() {
-		hadKey = wincoe.ClearStdin() // OS-specific
-	})
-
-	if hadKey {
-		fmt.Print("(clrbuf)...")
-	}
-
-	done := make(chan struct{}, 1)
-
-	go func() {
-		wincoe.WithConsoleEventRaw(func() {
-			wincoe.ReadKeySequence() // OS-specific
-			//})
-			//WithConsoleEventRaw(func() {
-
-			if wincoe.ClearStdin() { // OS-specific
-				fmt.Print("(clrbuf2).")
-			}
-		})
-		done <- struct{}{} // Empty structs occupy zero bytes and are commonly used for signals where no data is needed.
-	}()
-
-	// select {
-	// case <-done:
-	// 	//case <-ctx.Done():  // this bypasses the key wait!
-	// }
-	<-done // blocks until a value is received from the channel.
-	fmt.Println()
 }
 
 func watchKeys(reloadFn func(), cleanExitFn func()) {

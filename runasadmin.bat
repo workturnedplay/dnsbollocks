@@ -1,4 +1,7 @@
 @echo off
+echo "It's not necessary to run it as admin at this time (except for seeing full paths for the UDP exe clients)"
+echo "Press Ctrl+C to stop it or..."
+pause
 
 :: (nope:)disallow Ctrl+break, no effect, it still prompts: Terminate batch job (Y/N)?
 ::break off
