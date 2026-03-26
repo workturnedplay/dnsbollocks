@@ -36,11 +36,13 @@ const (
 )
 
 var (
-	modiphlpapi              = windows.NewLazySystemDLL("iphlpapi.dll")
-	procGetExtendedUdpTable  = modiphlpapi.NewProc("GetExtendedUdpTable")
+	modiphlpapi             = windows.NewLazySystemDLL("iphlpapi.dll")
+	procGetExtendedUdpTable = modiphlpapi.NewProc("GetExtendedUdpTable")
+
 	modkernel32              = windows.NewLazySystemDLL("kernel32.dll")
 	procQueryFullProcessName = modkernel32.NewProc("QueryFullProcessImageNameW")
 
+	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
 	procCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
 	procProcess32First           = kernel32.NewProc("Process32FirstW")
 	procProcess32Next            = kernel32.NewProc("Process32NextW")

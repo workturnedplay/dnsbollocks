@@ -14,7 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package dnsbollocks
+// TODO: untested, as this whole lib is meant for Windows only.
+package waitanykey
 
 import (
 	"os"

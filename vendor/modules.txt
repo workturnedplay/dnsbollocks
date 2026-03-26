@@ -7,9 +7,12 @@ github.com/miekg/dns
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/workturnedplay/wincoe v0.0.1
+# github.com/workturnedplay/wincoe v0.0.4
 ## explicit; go 1.26.0
 github.com/workturnedplay/wincoe
+github.com/workturnedplay/wincoe/internal/consolecolors
+github.com/workturnedplay/wincoe/internal/waitanykey
+github.com/workturnedplay/wincoe/internal/wincall
 # golang.org/x/mod v0.34.0
 ## explicit; go 1.25.0
 golang.org/x/mod/semver

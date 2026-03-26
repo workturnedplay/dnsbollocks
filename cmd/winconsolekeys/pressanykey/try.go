@@ -4,7 +4,8 @@ package main
 
 import (
 	"fmt"
-	"github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
+	//"github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
+	"github.com/workturnedplay/wincoe"
 	"os"
 	"time"
 
@@ -17,9 +18,9 @@ func main() {
 	time.Sleep(3 * time.Second)
 
 	var hadKey bool
-	dnsbollocks.WithConsoleEventRaw(func() {
+	wincoe.WithConsoleEventRaw(func() {
 		fmt.Println("foo1")
-		hadKey = dnsbollocks.ClearStdin()
+		hadKey = wincoe.ClearStdin()
 		fmt.Println("foo2")
 	})
 
@@ -38,6 +39,6 @@ func main() {
 	defer term.Restore(fd, oldState)
 
 	fmt.Print("Now press any key to exit.")
-	dnsbollocks.ReadKeySequence()
+	wincoe.ReadKeySequence()
 	fmt.Println()
 }

@@ -1,6 +1,9 @@
+* add a config key which says all allowed A dns type queries also allow HTTPS ones
+* check added rules to not allow hosts that aren't valid like "=accounts.google.com"
+* make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
 //* if the IP in listen_doh in config.json is changed, the cert needs to be regenerated to allow that IP to work, so need to delete cert.pem (not key.pem too) to cause regen of both .pem files with that IP setting.
 * make it 'pause' even when errors happen, else i need to wrap it in a .bat!
-* show the IPs gotten from upstream in logs, even if cached, even if HTTPS dns type!(even tho stripped ipv4hint etc.)
+//* show the IPs gotten from upstream in logs, even if cached, even if HTTPS dns type!(even tho stripped ipv4hint etc.)
 * hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
   * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
   * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json

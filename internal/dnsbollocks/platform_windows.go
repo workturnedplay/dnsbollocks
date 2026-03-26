@@ -3180,7 +3180,7 @@ func shutdown(exitCode int) {
 	//sleep 1 sec to allow "quitting on shutdown" message to show.
 	time.Sleep(1000 * time.Millisecond)
 	waitAnyKeyIfInteractive()
-	//bufio.NewReader(os.Stdin).ReadBytes('\n') //FIXME: make it for any key not just Enter!
+	//bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
 	fmt.Println("exitting with exit code", exitCode)
 	os.Exit(exitCode)
 }
@@ -3204,8 +3204,8 @@ func waitAnyKeyIfInteractive() {
 	// defer term.Restore(fd, oldState)
 
 	var hadKey bool
-	WithConsoleEventRaw(func() {
-		hadKey = ClearStdin() // OS-specific
+	wincoe.WithConsoleEventRaw(func() {
+		hadKey = wincoe.ClearStdin() // OS-specific
 	})
 
 	if hadKey {
@@ -3215,12 +3215,12 @@ func waitAnyKeyIfInteractive() {
 	done := make(chan struct{}, 1)
 
 	go func() {
-		WithConsoleEventRaw(func() {
-			ReadKeySequence() // OS-specific
+		wincoe.WithConsoleEventRaw(func() {
+			wincoe.ReadKeySequence() // OS-specific
 			//})
 			//WithConsoleEventRaw(func() {
 
-			if ClearStdin() { // OS-specific
+			if wincoe.ClearStdin() { // OS-specific
 				fmt.Print("(clrbuf2).")
 			}
 		})

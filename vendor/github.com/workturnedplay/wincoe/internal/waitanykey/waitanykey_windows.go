@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package dnsbollocks
+package waitanykey
 
 import (
 	//"fmt"
@@ -347,6 +347,8 @@ func WithConsoleEventRaw(fn func()) {
 	}
 
 	newMode := oldMode
+	//"Take the current value of newMode and force the ENABLE_LINE_INPUT bit to be 0 (off), while leaving all other bits exactly as they were."
+	//so: newMode = newMode AND (NOT windows.ENABLE_LINE_INPUT)
 	newMode &^= windows.ENABLE_LINE_INPUT
 	newMode &^= windows.ENABLE_ECHO_INPUT
 
