@@ -2000,7 +2000,8 @@ func startDNSListener(addr string) {
 							// 	}
 							// } else {
 							//not running as Admin already
-							if exe == "svchost.exe" {
+							if strings.EqualFold(exe, "svchost.exe") {
+								//if strings.ToLower(exe) == "svchost.exe" {
 								//appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
 								appendedInfo = "(exe path seen only when Admin)"
 								// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
