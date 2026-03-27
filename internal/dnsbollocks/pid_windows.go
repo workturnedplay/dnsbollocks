@@ -23,29 +23,25 @@ import (
 	"fmt"
 	"net"
 	//"os"
-	"strings"
-	"syscall"
+	//"strings"
+	//"syscall"
 	"unsafe"
 
+	"github.com/workturnedplay/wincoe"
 	"golang.org/x/sys/windows"
 )
 
-const (
-	AF_INET             = 2
-	UDP_TABLE_OWNER_PID = 1 // MIB_UDPTABLE_OWNER_PID
-)
+// var (
+// 	modiphlpapi             = windows.NewLazySystemDLL("iphlpapi.dll")
+// 	procGetExtendedUdpTable = modiphlpapi.NewProc("GetExtendedUdpTable")
 
-var (
-	modiphlpapi             = windows.NewLazySystemDLL("iphlpapi.dll")
-	procGetExtendedUdpTable = modiphlpapi.NewProc("GetExtendedUdpTable")
+// 	kernel32                 = windows.NewLazySystemDLL("kernel32.dll")
+// 	procQueryFullProcessName = kernel32.NewProc("QueryFullProcessImageNameW")
 
-	kernel32                 = windows.NewLazySystemDLL("kernel32.dll")
-	procQueryFullProcessName = kernel32.NewProc("QueryFullProcessImageNameW")
-
-	procCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
-	procProcess32First           = kernel32.NewProc("Process32FirstW")
-	procProcess32Next            = kernel32.NewProc("Process32NextW")
-)
+// 	procCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
+// 	procProcess32First           = kernel32.NewProc("Process32FirstW")
+// 	procProcess32Next            = kernel32.NewProc("Process32NextW")
+// )
 
 // pidAndExeForUDP returns (pid, exePath_or_exeName, error).
 // clientAddr should be the remote UDP address observed on the server side (e.g., 127.0.0.1:49936).
@@ -60,34 +56,42 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	}
 	port := uint16(clientAddr.Port)
 
-	// First call to GetExtendedUdpTable to get required buffer size.
-	var bufSize uint32
-	ret, _, _ := procGetExtendedUdpTable.Call(
-		0,
-		uintptr(unsafe.Pointer(&bufSize)),
-		0,
-		uintptr(AF_INET),
-		uintptr(UDP_TABLE_OWNER_PID),
-		0,
-	)
-	if ret != uintptr(syscall.ERROR_INSUFFICIENT_BUFFER) && ret != 0 {
-		return 0, "", fmt.Errorf("GetExtendedUdpTable size query failed: %d", ret)
-	}
-	if bufSize == 0 {
-		return 0, "", errors.New("GetExtendedUdpTable returned size 0")
+	buf, err := wincoe.GetExtendedUDPTable(false, wincoe.AF_INET)
+	// // First call to GetExtendedUdpTable to get required buffer size.
+	// var bufSize uint32
+	// ret, _, _ := wincoe.api.ProcGetExtendedUdpTable( //.Call(
+	// 	0,
+	// 	uintptr(unsafe.Pointer(&bufSize)),
+	// 	0,
+	// 	uintptr(wincoe.AF_INET),
+	// 	uintptr(wincoe.UDP_TABLE_OWNER_PID),
+	// 	0,
+	// )
+	// if ret != uintptr(syscall.ERROR_INSUFFICIENT_BUFFER) && ret != 0 {
+	// 	return 0, "", fmt.Errorf("GetExtendedUdpTable size query failed: %d", ret)
+	// }
+	// if bufSize == 0 {
+	// 	return 0, "", errors.New("GetExtendedUdpTable returned size 0")
+	// }
+
+	// buf := make([]byte, bufSize)
+	// ret, _, err := procGetExtendedUdpTable.Call(
+	// 	uintptr(unsafe.Pointer(&buf[0])),
+	// 	uintptr(unsafe.Pointer(&bufSize)),
+	// 	0,
+	// 	uintptr(AF_INET),
+	// 	uintptr(UDP_TABLE_OWNER_PID),
+	// 	0,
+	// )
+	// if ret != 0 {
+	// 	return 0, "", fmt.Errorf("GetExtendedUdpTable failed: %v (code %d)", err, ret)
+	// }
+	if err != nil {
+		return 0, "", err
 	}
 
-	buf := make([]byte, bufSize)
-	ret, _, err := procGetExtendedUdpTable.Call(
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(unsafe.Pointer(&bufSize)),
-		0,
-		uintptr(AF_INET),
-		uintptr(UDP_TABLE_OWNER_PID),
-		0,
-	)
-	if ret != 0 {
-		return 0, "", fmt.Errorf("GetExtendedUdpTable failed: %v (code %d)", err, ret)
+	if buf == nil {
+		return 0, "", errors.New("GetExtendedUdpTable returned empty buffer which means there were no UDP entries in the table")
 	}
 
 	// Buffer layout: DWORD dwNumEntries; then array of MIB_UDPROW_OWNER_PID entries.
@@ -125,10 +129,20 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 			// treat 0.0.0.0 as wildcard match
 			if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip4) {
 				// found PID
-				exe, err := exePathFromPID(owningPid)
+				exe, err := wincoe.ExePathFromPID(owningPid)
 				if err != nil {
+					//fmt.Println(err)
 					// got error due to permissions needed for abs. path? this will work but it's just the .exe:
-					exe = getProcessName(owningPid)
+					//exe, err2 := wincoe.GetProcessName(owningPid) // shadowing is only a warning here, major footgun otherwise.
+
+					var err2 error // Declare err2 so we don't have to use :=
+					exe, err2 = wincoe.GetProcessName(owningPid)
+
+					if err2 != nil {
+						return 0, "", fmt.Errorf("pid %d not found for %s, errTransient:'%v', err:'%w'", num, clientAddr.String(), err, err2)
+					}
+
+					//_ = exe // enable when trying for shadowing
 				}
 				return owningPid, exe, nil
 			}
@@ -138,56 +152,56 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	return 0, "", fmt.Errorf("pid %d not found for %s", num, clientAddr.String())
 }
 
-// exePathFromPID returns process image path for pid or an error.
-// Uses QueryFullProcessImageNameW. May fail if insufficient privilege.
-func exePathFromPID(pid uint32) (string, error) {
-	const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-	h, err := windows.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return "", fmt.Errorf("OpenProcess failed: %w", err)
-	}
-	defer windows.CloseHandle(h)
+// // exePathFromPID returns process image path for pid or an error.
+// // Uses QueryFullProcessImageNameW. May fail if insufficient privilege.
+// func exePathFromPID(pid uint32) (string, error) {
+// 	const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+// 	h, err := windows.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+// 	if err != nil {
+// 		return "", fmt.Errorf("OpenProcess failed: %w", err)
+// 	}
+// 	defer windows.CloseHandle(h)
 
-	// prepare buffer for wide chars
-	const bufChars = 260
-	buf := make([]uint16, bufChars)
-	size := uint32(bufChars)
-	r1, _, e1 := procQueryFullProcessName.Call(
-		uintptr(h),
-		uintptr(0),
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(unsafe.Pointer(&size)),
-	)
-	if r1 == 0 {
-		// try fallback: QueryFullProcessImageNameW may require different access; return PID only.
-		return "", fmt.Errorf("QueryFullProcessImageNameW failed: %v", e1)
-	}
-	path := windows.UTF16ToString(buf[:size])
-	// Normalize: make backslashes single and trim
-	path = strings.TrimSpace(path)
-	return path, nil
-}
+// 	// prepare buffer for wide chars
+// 	const bufChars = 260
+// 	buf := make([]uint16, bufChars)
+// 	size := uint32(bufChars)
+// 	r1, _, e1 := procQueryFullProcessName.Call(
+// 		uintptr(h),
+// 		uintptr(0),
+// 		uintptr(unsafe.Pointer(&buf[0])),
+// 		uintptr(unsafe.Pointer(&size)),
+// 	)
+// 	if r1 == 0 {
+// 		// try fallback: QueryFullProcessImageNameW may require different access; return PID only.
+// 		return "", fmt.Errorf("QueryFullProcessImageNameW failed: %v", e1)
+// 	}
+// 	path := windows.UTF16ToString(buf[:size])
+// 	// Normalize: make backslashes single and trim
+// 	path = strings.TrimSpace(path)
+// 	return path, nil
+// }
 
-func getProcessName(pid uint32) string {
-	// TH32CS_SNAPPROCESS = 0x00000002
-	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(0x00000002, 0)
-	if snapshot == uintptr(windows.InvalidHandle) {
-		return "unknown"
-	}
-	defer windows.CloseHandle(windows.Handle(snapshot))
+// func getProcessName(pid uint32) string {
+// 	// TH32CS_SNAPPROCESS = 0x00000002
+// 	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(0x00000002, 0)
+// 	if snapshot == uintptr(windows.InvalidHandle) {
+// 		return "unknown"
+// 	}
+// 	defer windows.CloseHandle(windows.Handle(snapshot))
 
-	var entry windows.ProcessEntry32
-	entry.Size = uint32(unsafe.Sizeof(entry))
+// 	var entry windows.ProcessEntry32
+// 	entry.Size = uint32(unsafe.Sizeof(entry))
 
-	ret, _, _ := procProcess32First.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
-	for ret != 0 {
-		if entry.ProcessID == pid {
-			return windows.UTF16ToString(entry.ExeFile[:])
-		}
-		ret, _, _ = procProcess32Next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
-	}
-	return "not found"
-}
+// 	ret, _, _ := procProcess32First.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+// 	for ret != 0 {
+// 		if entry.ProcessID == pid {
+// 			return windows.UTF16ToString(entry.ExeFile[:])
+// 		}
+// 		ret, _, _ = procProcess32Next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+// 	}
+// 	return "not found"
+// }
 
 func GetServiceNamesFromPID(targetPID uint32) ([]string, error) {
 	// 1. Open the Service Control Manager

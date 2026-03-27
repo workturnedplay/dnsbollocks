@@ -6,3 +6,4 @@
 *.key
 bin/
 query_whitelist.json
+*.swp
