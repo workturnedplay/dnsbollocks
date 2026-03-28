@@ -1080,6 +1080,10 @@ func logFatal2(msg string) {
 	os.Exit(1) // replaced log.Fatal
 }
 
+// 2. New error channel for service failures
+// We use a buffer of (e.g.) 10 so multiple services failing at once won't block
+var errChan chan error = make(chan error, 10)
+
 func OldMain() {
 	initBootstrapLogging() // ← FIRST LINE — colored console, mainLogger now exists
 	//flag.Parse() // For future flags
@@ -1092,6 +1096,9 @@ func OldMain() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	mainLogger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
+
+	//errChan := make(chan error, 10)
+	//mainLogger.Debug("Error channel ready")
 
 	if err := loadConfig(); err != nil {
 		logFatal("Config load failed:", err)
@@ -1150,10 +1157,34 @@ func OldMain() {
 		},
 	)
 
-	<-sigChan // Wait here - UI goroutine handles serving
-	fmt.Println("Shutdown signal received, SIGINT exit.")
-	cancel()      // Cancel context for graceful close
-	shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
+	//<-sigChan // Wait here - UI goroutine handles serving
+	// 4. The Seamless Wait
+	select {
+	case sig := <-sigChan:
+		// Case A: User pressed Ctrl+C
+		mainLogger.Info("shutdown initiated by signal", slog.Any("signal", sig))
+		// Proceed to graceful cleanup
+		cancel()      // Cancel context for graceful close
+		shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
+
+	case err := <-errChan:
+		// Case B: A background goroutine (TCP/DoH) died
+		mainLogger.Error("CRITICAL: background service failure", slog.Any("err", err))
+		// You can choose to exit(1) here because a vital organ failed
+		cancel()    // Cancel context for graceful close
+		shutdown(3) // some error happened
+
+	case <-ctx.Done():
+		// Case C: Context was cancelled elsewhere
+		mainLogger.Info("context cancelled, shutting down")
+		cancel()    // Cancel context for graceful close
+		shutdown(4) // some error happened
+	}
+
+	//fmt.Println("Shutdown signal received, SIGINT exit.")
+	mainLogger.Error("unreachable")
+	cancel()     // Cancel context for graceful close
+	shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 }
 
 func loadConfig() error {
@@ -1973,7 +2004,6 @@ func startDNSListener(addr string) {
 
 			//TheFor:
 			for {
-
 				select {
 				case <-ctx.Done():
 					// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
@@ -1989,44 +2019,46 @@ func startDNSListener(addr string) {
 						//break TheFor
 						continue
 					}
-					pid, exe, err := PidAndExeForUDP(clientAddr) //TODO: do this for TCP below too!
-					if err != nil {
-						mainLogger.Warn("couldn't get pid and exe name for UDP client", slog.Any("clientAddr", clientAddr), slog.Any("err", err))
-					} else {
-						var appendedInfo string
-						if !isAdmin {
-							// 	if exe == "C:\\Windows\\System32\\svchost.exe" {
-							// 		appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
-							// 	}
-							// } else {
-							//not running as Admin already
-							if strings.EqualFold(exe, "svchost.exe") {
-								//if strings.ToLower(exe) == "svchost.exe" {
-								//appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
-								appendedInfo = "(exe path seen only when Admin)"
-								// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
-							}
-						}
+					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr)
+					LogClientInfo("UDP", clientAddr, pid, exe, err)
 
-						//this works even if non-Admin
-						names, err := GetServiceNamesFromPID(pid)
-						//serviceInfo := 	if err!=nil { "one" } else {"two"}
-						//fmt.Sprintf("%d service(s): %v", len(names), names)
-						var serviceInfo string
+					// if err != nil {
+					// 	mainLogger.Warn("couldn't get pid and exe name for UDP client", slog.Any("clientAddr", clientAddr), slog.Any("err", err))
+					// } else {
+					// 	var appendedInfo string
+					// 	if !isAdmin {
+					// 		// 	if exe == "C:\\Windows\\System32\\svchost.exe" {
+					// 		// 		appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
+					// 		// 	}
+					// 		// } else {
+					// 		//not running as Admin already
+					// 		if strings.EqualFold(exe, "svchost.exe") {
+					// 			//if strings.ToLower(exe) == "svchost.exe" {
+					// 			//appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
+					// 			appendedInfo = "(exe path seen only when Admin)"
+					// 			// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
+					// 		}
+					// 	}
 
-						if err != nil {
-							// If there was an error querying the SCM
-							serviceInfo = fmt.Sprintf("(error getting service info: '%v')", err)
-						} else if len(names) == 0 {
-							// If the PID exists but has no services (not a service host)
-							serviceInfo = "0 services for this pid"
-						} else {
-							// Success: "2 service(s): [Dnscache LanmanWorkstation]"
-							serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
-						}
-						mainLogger.Info("UDP client connected", slog.Any("clientAddr", clientAddr), slog.Any("pid", pid), slog.String("exe", exe), slog.String("service", serviceInfo),
-							slog.String("exe_comment", appendedInfo))
-					}
+					// 	//this works even if non-Admin
+					// 	names, err := wincoe.GetServiceNamesFromPID(pid)
+					// 	//serviceInfo := 	if err!=nil { "one" } else {"two"}
+					// 	//fmt.Sprintf("%d service(s): %v", len(names), names)
+					// 	var serviceInfo string
+
+					// 	if err != nil {
+					// 		// If there was an error querying the SCM
+					// 		serviceInfo = fmt.Sprintf("(error getting service info: '%v')", err)
+					// 	} else if len(names) == 0 {
+					// 		// If the PID exists but has no services (not a service host)
+					// 		serviceInfo = "0 services for this pid"
+					// 	} else {
+					// 		// Success: "2 service(s): [Dnscache LanmanWorkstation]"
+					// 		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
+					// 	}
+					// 	mainLogger.Info("UDP client connected", slog.Any("clientAddr", clientAddr), slog.Any("pid", pid), slog.String("exe", exe), slog.String("service", serviceInfo),
+					// 		slog.String("exe_comment", appendedInfo))
+					// }
 
 					go handleUDP(buf[:n], clientAddr, udpLn)
 				}
@@ -2093,8 +2125,43 @@ func startDNSListener(addr string) {
 					} else if backoff < 1*time.Second {
 						backoff *= 2
 					}
+					mainLogger.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
 					time.Sleep(backoff)
 					continue
+				}
+
+				// 1. Get the remote address as a *net.TCPAddr
+				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+				if !ok {
+					mainLogger.Warn("could not cast remote addr to TCPAddr", slog.Any("addr", conn.RemoteAddr()))
+				} else {
+					// 2. Call your new TCP PID/Exe helper
+					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
+					LogClientInfo("TCP", clientAddr, pid, exe, err)
+
+					// if err != nil {
+					// 	mainLogger.Warn("couldn't get pid and exe name for TCP client",
+					// 		slog.Any("clientAddr", clientAddr),
+					// 		slog.Any("err", err))
+					// } else {
+					// 	// 3. Get services (This helper works for both UDP/TCP PIDs)
+					// 	names, sErr := wincoe.GetServiceNamesFromPID(pid)
+
+					// 	var serviceInfo string
+					// 	if sErr != nil {
+					// 		serviceInfo = fmt.Sprintf("(error: '%v')", sErr)
+					// 	} else if len(names) == 0 {
+					// 		serviceInfo = "0 services"
+					// 	} else {
+					// 		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
+					// 	}
+
+					// 	mainLogger.Info("TCP client connected",
+					// 		slog.Any("clientAddr", clientAddr),
+					// 		slog.Any("pid", pid),
+					// 		slog.String("exe", exe),
+					// 		slog.String("service", serviceInfo))
+					// }
 				}
 
 				// accepted a connection; handle in new goroutine
@@ -2109,6 +2176,31 @@ func startDNSListener(addr string) {
 	if udpLn == nil && tcpLn == nil {
 		fmt.Println("Warning: No DNS listeners!")
 	}
+}
+
+func LogClientInfo(protocol string, clientAddr net.Addr, pid uint32, exe string, err error) {
+	if err != nil {
+		mainLogger.Warn("couldn't get pid and exe name",
+			slog.String("proto", protocol),
+			slog.Any("clientAddr", clientAddr),
+			slog.Any("err", err))
+		return
+	}
+
+	names, _ := wincoe.GetServiceNamesFromPID(pid)
+	var serviceInfo string
+	if len(names) > 0 {
+		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
+	} else {
+		serviceInfo = "0 services"
+	}
+
+	mainLogger.Info("client connected",
+		slog.String("proto", protocol),
+		slog.Any("clientAddr", clientAddr),
+		slog.Any("pid", pid),
+		slog.String("exe", exe),
+		slog.String("service", serviceInfo))
 }
 
 func handleUDP(wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
@@ -2183,20 +2275,35 @@ func startDoHListener(addr string) {
 	}
 	go func() {
 		defer listener.Close() // Graceful close on shutdown
+		//doneFIXME: how do we know if this failed to maybe restart it or exit the whole program or whatever!?
 		if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			mainLogger.Error("doh_serve_failed", slog.Any("err", err))
+			errChan <- fmt.Errorf("DoH server failed: %w", err)
 		}
 	}()
 	fmt.Println("DoH server loop launched in goroutine - func returning")
 }
 
 func dohHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+	// 1. Identify the client immediately, before replying.
+	//Since you are performing the PID lookup inside the handler (before sending the response), the TCP connection is guaranteed to be in the ESTABLISHED state.
+	// Firefox is sitting there waiting for its DNS-over-HTTPS answer, so it's the perfect time to "catch" it in the Windows TCP table.
+	remoteTCP, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	if err == nil {
+		// Use our TCP PID helper
+		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
+		LogClientInfo("DoH", remoteTCP, pid, exe, pErr)
+	} else {
+		mainLogger.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
+	}
+
 	if r.Method != "POST" && r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body []byte
-	var err error
+
 	if r.Method == "POST" {
 		body, err = io.ReadAll(r.Body)
 	} else {
@@ -2221,7 +2328,7 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	pack, _ := resp.Pack() // Ignore err
+	pack, _ := resp.Pack() // Ignore err, FIXME: don't!
 	w.Header().Set("Content-Type", "application/dns-message")
 	w.Write(pack)
 }
@@ -2239,7 +2346,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 
 	// Rate limit
 	gl := globalLimiter.Allow()
-	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst
+	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst, FIXME: is this in config.json ? or should it be!
 	cl := clIface.(*rate.Limiter)
 	if !gl || !cl.Allow() {
 		mainLogger.Warn("rate_limit_exceeded", slog.String("client", clientAddr))
