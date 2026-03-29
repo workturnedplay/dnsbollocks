@@ -37,6 +37,10 @@ echo Running go vet...
 go vet !MOD_FLAG! ./cmd/dnsbollocks ./internal/dnsbollocks
 if errorlevel 1 goto :fail
 
+echo Running go vet on everything...
+go vet !MOD_FLAG! ./...
+if errorlevel 1 goto :fail
+
 go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail
 
