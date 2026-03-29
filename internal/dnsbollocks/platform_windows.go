@@ -735,7 +735,7 @@ var (
 	blockMutex     sync.Mutex
 	stats          = expvar.NewInt("blocks") // Simple stats
 
-	ctx, cancel = context.WithCancel(context.Background())
+	backgroundCtx, cancel = context.WithCancel(context.Background())
 )
 
 var dnsTypes = []string{
@@ -1111,7 +1111,7 @@ func OldMain() {
 		logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
 		//os.Exit(1)
 	}
-	mainLogger.Debug("Non-elevated mode confirmed")
+	//mainLogger.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
 	initFullLogging() // ← this replaces the logger with files + correct console level
@@ -1152,7 +1152,8 @@ func OldMain() {
 		},
 		func() { // alt+x etc.
 			fmt.Println("Shutdown signal received, clean exit.")
-			cancel()
+			//FIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
+			cancel()    //FIXME: this triggers the below shutdown(4) !
 			shutdown(0) // clean exit
 		},
 	)
@@ -1174,10 +1175,10 @@ func OldMain() {
 		cancel()    // Cancel context for graceful close
 		shutdown(3) // some error happened
 
-	case <-ctx.Done():
+	case <-backgroundCtx.Done():
 		// Case C: Context was cancelled elsewhere
 		mainLogger.Info("context cancelled, shutting down")
-		cancel()    // Cancel context for graceful close
+		//cancel()    // Cancel context for graceful close, this was already done since we hit this.
 		shutdown(4) // some error happened
 	}
 
@@ -1974,6 +1975,20 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 	return nil
 }
 
+type contextKey string
+
+const clientInfoKey contextKey = "clientInfo"
+
+type clientMetadata struct {
+	protocol   string
+	pid        uint32
+	exe        string
+	services   []string
+	err        error
+	clientAddr net.Addr
+	startTime  time.Time
+}
+
 // Listeners...
 
 func startDNSListener(addr string) {
@@ -2005,7 +2020,7 @@ func startDNSListener(addr string) {
 			//TheFor:
 			for {
 				select {
-				case <-ctx.Done():
+				case <-backgroundCtx.Done():
 					// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
 					mainLogger.Info("quitting on shutdown...")
 
@@ -2020,47 +2035,8 @@ func startDNSListener(addr string) {
 						continue
 					}
 					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr)
-					LogClientInfo("UDP", clientAddr, pid, exe, err)
-
-					// if err != nil {
-					// 	mainLogger.Warn("couldn't get pid and exe name for UDP client", slog.Any("clientAddr", clientAddr), slog.Any("err", err))
-					// } else {
-					// 	var appendedInfo string
-					// 	if !isAdmin {
-					// 		// 	if exe == "C:\\Windows\\System32\\svchost.exe" {
-					// 		// 		appendedInfo = " (this is likely dnscache service aka \"DNS Client\" service)"
-					// 		// 	}
-					// 		// } else {
-					// 		//not running as Admin already
-					// 		if strings.EqualFold(exe, "svchost.exe") {
-					// 			//if strings.ToLower(exe) == "svchost.exe" {
-					// 			//appendedInfo = " (you need to run as Admin to see this particular exe path because it's a program that your user didn't start, tho it's safe to assume that it is dnscache aka \"DNS Client\" service)"
-					// 			appendedInfo = "(exe path seen only when Admin)"
-					// 			// tested ^ to be true at the moment, shows svchost.exe but it's dnscache service wrapped in svchost!
-					// 		}
-					// 	}
-
-					// 	//this works even if non-Admin
-					// 	names, err := wincoe.GetServiceNamesFromPID(pid)
-					// 	//serviceInfo := 	if err!=nil { "one" } else {"two"}
-					// 	//fmt.Sprintf("%d service(s): %v", len(names), names)
-					// 	var serviceInfo string
-
-					// 	if err != nil {
-					// 		// If there was an error querying the SCM
-					// 		serviceInfo = fmt.Sprintf("(error getting service info: '%v')", err)
-					// 	} else if len(names) == 0 {
-					// 		// If the PID exists but has no services (not a service host)
-					// 		serviceInfo = "0 services for this pid"
-					// 	} else {
-					// 		// Success: "2 service(s): [Dnscache LanmanWorkstation]"
-					// 		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
-					// 	}
-					// 	mainLogger.Info("UDP client connected", slog.Any("clientAddr", clientAddr), slog.Any("pid", pid), slog.String("exe", exe), slog.String("service", serviceInfo),
-					// 		slog.String("exe_comment", appendedInfo))
-					// }
-
-					go handleUDP(buf[:n], clientAddr, udpLn)
+					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err)
+					go handleUDP(udpPacketCtx, buf[:n], clientAddr, udpLn)
 				}
 			}
 		}()
@@ -2103,7 +2079,7 @@ func startDNSListener(addr string) {
 				if err != nil {
 					// if context canceled, exit cleanly
 					select {
-					case <-ctx.Done():
+					case <-backgroundCtx.Done():
 						fmt.Println("quitting on shutdown...")
 						return
 					default:
@@ -2130,44 +2106,22 @@ func startDNSListener(addr string) {
 					continue
 				}
 
+				tcpPacketCtx := backgroundCtx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
 				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 				if !ok {
 					mainLogger.Warn("could not cast remote addr to TCPAddr", slog.Any("addr", conn.RemoteAddr()))
+					//FIXME: when can this happen?!
 				} else {
 					// 2. Call your new TCP PID/Exe helper
 					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
-					LogClientInfo("TCP", clientAddr, pid, exe, err)
-
-					// if err != nil {
-					// 	mainLogger.Warn("couldn't get pid and exe name for TCP client",
-					// 		slog.Any("clientAddr", clientAddr),
-					// 		slog.Any("err", err))
-					// } else {
-					// 	// 3. Get services (This helper works for both UDP/TCP PIDs)
-					// 	names, sErr := wincoe.GetServiceNamesFromPID(pid)
-
-					// 	var serviceInfo string
-					// 	if sErr != nil {
-					// 		serviceInfo = fmt.Sprintf("(error: '%v')", sErr)
-					// 	} else if len(names) == 0 {
-					// 		serviceInfo = "0 services"
-					// 	} else {
-					// 		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
-					// 	}
-
-					// 	mainLogger.Info("TCP client connected",
-					// 		slog.Any("clientAddr", clientAddr),
-					// 		slog.Any("pid", pid),
-					// 		slog.String("exe", exe),
-					// 		slog.String("service", serviceInfo))
-					// }
+					tcpPacketCtx = makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, err)
 				}
 
 				// accepted a connection; handle in new goroutine
 				go func(c net.Conn) {
 					defer c.Close()
-					handleTCP(c)
+					handleTCP(tcpPacketCtx, c)
 				}(conn)
 			}
 		}()
@@ -2178,38 +2132,53 @@ func startDNSListener(addr string) {
 	}
 }
 
-func LogClientInfo(protocol string, clientAddr net.Addr, pid uint32, exe string, err error) {
+func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.Addr, pid uint32, exe string, err error) context.Context {
 	if err != nil {
 		mainLogger.Warn("couldn't get pid and exe name",
 			slog.String("proto", protocol),
 			slog.Any("clientAddr", clientAddr),
 			slog.Any("err", err))
-		return
+		return ctx
 	}
 
-	names, _ := wincoe.GetServiceNamesFromPID(pid)
+	services, _ := wincoe.GetServiceNamesFromPID(pid)
 	var serviceInfo string
-	if len(names) > 0 {
-		serviceInfo = fmt.Sprintf("%d service(s): %v", len(names), names)
+	if len(services) > 0 {
+		serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
 	} else {
 		serviceInfo = "0 services"
 	}
 
-	mainLogger.Info("client connected",
+	mainLogger.Debug("client connected",
 		slog.String("proto", protocol),
 		slog.Any("clientAddr", clientAddr),
 		slog.Any("pid", pid),
 		slog.String("exe", exe),
 		slog.String("service", serviceInfo))
+
+	// Create a specific context for THIS packet
+	//packetCtx := ctx // this is your global shutdown ctx
+	//if pErr == nil {
+	//names, _ := wincoe.GetServiceNamesFromPID(pid)
+	return context.WithValue(ctx, clientInfoKey, clientMetadata{
+		protocol:   protocol,
+		pid:        pid,
+		exe:        exe,
+		services:   services,
+		err:        err,
+		clientAddr: clientAddr,
+		startTime:  time.Now(), // Capture start time
+	})
+	//}
 }
 
-func handleUDP(wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
+func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
 		// Edge: Invalid packet—drop silently (common in floods)
 		return
 	}
-	resp := handleDNSQuery(msg, clientAddr.String())
+	resp := handleDNSQuery(ctx, msg, clientAddr.String())
 	if resp == nil {
 		return // Drop
 	}
@@ -2217,7 +2186,7 @@ func handleUDP(wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
 	_, _ = ln.WriteToUDP(pack, clientAddr) // Ignore write err
 }
 
-func handleTCP(conn net.Conn) {
+func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -2235,7 +2204,7 @@ func handleTCP(conn net.Conn) {
 	if err := msg.Unpack(wire); err != nil {
 		return
 	}
-	resp := handleDNSQuery(msg, conn.RemoteAddr().String())
+	resp := handleDNSQuery(ctx, msg, conn.RemoteAddr().String())
 	if resp != nil {
 		pack, _ := resp.Pack() // Ignore err
 		out := new(bytes.Buffer)
@@ -2285,6 +2254,8 @@ func startDoHListener(addr string) {
 }
 
 func dohHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context() // Get the request context
+
 	var err error
 	// 1. Identify the client immediately, before replying.
 	//Since you are performing the PID lookup inside the handler (before sending the response), the TCP connection is guaranteed to be in the ESTABLISHED state.
@@ -2293,9 +2264,11 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		// Use our TCP PID helper
 		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
-		LogClientInfo("DoH", remoteTCP, pid, exe, pErr)
+		ctx = makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
 	} else {
 		mainLogger.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
+		//FIXME: this is a bigger problem than a WARN, if it happens! but an ERROR here would make it mix with the red colored blocked requests, thus harder to be seen!
+		//TODO: see if we can trigger this! and/or think of what happens if it happens!
 	}
 
 	if r.Method != "POST" && r.Method != "GET" {
@@ -2323,7 +2296,7 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	resp := handleDNSQuery(msg, r.RemoteAddr) // Field, not method
+	resp := handleDNSQuery(ctx, msg, r.RemoteAddr) // Field, not method
 	if resp == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -2333,7 +2306,7 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(pack)
 }
 
-func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
+func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.Msg {
 	if len(msg.Question) != 1 {
 		return formerrResponse(msg)
 	}
@@ -2377,7 +2350,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 			recentBlocks = recentBlocks[1:]
 		}
 		blockMutex.Unlock()
-		logQuery(clientAddr, domain, qtype, "blocked", "", nil)
+		logQuery(ctx, clientAddr, domain, qtype, "blocked", "", nil)
 		return blockResponse(msg)
 	}
 
@@ -2393,7 +2366,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		resp.Id = msg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
-		logQuery(clientAddr, domain, qtype, "cache_hit", matchedID, ips)
+		logQuery(ctx, clientAddr, domain, qtype, "cache_hit", matchedID, ips)
 		return resp
 	}
 
@@ -2404,7 +2377,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 		if resp != nil {
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
-		logQuery(clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips)
+		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips)
 		negResp := servfailResponse(msg)
 		// Cache negatives short
 		cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
@@ -2415,12 +2388,12 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	// Filter
 	filtered := filterResponse(resp) //, responseBlacklist)
 	if filtered == nil {
-		logQuery(clientAddr, domain, qtype,
+		logQuery(ctx, clientAddr, domain, qtype,
 			"blockedByUpstream_ORIGINAL", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
 			matchedID, ips)
 		blocked := blockResponse(msg)
 		ips = extractIPs(blocked)
-		logQuery(clientAddr, domain, qtype,
+		logQuery(ctx, clientAddr, domain, qtype,
 			"blockedByUpstream_RETURNEDMODIFIED", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
 			matchedID, ips)
 		return blocked
@@ -2435,7 +2408,7 @@ func handleDNSQuery(msg *dns.Msg, clientAddr string) *dns.Msg {
 	cacheStore.Set(key, filtered, expiry)
 
 	ips = extractIPs(filtered)
-	logQuery(clientAddr, domain, qtype, "forwarded", matchedID, ips)
+	logQuery(ctx, clientAddr, domain, qtype, "forwarded", matchedID, ips)
 
 	return filtered
 }
@@ -2512,7 +2485,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 
 	// create request with supplied context so caller controls deadline/cancel
 	makeReq := func() (*http.Request, error) {
-		r, err := http.NewRequestWithContext(ctx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+		r, err := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
 		if err != nil {
 			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err))
 			//fmt.Println("Failed to create upstream request:", err)
@@ -2558,7 +2531,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			// small backoff: sleep a bit but respect context
 			select {
 			case <-time.After(100 * time.Millisecond):
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				fmt.Println("doh sensed quit...")
 				return nil
 			}
@@ -2878,22 +2851,70 @@ var queryActionColors = map[string]uint16{
 // 	queryLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
 // }
 
-func logQuery(client, domain, typ, action, ruleID string, ips []string) {
-	attrs := []any{
-		slog.String("client", client),
+const TIMESTAMPS_FORMAT string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
+
+func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string) {
+	var ts string = time.Now().Format(TIMESTAMPS_FORMAT)
+
+	var attrs []any = []any{
 		slog.String("domain", domain),
 		slog.String("type", typ),
 		slog.String("action", action),
-		slog.String("ts", time.Now().Format(time.RFC3339)),
-		slog.String("category", "query"), // <-- this routes it to "queries.log" only
 	}
+
+	// --- NEW: Pull the PID/Exe info from the context backpack ---
+	if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok {
+		elapsed := time.Since(info.startTime)
+		attrs = append(attrs,
+			slog.Uint64("pid", uint64(info.pid)),
+			slog.String("exe", info.exe),
+			slog.String("proto", info.protocol),
+			slog.Any("clientAddr", info.clientAddr),
+		)
+		//To avoid cluttering the console, at least.
+		num_services := len(info.services)
+		if num_services != 0 {
+			attrs = append(attrs,
+				slog.Any("services", info.services),
+				slog.Int("num_services", num_services),
+			)
+		}
+		if info.err != nil {
+			attrs = append(attrs,
+				slog.Any("err", info.err),
+			)
+		}
+		attrs = append(attrs,
+			slog.String("elapsed", elapsed.String()),
+			//slog.Int64("elapsed_ms", elapsed.Milliseconds()),
+			slog.Int64("elapsed_ns", elapsed.Nanoseconds()),
+			slog.String("client_connected_at_ts", info.startTime.Format(TIMESTAMPS_FORMAT)),
+			slog.String("log_ts", ts),
+		)
+	} else {
+		// This is the "Epic Coding Fail" tracker.
+		// We add a field to the query log so you can find these easily.
+		attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+
+		// Also, log a separate Error to your main system log/stderr
+		// so you get alerted that a handler is broken.
+		mainLogger.Warn("coding_fail: logQuery called without metadata in context",
+			slog.String("client", client),
+			slog.String("domain", domain))
+	}
+
 	if ruleID != "" {
 		attrs = append(attrs, slog.String("rule_id", ruleID))
 	}
 	if len(ips) > 0 {
 		attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
 	}
-	mainLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
+	attrs = append(attrs,
+		slog.String("client", client),
+
+		slog.String("category", "query"), // <-- this routes it to "queries.log" only
+	)
+	mainLogger.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
 }
 
 func servfailResponse(msg *dns.Msg) *dns.Msg {

@@ -1,3 +1,4 @@
+* handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
 * add a config key which says all allowed A dns type queries also allow HTTPS ones
 * check added rules to not allow hosts that aren't valid like "=accounts.google.com"
 * make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
