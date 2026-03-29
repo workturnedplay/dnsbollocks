@@ -1138,15 +1138,19 @@ func OldMain() {
 
 	go watchKeys(
 		func() { // Ctrl+R
+			mainLogger.Debug("Reload triggered...")
+			cacheStore.Flush()
+			mainLogger.Debug("Cache flushed/deleted.")
+
 			if err := loadQueryWhitelist(); err != nil {
 				logFatal("Whitelist reload failed:", err)
 			} else {
-				fmt.Println("Whitelist reloaded")
+				mainLogger.Debug("Whitelist reloaded")
 			}
 			if err := loadResponseBlacklist(); err != nil {
 				logFatal("Blacklist reload failed:", err)
 			} else {
-				fmt.Println("Blacklist reloaded")
+				mainLogger.Debug("Blacklist reloaded")
 			}
 			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
@@ -2354,8 +2358,9 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			recentBlocks = recentBlocks[1:]
 		}
 		blockMutex.Unlock()
-		logQuery(ctx, clientAddr, domain, qtype, "blocked", "", nil)
-		return blockResponse(msg)
+		blocked := blockResponse(msg)
+		logQuery(ctx, clientAddr, domain, qtype, "blocked", "", nil, blocked)
+		return blocked
 	}
 
 	// Cache (edge: Negative responses cached short)
@@ -2370,7 +2375,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		resp.Id = msg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
-		logQuery(ctx, clientAddr, domain, qtype, "cache_hit", matchedID, ips)
+		logQuery(ctx, clientAddr, domain, qtype, "cache_hit", matchedID, ips, resp)
 		return resp
 	}
 
@@ -2381,8 +2386,8 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		if resp != nil {
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
-		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips)
 		negResp := servfailResponse(msg)
+		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips, negResp)
 		// Cache negatives short
 		cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		return negResp
@@ -2394,12 +2399,12 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	if filtered == nil {
 		logQuery(ctx, clientAddr, domain, qtype,
 			"blockedByUpstream_ORIGINAL", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, ips)
+			matchedID, ips, resp)         //FIXME: 'resp' here isn't the original, we should make a copy of it like we did above for its 'ips' and use that here.
 		blocked := blockResponse(msg)
 		ips = extractIPs(blocked)
 		logQuery(ctx, clientAddr, domain, qtype,
 			"blockedByUpstream_RETURNEDMODIFIED", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, ips)
+			matchedID, ips, blocked)
 		return blocked
 	}
 
@@ -2412,7 +2417,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	cacheStore.Set(key, filtered, expiry)
 
 	ips = extractIPs(filtered)
-	logQuery(ctx, clientAddr, domain, qtype, "forwarded", matchedID, ips)
+	logQuery(ctx, clientAddr, domain, qtype, "forwarded", matchedID, ips, filtered)
 
 	return filtered
 }
@@ -2705,6 +2710,12 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 	if msg == nil {
 		panic("msg was nil, unexpected bad programming/code ;p")
 	}
+	if len(msg.Question) == 0 {
+		panic("no DNS question! unexpected bad programming/code ;p")
+	}
+
+	q := msg.Question[0]
+	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// nets := make([]*net.IPNet, 0, len(blacklists))
 	// for _, cidr := range blacklists {
@@ -2724,7 +2735,7 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 			goodAnswer = append(goodAnswer, modifiedRR)
 			//fmt.Println("Good inAnswer:",rr)
 		} else {
-			mainLogger.Warn("Dropped inAnswer from upstream due to containing blocked ip", slog.Any("rr", rr))
+			mainLogger.Warn("Dropped inAnswer from upstream due to containing blocked ip", slog.Any("query_type", qtype), slog.Any("rr", rr))
 		}
 	}
 	for _, rr := range msg.Extra {
@@ -2732,7 +2743,7 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 			goodExtra = append(goodExtra, modifiedRR)
 			//fmt.Println("Good inExtra:",rr)
 		} else {
-			fmt.Println("Dropped inExtra from upstream due to containing blocked ip:", rr)
+			mainLogger.Warn("Dropped inExtra from upstream due to containing blocked ip:", slog.Any("query_type", qtype), slog.Any("rr", rr))
 		}
 	}
 
@@ -2741,16 +2752,8 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
-		//logQuery(clientAddr, msg.Question[0].Name, qtype, "blockedbyUpstream", "", nil)
-		//errorLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
-		if len(msg.Question) > 0 {
-			mainLogger.Warn("response_filtered_all", slog.String("domain", msg.Question[0].Name))
-		} else {
-			mainLogger.Warn("response_filtered_all", slog.String("domain", "unknown"))
-		}
+		mainLogger.Warn("response_filtered_all", slog.Any("query_type", qtype), slog.String("domain", q.Name))
 		return nil
-		//	} else {
-		//		fmt.Println("Non0 answer:", msg.Answer)
 	}
 	return msg
 }
@@ -2788,6 +2791,8 @@ func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
 				//	fmt.Println("Dropping IP hint from the reply:", param);
 				//fmt.Println("NOT Dropping IP hint from the reply:", param);
 				//newParams = append(newParams, param)
+			} else {
+				mainLogger.Warn("Dropping IP hint from the HTTPS reply", slog.Any("param", param))
 			}
 		}
 		r.Value = newParams
@@ -2857,7 +2862,7 @@ var queryActionColors = map[string]uint16{
 
 const TIMESTAMPS_FORMAT string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
-func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string) {
+func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg) {
 	var ts string = time.Now().Format(TIMESTAMPS_FORMAT)
 
 	var attrs []any = []any{
@@ -2918,6 +2923,9 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 
 		slog.String("category", "query"), // <-- this routes it to "queries.log" only
 	)
+	if blocked != nil {
+		attrs = append(attrs, slog.Any("blocked_dnsMsg", blocked))
+	}
 	mainLogger.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
 }
 
