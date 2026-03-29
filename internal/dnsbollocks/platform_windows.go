@@ -2034,9 +2034,13 @@ func startDNSListener(addr string) {
 						//break TheFor
 						continue
 					}
+					// Create a distinct copy for the background worker
+					wireCopy := make([]byte, n)
+					copy(wireCopy, buf[:n])
+
 					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr)
 					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err)
-					go handleUDP(udpPacketCtx, buf[:n], clientAddr, udpLn)
+					go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
 				}
 			}
 		}()
