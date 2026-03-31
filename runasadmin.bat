@@ -1,5 +1,5 @@
 @echo off
-echo "It's not necessary to run it as admin at this time (except for seeing full paths for the UDP exe clients)"
+echo "It's not necessary to run it as admin at this time (except for seeing full paths for the exe clients that run as Admin)"
 echo "Press Ctrl+C to stop it or..."
 pause
 

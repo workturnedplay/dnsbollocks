@@ -82,6 +82,14 @@ When TinyWall is active, Windows Firewall rules are ignored; only TinyWall rules
 You need `go.exe` of Go language to compile this code into a standalone exe.  
 No internet required if you have Go already installed.  
 
+To can run `buildwrace.bat` or `go build -race` or `go run -race` you need a `gcc.exe` in `PATH` so use this(or just get it from https://winlibs.com):  
+https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.7z  
+which has this sha256 from here: https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.7z.sha256  
+and has this sha512 `6339f5d849bce4da2d4c7d9c89d8fc921599e68544e190efc4d800e84f64b3d46e850d7b707225e9edaa32ef7a76115bdd31788c6e2b2d92b532b4bb7c18c5d0 *winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.7z`  
+put it in `c:\winlibs\` and make sure its in `PATH` like `c:\winlibs\mingw64\bin`  
+(`mingwvars.bat` doesn't need to be ran at all)
+
+
 ## License
 
 Apache License 2.0

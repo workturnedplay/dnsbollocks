@@ -468,22 +468,22 @@ func initBootstrapLogging() {
 // Colored console handler (Windows-only, uses your exact color request)
 // -----------------------------------------------------------------------------
 
-// levelToAttr maps slog levels to Win32 console attributes exactly as you asked.
-var levelToAttr = map[slog.Level]uint16{
+// LevelToAttr maps slog levels to Win32 console attributes exactly as you asked.
+var LevelToAttr = map[slog.Level]uint16{
 	slog.LevelDebug: wincoe.FOREGROUND_GRAY,   // dark grey
 	slog.LevelInfo:  wincoe.FOREGROUND_NORMAL, // normal / light grey (we actually restore original, but fallback)
 	slog.LevelWarn:  wincoe.FOREGROUND_BRIGHT_MAGENTA,
 	slog.LevelError: wincoe.FOREGROUND_RED,
 }
 
-// coloredConsoleHandler sets color before the inner TextHandler writes, then restores.
+// ColoredConsoleHandler sets color before the inner TextHandler writes, then restores.
 // If there is no console (service, piped, etc.) it silently falls back to plain text.
-type coloredConsoleHandler struct {
-	inner    slog.Handler
-	hStdout  windows.Handle
-	origAttr uint16
-	useColor bool
-	mu       sync.Mutex
+type ColoredConsoleHandler struct {
+	Inner    slog.Handler
+	HStdout  windows.Handle
+	OrigAttr uint16
+	UseColor bool
+	Mu       sync.Mutex
 }
 
 func newColoredConsoleHandler(level slog.Level) slog.Handler {
@@ -507,11 +507,11 @@ func newColoredConsoleHandler(level slog.Level) slog.Handler {
 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 
-	return &coloredConsoleHandler{
-		inner:    inner,
-		hStdout:  hStdout,
-		origAttr: origAttr,
-		useColor: true,
+	return &ColoredConsoleHandler{
+		Inner:    inner,
+		HStdout:  hStdout,
+		OrigAttr: origAttr,
+		UseColor: true,
 	}
 
 	// normalPlainTextHandler:
@@ -519,79 +519,150 @@ func newColoredConsoleHandler(level slog.Level) slog.Handler {
 	//	return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 }
 
-func (h *coloredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.inner.Enabled(ctx, level)
+func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.Inner.Enabled(ctx, level)
 }
 
-func (h *coloredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.useColor {
-		// ────────────────────────────────
-		//  Decide which color to use
-		// ────────────────────────────────
+// what Grok 4.20 Expert says is the fixed one(he's not right):
+func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !h.UseColor {
+		return h.Inner.Handle(ctx, r)
+	}
 
-		var color uint16
-		var isQuery bool
-		var action string
+	h.Mu.Lock()
+	defer h.Mu.Unlock() // ← full critical section; unlock happens even on panic
 
-		// Scan attributes once — look for category and action
-		r.Attrs(func(a slog.Attr) bool {
-			switch a.Key {
-			case "category":
-				if a.Value.String() == "query" {
-					isQuery = true
-				}
-			case "action":
-				action = a.Value.String()
+	// ──────────────────────────────────────────────────────────────
+	// 1. Decide color exactly once while holding the lock
+	// ──────────────────────────────────────────────────────────────
+	var color uint16
+	var isQuery bool
+	var action string
+
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "category":
+			if a.Value.String() == "query" {
+				isQuery = true
 			}
-			return true // keep scanning
-		})
+		case "action":
+			action = a.Value.String()
+		}
+		return true
+	})
 
-		if isQuery && action != "" {
-			// Query line → try to use action-based color
-			if c, ok := queryActionColors[action]; ok {
-				color = c
-			} else {
-				// unknown action → fall back to level-based color
-				color = levelToAttr[r.Level]
-				// if color == 0 {
-				// 	color = h.origAttr
-				// }
-			}
+	if isQuery && action != "" {
+		if c, ok := QueryActionColors[action]; ok {
+			color = c
 		} else {
-			// Normal (non-query) log line → classic level-based coloring
-			color = levelToAttr[r.Level]
-			// if color == 0 {
-			// 	color = h.origAttr
-			// }
+			color = LevelToAttr[r.Level]
 		}
-		// color := levelToAttr[r.Level]
-		if color == 0 {
-			color = h.origAttr // safety
-		}
-		// ────────────────────────────────
-		//  Apply the chosen color
-		// ────────────────────────────────
-		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		err := wincoe.SetConsoleTextAttribute(h.hStdout, color)
-		if err == nil {
-			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
-			// }
-			// Important: restore color AFTER writing — even on error paths
-			defer func() {
-				_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) //nolint:errcheck // because nothing to do with the error.
-			}()
-		} // ignore if couldn't set the text attribute/color!
+	} else {
+		color = LevelToAttr[r.Level]
+	}
+	if color == 0 {
+		color = h.OrigAttr // never leave console in undefined state
 	}
 
-	writeErr := h.inner.Handle(ctx, r)
+	// ──────────────────────────────────────────────────────────────
+	// 3. Restore on every exit path (including panic)
+	// ──────────────────────────────────────────────────────────────
+	defer func() {
+		if resetErr := wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr); resetErr != nil {
+			// We are already inside a locked section and returning an error;
+			// we do not want to swallow the original error, so we only log.
+			// Never panic here — that would mask the real problem.
+			mainLogger.Warn("SetConsoleTextAttribute restore failed",
+				slog.Uint64("original_attr", uint64(h.OrigAttr)),
+				slog.Any("err", resetErr))
+		}
+	}()
 
-	if writeErr != nil {
-		return fmt.Errorf("inner handler failed: %w", writeErr)
+	// ──────────────────────────────────────────────────────────────
+	// 2. Apply color — never ignore errors
+	// ──────────────────────────────────────────────────────────────
+	if err := wincoe.SetConsoleTextAttribute(h.HStdout, color); err != nil {
+		// restore immediately on failure, then propagate
+		//_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) // best-effort
+		return fmt.Errorf("SetConsoleTextAttribute (set color %d): %w", color, err)
 	}
-	return nil
+
+	// ──────────────────────────────────────────────────────────────
+	// 4. Delegate to the real handler while color is active
+	// ──────────────────────────────────────────────────────────────
+	return h.Inner.Handle(ctx, r)
 }
+
+// // XXX: original code: Grok 4.20 thinks this causes the crash(he's not right)! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+// func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
+// 	if h.UseColor {
+// 		// ────────────────────────────────
+// 		//  Decide which color to use
+// 		// ────────────────────────────────
+
+// 		var color uint16
+// 		var isQuery bool
+// 		var action string
+
+// 		// Scan attributes once — look for category and action
+// 		r.Attrs(func(a slog.Attr) bool {
+// 			switch a.Key {
+// 			case "category":
+// 				if a.Value.String() == "query" {
+// 					isQuery = true
+// 				}
+// 			case "action":
+// 				action = a.Value.String()
+// 			}
+// 			return true // keep scanning
+// 		})
+
+// 		if isQuery && action != "" {
+// 			// Query line → try to use action-based color
+// 			if c, ok := QueryActionColors[action]; ok {
+// 				color = c
+// 			} else {
+// 				// unknown action → fall back to level-based color
+// 				color = LevelToAttr[r.Level]
+// 				// if color == 0 {
+// 				// 	color = h.origAttr
+// 				// }
+// 			}
+// 		} else {
+// 			// Normal (non-query) log line → classic level-based coloring
+// 			color = LevelToAttr[r.Level]
+// 			// if color == 0 {
+// 			// 	color = h.origAttr
+// 			// }
+// 		}
+// 		// color := levelToAttr[r.Level]
+// 		if color == 0 {
+// 			color = h.OrigAttr // safety
+// 		}
+// 		// ────────────────────────────────
+// 		//  Apply the chosen color
+// 		// ────────────────────────────────
+// 		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
+// 		h.Mu.Lock()
+// 		defer h.Mu.Unlock()
+// 		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
+// 		if err == nil {
+// 			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
+// 			// }
+// 			// Important: restore color AFTER writing — even on error paths
+// 			defer func() {
+// 				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
+// 			}()
+// 		} // ignore if couldn't set the text attribute/color!
+// 	}
+
+// 	writeErr := h.Inner.Handle(ctx, r)
+
+// 	if writeErr != nil {
+// 		return fmt.Errorf("inner handler failed: %w", writeErr)
+// 	}
+// 	return nil
+// }
 
 // // isQueryLine checks whether this record is one of our DNS query logs
 // func isQueryLine(r slog.Record) bool {
@@ -619,21 +690,21 @@ func (h *coloredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 // 	return action
 // }
 
-func (h *coloredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &coloredConsoleHandler{
-		inner:    h.inner.WithAttrs(attrs),
-		hStdout:  h.hStdout,
-		origAttr: h.origAttr,
-		useColor: h.useColor,
+func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &ColoredConsoleHandler{
+		Inner:    h.Inner.WithAttrs(attrs),
+		HStdout:  h.HStdout,
+		OrigAttr: h.OrigAttr,
+		UseColor: h.UseColor,
 	}
 }
 
-func (h *coloredConsoleHandler) WithGroup(name string) slog.Handler {
-	return &coloredConsoleHandler{
-		inner:    h.inner.WithGroup(name),
-		hStdout:  h.hStdout,
-		origAttr: h.origAttr,
-		useColor: h.useColor,
+func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
+	return &ColoredConsoleHandler{
+		Inner:    h.Inner.WithGroup(name),
+		HStdout:  h.HStdout,
+		OrigAttr: h.OrigAttr,
+		UseColor: h.UseColor,
 	}
 }
 
@@ -1085,6 +1156,19 @@ func logFatal2(msg string) {
 var errChan chan error = make(chan error, 10)
 
 func OldMain() {
+	// TEMPORARY: race detector smoke test — remove before release
+	if false {
+		var raceTest int
+		done := make(chan struct{})
+		go func() {
+			raceTest = 1 // concurrent write
+			close(done)
+		}()
+		raceTest = 2 // concurrent write
+		<-done
+		_ = raceTest
+	}
+
 	initBootstrapLogging() // ← FIRST LINE — colored console, mainLogger now exists
 	//flag.Parse() // For future flags
 
@@ -2042,6 +2126,7 @@ func startDNSListener(addr string) {
 					wireCopy := make([]byte, n)
 					copy(wireCopy, buf[:n])
 
+					//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
 					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr)
 					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err)
 					go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
@@ -2121,6 +2206,7 @@ func startDNSListener(addr string) {
 					mainLogger.Warn("could not cast remote addr to TCPAddr", slog.Any("addr", conn.RemoteAddr()))
 					//FIXME: when can this happen?!
 				} else {
+					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 					// 2. Call your new TCP PID/Exe helper
 					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
 					tcpPacketCtx = makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, err)
@@ -2352,12 +2438,15 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	ruleMutex.RUnlock()
 	if !matched {
 		stats.Add(1)
-		blockMutex.Lock()
-		recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
-		if len(recentBlocks) > 50 {
-			recentBlocks = recentBlocks[1:]
-		}
-		blockMutex.Unlock()
+		func() {
+			blockMutex.Lock()
+			defer blockMutex.Unlock() // Executes even if the code below panics
+			recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
+			if len(recentBlocks) > 50 {
+				recentBlocks = recentBlocks[1:]
+			}
+			//blockMutex.Unlock()
+		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
 		logQuery(ctx, clientAddr, domain, qtype, "blocked", "", nil, blocked)
 		return blocked
@@ -2832,7 +2921,7 @@ func extractIPs(msg *dns.Msg) []string {
 }
 
 // NEW: action-specific colors (only used for category=query lines)
-var queryActionColors = map[string]uint16{
+var QueryActionColors = map[string]uint16{
 	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
 	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
 	"blocked":                            wincoe.FOREGROUND_BRIGHT_RED,
@@ -2863,6 +2952,13 @@ var queryActionColors = map[string]uint16{
 const TIMESTAMPS_FORMAT string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
 func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg) {
+	if ctx == nil {
+		mainLogger.Error("bad coding: logQuery called with nil context", // should never happen
+			slog.String("client", client),
+			slog.String("domain", domain))
+		return
+	}
+
 	var ts string = time.Now().Format(TIMESTAMPS_FORMAT)
 
 	var attrs []any = []any{
@@ -2871,6 +2967,24 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 		slog.String("action", action),
 	}
 
+	//this is Grok 4.20 code which makes it always hit "coding_fail: logQuery called without metadata in context"
+	// val := ctx.Value(clientInfoKey)
+	// var info *clientMetadata
+	// var ok bool
+	// info, ok = val.(*clientMetadata) // ← this was the bug, shouldn't have been pointer(just as I thought was the problem, initially)
+	// if !ok || info == nil {
+	// 	// Epic Coding Fail tracker - this should never happen in production
+	// 	// attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+	// 	// This is the "Epic Coding Fail" tracker.
+	// 	// We add a field to the query log so you can find these easily.
+	// 	attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+
+	// 	// Also, log a separate Error to your main system log/stderr
+	// 	// so you get alerted that a handler is broken.
+	// 	mainLogger.Warn("coding_fail: logQuery called without metadata in context",
+	// 		slog.String("client", client),
+	// 		slog.String("domain", domain))
+	// } else {
 	// --- NEW: Pull the PID/Exe info from the context backpack ---
 	if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok {
 		elapsed := time.Since(info.startTime)
@@ -3214,15 +3328,17 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		blockMutex.Lock()
 		var body strings.Builder
 		body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
-		for _, b := range recentBlocks {
-			body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
-				b.Domain, b.Type, b.Domain, b.Domain))
-		}
+		func() {
+			blockMutex.Lock()
+			defer blockMutex.Unlock()
+			for _, b := range recentBlocks {
+				body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
+					b.Domain, b.Type, b.Domain, b.Domain))
+			}
+		}()
 		body.WriteString("</ul>")
-		blockMutex.Unlock()
 		//uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
 		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 		return
