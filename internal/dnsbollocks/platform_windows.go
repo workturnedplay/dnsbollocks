@@ -2127,7 +2127,13 @@ func startDNSListener(addr string) {
 					copy(wireCopy, buf[:n])
 
 					//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
-					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr)
+
+					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr) //FIXME: restore this
+					// wincoe.Smashy()
+					// pid := uint32(1)
+					// exe := "foo"
+					// err = nil
+
 					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err)
 					go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
 				}
@@ -2208,7 +2214,11 @@ func startDNSListener(addr string) {
 				} else {
 					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 					// 2. Call your new TCP PID/Exe helper
-					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
+					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr) // FIXME: restore this!
+					// wincoe.Smashy()
+					// pid := uint32(2)
+					// exe := "foo2"
+					// err = nil
 					tcpPacketCtx = makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, err)
 				}
 
@@ -2227,20 +2237,27 @@ func startDNSListener(addr string) {
 }
 
 func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.Addr, pid uint32, exe string, err error) context.Context {
+	var services []string
+	var serviceInfo string
 	if err != nil {
 		mainLogger.Warn("couldn't get pid and exe name",
 			slog.String("proto", protocol),
 			slog.Any("clientAddr", clientAddr),
 			slog.Any("err", err))
-		return ctx
-	}
-
-	services, _ := wincoe.GetServiceNamesFromPID(pid)
-	var serviceInfo string
-	if len(services) > 0 {
-		serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
+		//services = []string{"<err:no_pid>"}
+		//return ctx
+		serviceInfo = "err:no_pid"
 	} else {
-		serviceInfo = "0 services"
+		//fmt.Println("!before")
+		services, _ := wincoe.GetServiceNamesFromPIDUncached(pid)
+		//services = []string{"<service-lookup-disabled-for-debug>"}
+		//fmt.Println("!after")
+
+		if len(services) > 0 {
+			serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
+		} else {
+			serviceInfo = "no services"
+		}
 	}
 
 	mainLogger.Debug("client connected",
@@ -2248,7 +2265,9 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		slog.Any("clientAddr", clientAddr),
 		slog.Any("pid", pid),
 		slog.String("exe", exe),
-		slog.String("service", serviceInfo))
+		slog.String("service", serviceInfo),
+		slog.Any("err", err),
+	)
 
 	// Create a specific context for THIS packet
 	//packetCtx := ctx // this is your global shutdown ctx
@@ -2357,7 +2376,11 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	remoteTCP, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err == nil {
 		// Use our TCP PID helper
-		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
+		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP) //FIXME: restore this
+		// wincoe.Smashy()
+		// pid := uint32(3)
+		// exe := "foo3"
+		// var pErr error = nil
 		ctx = makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
 	} else {
 		mainLogger.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
