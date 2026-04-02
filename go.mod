@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/miekg/dns v1.1.72
+	github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/workturnedplay/wincoe v0.0.10
 	golang.org/x/sys v0.42.0

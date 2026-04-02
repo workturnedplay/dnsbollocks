@@ -1,8 +1,8 @@
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
-# github.com/miekg/dns v1.1.72
-## explicit; go 1.24.0
+# github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12
+## explicit; go 1.25.0
 github.com/miekg/dns
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
