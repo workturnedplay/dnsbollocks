@@ -7,3 +7,4 @@
 bin/
 query_whitelist.json
 *.swp
+dnsbollocks.escape.log

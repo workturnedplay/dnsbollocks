@@ -40,7 +40,9 @@ if errorlevel 1 goto :fail
 echo Running go vet on everything...
 go vet !MOD_FLAG! ./...
 if errorlevel 1 goto :fail
-
+rem -m: print inlining decisions and some escape-analysis notes.
+rem -m repeated (or -m -m): produces more detailed output (extra reasons, stack/heap decision details).
+go.exe build -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
 go.exe build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail
