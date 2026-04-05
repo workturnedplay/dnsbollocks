@@ -2315,14 +2315,17 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		services, _ := wincoe.GetServiceNamesFromPIDCached(pid)
+		services, err := wincoe.GetServiceNamesFromPIDCached(pid)
 		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
-
-		if len(services) > 0 {
-			serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
+		if err != nil {
+			serviceInfo = fmt.Sprintf("err:%v", err)
 		} else {
-			serviceInfo = "no services"
+			if len(services) > 0 {
+				serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
+			} else {
+				serviceInfo = "no services"
+			}
 		}
 	}
 
