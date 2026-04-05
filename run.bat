@@ -81,6 +81,9 @@ if not exist "!exe_name!" (
 )
 
 set GOTRACEBACK=all
+set WINCOE_SMASHY_TEST=1
+set WINCOE_SMASHY_RUNGC=1
+rem set GODEBUG=gctrace=1,gc=1,allocfreetrace=1
 set "GORACE=halt_on_error=1:log_path=race.log"
 rem won't see it: go env GORACE
 echo GORACE is '%GORACE%'
