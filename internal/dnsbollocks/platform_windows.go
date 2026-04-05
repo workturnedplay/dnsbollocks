@@ -2163,7 +2163,7 @@ func startDNSListener(addr string) {
 
 					//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
 
-					pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr) //FIXME: restore this
+					pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
 					// wincoe.Smashy()
 					// pid := uint32(1)
 					// exe := "foo"
@@ -2280,7 +2280,7 @@ func startDNSListener(addr string) {
 				} else {
 					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 					// 2. Call your new TCP PID/Exe helper
-					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr) // FIXME: restore this!
+					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
 					// wincoe.Smashy()
 					// pid := uint32(2)
 					// exe := "foo2"
@@ -2315,8 +2315,8 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		//services, _ := wincoe.GetServiceNamesFromPIDUncached(pid)
-		services = []string{"<service-lookup-disabled-for-debug>"}
+		services, _ := wincoe.GetServiceNamesFromPIDCached(pid)
+		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 
 		if len(services) > 0 {
@@ -2470,7 +2470,7 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 			slog.String("proto", "DoH"),
 			slog.Any("clientAddr", remoteTCP))
 		// Use our TCP PID helper
-		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP) //FIXME: restore this
+		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
 		// wincoe.Smashy()
 		// pid := uint32(3)
 		// exe := "foo3"
