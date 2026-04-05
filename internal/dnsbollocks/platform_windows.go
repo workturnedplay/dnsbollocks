@@ -495,6 +495,7 @@ func newColoredConsoleHandler(level slog.Level) slog.Handler {
 	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) //this will.
 	if hStdout == windows.InvalidHandle || err != nil {
 		// No console → plain text fallback
+		//FIXME: figure out if this would recuse infinitely:
 		mainLogger.Warn("failed to select console, falling back to plain text", slog.Any("err", err))
 		//goto normalPlainTextHandler
 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
@@ -503,6 +504,7 @@ func newColoredConsoleHandler(level slog.Level) slog.Handler {
 	origAttr, err := wincoe.GetConsoleScreenBufferAttributes(hStdout) // your new helper
 	if err != nil {
 		// fallback
+		//FIXME: figure out if this would recuse infinitely:
 		mainLogger.Warn("failed to select colored console, falling back to plain text", slog.Any("err", err))
 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
@@ -523,146 +525,147 @@ func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) b
 	return h.Inner.Enabled(ctx, level)
 }
 
-// what Grok 4.20 Expert says is the fixed one(he's not right):
-func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-	if !h.UseColor {
-		return h.Inner.Handle(ctx, r)
-	}
-
-	h.Mu.Lock()
-	defer h.Mu.Unlock() // ← full critical section; unlock happens even on panic
-
-	// ──────────────────────────────────────────────────────────────
-	// 1. Decide color exactly once while holding the lock
-	// ──────────────────────────────────────────────────────────────
-	var color uint16
-	var isQuery bool
-	var action string
-
-	r.Attrs(func(a slog.Attr) bool {
-		switch a.Key {
-		case "category":
-			if a.Value.String() == "query" {
-				isQuery = true
-			}
-		case "action":
-			action = a.Value.String()
-		}
-		return true
-	})
-
-	if isQuery && action != "" {
-		if c, ok := QueryActionColors[action]; ok {
-			color = c
-		} else {
-			color = LevelToAttr[r.Level]
-		}
-	} else {
-		color = LevelToAttr[r.Level]
-	}
-	if color == 0 {
-		color = h.OrigAttr // never leave console in undefined state
-	}
-
-	// ──────────────────────────────────────────────────────────────
-	// 3. Restore on every exit path (including panic)
-	// ──────────────────────────────────────────────────────────────
-	defer func() {
-		if resetErr := wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr); resetErr != nil {
-			// We are already inside a locked section and returning an error;
-			// we do not want to swallow the original error, so we only log.
-			// Never panic here — that would mask the real problem.
-			mainLogger.Warn("SetConsoleTextAttribute restore failed",
-				slog.Uint64("original_attr", uint64(h.OrigAttr)),
-				slog.Any("err", resetErr))
-		}
-	}()
-
-	// ──────────────────────────────────────────────────────────────
-	// 2. Apply color — never ignore errors
-	// ──────────────────────────────────────────────────────────────
-	if err := wincoe.SetConsoleTextAttribute(h.HStdout, color); err != nil {
-		// restore immediately on failure, then propagate
-		//_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) // best-effort
-		return fmt.Errorf("SetConsoleTextAttribute (set color %d): %w", color, err)
-	}
-
-	// ──────────────────────────────────────────────────────────────
-	// 4. Delegate to the real handler while color is active
-	// ──────────────────────────────────────────────────────────────
-	return h.Inner.Handle(ctx, r)
-}
-
-// // XXX: original code: Grok 4.20 thinks this causes the crash(he's not right)! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+// // what Grok 4.20 Expert says is the fixed one(he's not right):
 // func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-// 	if h.UseColor {
-// 		// ────────────────────────────────
-// 		//  Decide which color to use
-// 		// ────────────────────────────────
+// 	if !h.UseColor {
+// 		return h.Inner.Handle(ctx, r)
+// 	}
 
-// 		var color uint16
-// 		var isQuery bool
-// 		var action string
+// 	h.Mu.Lock()
+// 	defer h.Mu.Unlock() // ← full critical section; unlock happens even on panic
 
-// 		// Scan attributes once — look for category and action
-// 		r.Attrs(func(a slog.Attr) bool {
-// 			switch a.Key {
-// 			case "category":
-// 				if a.Value.String() == "query" {
-// 					isQuery = true
-// 				}
-// 			case "action":
-// 				action = a.Value.String()
+// 	// ──────────────────────────────────────────────────────────────
+// 	// 1. Decide color exactly once while holding the lock
+// 	// ──────────────────────────────────────────────────────────────
+// 	var color uint16
+// 	var isQuery bool
+// 	var action string
+
+// 	r.Attrs(func(a slog.Attr) bool {
+// 		switch a.Key {
+// 		case "category":
+// 			if a.Value.String() == "query" {
+// 				isQuery = true
 // 			}
-// 			return true // keep scanning
-// 		})
+// 		case "action":
+// 			action = a.Value.String()
+// 		}
+// 		return true
+// 	})
 
-// 		if isQuery && action != "" {
-// 			// Query line → try to use action-based color
-// 			if c, ok := QueryActionColors[action]; ok {
-// 				color = c
-// 			} else {
-// 				// unknown action → fall back to level-based color
-// 				color = LevelToAttr[r.Level]
-// 				// if color == 0 {
-// 				// 	color = h.origAttr
-// 				// }
-// 			}
+// 	if isQuery && action != "" {
+// 		if c, ok := QueryActionColors[action]; ok {
+// 			color = c
 // 		} else {
-// 			// Normal (non-query) log line → classic level-based coloring
 // 			color = LevelToAttr[r.Level]
-// 			// if color == 0 {
-// 			// 	color = h.origAttr
-// 			// }
 // 		}
-// 		// color := levelToAttr[r.Level]
-// 		if color == 0 {
-// 			color = h.OrigAttr // safety
-// 		}
-// 		// ────────────────────────────────
-// 		//  Apply the chosen color
-// 		// ────────────────────────────────
-// 		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
-// 		h.Mu.Lock()
-// 		defer h.Mu.Unlock()
-// 		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
-// 		if err == nil {
-// 			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
-// 			// }
-// 			// Important: restore color AFTER writing — even on error paths
-// 			defer func() {
-// 				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
-// 			}()
-// 		} // ignore if couldn't set the text attribute/color!
+// 	} else {
+// 		color = LevelToAttr[r.Level]
+// 	}
+// 	if color == 0 {
+// 		color = h.OrigAttr // never leave console in undefined state
 // 	}
 
-// 	writeErr := h.Inner.Handle(ctx, r)
+// 	// ──────────────────────────────────────────────────────────────
+// 	// 3. Restore on every exit path (including panic)
+// 	// ──────────────────────────────────────────────────────────────
+// 	defer func() {
+// 		if resetErr := wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr); resetErr != nil {
+// 			// We are already inside a locked section and returning an error;
+// 			// we do not want to swallow the original error, so we only log.
+// 			// Never panic here — that would mask the real problem.
+// 			//FIXME: figure out if this would recuse infinitely:
+// 			mainLogger.Warn("SetConsoleTextAttribute restore failed",
+// 				slog.Uint64("original_attr", uint64(h.OrigAttr)),
+// 				slog.Any("err", resetErr))
+// 		}
+// 	}()
 
-// 	if writeErr != nil {
-// 		return fmt.Errorf("inner handler failed: %w", writeErr)
+// 	// ──────────────────────────────────────────────────────────────
+// 	// 2. Apply color — never ignore errors
+// 	// ──────────────────────────────────────────────────────────────
+// 	if err := wincoe.SetConsoleTextAttribute(h.HStdout, color); err != nil {
+// 		// restore immediately on failure, then propagate
+// 		//_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) // best-effort
+// 		return fmt.Errorf("SetConsoleTextAttribute (set color %d): %w", color, err)
 // 	}
-// 	return nil
+
+// 	// ──────────────────────────────────────────────────────────────
+// 	// 4. Delegate to the real handler while color is active
+// 	// ──────────────────────────────────────────────────────────────
+// 	return h.Inner.Handle(ctx, r)
 // }
+
+// XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 also seen in https://go-review.googlesource.com/c/go/+/753040 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.UseColor {
+		// ────────────────────────────────
+		//  Decide which color to use
+		// ────────────────────────────────
+
+		var color uint16
+		var isQuery bool
+		var action string
+
+		// Scan attributes once — look for category and action
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "category":
+				if a.Value.String() == "query" {
+					isQuery = true
+				}
+			case "action":
+				action = a.Value.String()
+			}
+			return true // keep scanning
+		})
+
+		if isQuery && action != "" {
+			// Query line → try to use action-based color
+			if c, ok := QueryActionColors[action]; ok {
+				color = c
+			} else {
+				// unknown action → fall back to level-based color
+				color = LevelToAttr[r.Level]
+				// if color == 0 {
+				// 	color = h.origAttr
+				// }
+			}
+		} else {
+			// Normal (non-query) log line → classic level-based coloring
+			color = LevelToAttr[r.Level]
+			// if color == 0 {
+			// 	color = h.origAttr
+			// }
+		}
+		// color := levelToAttr[r.Level]
+		if color == 0 {
+			color = h.OrigAttr // safety
+		}
+		// ────────────────────────────────
+		//  Apply the chosen color
+		// ────────────────────────────────
+		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
+		h.Mu.Lock()
+		defer h.Mu.Unlock()
+		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
+		if err == nil {
+			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
+			// }
+			// Important: restore color AFTER writing — even on error paths
+			defer func() {
+				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
+			}()
+		} // ignore if couldn't set the text attribute/color!
+	}
+
+	writeErr := h.Inner.Handle(ctx, r)
+
+	if writeErr != nil {
+		return fmt.Errorf("inner handler failed: %w", writeErr)
+	}
+	return nil
+}
 
 // // isQueryLine checks whether this record is one of our DNS query logs
 // func isQueryLine(r slog.Record) bool {
@@ -1156,6 +1159,10 @@ func logFatal2(msg string) {
 var errChan chan error = make(chan error, 10)
 
 func OldMain() {
+	// wincoe.InstallCrashSink()
+	// if true {
+	// 	panic("deliberate panic")
+	// }
 	// TEMPORARY: race detector smoke test — remove before release
 	if false {
 		var raceTest int
@@ -1170,6 +1177,21 @@ func OldMain() {
 	}
 
 	initBootstrapLogging() // ← FIRST LINE — colored console, mainLogger now exists
+	// go func() {
+	// 	ticker := time.NewTicker(5 * time.Second)
+	// 	defer ticker.Stop()
+	// 	for range ticker.C {
+	// 		mainLogger.Debug("MARK")
+	// 	}
+	// }()
+	// go func() {
+	// 	for {
+	// 		wincoe.Churn2()
+	// 		// No sleep here, or a very small one
+	// 		time.Sleep(20 * time.Millisecond)
+	// 	}
+	// }()
+
 	//flag.Parse() // For future flags
 
 	// if len(os.Args) > 1 {
@@ -2091,7 +2113,7 @@ func startDNSListener(addr string) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		mainLogger.Error("invalid UDP address", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1)
+		os.Exit(1) //FIXME: see the below comment
 	}
 	udpLn, err := net.ListenUDP("udp", udpAddr)
 
@@ -2114,13 +2136,26 @@ func startDNSListener(addr string) {
 
 					return // Quit on shutdown
 				default:
-					n, clientAddr, err := udpLn.ReadFromUDP(buf)
-					if err != nil {
+					n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
+					if err2 != nil {
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-						mainLogger.Warn("udp_read_error", slog.Any("err", err))
+						mainLogger.Warn("udp_read_error", slog.Any("err", err2))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
 						continue
+					}
+					fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
+					mainLogger.Debug("client connected(early logging)",
+						slog.String("proto", "UDP"),
+						slog.Any("clientAddr", clientAddr),
+						//slog.Any("pid", pid),
+						//slog.String("exe", exe),
+						//slog.String("service", serviceInfo),
+						//slog.Any("err", err),
+					)
+
+					if n > len(buf) {
+						panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
 					}
 					// Create a distinct copy for the background worker
 					wireCopy := make([]byte, n)
@@ -2128,13 +2163,13 @@ func startDNSListener(addr string) {
 
 					//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
 
-					pid, exe, err := wincoe.PidAndExeForUDP(clientAddr) //FIXME: restore this
+					pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr) //FIXME: restore this
 					// wincoe.Smashy()
 					// pid := uint32(1)
 					// exe := "foo"
 					// err = nil
 
-					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err)
+					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
 					go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
 				}
 			}
@@ -2166,13 +2201,31 @@ func startDNSListener(addr string) {
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		go func() {
 			defer tcpLn.Close()
-
+			//TODO: CHECK this:
+			// 			// In a separate goroutine
+			// go func() {
+			//     <-backgroundCtx.Done()
+			//     tcpLn.Close() // This wakes up Accept() with an error safely
+			// }()
+			// // Then simplify your loop
+			// for {
+			//     conn, err := tcpLn.Accept()
+			//     if err != nil {
+			//         return // Exit on any error (like closed listener)
+			//     }
+			//     // ... handle connection
+			// }
 			// small buffer for accept errors backoff
 			var backoff time.Duration
 
 			for {
 				// allow Accept to be interruptible by context by using a deadline
-				tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+				err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
+				//err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
+				if err != nil {
+					mainLogger.Warn("can't set TCP deadline", slog.Any("err", err))
+					panic("wtw")
+				}
 
 				conn, err := tcpLn.Accept()
 				if err != nil {
@@ -2185,7 +2238,17 @@ func startDNSListener(addr string) {
 					}
 
 					// handle timeout-like errors (due to SetDeadline)
-					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+
+					// if ne, ok := err.(net.Error); ok && ne.Timeout() { // old way
+					// 	// reset backoff and continue
+					// 	backoff = 0
+					// 	continue
+					// }
+
+					// 1. Declare a variable for the interface you're looking for
+					var netErr net.Error
+					// 2. Use errors.As to check if 'err' (or anything it wraps) is a net.Error
+					if errors.As(err, &netErr) && netErr.Timeout() {
 						// reset backoff and continue
 						backoff = 0
 						continue
@@ -2208,6 +2271,9 @@ func startDNSListener(addr string) {
 				tcpPacketCtx := backgroundCtx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
 				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+				mainLogger.Debug("client connected(early logging)",
+					slog.String("proto", "TCP"),
+					slog.Any("clientAddr", clientAddr))
 				if !ok {
 					mainLogger.Warn("could not cast remote addr to TCPAddr", slog.Any("addr", conn.RemoteAddr()))
 					//FIXME: when can this happen?!
@@ -2249,8 +2315,8 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		services, _ := wincoe.GetServiceNamesFromPIDUncached(pid)
-		//services = []string{"<service-lookup-disabled-for-debug>"}
+		//services, _ := wincoe.GetServiceNamesFromPIDUncached(pid)
+		services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 
 		if len(services) > 0 {
@@ -2288,46 +2354,71 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
-		// Edge: Invalid packet—drop silently (common in floods)
+		// Edge: Invalid packet (common in floods)
+		mainLogger.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", slog.Any("err", err))
 		return
 	}
 	resp := handleDNSQuery(ctx, msg, clientAddr.String())
 	if resp == nil {
 		return // Drop
 	}
-	pack, _ := resp.Pack()                 // Ignore err for brevity (rare)
-	_, _ = ln.WriteToUDP(pack, clientAddr) // Ignore write err
+	pack, err := resp.Pack()
+	if err != nil {
+		mainLogger.Warn("failed to pack DNS UDP packet response thus not sent", slog.Any("err", err))
+		return
+	}
+	wroteN, err := ln.WriteToUDP(pack, clientAddr)
+	if err != nil {
+		mainLogger.Warn("failed to write to UDP the DNS packet response", slog.Any("err", err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		return
+	}
 }
 
 func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	buf := make([]byte, 2)
-	if _, err := io.ReadFull(conn, buf); err != nil {
+	const TWO = 2
+	buf := make([]byte, TWO)
+	if n, err := io.ReadFull(conn, buf); err != nil {
+		mainLogger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", TWO))
 		return
 	}
 	length := int(binary.BigEndian.Uint16(buf))
-	if length > 65535 { // Edge: Oversize packet
+	const TOOBIG = 65535
+	if length > TOOBIG { // Edge: Oversize packet
+		mainLogger.Warn("too big'a'packet in TCP DNS connection, thus dropped/ignored", slog.Any("bigger_than_this", TOOBIG), slog.Int("actual_bytes", length))
 		return
 	}
 	wire := make([]byte, length)
-	if _, err := io.ReadFull(conn, wire); err != nil {
+	if n, err := io.ReadFull(conn, wire); err != nil {
+		mainLogger.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length))
 		return
 	}
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
+		mainLogger.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", slog.Any("err", err))
 		return
 	}
 	resp := handleDNSQuery(ctx, msg, conn.RemoteAddr().String())
 	if resp != nil {
-		pack, _ := resp.Pack() // Ignore err
-		out := new(bytes.Buffer)
-		err := binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
+		pack, err := resp.Pack() // Ignore err
 		if err != nil {
+			mainLogger.Warn("failed to pack DNS TCP packet response thus not sent", slog.Any("err", err))
+			return
+		}
+		out := new(bytes.Buffer)
+		err = binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
+		if err != nil {
+			mainLogger.Warn("failed to write to the buffer the pack len (2 bytes) of the TCP DNS packet response", slog.Any("err", err))
 			return
 		}
 		out.Write(pack)
-		_, _ = conn.Write(out.Bytes()) // Ignore write err
+		wroteN, err := conn.Write(out.Bytes()) // Ignore write err
+		if err != nil {
+			mainLogger.Warn("failed to write to TCP the DNS packet response body (wrote the 2 bytes len before)", slog.Any("err", err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+			return
+		}
 	}
+	mainLogger.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho.")
 }
 
 func startDoHListener(addr string) {
@@ -2375,6 +2466,9 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	// Firefox is sitting there waiting for its DNS-over-HTTPS answer, so it's the perfect time to "catch" it in the Windows TCP table.
 	remoteTCP, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err == nil {
+		mainLogger.Debug("client connected(early logging)",
+			slog.String("proto", "DoH"),
+			slog.Any("clientAddr", remoteTCP))
 		// Use our TCP PID helper
 		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP) //FIXME: restore this
 		// wincoe.Smashy()
@@ -2719,7 +2813,7 @@ func getBlockedString() string {
 	}
 	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
 	// You can also use time.DateOnly (2006-01-02) if you prefer
-	startTime := time.Now().Format("2006-01-02 15:04:05")
+	startTime := time.Now().Format("2006-01-02 15:04:05-0700") // don't need more precision here!
 
 	return fmt.Sprintf("Blocked by %q [which was started on %q]", exePath, startTime)
 }
