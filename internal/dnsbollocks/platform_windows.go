@@ -2315,7 +2315,8 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		services, err := wincoe.GetServiceNamesFromPIDCached(pid)
+		//services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
+		services, err = wincoe.GetServiceNamesFromPIDCached(pid)
 		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 		if err != nil {
@@ -2703,11 +2704,11 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 
 	// create request with supplied context so caller controls deadline/cancel
 	makeReq := func() (*http.Request, error) {
-		r, err := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
-		if err != nil {
-			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err))
+		r, err2 := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+		if err2 != nil {
+			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
 			//fmt.Println("Failed to create upstream request:", err)
-			return nil, err
+			return nil, err2
 		}
 		r.Header.Set("Content-Type", "application/dns-message")
 		if config.SNIHostname != "" {
@@ -2725,15 +2726,15 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			initDoHClient()
 		}
 
-		req2, err := makeReq()
-		if err != nil {
-			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err))
+		req2, err2 := makeReq()
+		if err2 != nil {
+			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
 			//fmt.Println("Failed to create upstream request:", err)
 			return nil
 		}
 
-		resp, err = dohClient.Do(req2)
-		if err == nil {
+		resp, err2 = dohClient.Do(req2)
+		if err2 == nil {
 			//success!
 			break
 		}
@@ -2741,10 +2742,10 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
 		var netErr net.Error
-		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
-			errors.As(err, &netErr) && netErr.Temporary() {
+		if errors.Is(err2, io.ErrUnexpectedEOF) || errors.Is(err2, io.EOF) ||
+			errors.As(err2, &netErr) && netErr.Temporary() {
 			// retry once
-			mainLogger.Error("doh_post_transient_error(retrying next tho!)", slog.Any("err", err), slog.Int("attempt", attempt))
+			mainLogger.Error("doh_post_transient_error(retrying next tho!)", slog.Any("err", err2), slog.Int("attempt", attempt))
 			//fmt.Println("doh_post_transient_error(retrying next tho!):", err)
 			// small backoff: sleep a bit but respect context
 			select {
@@ -2757,7 +2758,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		}
 
 		// non-retryable error
-		mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err))
+		mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err2))
 		//fmt.Println("Failed to query upstream DNS server:", err)
 		return nil
 	}

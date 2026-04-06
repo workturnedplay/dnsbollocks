@@ -34,20 +34,13 @@ if "!HAS_WORKSPACE!"=="1" (
   echo Running vendored due to lack of workspace
 )
 
-echo Running go vet...
-:: ./... means “Walk the directory tree from here, find every Go package, and apply vet to each.”
-:: 'go vet' does:
-:: Full static analysis of the package
-:: Including unreachable code
-:: Including dead branches
-:: Including code not exercised by tests
-::go vet -mod=vendor ./...
-"%goexe%" vet !MOD_FLAG! ./cmd/dnsbollocks ./internal/dnsbollocks
-if errorlevel 1 goto :fail
+call prebuildcheck.bat silent
+if errorlevel 1 (
+    echo.
+    choice /c NY /m "%lintexe% found issues. Stop build?"
+    if errorlevel 2 goto :fail
+)
 
-echo Running go vet on everything...
-"%goexe%" vet !MOD_FLAG! ./...
-if errorlevel 1 goto :fail
 rem -m: print inlining decisions and some escape-analysis notes.
 rem -m repeated (or -m -m): produces more detailed output (extra reasons, stack/heap decision details).
 "%goexe%" build -x -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
