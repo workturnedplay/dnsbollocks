@@ -2144,7 +2144,7 @@ func startDNSListener(addr string) {
 						//break TheFor
 						continue
 					}
-					fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
+					//fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
 					mainLogger.Debug("client connected(early logging)",
 						slog.String("proto", "UDP"),
 						slog.Any("clientAddr", clientAddr),
