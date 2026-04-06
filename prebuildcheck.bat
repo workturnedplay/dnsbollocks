@@ -84,9 +84,11 @@ rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail
 
 set "lintexe=%USERPROFILE%\go\bin\golangci-lint.exe"
-echo Running %lintexe%
+rem pushd internal\dnsbollocks
+echo Running %lintexe% run !LINT_MOD_FLAG! ./...
 "%lintexe%" run !LINT_MOD_FLAG! ./...
 if errorlevel 1 goto :fail
+rem popd
 
 rem echo Running: go build ... 
 rem "%goexe%" build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks

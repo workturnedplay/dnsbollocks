@@ -7,7 +7,7 @@ github.com/miekg/dns
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/workturnedplay/wincoe v0.0.11
+# github.com/workturnedplay/wincoe v0.0.12
 ## explicit; go 1.27
 github.com/workturnedplay/wincoe
 # golang.org/x/mod v0.34.0

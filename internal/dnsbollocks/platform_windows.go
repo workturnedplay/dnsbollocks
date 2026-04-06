@@ -378,9 +378,9 @@ func loadQueryWhitelist() error {
 					r.ID = nid
 					changed++
 				}
-				new := strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
-				if new != r.Pattern {
-					r.Pattern = new
+				new2 := strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
+				if new2 != r.Pattern {
+					r.Pattern = new2
 					changed++
 				}
 				cleaned = append(cleaned, *r)
@@ -1773,16 +1773,16 @@ func recursiveMatchOld(pattern, name string) bool {
 			// consume the token
 			pattern = pattern[3:]
 			// Match one or more chars (but not dot): we must ensure we don't consume dots.
-			// find max run of non-dot chars at start of name
-			max := 0
+			// find max2 run of non-dot chars at start of name
+			max2 := 0
 			for j := 0; j < len(name) && name[j] != '.'; j++ {
-				max = j + 1
+				max2 = j + 1
 			}
 			// must match at least one char
-			if max < 1 {
+			if max2 < 1 {
 				return false
 			}
-			for i := 1; i <= max; i++ {
+			for i := 1; i <= max2; i++ {
 				if recursiveMatch(pattern, name[i:]) {
 					return true
 				}
@@ -1867,14 +1867,14 @@ func recursiveMatch(pattern, name string) bool {
 		case strings.HasPrefix(pattern, "{*}"):
 			// consume 1+ chars, stop at dot
 			pattern = pattern[3:]
-			max := 0
+			max3 := 0
 			for j := 0; j < len(name) && name[j] != '.'; j++ {
-				max = j + 1
+				max3 = j + 1
 			}
-			if max < 1 {
+			if max3 < 1 {
 				return false
 			}
-			for i := 1; i <= max; i++ {
+			for i := 1; i <= max3; i++ {
 				if recursiveMatch(pattern, name[i:]) {
 					return true
 				}
@@ -2315,8 +2315,8 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		//services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
-		services, err = wincoe.GetServiceNamesFromPIDCached(pid)
+		services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
+		//services, err = wincoe.GetServiceNamesFromPIDCached(pid)
 		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 		if err != nil {
