@@ -1262,7 +1262,7 @@ func OldMain() {
 		},
 		func() { // alt+x Ctrl+X etc.
 			fmt.Println("Shutdown signal received, clean exit.")
-			//FIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
+			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			shutdown(0) // clean exit
 		},
@@ -2103,6 +2103,7 @@ type clientMetadata struct {
 
 // Listeners...
 
+// non-blocking! listens on both UDP and TCP ports 53
 func startDNSListener(addr string) {
 	//	listenerErrs.Add(1)
 	//	defer listenerErrs.Done()
@@ -2121,60 +2122,76 @@ func startDNSListener(addr string) {
 
 	if err != nil {
 		mainLogger.Error("UDP bind/listen failed", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
+		shutdown(1)
+		//os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
 	} else {
-		mainLogger.Info("UDP DNS listening success", slog.String("addr", addr))
+		go func() { //we won't be blocking here.
+			//defer udpLn.Close()
+			// 1. DEFENSIVE DEFER: This ensures the port is freed even if the
+			// function panics or returns unexpectedly before the goroutine starts.
+			defer func() {
+				err = udpLn.Close()
+				_ = err
+			}() // will be called twice usually, because of the below goroutine
+			// 2. SHUTDOWN WATCHER: This handles the "Press any key" / context cancel
+			go func() {
+				<-backgroundCtx.Done()
+				// We call Close here to unblock the Read/Accept loop immediately.
+				// If this runs, the 'defer' above will just return an error later.
+				err = udpLn.Close()
+				_ = err
+			}()
+			mainLogger.Info("UDP DNS listening success", slog.String("addr", addr))
 
-		buf := make([]byte, 512+512)
-		go func() {
-			defer udpLn.Close()
+			buf := make([]byte, 512+512)
 
 			//TheFor:
 			for {
-				select {
-				case <-backgroundCtx.Done():
-					// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
-					mainLogger.Info("quitting on shutdown...")
+				n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
+				if err2 != nil {
+					select {
+					case <-backgroundCtx.Done():
+						// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
+						mainLogger.Debug("UDP DNS listener is quitting due to shutdown...")
 
-					return // Quit on shutdown
-				default:
-					n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
-					if err2 != nil {
+						return // Quit on shutdown
+					default:
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-						mainLogger.Warn("udp_read_error", slog.Any("err", err2))
+						mainLogger.Warn("UDP DNS listener udp_read_error", slog.Any("err", err2))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
-						continue
-					}
-					//fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
-					mainLogger.Debug("client connected(early logging)",
-						slog.String("proto", "UDP"),
-						slog.Any("clientAddr", clientAddr),
-						//slog.Any("pid", pid),
-						//slog.String("exe", exe),
-						//slog.String("service", serviceInfo),
-						//slog.Any("err", err),
-					)
+						continue // Real network error, keep trying
+					} //select
+				} //if err2
 
-					if n > len(buf) {
-						panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
-					}
-					// Create a distinct copy for the background worker
-					wireCopy := make([]byte, n)
-					copy(wireCopy, buf[:n])
+				//fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
+				mainLogger.Debug("client connected(early logging)",
+					slog.String("proto", "UDP"),
+					slog.Any("clientAddr", clientAddr),
+					//slog.Any("pid", pid),
+					//slog.String("exe", exe),
+					//slog.String("service", serviceInfo),
+					//slog.Any("err", err),
+				)
 
-					//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
-
-					pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
-					// wincoe.Smashy()
-					// pid := uint32(1)
-					// exe := "foo"
-					// err = nil
-
-					udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
-					go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
+				if n > len(buf) {
+					panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
 				}
-			}
+				// Create a distinct copy for the background worker
+				wireCopy := make([]byte, n)
+				copy(wireCopy, buf[:n])
+
+				//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
+
+				pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
+				// wincoe.Smashy()
+				// pid := uint32(1)
+				// exe := "foo"
+				// err = nil
+
+				udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
+				go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
+			} //infinite 'for'
 		}()
 	} // else
 
@@ -2198,17 +2215,21 @@ func startDNSListener(addr string) {
 		mainLogger.Error("TCP bind/listen failed", slog.String("addr", addr), slog.Any("err", err))
 		os.Exit(1)
 	} else {
-		fmt.Println("Success")
-		fmt.Printf("TCP DNS listening on %q\n", addr)
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		go func() {
-			defer tcpLn.Close()
-			//TODO: CHECK this:
-			// 			// In a separate goroutine
-			// go func() {
-			//     <-backgroundCtx.Done()
-			//     tcpLn.Close() // This wakes up Accept() with an error safely
-			// }()
+			defer func() {
+				err = tcpLn.Close()
+				_ = err
+			}() // just in case we exit via non-shutdown(x)
+			// In a separate goroutine watch for shutdown and close the listener
+			go func() {
+				<-backgroundCtx.Done()
+				err = tcpLn.Close() // This wakes up Accept() with an error safely
+				_ = err
+			}()
+			fmt.Println("Success")
+			fmt.Printf("TCP DNS listening on %q\n", addr)
+
 			// // Then simplify your loop
 			// for {
 			//     conn, err := tcpLn.Accept()
@@ -2217,58 +2238,51 @@ func startDNSListener(addr string) {
 			//     }
 			//     // ... handle connection
 			// }
-			// small buffer for accept errors backoff
-			var backoff time.Duration
+
+			// // small buffer for accept errors backoff
+			// var backoff time.Duration
 
 			for {
-				// allow Accept to be interruptible by context by using a deadline
-				err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
-				//err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
-				if err != nil {
-					mainLogger.Warn("can't set TCP deadline", slog.Any("err", err))
-					panic("wtw")
-				}
+				// // allow Accept to be interruptible by context by using a deadline
+				// err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
+				// //err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
+				// if err != nil {
+				// 	mainLogger.Warn("can't set TCP deadline", slog.Any("err", err))
+				// 	panic("wtw")
+				// }
 
 				conn, err := tcpLn.Accept()
 				if err != nil {
 					// if context canceled, exit cleanly
 					select {
 					case <-backgroundCtx.Done():
-						fmt.Println("quitting on shutdown...")
+						mainLogger.Debug("TCP DNS listener is quitting due to shutdown...")
 						return
 					default:
-					}
+						// // handle timeout-like errors (due to SetDeadline)
+						// // 1. Declare a variable for the interface you're looking for
+						// var netErr net.Error
+						// // 2. Use errors.As to check if 'err' (or anything it wraps) is a net.Error
+						// if errors.As(err, &netErr) && netErr.Timeout() {
+						// 	// reset backoff and continue
+						// 	backoff = 0
+						// 	continue
+						// }
 
-					// handle timeout-like errors (due to SetDeadline)
+						// non-temporary error: log, backoff a bit to avoid hot loop, continue
+						//fmt.Println("tcp accept error:", err)
+						mainLogger.Warn("tcp_accept_error", slog.Any("err", err))
 
-					// if ne, ok := err.(net.Error); ok && ne.Timeout() { // old way
-					// 	// reset backoff and continue
-					// 	backoff = 0
-					// 	continue
-					// }
-
-					// 1. Declare a variable for the interface you're looking for
-					var netErr net.Error
-					// 2. Use errors.As to check if 'err' (or anything it wraps) is a net.Error
-					if errors.As(err, &netErr) && netErr.Timeout() {
-						// reset backoff and continue
-						backoff = 0
+						// if backoff == 0 {
+						// 	backoff = 50 * time.Millisecond
+						// } else if backoff < 1*time.Second {
+						// 	backoff *= 2
+						// }
+						// mainLogger.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
+						// time.Sleep(backoff)
 						continue
-					}
-
-					// non-temporary error: log, backoff a bit to avoid hot loop, continue
-					//fmt.Println("tcp accept error:", err)
-					mainLogger.Warn("tcp_accept_error", slog.Any("err", err))
-
-					if backoff == 0 {
-						backoff = 50 * time.Millisecond
-					} else if backoff < 1*time.Second {
-						backoff *= 2
-					}
-					mainLogger.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
-					time.Sleep(backoff)
-					continue
-				}
+					} // select
+				} // if err
 
 				tcpPacketCtx := backgroundCtx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
@@ -2292,7 +2306,7 @@ func startDNSListener(addr string) {
 
 				// accepted a connection; handle in new goroutine
 				go func(c net.Conn) {
-					defer c.Close()
+					defer func() { _ = c.Close() }()
 					handleTCP(tcpPacketCtx, c)
 				}(conn)
 			}
@@ -2300,7 +2314,7 @@ func startDNSListener(addr string) {
 
 	}
 	if udpLn == nil && tcpLn == nil {
-		fmt.Println("Warning: No DNS listeners!")
+		mainLogger.Warn("No DNS listeners(neither TCP nor UDP!")
 	}
 }
 
@@ -2427,6 +2441,7 @@ func handleTCP(ctx context.Context, conn net.Conn) {
 	mainLogger.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho.")
 }
 
+// non-blocking!
 func startDoHListener(addr string) {
 	fmt.Printf("Starting DoH listener on %q...\n", addr)
 
