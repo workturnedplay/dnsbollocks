@@ -2315,8 +2315,8 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		serviceInfo = "err:no_pid"
 	} else {
 		//fmt.Println("!before")
-		services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
-		//services, err = wincoe.GetServiceNamesFromPIDCached(pid)
+		//services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
+		services, err = wincoe.GetServiceNamesFromPIDCached(pid)
 		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 		if err != nil {
@@ -2416,7 +2416,7 @@ func handleTCP(ctx context.Context, conn net.Conn) {
 			return
 		}
 		out.Write(pack)
-		wroteN, err := conn.Write(out.Bytes()) // Ignore write err
+		wroteN, err := conn.Write(out.Bytes())
 		if err != nil {
 			mainLogger.Warn("failed to write to TCP the DNS packet response body (wrote the 2 bytes len before)", slog.Any("err", err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 			return
@@ -2507,18 +2507,33 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := new(dns.Msg)
-	if err := msg.Unpack(body); err != nil {
+	if err2 := msg.Unpack(body); err2 != nil {
+		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusInternalServerError)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	resp := handleDNSQuery(ctx, msg, r.RemoteAddr) // Field, not method
 	if resp == nil {
+		mainLogger.Warn("empty DNS response, replying to client with service unavailable", slog.String("client", r.RemoteAddr))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	pack, _ := resp.Pack() // Ignore err, FIXME: don't!
+	pack, err := resp.Pack()
+	if err != nil {
+		mainLogger.Warn("doh_pack_response_to_client_failed", slog.Any("err", err), slog.String("client", r.RemoteAddr))
+		// Return a 500 error to the DoH client
+		http.Error(w, "Failed to pack DNS response", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/dns-message")
-	w.Write(pack)
+	w.Header().Set("Content-Length", fmt.Sprint(len(pack)))
+	w.WriteHeader(http.StatusOK)
+	wroteN, err := w.Write(pack)
+	if err != nil {
+		mainLogger.Warn("failed to write the DoH reply to client (the DNS packet response body)", slog.Any("err", err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		return
+	}
 }
 
 func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.Msg {
@@ -2599,7 +2614,9 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		negResp := servfailResponse(msg)
 		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips, negResp)
 		// Cache negatives short
-		cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
+		//cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
+		// FIX: Store a copy of the negative response as well
+		cacheStore.Set(key, negResp.Copy(), 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		return negResp
 	}
 
@@ -2624,7 +2641,10 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	if expiry < time.Duration(config.CacheMinTTL)*time.Second {
 		expiry = time.Duration(config.CacheMinTTL) * time.Second
 	}
-	cacheStore.Set(key, filtered, expiry)
+
+	//cacheStore.Set(key, filtered, expiry)
+	// FIX: Store a copy in the cache, not the pointer you are about to return
+	cacheStore.Set(key, filtered.Copy(), expiry)
 
 	ips = extractIPs(filtered)
 	logQuery(ctx, clientAddr, domain, qtype, "forwarded", matchedID, ips, filtered)
