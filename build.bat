@@ -9,30 +9,34 @@ echo Using GO exe as: %goexe%
 set | findstr GO
 rem shouldn't see anything other than GOPATH being set, if GOROOT is set then we've a problem for gcc might use it?! unsure
 
-:: 0. Capture Workspace State
-:: Run this BEFORE you 'set GOWORK=off' if you want to know the original state
-set "WS_PATH="
-for /f "tokens=*" %%w in ('go env GOWORK') do set "WS_PATH=%%w"
+REM :: 0. Capture Workspace State
+REM :: Run this BEFORE you 'set GOWORK=off' if you want to know the original state
+REM set "WS_PATH="
+REM for /f "tokens=*" %%w in ('go env GOWORK') do set "WS_PATH=%%w"
 
-:: If WS_PATH is "off" or empty, we aren't in a workspace.
-:: Otherwise, WS_PATH contains the full path to your go.work file.
-if NOT "!WS_PATH!"=="off" if NOT "!WS_PATH!"=="" (
-    set "HAS_WORKSPACE=1"
-    :: Extract the directory from the full file path
-    echo Detected Workspace: !WS_PATH!
-) else (
-    set "HAS_WORKSPACE=0"
-)
+REM :: If WS_PATH is "off" or empty, we aren't in a workspace.
+REM :: Otherwise, WS_PATH contains the full path to your go.work file.
+REM if NOT "!WS_PATH!"=="off" if NOT "!WS_PATH!"=="" (
+    REM set "HAS_WORKSPACE=1"
+    REM :: Extract the directory from the full file path
+    REM echo Detected Workspace: !WS_PATH!
+REM ) else (
+    REM set "HAS_WORKSPACE=0"
+REM )
 
-::if exist "..\go.work" (
-if "!HAS_WORKSPACE!"=="1" (
-  set "MOD_FLAG="
-  echo Running unvendored due to workspace
-) else (
-  :: Use vendor ONLY if we are NOT in a workspace
-  set "MOD_FLAG=-mod=vendor"
-  echo Running vendored due to lack of workspace
-)
+REM set "HAS_WORKSPACE=0"
+
+REM if "!HAS_WORKSPACE!"=="1" (
+  REM set "MOD_FLAG="
+  REM echo Running unvendored due to workspace
+REM ) else (
+  REM :: Use vendor ONLY if we are NOT in a workspace
+  REM set "MOD_FLAG=-mod=vendor"
+  REM echo Running vendored due to lack of workspace
+REM )
+
+echo Running vendored
+set "MOD_FLAG=-mod=vendor"
 
 call prebuildcheck.bat silent
 if errorlevel 1 (

@@ -12,39 +12,41 @@ if NOT "%1" == "silent" (
 rem shouldn't see anything other than GOPATH being set, if GOROOT is set then we've a problem for gcc might use it?! unsure
 
 
-:: 0. Capture Workspace State
-:: Run this BEFORE you 'set GOWORK=off' if you want to know the original state
-set "WS_PATH="
-for /f "tokens=*" %%w in ('go env GOWORK') do set "WS_PATH=%%w"
+REM REM 0. Capture Workspace State
+REM REM Run this BEFORE you 'set GOWORK=off' if you want to know the original state
+REM set "WS_PATH="
+REM for /f "tokens=*" %%w in ('go env GOWORK') do set "WS_PATH=%%w"
 
-:: If WS_PATH is "off" or empty, we aren't in a workspace.
-:: Otherwise, WS_PATH contains the full path to your go.work file.
-if NOT "!WS_PATH!"=="off" if NOT "!WS_PATH!"=="" (
-    set "HAS_WORKSPACE=1"
-    if NOT "%1" == "silent" (
-      rem Extract the directory from the full file path
-      echo Detected Workspace: !WS_PATH!
-    )
-) else (
-    set "HAS_WORKSPACE=0"
-)
+REM rem If WS_PATH is "off" or empty, we aren't in a workspace.
+REM rem Otherwise, WS_PATH contains the full path to your go.work file.
+REM if NOT "!WS_PATH!"=="off" if NOT "!WS_PATH!"=="" (
+    REM set "HAS_WORKSPACE=1"
+    REM if NOT "%1" == "silent" (
+      REM rem Extract the directory from the full file path
+      REM echo Detected Workspace: !WS_PATH!
+    REM )
+REM ) else (
+    REM set "HAS_WORKSPACE=0"
+REM )
 
-::if exist "..\go.work" (
-if "!HAS_WORKSPACE!"=="1" (
-  set "MOD_FLAG="
-  if NOT "%1" == "silent" (
-    echo Running unvendored due to workspace
-  )
-) else (
-  rem Use vendor ONLY if we are NOT in a workspace
-  set "MOD_FLAG=-mod=vendor"
-  if NOT "%1" == "silent" (
-    echo Running vendored due to lack of workspace
-    rem This is the long-form flag the linter actually understands
-  )
-  set "LINT_MOD_FLAG=--modules-download-mode=vendor"
-)
+REM if "!HAS_WORKSPACE!"=="1" (
+  REM set "MOD_FLAG="
+  REM if NOT "%1" == "silent" (
+    REM echo Running unvendored due to workspace
+  REM )
+REM ) else (
+  REM rem Use vendor ONLY if we are NOT in a workspace
+  REM set "MOD_FLAG=-mod=vendor"
+  REM if NOT "%1" == "silent" (
+    REM echo Running vendored due to lack of workspace
+    REM rem This is the long-form flag the linter actually understands
+  REM )
+  REM set "LINT_MOD_FLAG=--modules-download-mode=vendor"
+REM )
 
+echo Running vendored
+set "MOD_FLAG=-mod=vendor"
+set "LINT_MOD_FLAG=--modules-download-mode=vendor"
 
 echo Running go vet...
 :: ./... means “Walk the directory tree from here, find every Go package, and apply vet to each.”
