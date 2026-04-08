@@ -2129,17 +2129,19 @@ func startDNSListener(addr string) {
 			//defer udpLn.Close()
 			// 1. DEFENSIVE DEFER: This ensures the port is freed even if the
 			// function panics or returns unexpectedly before the goroutine starts.
-			defer func() {
-				err = udpLn.Close()
-				_ = err
-			}() // will be called twice usually, because of the below goroutine
+			closer := func() {
+				// Use a local error variable here
+				if closeErr := udpLn.Close(); closeErr != nil {
+					_ = closeErr
+				}
+			} // will be called twice usually, because of the below goroutine
+			defer closer()
 			// 2. SHUTDOWN WATCHER: This handles the "Press any key" / context cancel
 			go func() {
 				<-backgroundCtx.Done()
 				// We call Close here to unblock the Read/Accept loop immediately.
 				// If this runs, the 'defer' above will just return an error later.
-				err = udpLn.Close()
-				_ = err
+				closer()
 			}()
 			mainLogger.Info("UDP DNS listening success", slog.String("addr", addr))
 
@@ -2217,15 +2219,15 @@ func startDNSListener(addr string) {
 	} else {
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		go func() {
-			defer func() {
-				err = tcpLn.Close()
+			closer := func() {
+				err := tcpLn.Close()
 				_ = err
-			}() // just in case we exit via non-shutdown(x)
+			} // just in case we exit via non-shutdown(x)
+			defer closer()
 			// In a separate goroutine watch for shutdown and close the listener
 			go func() {
 				<-backgroundCtx.Done()
-				err = tcpLn.Close() // This wakes up Accept() with an error safely
-				_ = err
+				closer() // This wakes up Accept() with an error safely
 			}()
 			fmt.Println("Success")
 			fmt.Printf("TCP DNS listening on %q\n", addr)
