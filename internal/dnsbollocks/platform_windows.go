@@ -1260,10 +1260,10 @@ func OldMain() {
 			}
 			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
-		func() { // alt+x etc.
+		func() { // alt+x Ctrl+X etc.
 			fmt.Println("Shutdown signal received, clean exit.")
 			//FIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
-			cancel()    //FIXME: this triggers the below shutdown(4) !
+			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			shutdown(0) // clean exit
 		},
 	)
@@ -1275,14 +1275,14 @@ func OldMain() {
 		// Case A: User pressed Ctrl+C
 		mainLogger.Info("shutdown initiated by signal", slog.Any("signal", sig))
 		// Proceed to graceful cleanup
-		cancel()      // Cancel context for graceful close
+		//cancel()      // Cancel context for graceful close
 		shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
 
 	case err := <-errChan:
 		// Case B: A background goroutine (TCP/DoH) died
 		mainLogger.Error("CRITICAL: background service failure", slog.Any("err", err))
 		// You can choose to exit(1) here because a vital organ failed
-		cancel()    // Cancel context for graceful close
+		//cancel()    // Cancel context for graceful close
 		shutdown(3) // some error happened
 
 	case <-backgroundCtx.Done():
@@ -1294,9 +1294,11 @@ func OldMain() {
 
 	//fmt.Println("Shutdown signal received, SIGINT exit.")
 	mainLogger.Error("unreachable")
-	cancel()     // Cancel context for graceful close
+	//cancel()     // Cancel context for graceful close
 	shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 }
+
+var shutdownOnce sync.Once
 
 func loadConfig() error {
 	const cfgFname = configFileName
@@ -3568,21 +3570,27 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func shutdown(exitCode int) {
-	mainLogger.Info("Shutting down...")
+	shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
+		mainLogger.Info("Shutting down...")
+		// 1. Cancel the context immediately so all other listeners stop
+		cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
+		mainLogger.Debug("Context cancelled...")
 
-	cacheStore.Flush()
-	mainLogger.Debug("Cache flushed")
-	//TODO: webUI shutdown
-	mainLogger.Debug("webUI shutdown(fake)")
-	// Close log files (reopen on next run)
-	//sleep 1 sec to allow "quitting on shutdown" message to show.
-	time.Sleep(1000 * time.Millisecond)
-	if !wincoe.WaitAnyKeyIfInteractive() {
-		mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
-	}
-	//bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
-	mainLogger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
-	os.Exit(exitCode)
+		cacheStore.Flush()
+		mainLogger.Debug("Cache flushed")
+		//TODO: webUI shutdown
+		mainLogger.Debug("webUI shutdown(fake)")
+		// Close log files (reopen on next run)
+		//sleep 1 sec to allow "quitting on shutdown" message to show.
+		time.Sleep(1000 * time.Millisecond)
+		mainLogger.Debug("waited 1 sec")
+		if !wincoe.WaitAnyKeyIfInteractive() {
+			mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
+		}
+		//bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
+		mainLogger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
+		os.Exit(exitCode)
+	})
 }
 
 func watchKeys(reloadFn func(), cleanExitFn func()) {
