@@ -596,7 +596,7 @@ func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) b
 // 	return h.Inner.Handle(ctx, r)
 // }
 
-// XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 also seen in https://go-review.googlesource.com/c/go/+/753040 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+// XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
 func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.UseColor {
 		// ────────────────────────────────
