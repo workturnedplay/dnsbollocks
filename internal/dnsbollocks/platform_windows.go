@@ -3088,6 +3088,7 @@ var QueryActionColors = map[string]uint16{
 	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
 	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
 	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
+	"forwarded_but_FAILED_so_NXDOMAIN":   wincoe.FOREGROUND_BRIGHT_RED,
 	// you can add more action → color mappings here
 	// unknown actions → fall back to level-based color
 }

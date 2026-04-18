@@ -44,7 +44,9 @@ REM ) else (
   REM set "LINT_MOD_FLAG=--modules-download-mode=vendor"
 REM )
 
-echo Running vendored
+if NOT "%1" == "silent" (
+  echo Running vendored
+)
 set "MOD_FLAG=-mod=vendor"
 set "LINT_MOD_FLAG=--modules-download-mode=vendor"
 
