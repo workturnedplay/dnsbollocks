@@ -91,6 +91,8 @@ type Config struct {
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
+	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
+	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
 }
 
 // Near the other globals (after Config definition)
@@ -436,6 +438,7 @@ func DefaultConfig() Config {
 		LogMaxSizeMB:            4095, // Rotation threshold
 		AllowRunAsAdmin:         false,
 		BlockAAAAasEmptyNoError: true,
+		AllowHTTPSIfAAllowed:    true,
 	}
 }
 
@@ -2590,6 +2593,23 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			break
 		}
 	}
+
+	// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
+	// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
+	if config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
+		for _, rule := range whitelist["A"] {
+			if !rule.Enabled {
+				continue
+			}
+			if matchPattern(rule.Pattern, domain) {
+				matchedID = rule.ID
+				matched = true
+				break
+			}
+		}
+	}
+	// --- END OF NEW CODE ---
+
 	ruleMutex.RUnlock()
 	if !matched {
 		stats.Add(1)
