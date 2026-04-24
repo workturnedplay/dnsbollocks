@@ -15,6 +15,22 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 
+:: 1. Check if we are already in the resized window
+if "%~1"=="--resized" goto :MAIN_LOGIC
+
+:: 2. If not, relaunch this exact script in a new WT window
+:: -w 1: New window
+:: --size: Your dimensions
+:: -d: Start in current directory
+:: "%~f0": The full path to THIS script
+:: --resized: A flag we pass so the script knows it's already resized
+wt -w 1 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized
+exit /b
+
+:MAIN_LOGIC
+:: 3. Now you are in the correct window size. 
+:: You can run your EXE directly, and standard Batch rules apply.
+
 @rem set GOMAXPROCS=12
 
 @rem set CGO_ENABLED=1
@@ -89,6 +105,19 @@ rem won't see it: go env GORACE
 echo GORACE is '%GORACE%'
 
 echo Running command^(in current dir^): "!exe_name!"
+REM set "LOCK_FILE=%temp%\exe_busy_%random%.tmp"
+REM :: Create the lock file
+REM echo busy > "%LOCK_FILE%"
+
+REM rem opens in new window! and wt doesn't wait for it!
+REM rem start /b /w wt -w 1 --size 300x50 --pos 0,1100 -d "!cd!" -- cmd /c "!exe_name!"
+REM wt -w 1 --size 300x50 --pos 0,1100 -d "!cd!" -- cmd /c "!exe_name! & del "%LOCK_FILE%""
+REM echo Waiting for program to finish...
+
+REM :wait_loop
+REM timeout /t 1 /nobreak >nul
+REM if exist "%LOCK_FILE%" goto wait_loop
+
 "!exe_name!"
 set "ec=%ERRORLEVEL%"
 
