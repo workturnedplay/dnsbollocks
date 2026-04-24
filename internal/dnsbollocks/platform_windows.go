@@ -34,6 +34,7 @@ import (
 	"errors"
 	"expvar"
 	"reflect"
+	"sync/atomic"
 
 	"fmt"
 	"html/template"
@@ -1333,7 +1334,7 @@ func OldMain() {
 	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
 
 	go watchKeys(
-		func() { // Ctrl+R
+		func() { // Ctrl+R aka reloadFn
 			mainLogger.Debug("Reload triggered...")
 			cacheStore.Flush()
 			mainLogger.Debug("Cache flushed/deleted.")
@@ -1354,9 +1355,10 @@ func OldMain() {
 			} else {
 				mainLogger.Debug("Local hosts reloaded")
 			}
+			_ = initDoHClient()
 			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
-		func() { // alt+x Ctrl+X etc.
+		func() { // alt+x Ctrl+X etc. aka cleanExitFn
 			fmt.Println("Shutdown signal received, clean exit.")
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
@@ -3018,23 +3020,35 @@ func computeTTL(msg *dns.Msg) int {
 }
 
 var (
-	dohClient    *http.Client
-	dohTransport *http.Transport
-	dohMu        sync.Mutex
+	//dohClient    *http.Client
+	dohTransport *http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
+	//dohMu        sync.RWMutex
+	//atomicDohClient atomic.Pointer[http.Client]
+	dohClientPtr atomic.Pointer[http.Client]
+	dohMu        sync.Mutex // Only used for initialization/reloads
 )
 
 // call once at startup or when upstream config changes
-func initDoHClient() { //upstreamIP, sni string) {
+func initDoHClient() *http.Client { //upstreamIP, sni string) {
 	//What this function does is purely preparatory. You are assembling a plan for future connections, not executing one.
 	//Here’s why nothing goes on the network yet:
 	//The http.Transport you create is just configuration.
 	//DialContext is a callback, not an action. Go stores that function and promises to call it later only when a request actually needs a connection.
 	//CloseIdleConnections() is the only thing here that might touch sockets — and even then, only previously established idle ones. If this is the first init, or if no DoH requests were ever made, there’s nothing to close and nothing goes out.
 	//http.Client and http.Transport are blueprints, not engines.
-	fmt.Println("starting initDoHClient()")
+	mainLogger.Debug("starting initDoHClient()")
+	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
 	dohMu.Lock()
 	defer dohMu.Unlock()
-	fmt.Println("past lock in initDoHClient()")
+	mainLogger.Debug("past lock in initDoHClient()")
+	// 4. DOUBLE CHECK
+	// While we were waiting for the lock, someone else might
+	// have finished the initialization. Check again.
+	if current := dohClientPtr.Load(); current != nil {
+		return current
+	}
+	// 5. DO THE ACTUAL WORK
+	// Build your transport, tls config, etc.
 
 	if dohTransport != nil {
 		dohTransport.CloseIdleConnections()
@@ -3044,25 +3058,29 @@ func initDoHClient() { //upstreamIP, sni string) {
 		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443"))
+			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443")) //FIXME: port 443 is hardcoded instead of used from config.json !
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName:         config.SNIHostname,
 			InsecureSkipVerify: false,
 		},
-		Proxy:               nil,  // avoid proxy interference
-		ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-		IdleConnTimeout:     90 * time.Second,
+		Proxy:               nil,              // avoid proxy interference
+		ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+		IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 	}
 
 	dohTransport = t
-	dohClient = &http.Client{
+	newDoHClient := &http.Client{
 		Timeout:   5 * time.Second, // overall per-request timeout
 		Transport: dohTransport,
 	}
-	fmt.Println("ending initDoHClient()")
+	// 6. ATOMIC STORE
+	dohClientPtr.Store(newDoHClient)
+	mainLogger.Info("DoH client initialized/reloaded")
+	mainLogger.Debug("ending initDoHClient()")
+	return newDoHClient
 }
 
 // forwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
@@ -3091,11 +3109,20 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 	}
 	//fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
 	var resp *http.Response
-	var attempt int
-	for attempt = 0; attempt < 2; attempt++ {
+	//var attempt int
+	//for attempt = 0; attempt < 2; attempt++ {
+	for attempt := range 2 { //TODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
+		// 1. ATOMIC LOAD (Fast path, no locking)
+		dohClient := dohClientPtr.Load()
+		//Since forwardToDoH gets its own local copy of the pointer from .Load(), even if a Ctrl+R swap happens in the middle of a request, that specific request finishes
+		// using the "old" client safely. The old client is then garbage collected naturally when the function returns.
+
 		if dohClient == nil {
 			// defensive: initialize if not yet done (use current config)
-			initDoHClient()
+			dohClient = initDoHClient() // Inside this, you already have a Lock()
+		}
+		if dohClient == nil {
+			panic("dohClient still nil after init! shouldn't happen")
 		}
 
 		req2, err2 := makeReq()
@@ -3105,7 +3132,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			return nil
 		}
 
-		resp, err2 = dohClient.Do(req2)
+		resp, err2 = dohClient.Do(req2) // this is concurrency safe
 		if err2 == nil {
 			//success!
 			break
