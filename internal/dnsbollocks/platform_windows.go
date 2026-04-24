@@ -899,6 +899,7 @@ var (
 	stats          = expvar.NewInt("blocks") // Simple stats
 
 	backgroundCtx, cancel = context.WithCancel(context.Background())
+	shutdownWG            sync.WaitGroup
 )
 
 var dnsTypes = []string{
@@ -1438,8 +1439,8 @@ func loadConfig() error {
 		// 3. Second, check for MISSING fields (No manual list!)
 		// We decode into a map just to see which keys exist in the JSON.
 		var presentKeys map[string]any
-		if err := json.Unmarshal(data, &presentKeys); err != nil {
-			panic(fmt.Errorf("shouldn't happen since decoding into Config worked! err:%w", err))
+		if err2 := json.Unmarshal(data, &presentKeys); err2 != nil {
+			panic(fmt.Errorf("shouldn't happen since decoding into Config worked! err:%w", err2))
 			//return err
 		}
 
@@ -2297,7 +2298,10 @@ func startDNSListener(addr string) {
 		shutdown(1)
 		//os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
 	} else {
+		shutdownWG.Add(1) // +1 for the Main UDP Loop
+
 		go func() { //we won't be blocking here.
+			defer shutdownWG.Done()
 			//defer udpLn.Close()
 			// 1. DEFENSIVE DEFER: This ensures the port is freed even if the
 			// function panics or returns unexpectedly before the goroutine starts.
@@ -2309,7 +2313,9 @@ func startDNSListener(addr string) {
 			} // will be called twice usually, because of the below goroutine
 			defer closer()
 			// 2. SHUTDOWN WATCHER: This handles the "Press any key" / context cancel
+			shutdownWG.Add(1) // +1 for the UDP Shutdown Watcher
 			go func() {
+				defer shutdownWG.Done()
 				<-backgroundCtx.Done()
 				// We call Close here to unblock the Read/Accept loop immediately.
 				// If this runs, the 'defer' above will just return an error later.
@@ -2353,11 +2359,12 @@ func startDNSListener(addr string) {
 				if n > len(buf) {
 					panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
 				}
+
+				//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
+
 				// Create a distinct copy for the background worker
 				wireCopy := make([]byte, n)
 				copy(wireCopy, buf[:n])
-
-				//FIXME: this slows down things here until it's ready to ReadFromUDP (above) again!
 
 				pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
 				// wincoe.Smashy()
@@ -2366,7 +2373,13 @@ func startDNSListener(addr string) {
 				// err = nil
 
 				udpPacketCtx := makeClientInfoContext(backgroundCtx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
-				go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
+				//go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
+				// TRACK INDIVIDUAL REQUESTS:
+				shutdownWG.Add(1)
+				go func(pCtx context.Context, data []byte, addr *net.UDPAddr, ln *net.UDPConn) {
+					defer shutdownWG.Done()
+					handleUDP(pCtx, data, addr, ln)
+				}(udpPacketCtx, wireCopy, clientAddr, udpLn)
 			} //infinite 'for'
 		}()
 	} // else
@@ -2392,14 +2405,19 @@ func startDNSListener(addr string) {
 		os.Exit(1)
 	} else {
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
+		shutdownWG.Add(1) // +1 for the Main TCP Loop
 		go func() {
+			defer shutdownWG.Done()
+
 			closer := func() {
 				err := tcpLn.Close()
 				_ = err
 			} // just in case we exit via non-shutdown(x)
 			defer closer()
 			// In a separate goroutine watch for shutdown and close the listener
+			shutdownWG.Add(1) // +1 for the TCP Shutdown Watcher
 			go func() {
+				defer shutdownWG.Done()
 				<-backgroundCtx.Done()
 				closer() // This wakes up Accept() with an error safely
 			}()
@@ -2481,10 +2499,19 @@ func startDNSListener(addr string) {
 				}
 
 				// accepted a connection; handle in new goroutine
-				go func(c net.Conn) {
-					defer func() { _ = c.Close() }()
-					handleTCP(tcpPacketCtx, c)
-				}(conn)
+				// go func(c net.Conn) {
+				// 	defer func() { _ = c.Close() }()
+				// 	handleTCP(tcpPacketCtx, c)
+				// }(conn)
+
+				//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
+				// TRACK INDIVIDUAL CONNECTIONS:
+				shutdownWG.Add(1)
+				go func(c net.Conn, pCtx context.Context) {
+					defer shutdownWG.Done() // This fires when handleTCP returns
+					defer c.Close()
+					handleTCP(pCtx, c)
+				}(conn, tcpPacketCtx)
 			}
 		}()
 
@@ -2647,8 +2674,22 @@ func startDoHListener(addr string) {
 		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
 		WriteTimeout: 30 * time.Second, // Optional, for responses
 	}
+	/*
+			When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
+
+		    If Add(1) is inside: There is a tiny window of time where the goroutine is "scheduled" but hasn't actually started running.
+			If your shutdown() function calls Wait() during that tiny window, the WaitGroup counter is still 0. The program thinks there is no work to wait for and exits immediately,
+			killing the goroutine before it even begins.
+
+		    If Add(1) is outside: You increment the counter before the goroutine is even created. This ensures that Wait() will see a counter of at least 1,
+			effectively "blocking the exit" until that goroutine starts, runs, and eventually calls Done().
+
+		The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
+	*/
+	shutdownWG.Add(1)
 	// Listen for the global shutdown signal to gracefully close the DoH server
 	go func() {
+		defer shutdownWG.Done() // Signal this watcher is finished
 		<-backgroundCtx.Done()
 		mainLogger.Debug("Shutting down DoH server...")
 		// Give it a max of 3 seconds to finish existing requests before force closing
@@ -2656,7 +2697,11 @@ func startDoHListener(addr string) {
 		defer cancelDown()
 		_ = dohSrv.Shutdown(shutdownCtx)
 	}()
+
+	shutdownWG.Add(1)
 	go func() {
+		defer shutdownWG.Done() // Signal the server is officially stopped
+
 		defer listener.Close() // Graceful close on shutdown
 		//doneFIXME: how do we know if this failed to maybe restart it or exit the whole program or whatever!?
 		if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -2665,6 +2710,32 @@ func startDoHListener(addr string) {
 		}
 	}()
 	fmt.Println("DoH server loop launched in goroutine - func returning")
+}
+
+func getSecureID() uint16 {
+	b := make([]byte, 2)
+	maxRetries := 3
+
+	//for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
+		//"Read is a helper function that calls Reader.Read using io.ReadFull. On return, n == len(b) if and only if err == nil." - Gemini 3 Thinking
+		_, err := rand.Read(b)
+		if err == nil {
+			//If err == nil, it is guaranteed that n is exactly the size of your buffer (2 bytes).
+			return binary.BigEndian.Uint16(b)
+		}
+		// Small sleep before retry to let system entropy recover
+		// Don't sleep on the very last attempt
+		if i < maxRetries-1 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	// If we get here, the OS is fundamentally broken.
+	// It's safer to crash than to serve insecure/predictable DNS.
+	// If we reach this point, the system CSPRNG is failing.
+	// Panic is the safest security choice for a DNS proxy.
+	panic("critical system error: failed to generate secure random entropy")
 }
 
 func dohHandler(w http.ResponseWriter, r *http.Request) {
@@ -2830,17 +2901,19 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	}
 
 	// --- START Local Hosts Override ---
-	localHostsMu.RLock()
 	var hasLocalHost bool
 	var matchedIPs []net.IP
-	for _, rule := range localHosts {
-		if matchPattern(rule.Pattern, domain) {
-			matchedIPs = rule.IPs
-			hasLocalHost = true
-			break
+	func() {
+		localHostsMu.RLock()
+		defer localHostsMu.RUnlock() // maybe it panics so unlock it even then!
+		for _, rule := range localHosts {
+			if matchPattern(rule.Pattern, domain) {
+				matchedIPs = rule.IPs
+				hasLocalHost = true
+				break
+			}
 		}
-	}
-	localHostsMu.RUnlock()
+	}() // for defer
 
 	if hasLocalHost {
 		resp := new(dns.Msg)
@@ -2848,32 +2921,43 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		resp.Authoritative = true
 		resp.RecursionAvailable = true
 
+		const timeUntilLocalHostsExpireInSeconds = 300
 		for _, ip := range matchedIPs {
 			isIPv4 := ip.To4() != nil
 
 			if qtype == "A" && isIPv4 {
 				rr := new(dns.A)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: timeUntilLocalHostsExpireInSeconds}
 				rr.A = ip
 				resp.Answer = append(resp.Answer, rr)
 			} else if qtype == "AAAA" && !isIPv4 {
 				rr := new(dns.AAAA)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: timeUntilLocalHostsExpireInSeconds}
 				rr.AAAA = ip
 				resp.Answer = append(resp.Answer, rr)
 			}
 		}
 
 		// Cache this override so subsequent queries bypass the pattern loop
-		cacheStore.Set(key, resp.Copy(), 300*time.Second)
+		cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
 
 		logQuery(ctx, clientAddr, domain, qtype, "local_host_override", "", extractIPs(resp), resp)
 		return resp
 	}
 	// --- END Local Hosts Override ---
 
-	// Forward
+	// Forward to upstream DNS
+	// 1. Save the original client ID
+	oldID := msg.Id
+	msg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
+	// 3. DO THE ACTUAL UPSTREAM QUERY
 	resp := forwardToDoH(msg)
+	// 4. Restore the original ID so the client's DNS resolver accepts the answer
+	if resp != nil {
+		resp.Id = oldID
+	}
+	//Gemini 3 Thinking: "The ID Matching is a "defense in depth" move. By using a random ID for the journey to Quad9 and back, you decouple your internal network's IDs from the public internet,
+	// making it much harder for someone to inject fake DNS responses into your proxy."
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
 		ips := []string{} //{"NXDOMAIN"}
 		if resp != nil {
@@ -3498,14 +3582,20 @@ func startWebUI(port int) {
 
 	uiSrv := &http.Server{Handler: mux}
 	// Listen for the global shutdown signal to gracefully close the Web UI
+	shutdownWG.Add(1)
 	go func() {
+		defer shutdownWG.Done()
+
 		<-backgroundCtx.Done()
 		mainLogger.Debug("Shutting down Web UI server...")
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
 		_ = uiSrv.Shutdown(shutdownCtx)
 	}()
+	shutdownWG.Add(1)
 	go func() {
+		defer shutdownWG.Done()
+
 		defer listener.Close() // Graceful close
 		if err := uiSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			//errorLogger.Error("ui_serve_failed", slog.Any("err", err))
@@ -4063,8 +4153,13 @@ func shutdown(exitCode int) {
 		//mainLogger.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
 		// Wait 1 sec to allow graceful HTTP shutdowns and the "quitting" messages to show
-		time.Sleep(1000 * time.Millisecond)
-		mainLogger.Debug("waited 1 sec for port cleanup")
+		//time.Sleep(1000 * time.Millisecond)
+		// ADD: Wait for all registered goroutines to signal they've exited
+		mainLogger.Debug("Waiting for goroutines to finish...")
+		shutdownWG.Wait()
+		mainLogger.Debug("All goroutines exited.")
+		//mainLogger.Debug("waited 1 sec for port cleanup")
+
 		if !wincoe.WaitAnyKeyIfInteractive() {
 			mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
 		}
