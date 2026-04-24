@@ -50,7 +50,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"html"
+	//"html"
 	"strings"
 	"sync"
 	"syscall"
@@ -114,8 +114,8 @@ var (
 	responseBlacklistMu sync.RWMutex
 )
 
-// Rule represents a whitelist rule.
-type Rule struct {
+// RuleEntry represents a whitelist rule.
+type RuleEntry struct {
 	ID      string `json:"id"`
 	Pattern string `json:"pattern"`
 	Enabled bool   `json:"enabled"`
@@ -434,7 +434,7 @@ func loadQueryWhitelist() error {
 		func() {
 			ruleMutex.Lock()
 			defer ruleMutex.Unlock()
-			whitelist = make(map[string][]Rule)
+			whitelist = make(map[string][]RuleEntry)
 		}() // lock released here
 		return saveQueryWhitelist() // create "empty" file; uses lock
 	}
@@ -442,7 +442,7 @@ func loadQueryWhitelist() error {
 		return fmt.Errorf("cannot read whitelist file %q: %w", path, err)
 	}
 
-	var rulesByType map[string][]Rule
+	var rulesByType map[string][]RuleEntry
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err = dec.Decode(&rulesByType); err != nil {
@@ -454,9 +454,9 @@ func loadQueryWhitelist() error {
 		ruleMutex.Lock()
 		defer ruleMutex.Unlock()
 
-		whitelist = make(map[string][]Rule, len(rulesByType))
+		whitelist = make(map[string][]RuleEntry, len(rulesByType))
 		for typ, rules := range rulesByType {
-			var cleaned []Rule
+			var cleaned []RuleEntry
 			for i := range rules {
 				r := &rules[i]
 				// XXX: it may not have an ID set at this point
@@ -892,8 +892,8 @@ var (
 	// errorLogger    *slog.Logger
 	cacheStore     *cache.Cache
 	globalLimiter  *rate.Limiter
-	clientLimiters sync.Map          // map[string]*rate.Limiter
-	whitelist      map[string][]Rule // type -> rules
+	clientLimiters sync.Map               // map[string]*rate.Limiter
+	whitelist      map[string][]RuleEntry // type -> rules
 	ruleMutex      sync.RWMutex
 	recentBlocks   = make([]BlockedQuery, 0, 50) // For UI
 	blockMutex     sync.Mutex
@@ -1056,78 +1056,328 @@ const noScriptWarningHTML = `
   ">
     JavaScript is disabled.
     <br>
-    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname withing allowable chars or byte limits?)
+    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
   </div>
 </noscript>
 `
 
+// var uiTemplates = template.Must(template.New("").Parse(
+// 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
+//     <style>
+// body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
+//         .container { max-width: 1000px; margin: auto; }
+//         h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
+//         table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+//         th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
+//         th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
+//         .btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
+//         .btn-edit { background: #0078d4; color: white; }
+//         .btn-del { background: #d83b01; color: white; margin-left: 5px; }
+//         .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
+//         .hidden { display: none; }
+//         input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
+
+//         thead th {
+//             position: sticky;
+//             top: 0;
+//             background: #1e1e1e;
+//             z-index: 2;
+//         }
+
+// .actions {
+//     white-space: nowrap;
+// }
+// .actions form {
+//     display: inline;
+//     margin: 0;
+// }
+// .actions button {
+//     display: inline-block;
+//     vertical-align: middle;
+// }
+
+// /* --- UI stability fixes --- */
+// table {
+//   border-collapse: collapse;
+// }
+// thead th {
+//   position: sticky;
+//   top: 0;
+//   background: #222;
+//   z-index: 3;
+// }
+// .actions {
+//   white-space: nowrap;
+// }
+// .actions form {
+//   display: inline;
+//   margin: 0;
+// }
+// .actions button {
+//   display: inline-block;
+//   vertical-align: middle;
+// }
+// /* Prevent edit row from changing height */
+// tr td {
+//   vertical-align: middle;
+// }
+
+// </style></head><body>` +
+// 		noScriptWarningHTML + `
+//     <div class="container">
+//     <h1>DNSbollocks</h1>
+//     <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Local Hosts</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+//     {{.Body}}
+//     </div>
+//     <script>
+//     document.addEventListener('DOMContentLoaded', function() {
+//         document.querySelectorAll('button[data-edit-id]').forEach(btn => {
+//             btn.addEventListener('click', function(e) {
+//                 e.preventDefault();
+//                 const row = this.closest('tr');
+//                 const typ = this.dataset.editType;
+//                 const id = this.dataset.editId;
+//                 const oldPattern = this.dataset.editPattern;
+//                 const enabled = this.dataset.editEnabled === 'true';
+//                 row.style.display = 'none';
+//                 const formHtml = ` + "`" + `
+//                 <tr>
+//                     <td>
+//                         <select name="type" id="editType_${id}">
+//                             ` + strings.Join(func() []string {
+// 		var opts []string
+// 		for _, t := range dnsTypes {
+// 			//dnsTypes is from our Go code not user input, can use %s here. Also puting user input here would be bad for this templating too!
+// 			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
+// 		}
+// 		return opts
+// 	}(), "") + `
+//                         </select>
+//                     </td>
+//                     <td>${id}</td>
+//                     <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
+//                     <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}></label></td>
+//                     <td>
+//                         <form method="post" action="/rules" id="editForm_${id}">
+//                             <input type="hidden" name="id" value="${id}">
+//                             <button type="submit">Save</button>
+//                             <button type="button" onclick="cancelEdit('${id}')">Cancel</button>
+//                         </form>
+//                     </td>
+//                 </tr>
+//                 ` + "`" + `;
+//                 row.insertAdjacentHTML('afterend', formHtml);
+// 				const select = document.getElementById('editType_' + id);
+// 				if (select) {
+// 					select.value = typ;
+// 					// Guard: detect impossible / stale / corrupted types
+// 					if (![...select.options].some(o => o.value === typ)) {
+// 						console.warn(
+// 							'Unknown DNS type for rule',
+// 							{ id, typ, known: [...select.options].map(o => o.value) }
+// 						);
+// 						select.selectedIndex = 0;
+// 					}
+// 				}
+//                 const form = document.getElementById('editForm_' + id);
+//                 form.addEventListener('submit', function(e) {
+//                     e.preventDefault();
+//                     const newPattern = document.getElementById('editPattern_' + id).value.trim();
+//                     const enabledChecked = document.getElementById('editEnabled_' + id).checked;
+//                     const newType = document.getElementById('editType_' + id).value;
+//                     if (newPattern === '') {
+//                         alert('Pattern cannot be empty');
+//                         return;
+//                     }
+//                     const formData = new FormData();
+//                     formData.append('id', id);
+//                     formData.append('pattern', newPattern);
+//                     formData.append('type', newType);
+//                     formData.append('enabled', enabledChecked ? 'true' : 'false');
+//                     fetch('/rules', {method: 'POST', body: formData})
+//                         .then(() => location.reload())
+//                         .catch(err => console.error('Save failed:', err));
+//                 });
+//             });
+//         });
+//         window.cancelEdit = function(id) {
+//             const formElem = document.querySelector('#editForm_' + id);
+//             if (!formElem) return;
+//             const tr = formElem.closest('tr');
+//             if (tr) tr.remove();
+//             const originalBtn = document.querySelector('button[data-edit-id="' + id + '"]');
+//             if (originalBtn) {
+//                 const originalRow = originalBtn.closest('tr');
+//                 if (originalRow) originalRow.style.display = '';
+//             }
+//         };
+//     });
+//     </script>
+
+// <script>
+// // Preserve scroll position across form submits / reloads
+// (function() {
+//   const key = "scrollY";
+//   window.addEventListener("beforeunload", function () {
+//     try { sessionStorage.setItem(key, window.scrollY); } catch(e) {}
+//   });
+//   window.addEventListener("load", function () {
+//     try {
+//       const y = sessionStorage.getItem(key);
+//       if (y !== null) window.scrollTo(0, parseInt(y, 10));
+//     } catch(e) {}
+//   });
+// })();
+// </script>
+
+// </body></html>`,
+// ))
+
+// body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
+//
+//	.container { max-width: 1000px; margin: auto; }
+//	h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
+//	table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+//	th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
+//	th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
+//	.btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
+//	.btn-edit { background: #0078d4; color: white; }
+//	.btn-del { background: #d83b01; color: white; margin-left: 5px; }
+//	.btn-cancel { background: #444; color: white; }
+//	.actions { white-space: nowrap; }
+//	.hidden { display: none; }
+//	input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
+//	thead th { position: sticky; top: 0; background: #1e1e1e; z-index: 2; }
+//	.actions form { display: inline; margin: 0; }
+//	.actions button { display: inline-block; vertical-align: middle; }
+//	tr td { vertical-align: middle; }
+
+// <style>
+// 		body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
+//         .container { max-width: 1100px; margin: auto; }
+//         h1 { color: #0078d4; margin-bottom: 20px; }
+//         h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
+
+//         /* GLOBAL FORM STYLES (The Dark Mode Fix) */
+//         input[type="text"], select, button {
+//             background: #2d2d2d;
+//             color: #ffffff;
+//             border: 1px solid #444;
+//             padding: 8px 12px;
+//             border-radius: 4px;
+//             outline: none;
+//             font-size: 0.9em;
+//         }
+//         input[type="text"]:focus, select:focus { border-color: #0078d4; }
+//         button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
+//         button:hover { background: #3d3d3d; }
+
+//         /* Tables */
+//         table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; }
+//         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
+//         th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+
+//         /* Specialized Buttons */
+//         .btn-edit { background: #0078d4; color: white; border: none; }
+//         .btn-edit:hover { background: #005a9e; }
+//         .btn-del { background: #d83b01; color: white; border: none; }
+//         .btn-del:hover { background: #a82a01; }
+//         .btn-cancel { background: #444; color: white; border: none; }
+
+//	nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
+//	nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
+//	nav a:hover { text-decoration: underline; }
+//	.tag-enabled { color: #4ec9b0; font-weight: bold; }
+//	.tag-disabled { color: #f44747; font-weight: bold; }
+//	pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; }
+//
+// </style>
 var uiTemplates = template.Must(template.New("").Parse(
 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
-    <style>
-body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
-        .container { max-width: 1000px; margin: auto; }
-        h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
-        table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
-        th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
-        th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
-        .btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
-        .btn-edit { background: #0078d4; color: white; }
-        .btn-del { background: #d83b01; color: white; margin-left: 5px; }
-        .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
-        .hidden { display: none; }
-        input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
+<style>
+    /* 1. LAYOUT & TEXT */
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
+    .container { max-width: 1100px; margin: auto; }
+    h1 { color: #0078d4; margin-bottom: 20px; }
+    h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
+    
+    nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
+    nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
+    nav a:hover { text-decoration: underline; }
 
-        thead th {
-            position: sticky;
-            top: 0;
-            background: #1e1e1e;
-            z-index: 2;
-        }
+    /* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
+    input[type="text"], select, button { 
+        background-color: #2d2d2d !important; /* Forced Dark */
+        color: #ffffff !important;           /* Forced White Text */
+        border: 1px solid #444 !important; 
+        padding: 8px 12px; 
+        border-radius: 4px; 
+        outline: none;
+        font-size: 0.9em;
+        vertical-align: middle;
+    }
 
-.actions {
-    white-space: nowrap;
-}
-.actions form {
-    display: inline;
-    margin: 0;
-}
-.actions button {
-    display: inline-block;
-    vertical-align: middle;
-}
+    /* Specialized Select/Dropdown logic */
+    select {
+        appearance: none; /* Removes the default Windows 'white' arrow */
+        -webkit-appearance: none;
+        /* Adds a custom white arrow so you can see it's a dropdown */
+        background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') !important;
+        background-repeat: no-repeat !important;
+        background-position: right 10px center !important;
+        background-size: 14px !important;
+        padding-right: 35px !important;
+    }
 
-/* --- UI stability fixes --- */
-table {
-  border-collapse: collapse;
-}
-thead th {
-  position: sticky;
-  top: 0;
-  background: #222;
-  z-index: 3;
-}
-.actions {
-  white-space: nowrap;
-}
-.actions form {
-  display: inline;
-  margin: 0;
-}
-.actions button {
-  display: inline-block;
-  vertical-align: middle;
-}
-/* Prevent edit row from changing height */
-tr td {
-  vertical-align: middle;
-}
+    /* Ensure dropdown options are also dark */
+    select option { background: #2d2d2d; color: white; }
 
+    input[type="text"]:focus, select:focus { border-color: #0078d4 !important; }
+    
+    button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
+    button:hover { background: #3d3d3d !important; }
+
+    /* 3. TABLES */
+    table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
+    th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* 4. BUTTON VARIANTS */
+    .btn-edit { background-color: #0078d4 !important; color: white !important; border: none !important; }
+    .btn-edit:hover { background-color: #005a9e !important; }
+    .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
+    .btn-del:hover { background-color: #a82a01 !important; }
+    .btn-cancel { background-color: #444 !important; color: white !important; border: none !important; }
+
+    /* 5. UTILITIES */
+    .tag-enabled { color: #4ec9b0; font-weight: bold; }
+    .tag-disabled { color: #f44747; font-weight: bold; }
+    pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
 </style></head><body>` +
 		noScriptWarningHTML + `
     <div class="container">
     <h1>DNSbollocks</h1>
-    <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Local Hosts</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-    {{.Body}}
+	<nav>
+    <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Hosts</a> | 
+	<a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | 
+	<a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+    </nav>
+    <hr>
+    
+    {{/* This acts as a router inside the template */}}
+    {{if eq .Page "rules"}}
+        {{template "rules" .}}
+	{{else if eq .Page "hosts"}}
+        {{template "hosts" .}}
+    {{else if eq .Page "blocks"}}
+        {{template "blocks" .}}
+	{{else if eq .Page "logs"}}
+        {{template "logs" .}}
+    {{else}}
+        {{/* Fallback for Stats / Legacy*/}}
+        {{.RawBody}} 
+    {{end}}
+
     </div>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -1147,7 +1397,6 @@ tr td {
                             ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
-			//dnsTypes is from our Go code not user input, can use %s here. Also puting user input here would be bad for this templating too!
 			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
 		}
 		return opts
@@ -1168,27 +1417,14 @@ tr td {
                 ` + "`" + `;
                 row.insertAdjacentHTML('afterend', formHtml);
 				const select = document.getElementById('editType_' + id);
-				if (select) {
-					select.value = typ;
-					// Guard: detect impossible / stale / corrupted types
-					if (![...select.options].some(o => o.value === typ)) {
-						console.warn(
-							'Unknown DNS type for rule',
-							{ id, typ, known: [...select.options].map(o => o.value) }
-						);
-						select.selectedIndex = 0;
-					}
-				}
+				if (select) { select.value = typ; }
                 const form = document.getElementById('editForm_' + id);
                 form.addEventListener('submit', function(e) {
                     e.preventDefault();
                     const newPattern = document.getElementById('editPattern_' + id).value.trim();
                     const enabledChecked = document.getElementById('editEnabled_' + id).checked;
                     const newType = document.getElementById('editType_' + id).value;
-                    if (newPattern === '') {
-                        alert('Pattern cannot be empty');
-                        return;
-                    }
+                    if (newPattern === '') { alert('Pattern cannot be empty'); return; }
                     const formData = new FormData();
                     formData.append('id', id);
                     formData.append('pattern', newPattern);
@@ -1213,25 +1449,141 @@ tr td {
         };
     });
     </script>
+</body></html>
 
-<script>
-// Preserve scroll position across form submits / reloads
-(function() {
-  const key = "scrollY";
-  window.addEventListener("beforeunload", function () {
-    try { sessionStorage.setItem(key, window.scrollY); } catch(e) {}
-  });
-  window.addEventListener("load", function () {
-    try {
-      const y = sessionStorage.getItem(key);
-      if (y !== null) window.scrollTo(0, parseInt(y, 10));
-    } catch(e) {}
-  });
-})();
-</script>
+{{/* --- SUB-TEMPLATE FOR RULES --- */}}
+{{define "rules"}}
+<h2>Add New Rule</h2>
+<form method="post" action="/rules">
+    <select name="type">
+    {{range .DNSTypes}}
+        <option value="{{.}}">{{.}}</option>
+    {{end}}
+    </select>
+    <input type="text" name="pattern" placeholder="pattern" required> 
+    <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
+    <button type="submit" class="btn-edit">Add Rule</button>
+</form>
 
-</body></html>`,
-))
+<h2>Whitelist Rules</h2>
+<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>
+{{range $typ, $ruleList := .Rules}}
+    {{range $ruleList}}
+    <tr>
+        <td>{{$typ}}</td>
+        <td>{{.ID}}</td>
+        <td>{{.Pattern}}</td>
+		<td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+        <td class="actions">
+            {{/* The template engine securely escapes .Pattern and .ID here automatically */}}
+            <button class="btn-edit" data-edit-id="{{.ID}}" data-edit-type="{{$typ}}" data-edit-pattern="{{.Pattern}}" data-edit-enabled="{{.Enabled}}">Edit</button>
+            <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+                <input type="hidden" name="delete" value="1">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <input type="hidden" name="type" value="{{$typ}}">
+                <button type="submit" class="btn-del">Delete</button>
+            </form>
+        </td>
+    </tr>
+    {{end}}
+{{end}}
+</table>
+{{end}}
+
+{{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
+{{define "blocks"}}
+<h2>Recent Blocks (Quick Unblock)</h2><ul>
+{{range .Blocks}}
+    <li>{{.Domain}} ({{.Type}}) 
+        <form method="post" action="/blocks" style="display:inline;">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="A">
+            <button type="submit">Unblock A</button>
+        </form> 
+        <button onclick="location.href='/blocks?type=AAAA&domain={{.Domain}}'">Unblock AAAA</button>
+    </li>
+{{end}}
+</ul>
+{{end}}
+
+{{define "hosts"}}
+    <div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">
+        <strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.
+    </div>
+
+    <h2>Add New Local Host</h2>
+    <form method="post" action="/hosts">
+        <input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> 
+        <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> 
+        <button type="submit">Add Host</button>
+    </form>
+
+    <h2>Local Hosts</h2>
+    <table>
+        <tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>
+        {{range .Hosts}}
+        <tr id="hostRow_{{.Index}}">
+            <td>{{.Pattern}}</td>
+            <td>{{.IPsDisplay}}</td>
+            <td class="actions">
+                <button class="btn-edit" onclick="editHost(this, {{.Index}}, '{{.Pattern}}', '{{.IPsDisplay}}')">Edit</button>
+                <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
+                    <input type="hidden" name="delete" value="1">
+                    <input type="hidden" name="pattern" value="{{.Pattern}}">
+                    <button class="btn-del" type="submit">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3">No local hosts defined.</td></tr>
+        {{end}}
+    </table>
+
+    <script>
+    function editHost(btn, index, pat, ips) {
+        const row = document.getElementById('hostRow_' + index);
+        row.style.display = 'none';
+        const formHtml = ` + "`" + `
+        <tr id="editHostRow_${index}">
+            <td>
+                <input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
+                <input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
+            </td>
+            <td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
+            <td>
+                <form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
+                    <input type="hidden" name="edit" value="1">
+                    <button type="submit" class="btn-edit">Save</button>
+                    <button type="button" class="btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
+                </form>
+            </td>
+        </tr>
+        ` + "`" + `;
+        row.insertAdjacentHTML('afterend', formHtml);
+    }
+    function cancelHostEdit(index) {
+        const editRow = document.getElementById('editHostRow_' + index);
+        if (editRow) editRow.remove();
+        const row = document.getElementById('hostRow_' + index);
+        if (row) row.style.display = '';
+    }
+    </script>
+{{end}}
+
+{{define "logs"}}
+    <h2>{{.Title}}</h2>
+    
+    <form method="get" style="margin-bottom: 20px;">
+        <input type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." style="width: 300px;">
+        <button type="submit">Filter</button>
+		<button type="button" class="btn-cancel" onclick="this.form.q.value=''; this.form.submit();">Clear</button>
+    </form>
+
+    <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333;">
+        <pre style="max-height: 600px; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all; font-family: 'Consolas', monospace; font-size: 0.9em; color: #dcdcdc;">{{if .Content}}{{.Content}}{{else}}No log entries found.{{end}}</pre>
+    </div>
+{{end}}
+`))
 
 const configFileName = "config.json"
 
@@ -1704,7 +2056,7 @@ func validateUpstream() error {
 	return nil
 }
 
-func countRules(wl map[string][]Rule) int {
+func countRules(wl map[string][]RuleEntry) int {
 	total := 0
 	for _, rs := range wl {
 		total += len(rs)
@@ -1712,7 +2064,7 @@ func countRules(wl map[string][]Rule) int {
 	return total
 }
 
-func newUniqueID(alreadyHave map[string][]Rule) string {
+func newUniqueID(alreadyHave map[string][]RuleEntry) string {
 	existing := make(map[string]struct{})
 	for _, rs := range alreadyHave {
 		for _, r := range rs {
@@ -3636,65 +3988,97 @@ func startWebUI(port int) {
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	body := fmt.Sprintf("<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
-	//uiTemplates.Execute(w, struct{ Body string }{Body: body})
-	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+	var body strings.Builder
+	body.WriteString("<h2>Statistics</h2>")
+	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
+	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+	data := map[string]any{
+		"Page":    "stats",
+		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
+	}
+	uiTemplates.Execute(w, data)
+}
+
+func snapshotWhitelist() map[string][]RuleEntry {
+	ruleMutex.RLock()
+	defer ruleMutex.RUnlock()
+
+	copyMap := make(map[string][]RuleEntry)
+	for key, entries := range whitelist {
+		// Copy the slice to prevent modification of the underlying array
+		newSlice := make([]RuleEntry, len(entries))
+		copy(newSlice, entries)
+		copyMap[key] = newSlice
+	}
+	return copyMap
 }
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-		ruleMutex.RLock()
-		defer ruleMutex.RUnlock()
+		// ruleMutex.RLock()
+		// defer ruleMutex.RUnlock()
 
-		var body strings.Builder
-
-		// Add form
-		body.WriteString("<h2>Add New Rule</h2>")
-		body.WriteString("<form method=\"post\" action=\"/rules\">")
-		body.WriteString("<select name=\"type\">")
-		for _, t := range dnsTypes {
-			fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
+		data := map[string]any{
+			"Page":     "rules",
+			"DNSTypes": dnsTypes,
+			"Rules":    snapshotWhitelist(), // Safe, independent copy
 		}
-		body.WriteString("</select> ")
-		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
-		body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
-		body.WriteString("<button type=\"submit\">Add Rule</button>")
-		body.WriteString("</form>")
 
-		// Table
-		body.WriteString("<h2>Whitelist Rules</h2>")
-		body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
+		// var body strings.Builder
 
-		for typ, rules := range whitelist {
-			for _, rule := range rules {
-				enabled := "Yes"
-				if !rule.Enabled {
-					enabled = "No"
-				}
-				escapedPattern := html.EscapeString(rule.Pattern)
-				body.WriteString(fmt.Sprintf(`
-        <tr>
-            <td>%q</td>
-            <td>%q</td>
-            <td>%q</td>
-            <td>%q</td>
-            <td class="actions">
-                <button class="btn btn-edit" data-edit-id=%q data-edit-type=%q data-edit-pattern=%q data-edit-enabled="%t">Edit</button>
-                <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
-                    <input type="hidden" name="delete" value="1">
-                    <input type="hidden" name="id" value=%q>
-                    <input type="hidden" name="type" value=%q>
-                    <button type="submit">Delete</button>
-                </form>
-            </td>
-        </tr>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
-			}
+		// // Add form
+		// body.WriteString("<h2>Add New Rule</h2>")
+		// body.WriteString("<form method=\"post\" action=\"/rules\">")
+		// body.WriteString("<select name=\"type\">")
+		// for _, t := range dnsTypes {
+		// 	fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
+		// }
+		// body.WriteString("</select> ")
+		// body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
+		// body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
+		// body.WriteString("<button type=\"submit\">Add Rule</button>")
+		// body.WriteString("</form>")
+
+		// // Table
+		// body.WriteString("<h2>Whitelist Rules</h2>")
+		// body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
+
+		// for typ, rules := range whitelist {
+		// 	for _, rule := range rules {
+		// 		enabled := "Yes"
+		// 		if !rule.Enabled {
+		// 			enabled = "No"
+		// 		}
+		// 		escapedPattern := html.EscapeString(rule.Pattern)
+		// 		body.WriteString(fmt.Sprintf(`
+		// <tr>
+		//     <td>%q</td>
+		//     <td>%q</td>
+		//     <td>%q</td>
+		//     <td>%q</td>
+		//     <td class="actions">
+		//         <button class="btn btn-edit" data-edit-id=%q data-edit-type=%q data-edit-pattern=%q data-edit-enabled="%t">Edit</button>
+		//         <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+		//             <input type="hidden" name="delete" value="1">
+		//             <input type="hidden" name="id" value=%q>
+		//             <input type="hidden" name="type" value=%q>
+		//             <button type="submit">Delete</button>
+		//         </form>
+		//     </td>
+		// </tr>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
+		// 	}
+		// }
+		// body.WriteString("</table>")
+		// Pass the raw data. The template handles the HTML.
+		//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+
+		// NO LOCK NEEDED HERE during Execute
+		if err := uiTemplates.Execute(w, data); err != nil {
+			mainLogger.Error("template_execute_failed", slog.Any("err", err))
 		}
-		body.WriteString("</table>")
 
-		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 		return
 	}
 
@@ -3824,7 +4208,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Add to new type
-				newRule := Rule{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 				// if _, ok := whitelist[typ]; !ok {
 				// 	//config.Whitelist[typ] = []Rule{}
 				// 	whitelist[typ] = []Rule{}
@@ -3845,7 +4229,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				newID := newUniqueID(whitelist)
-				newRule := Rule{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
+				newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
 				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
 				// 	whitelist[typ] = []Rule{}
 				// }
@@ -3866,92 +4250,124 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type HostView struct {
+	Index      int
+	Pattern    string
+	IPsDisplay string // Pre-joined "1.1.1.1, 2.2.2.2"
+}
+
 func hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+		// localHostsMu.RLock()
+		// defer localHostsMu.RUnlock()
+
+		// var body strings.Builder
+
+		// // Disclaimer per request
+		// body.WriteString(`<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">`)
+		// body.WriteString(`<strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.`)
+		// body.WriteString(`</div>`)
+
+		// // Add form
+		// body.WriteString("<h2>Add New Local Host</h2>")
+		// body.WriteString(`<form method="post" action="/hosts">`)
+		// body.WriteString(`<input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> `)
+		// body.WriteString(`<input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> `)
+		// body.WriteString(`<button type="submit">Add Host</button>`)
+		// body.WriteString(`</form>`)
+
+		// // Table
+		// body.WriteString("<h2>Local Hosts</h2>")
+		// body.WriteString("<table><tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>")
+
+		// for i, rule := range localHosts {
+		// 	escapedPattern := html.EscapeString(rule.Pattern)
+		// 	var ipsStr []string
+		// 	for _, ip := range rule.IPs {
+		// 		ipsStr = append(ipsStr, ip.String())
+		// 	}
+		// 	joinedIPs := html.EscapeString(strings.Join(ipsStr, ", "))
+
+		// 	//body.WriteString(fmt.Sprintf(`
+		// 	fmt.Fprintf(&body, `
+		// 	<tr id="hostRow_%d">
+		// 		<td>%s</td>
+		// 		<td>%s</td>
+		// 		<td class="actions">
+		// 			<button class="btn btn-edit" onclick="editHost(this, %d, '%s', '%s')">Edit</button>
+		// 			<form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
+		// 				<input type="hidden" name="delete" value="1">
+		// 				<input type="hidden" name="pattern" value="%s">
+		// 				<button class="btn btn-del" type="submit">Delete</button>
+		// 			</form>
+		// 		</td>
+		// 	</tr>`, i, escapedPattern, joinedIPs, i, escapedPattern, joinedIPs, escapedPattern)
+		// 	//)
+		// }
+		// body.WriteString("</table>")
+
+		// // Isolated script for Local Hosts inline editing
+		// body.WriteString(`
+		// <script>
+		// function editHost(btn, index, pat, ips) {
+		// 	const row = document.getElementById('hostRow_' + index);
+		// 	row.style.display = 'none';
+		// 	const formHtml = ` + "`" + `
+		// 	<tr id="editHostRow_${index}">
+		// 		<td>
+		// 			<input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
+		// 			<input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
+		// 		</td>
+		// 		<td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
+		// 		<td>
+		// 			<form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
+		// 				<input type="hidden" name="edit" value="1">
+		// 				<button type="submit" class="btn btn-edit">Save</button>
+		// 				<button type="button" class="btn btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
+		// 			</form>
+		// 		</td>
+		// 	</tr>
+		// 	` + "`" + `;
+		// 	row.insertAdjacentHTML('afterend', formHtml);
+		// }
+		// function cancelHostEdit(index) {
+		// 	const editRow = document.getElementById('editHostRow_' + index);
+		// 	if (editRow) editRow.remove();
+		// 	const row = document.getElementById('hostRow_' + index);
+		// 	if (row) row.style.display = '';
+		// }
+		// </script>
+		// `)
+		//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+
+		// 1. Snapshot the data under lock
 		localHostsMu.RLock()
-		defer localHostsMu.RUnlock()
-
-		var body strings.Builder
-
-		// Disclaimer per request
-		body.WriteString(`<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">`)
-		body.WriteString(`<strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.`)
-		body.WriteString(`</div>`)
-
-		// Add form
-		body.WriteString("<h2>Add New Local Host</h2>")
-		body.WriteString(`<form method="post" action="/hosts">`)
-		body.WriteString(`<input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> `)
-		body.WriteString(`<input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> `)
-		body.WriteString(`<button type="submit">Add Host</button>`)
-		body.WriteString(`</form>`)
-
-		// Table
-		body.WriteString("<h2>Local Hosts</h2>")
-		body.WriteString("<table><tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>")
-
-		for i, rule := range localHosts {
-			escapedPattern := html.EscapeString(rule.Pattern)
+		viewData := make([]HostView, len(localHosts))
+		for i, h := range localHosts {
 			var ipsStr []string
-			for _, ip := range rule.IPs {
+			for _, ip := range h.IPs {
 				ipsStr = append(ipsStr, ip.String())
 			}
-			joinedIPs := html.EscapeString(strings.Join(ipsStr, ", "))
-
-			//body.WriteString(fmt.Sprintf(`
-			fmt.Fprintf(&body, `
-			<tr id="hostRow_%d">
-				<td>%s</td>
-				<td>%s</td>
-				<td class="actions">
-					<button class="btn btn-edit" onclick="editHost(this, %d, '%s', '%s')">Edit</button>
-					<form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
-						<input type="hidden" name="delete" value="1">
-						<input type="hidden" name="pattern" value="%s">
-						<button class="btn btn-del" type="submit">Delete</button>
-					</form>
-				</td>
-			</tr>`, i, escapedPattern, joinedIPs, i, escapedPattern, joinedIPs, escapedPattern)
-			//)
+			viewData[i] = HostView{
+				Index:      i,
+				Pattern:    h.Pattern,
+				IPsDisplay: strings.Join(ipsStr, ", "),
+			}
 		}
-		body.WriteString("</table>")
+		localHostsMu.RUnlock() // Lock released!
 
-		// Isolated script for Local Hosts inline editing
-		body.WriteString(`
-		<script>
-		function editHost(btn, index, pat, ips) {
-			const row = document.getElementById('hostRow_' + index);
-			row.style.display = 'none';
-			const formHtml = ` + "`" + `
-			<tr id="editHostRow_${index}">
-				<td>
-					<input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
-					<input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
-				</td>
-				<td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
-				<td>
-					<form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
-						<input type="hidden" name="edit" value="1">
-						<button type="submit" class="btn btn-edit">Save</button>
-						<button type="button" class="btn btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
-					</form>
-				</td>
-			</tr>
-			` + "`" + `;
-			row.insertAdjacentHTML('afterend', formHtml);
+		// 2. Render the page
+		data := map[string]any{
+			"Page":  "hosts",
+			"Hosts": viewData,
 		}
-		function cancelHostEdit(index) {
-			const editRow = document.getElementById('editHostRow_' + index);
-			if (editRow) editRow.remove();
-			const row = document.getElementById('hostRow_' + index);
-			if (row) row.style.display = '';
-		}
-		</script>
-		`)
 
-		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+		if err := uiTemplates.Execute(w, data); err != nil {
+			mainLogger.Error("template_error", slog.Any("err", err))
+		}
+
 		return
 	}
 
@@ -4069,19 +4485,32 @@ func hostsHandler(w http.ResponseWriter, r *http.Request) {
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		var body strings.Builder
-		body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
-		func() {
-			blockMutex.Lock()
-			defer blockMutex.Unlock()
-			for _, b := range recentBlocks {
-				body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
-					b.Domain, b.Type, b.Domain, b.Domain))
-			}
-		}()
-		body.WriteString("</ul>")
-		//uiTemplates.Execute(w, struct{ Body string }{Body: body.String()})
-		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+		// var body strings.Builder
+		// body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
+		// func() {
+		// 	blockMutex.Lock()
+		// 	defer blockMutex.Unlock()
+		// 	for _, b := range recentBlocks {
+		// 		body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
+		// 			b.Domain, b.Type, b.Domain, b.Domain))
+		// 	}
+		// }()
+		// body.WriteString("</ul>")
+		// uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+		blockMutex.Lock()
+		// Make a copy so we don't hold the lock while template renders
+		blocksCopy := make([]BlockedQuery, len(recentBlocks))
+		copy(blocksCopy, recentBlocks)
+		blockMutex.Unlock()
+
+		data := map[string]any{
+			"Page":   "blocks",
+			"Blocks": blocksCopy,
+		}
+
+		if err := uiTemplates.Execute(w, data); err != nil {
+			mainLogger.Error("template_execute_failed", slog.Any("err", err))
+		}
 		return
 	}
 	if r.Method == "POST" {
@@ -4108,7 +4537,7 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 				ruleMutex.Lock()
 				defer ruleMutex.Unlock()
 				// Add rule for typ
-				newRule := Rule{ID: newUniqueID(whitelist), // this can panic
+				newRule := RuleEntry{ID: newUniqueID(whitelist), // this can panic
 					Pattern: domainLowercased, Enabled: true}
 				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
 				// 	whitelist[typ] = []Rule{}
@@ -4125,47 +4554,100 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	domainFilter := r.URL.Query().Get("domain")
-	// Basic file read/filter stub
-	data, err := os.ReadFile(config.LogQueriesFile)
+// Helper to keep things clean
+func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		http.Error(w, "Log read failed", http.StatusInternalServerError)
-		return
+		// If file doesn't exist yet, don't crash, just show empty
+		data = []byte("")
 	}
+
 	lines := strings.Split(string(data), "\n")
 	var filtered []string
+
+	searchLower := strings.ToLower(filter)
 	for _, line := range lines {
-		if strings.Contains(line, domainFilter) || domainFilter == "" {
+		if line == "" {
+			continue
+		}
+		if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
 			filtered = append(filtered, line)
 		}
 	}
-	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
 
-	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+	// We reverse them so the newest logs are at the top
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+
+	renderData := map[string]any{
+		"Page":    "logs",
+		"Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
+		"Title":   title,
+		"Filter":  filter,
+		"Content": strings.Join(filtered, "\n"),
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	uiTemplates.Execute(w, renderData)
+}
+
+func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
+	filter := r.URL.Query().Get("q")
+	//no:// If they used the old 'domain' param, support it as a fallback
+	// if filter == "" {
+	// 	filter = r.URL.Query().Get("domain")
+	// }
+
+	renderLogPage(w, r, "Query Logs", config.LogQueriesFile, filter)
 }
 
 func logsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	domainFilter := r.URL.Query().Get("domain") //FIXME: filter by what? should be any string since this is the full log, not just queries in it.
-	// Basic file read/filter stub
-	data, err := os.ReadFile(config.LogErrorsFile)
-	if err != nil {
-		http.Error(w, "Log read failed", http.StatusInternalServerError)
-		return
-	}
-	lines := strings.Split(string(data), "\n")
-	var filtered []string
-	for _, line := range lines {
-		if strings.Contains(line, domainFilter) || domainFilter == "" {
-			filtered = append(filtered, line)
-		}
-	}
-	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
-
-	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+	filter := r.URL.Query().Get("q")
+	renderLogPage(w, r, "System & Error Logs", config.LogErrorsFile, filter)
 }
+
+// func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
+// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// 	domainFilter := r.URL.Query().Get("domain")
+// 	// Basic file read/filter stub
+// 	data, err := os.ReadFile(config.LogQueriesFile)
+// 	if err != nil {
+// 		http.Error(w, "Log read failed", http.StatusInternalServerError)
+// 		return
+// 	}
+// 	lines := strings.Split(string(data), "\n")
+// 	var filtered []string
+// 	for _, line := range lines {
+// 		if strings.Contains(line, domainFilter) || domainFilter == "" {
+// 			filtered = append(filtered, line)
+// 		}
+// 	}
+// 	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
+
+// 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+// }
+
+// func logsHandler(w http.ResponseWriter, r *http.Request) {
+// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// 	domainFilter := r.URL.Query().Get("domain") //FIXME: filter by what? should be any string since this is the full log, not just queries in it.
+// 	// Basic file read/filter stub
+// 	data, err := os.ReadFile(config.LogErrorsFile)
+// 	if err != nil {
+// 		http.Error(w, "Log read failed", http.StatusInternalServerError)
+// 		return
+// 	}
+// 	lines := strings.Split(string(data), "\n")
+// 	var filtered []string
+// 	for _, line := range lines {
+// 		if strings.Contains(line, domainFilter) || domainFilter == "" {
+// 			filtered = append(filtered, line)
+// 		}
+// 	}
+// 	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
+
+// 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
+// }
 
 func shutdown(exitCode int) {
 	shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
