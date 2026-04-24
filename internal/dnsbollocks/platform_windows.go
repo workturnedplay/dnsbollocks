@@ -1124,7 +1124,7 @@ tr td {
 		noScriptWarningHTML + `
     <div class="container">
     <h1>DNSbollocks</h1>
-    <a href="/rules">Whitelist Rules</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+    <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Local Hosts</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     {{.Body}}
     </div>
     <script>
@@ -3470,6 +3470,7 @@ func startWebUI(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", statsHandler)
 	mux.HandleFunc("/rules", rulesHandler)
+	mux.HandleFunc("/hosts", hostsHandler)
 	mux.HandleFunc("/blocks", blocksHandler)
 	mux.HandleFunc("/logs", logsHandler)
 	mux.HandleFunc("/logs_queries", logsQueriesHandler)
@@ -3737,6 +3738,206 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			logFatal("failed to save whitelist after rule add/edit from webUI", err)
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
+	}
+}
+
+func hostsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		localHostsMu.RLock()
+		defer localHostsMu.RUnlock()
+
+		var body strings.Builder
+
+		// Disclaimer per request
+		body.WriteString(`<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">`)
+		body.WriteString(`<strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.`)
+		body.WriteString(`</div>`)
+
+		// Add form
+		body.WriteString("<h2>Add New Local Host</h2>")
+		body.WriteString(`<form method="post" action="/hosts">`)
+		body.WriteString(`<input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> `)
+		body.WriteString(`<input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> `)
+		body.WriteString(`<button type="submit">Add Host</button>`)
+		body.WriteString(`</form>`)
+
+		// Table
+		body.WriteString("<h2>Local Hosts</h2>")
+		body.WriteString("<table><tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>")
+
+		for i, rule := range localHosts {
+			escapedPattern := html.EscapeString(rule.Pattern)
+			var ipsStr []string
+			for _, ip := range rule.IPs {
+				ipsStr = append(ipsStr, ip.String())
+			}
+			joinedIPs := html.EscapeString(strings.Join(ipsStr, ", "))
+
+			//body.WriteString(fmt.Sprintf(`
+			fmt.Fprintf(&body, `
+			<tr id="hostRow_%d">
+				<td>%s</td>
+				<td>%s</td>
+				<td class="actions">
+					<button class="btn btn-edit" onclick="editHost(this, %d, '%s', '%s')">Edit</button>
+					<form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
+						<input type="hidden" name="delete" value="1">
+						<input type="hidden" name="pattern" value="%s">
+						<button class="btn btn-del" type="submit">Delete</button>
+					</form>
+				</td>
+			</tr>`, i, escapedPattern, joinedIPs, i, escapedPattern, joinedIPs, escapedPattern)
+			//)
+		}
+		body.WriteString("</table>")
+
+		// Isolated script for Local Hosts inline editing
+		body.WriteString(`
+		<script>
+		function editHost(btn, index, pat, ips) {
+			const row = document.getElementById('hostRow_' + index);
+			row.style.display = 'none';
+			const formHtml = ` + "`" + `
+			<tr id="editHostRow_${index}">
+				<td>
+					<input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
+					<input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
+				</td>
+				<td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
+				<td>
+					<form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
+						<input type="hidden" name="edit" value="1">
+						<button type="submit" class="btn btn-edit">Save</button>
+						<button type="button" class="btn btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
+					</form>
+				</td>
+			</tr>
+			` + "`" + `;
+			row.insertAdjacentHTML('afterend', formHtml);
+		}
+		function cancelHostEdit(index) {
+			const editRow = document.getElementById('editHostRow_' + index);
+			if (editRow) editRow.remove();
+			const row = document.getElementById('hostRow_' + index);
+			if (row) row.style.display = '';
+		}
+		</script>
+		`)
+
+		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
+		return
+	}
+
+	if r.Method == "POST" {
+		// --- DELETE ---
+		if r.FormValue("delete") == "1" {
+			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
+			if pattern == "" {
+				http.Error(w, "pattern required for delete", http.StatusBadRequest)
+				return
+			}
+
+			deleted := false
+			func() {
+				localHostsMu.Lock()
+				defer localHostsMu.Unlock()
+				for i, rule := range localHosts {
+					if rule.Pattern == pattern {
+						localHosts = append(localHosts[:i], localHosts[i+1:]...)
+						deleted = true
+						break
+					}
+				}
+			}()
+
+			if deleted {
+				if err := saveLocalHosts(); err != nil {
+					logFatal("failed to save local hosts after deletion", err)
+				}
+				http.Redirect(w, r, "/hosts", http.StatusSeeOther)
+				return
+			}
+			http.Error(w, "host not found", http.StatusNotFound)
+			return
+		}
+
+		// --- ADD / EDIT ---
+		pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
+		oldPattern := strings.ToLower(strings.TrimSpace(r.FormValue("old_pattern")))
+		isEdit := r.FormValue("edit") == "1"
+
+		if pattern == "" {
+			http.Error(w, "pattern required", http.StatusBadRequest)
+			return
+		}
+
+		ipsRaw := strings.Split(r.FormValue("ips"), ",")
+		var netIPs []net.IP
+		for _, ipStr := range ipsRaw {
+			ipStr = strings.TrimSpace(ipStr)
+			if ipStr == "" {
+				continue
+			}
+			if ip := net.ParseIP(ipStr); ip != nil {
+				netIPs = append(netIPs, ip)
+			} else {
+				http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
+				return
+			}
+		}
+
+		if len(netIPs) == 0 {
+			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
+			return
+		}
+
+		var conflictErr bool
+		func() {
+			localHostsMu.Lock()
+			defer localHostsMu.Unlock()
+
+			if isEdit {
+				// Remove the old rule if editing
+				for i, rule := range localHosts {
+					if rule.Pattern == oldPattern {
+						localHosts = append(localHosts[:i], localHosts[i+1:]...)
+						break
+					}
+				}
+				// Remove the target pattern if we renamed to an existing one (overwrite logic)
+				for i, rule := range localHosts {
+					if rule.Pattern == pattern {
+						localHosts = append(localHosts[:i], localHosts[i+1:]...)
+						break
+					}
+				}
+			} else {
+				// Prevent duplicates on explicit 'Add'
+				for _, rule := range localHosts {
+					if rule.Pattern == pattern {
+						conflictErr = true
+						return
+					}
+				}
+			}
+
+			if !conflictErr {
+				localHosts = append(localHosts, LocalHostRule{Pattern: pattern, IPs: netIPs})
+			}
+		}()
+
+		if conflictErr {
+			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
+			return
+		}
+
+		if err := saveLocalHosts(); err != nil {
+			logFatal("failed to save local hosts after add/edit", err)
+		}
+
+		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 	}
 }
 
