@@ -2317,7 +2317,9 @@ func startDNSListener(addr string) {
 			}()
 			mainLogger.Info("UDP DNS listening success", slog.String("addr", addr))
 
-			buf := make([]byte, 512+512)
+			//buf := make([]byte, 512+512)
+			// FIX: Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
+			buf := make([]byte, 4096)
 
 			//TheFor:
 			for {
@@ -2570,6 +2572,10 @@ func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *ne
 
 func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+
+	// FIX: Drop idle/stale TCP connections after 5 seconds to prevent goroutine leaks
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
 	const TWO = 2
 	buf := make([]byte, TWO)
 	if n, err := io.ReadFull(conn, buf); err != nil {
@@ -2693,6 +2699,8 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	var body []byte
 
 	if r.Method == "POST" {
+		// FIX: Limit incoming DoH payload to 64KB to prevent memory exhaustion attacks
+		r.Body = http.MaxBytesReader(w, r.Body, 65536)
 		body, err = io.ReadAll(r.Body)
 	} else {
 		encoded := r.URL.Query().Get("dns")
