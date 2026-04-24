@@ -80,7 +80,7 @@ type Config struct {
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
 	BlacklistFile string `json:"blacklist_file"` // "response_blacklist.json"
-	HostsFile     string `json:"hosts_file"`     // "hosts2ip.json"
+	HostsFile     string `json:"hosts_file"`     // "hosts2ip.json" XXX: a host has to match the whitelist first before being considered from here!
 	// ConsoleLogLevel controls what appears on the terminal.
 	// Valid values (case-insensitive): "debug", "info", "warn", "error".
 	// Default: "info". Only >= this level is shown on console.
@@ -3524,6 +3524,19 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 		var body strings.Builder
 
+		// Add form
+		body.WriteString("<h2>Add New Rule</h2>")
+		body.WriteString("<form method=\"post\" action=\"/rules\">")
+		body.WriteString("<select name=\"type\">")
+		for _, t := range dnsTypes {
+			fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
+		}
+		body.WriteString("</select> ")
+		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
+		body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
+		body.WriteString("<button type=\"submit\">Add Rule</button>")
+		body.WriteString("</form>")
+
 		// Table
 		body.WriteString("<h2>Whitelist Rules</h2>")
 		body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
@@ -3554,19 +3567,6 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		body.WriteString("</table>")
-
-		// Add form
-		body.WriteString("<h2>Add New Rule</h2>")
-		body.WriteString("<form method=\"post\" action=\"/rules\">")
-		body.WriteString("<select name=\"type\">")
-		for _, t := range dnsTypes {
-			fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
-		}
-		body.WriteString("</select> ")
-		body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
-		body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
-		body.WriteString("<button type=\"submit\">Add Rule</button>")
-		body.WriteString("</form>")
 
 		uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 		return
