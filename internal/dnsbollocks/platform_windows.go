@@ -2641,6 +2641,15 @@ func startDoHListener(addr string) {
 		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
 		WriteTimeout: 30 * time.Second, // Optional, for responses
 	}
+	// Listen for the global shutdown signal to gracefully close the DoH server
+	go func() {
+		<-backgroundCtx.Done()
+		mainLogger.Debug("Shutting down DoH server...")
+		// Give it a max of 3 seconds to finish existing requests before force closing
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelDown()
+		_ = dohSrv.Shutdown(shutdownCtx)
+	}()
 	go func() {
 		defer listener.Close() // Graceful close on shutdown
 		//doneFIXME: how do we know if this failed to maybe restart it or exit the whole program or whatever!?
@@ -3479,6 +3488,14 @@ func startWebUI(port int) {
 	fmt.Printf("Web UI listening on %s:%d (stats at /debug/vars)\n", hostOrIp, port) //FIXME: hardcoded IP
 
 	uiSrv := &http.Server{Handler: mux}
+	// Listen for the global shutdown signal to gracefully close the Web UI
+	go func() {
+		<-backgroundCtx.Done()
+		mainLogger.Debug("Shutting down Web UI server...")
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelDown()
+		_ = uiSrv.Shutdown(shutdownCtx)
+	}()
 	go func() {
 		defer listener.Close() // Graceful close
 		if err := uiSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -3829,16 +3846,16 @@ func shutdown(exitCode int) {
 		mainLogger.Info("Shutting down...")
 		// 1. Cancel the context immediately so all other listeners stop
 		cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
-		mainLogger.Debug("Context cancelled...")
+		mainLogger.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
 		cacheStore.Flush()
 		mainLogger.Debug("Cache flushed")
-		//TODO: webUI shutdown
-		mainLogger.Debug("webUI shutdown(fake)")
-		// Close log files (reopen on next run)
+		//doneTODO: webUI shutdown (done via cancel() above)
+		//mainLogger.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
+		// Wait 1 sec to allow graceful HTTP shutdowns and the "quitting" messages to show
 		time.Sleep(1000 * time.Millisecond)
-		mainLogger.Debug("waited 1 sec")
+		mainLogger.Debug("waited 1 sec for port cleanup")
 		if !wincoe.WaitAnyKeyIfInteractive() {
 			mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
 		}
