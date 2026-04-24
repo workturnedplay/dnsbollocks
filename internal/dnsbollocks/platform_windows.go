@@ -33,6 +33,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"expvar"
+	"reflect"
 
 	"fmt"
 	"html/template"
@@ -515,7 +516,7 @@ func DefaultConfig() Config {
 
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
-		HostsFile:     "local_hosts.json",
+		HostsFile:     "hosts2ip.json",
 
 		LogQueriesFile:          "queries.log",
 		LogErrorsFile:           "dnsbollocks.log",
@@ -1398,6 +1399,12 @@ func loadConfig() error {
 	const cfgFname = configFileName
 	fmt.Printf("Loading config file %q\n", cfgFname)
 	var shouldSaveConfig = false
+	// ---> FIX: Pre-populate the global config with defaults BEFORE reading/decoding
+	// this way missing keys from config.json file will be set to default value!
+	// 1. ALWAYS start by filling the global config with defaults.
+	// This is critical because Decode only overwrites what is in the file.
+	config = DefaultConfig()
+
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
 		if isAdmin {
@@ -1409,17 +1416,73 @@ func loadConfig() error {
 			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", cfgFname)
 		}
 		// Defaults
-		config = DefaultConfig()
+		// REMOVED: config = DefaultConfig() because it is already set above
+		//config = DefaultConfig()
 
 		shouldSaveConfig = true
 	} else {
+		// 2. First, check for unknown fields and decode into 'config'
 		dec := json.NewDecoder(bytes.NewReader(data))
-		dec.DisallowUnknownFields()
+		dec.DisallowUnknownFields() // This is why we use NewDecoder
+		//var theReadConfig Config = DefaultConfig()
+
 		//FIXME: any reload into existing config would race with other readers of config.* values, in theory, as this isn't mutex protected. But we don't reload config anyway, only the whitelist/blacklist which are mutexed.
+
+		// dec.Decode will now overwrite ONLY the fields present in the JSON.
+		// Missing fields will retain the values from DefaultConfig().
 		if err = dec.Decode(&config); err != nil {
-			mainLogger.Error("Config file %q contains unsupported fields", slog.String("file", cfgFname), slog.Any("err", err))
-			return fmt.Errorf("Config contains unsupported or typo-ed fields: %w", err)
+			//if err = dec.Decode(&theReadConfig); err != nil {
+			mainLogger.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), slog.Any("err", err))
+			return fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
+		// 3. Second, check for MISSING fields (No manual list!)
+		// We decode into a map just to see which keys exist in the JSON.
+		var presentKeys map[string]any
+		if err := json.Unmarshal(data, &presentKeys); err != nil {
+			panic(fmt.Errorf("shouldn't happen since decoding into Config worked! err:%w", err))
+			//return err
+		}
+
+		// 3. Check for MISSING fields
+		// Use reflection to compare the struct's "json" tags against the map
+
+		// missing := []string{}
+		// t := reflect.TypeOf(config)
+		// for i := 0; i < t.NumField(); i++ {
+		// 	tag := t.Field(i).Tag.Get("json")
+		// 	if tag == "" || tag == "-" {
+		// 		continue
+		// 	}
+
+		// 	if _, ok := presentKeys[tag]; !ok {
+		// 		missing = append(missing, tag)
+		// 	}
+		// }
+
+		// Use TypeFor[T] (Go 1.22+) and VisibleFields (Go 1.17+)
+		missing := []string{}
+		t := reflect.TypeFor[Config]()
+
+		for _, field := range reflect.VisibleFields(t) {
+			tag := field.Tag.Get("json")
+			if tag == "" || tag == "-" {
+				continue
+			}
+
+			if _, ok := presentKeys[tag]; !ok {
+				missing = append(missing, tag)
+			}
+		}
+
+		if len(missing) > 0 {
+			mainLogger.Warn("Config file has missing keys; using defaults", slog.String("config_file", cfgFname), slog.Any("missing", missing))
+			shouldSaveConfig = true
+		}
+		// if theReadConfig != config {
+		// 	mainLogger.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
+		// 	config = theReadConfig
+		// 	shouldSaveConfig = true
+		// }
 	}
 	// Validate loaded config
 	if config.CacheMinTTL < 60 {
@@ -1521,6 +1584,7 @@ func saveConfig() error {
 	if err := os.WriteFile(configFileName, data, 0600); err != nil {
 		return fmt.Errorf("config write failed: %w", err)
 	}
+	mainLogger.Info("Saved config file", slog.String("config_file", configFileName))
 	return nil
 }
 
