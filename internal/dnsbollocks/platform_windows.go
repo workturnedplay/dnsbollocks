@@ -79,6 +79,7 @@ type Config struct {
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
 	BlacklistFile string `json:"blacklist_file"` // "response_blacklist.json"
+	HostsFile     string `json:"hosts_file"`     // "hosts2ip.json"
 	// ConsoleLogLevel controls what appears on the terminal.
 	// Valid values (case-insensitive): "debug", "info", "warn", "error".
 	// Default: "info". Only >= this level is shown on console.
@@ -94,6 +95,16 @@ type Config struct {
 	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
 }
+
+type LocalHostRule struct {
+	Pattern string
+	IPs     []net.IP
+}
+
+var (
+	localHosts   []LocalHostRule
+	localHostsMu sync.RWMutex
+)
 
 // Near the other globals (after Config definition)
 var (
@@ -207,6 +218,79 @@ func saveResponseBlacklist() error {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
 		fmt.Printf("Saved blacklist file %q\n", blacklistFileName)
+	}
+	return nil
+}
+
+func loadLocalHosts() error {
+	path := config.HostsFile
+	if path == "" {
+		panic("dev: didn't set the default hosts filename!")
+	}
+	//fmt.Printf("Path before:%s", path) // hmm why is it "." with quotes!
+	path = filepath.Clean(path)
+
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		fmt.Printf("Hosts file %q not found → starting with empty local hosts\n", path)
+		localHostsMu.Lock()
+		localHosts = nil
+		localHostsMu.Unlock()
+		return saveLocalHosts() // creates empty default file
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read hosts file %q: %w", path, err)
+	}
+
+	var raw map[string][]string
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err = dec.Decode(&raw); err != nil {
+		return fmt.Errorf("failed to parse hosts file %q: %w", path, err)
+	}
+
+	var parsed []LocalHostRule
+	for pat, ips := range raw {
+		pat = strings.ToLower(pat) // normalize for matchPattern
+		var netIPs []net.IP
+		for _, ipStr := range ips {
+			if ip := net.ParseIP(ipStr); ip != nil {
+				netIPs = append(netIPs, ip)
+			} else {
+				mainLogger.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
+			}
+		}
+		if len(netIPs) > 0 {
+			parsed = append(parsed, LocalHostRule{Pattern: pat, IPs: netIPs})
+		}
+	}
+
+	localHostsMu.Lock()
+	localHosts = parsed
+	localHostsMu.Unlock()
+
+	fmt.Printf("Loaded %d host rules from %q\n", len(localHosts), path)
+	return nil
+}
+
+func saveLocalHosts() error {
+	localHostsMu.RLock()
+	raw := make(map[string][]string)
+	for _, rule := range localHosts {
+		var ips []string
+		for _, ip := range rule.IPs {
+			ips = append(ips, ip.String())
+		}
+		raw[rule.Pattern] = ips
+	}
+	localHostsMu.RUnlock()
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("hosts file marshal failed: %w", err)
+	}
+	if err := os.WriteFile(config.HostsFile, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write hosts file %q: %w", config.HostsFile, err)
 	}
 	return nil
 }
@@ -431,6 +515,7 @@ func DefaultConfig() Config {
 
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
+		HostsFile:     "local_hosts.json",
 
 		LogQueriesFile:          "queries.log",
 		LogErrorsFile:           "dnsbollocks.log",
@@ -1261,6 +1346,12 @@ func OldMain() {
 			} else {
 				mainLogger.Debug("Blacklist reloaded")
 			}
+			// Inside watchKeys, in the Ctrl+R lambda block:
+			if err := loadLocalHosts(); err != nil {
+				logFatal("Hosts reload failed:", err)
+			} else {
+				mainLogger.Debug("Local hosts reloaded")
+			}
 			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
 		func() { // alt+x Ctrl+X etc.
@@ -1363,6 +1454,9 @@ func loadConfig() error {
 	if didClean := cleanFileName(&config.LogErrorsFile, "log_errors"); didClean && !shouldSaveConfig {
 		shouldSaveConfig = true
 	}
+	if didClean := cleanFileName(&config.HostsFile, "hosts_file"); didClean && !shouldSaveConfig {
+		shouldSaveConfig = true
+	}
 
 	// After decoding config
 	err = loadQueryWhitelist()
@@ -1371,6 +1465,9 @@ func loadConfig() error {
 	}
 	err = loadResponseBlacklist()
 	if err != nil {
+		return err
+	}
+	if err = loadLocalHosts(); err != nil {
 		return err
 	}
 
@@ -1382,10 +1479,18 @@ func loadConfig() error {
 	return nil
 }
 
+// don't pass empty or it will panic
 func cleanFileName(what *string, description string) (didClean bool) {
-	cleanedFile := filepath.Clean(*what)
+	var cleanedFile string = *what
+	if cleanedFile == "" {
+		//woulda been cleaned into "." aka a dot!
+		panic("dev fail: passed empty filename to clean for " + description)
+	}
+	cleanedFile = filepath.Clean(*what)
+	//from doc: If the result of this process is an empty string, Clean returns the string ".".
+
 	if cleanedFile != *what {
-		fmt.Printf("Cleaned %s filename from config file, before vs after: %q vs %q", description, *what, cleanedFile)
+		fmt.Printf("Cleaned %s filename from config file, before vs after: %q vs %q\n", description, *what, cleanedFile)
 		didClean = true
 		*what = cleanedFile
 	} else {
@@ -2643,6 +2748,49 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		return resp
 	}
 
+	// --- START Local Hosts Override ---
+	localHostsMu.RLock()
+	var hasLocalHost bool
+	var matchedIPs []net.IP
+	for _, rule := range localHosts {
+		if matchPattern(rule.Pattern, domain) {
+			matchedIPs = rule.IPs
+			hasLocalHost = true
+			break
+		}
+	}
+	localHostsMu.RUnlock()
+
+	if hasLocalHost {
+		resp := new(dns.Msg)
+		resp.SetReply(msg)
+		resp.Authoritative = true
+		resp.RecursionAvailable = true
+
+		for _, ip := range matchedIPs {
+			isIPv4 := ip.To4() != nil
+
+			if qtype == "A" && isIPv4 {
+				rr := new(dns.A)
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}
+				rr.A = ip
+				resp.Answer = append(resp.Answer, rr)
+			} else if qtype == "AAAA" && !isIPv4 {
+				rr := new(dns.AAAA)
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 300}
+				rr.AAAA = ip
+				resp.Answer = append(resp.Answer, rr)
+			}
+		}
+
+		// Cache this override so subsequent queries bypass the pattern loop
+		cacheStore.Set(key, resp.Copy(), 300*time.Second)
+
+		logQuery(ctx, clientAddr, domain, qtype, "local_host_override", "", extractIPs(resp), resp)
+		return resp
+	}
+	// --- END Local Hosts Override ---
+
 	// Forward
 	resp := forwardToDoH(msg)
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
@@ -3113,6 +3261,7 @@ var QueryActionColors = map[string]uint16{
 	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
 	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
 	"forwarded_but_FAILED_so_NXDOMAIN":   wincoe.FOREGROUND_BRIGHT_RED,
+	"local_host_override":                wincoe.FOREGROUND_BRIGHT_CYAN,
 	// you can add more action → color mappings here
 	// unknown actions → fall back to level-based color
 }
