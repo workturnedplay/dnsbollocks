@@ -101,8 +101,17 @@ set WINCOE_SMASHY_TEST=1
 set WINCOE_SMASHY_RUNGC=1
 rem set GODEBUG=gctrace=1,gc=1,allocfreetrace=1
 set "GORACE=halt_on_error=1:log_path=race.log"
+rem GORACE being unset won't skip the +1 sec delay on shutdown due to being compiled by 'go build -race'
+rem set GORACE=
 rem won't see it: go env GORACE
 echo GORACE is '%GORACE%'
+
+rem to catch more bugs:
+:: Force the garbage collector to be more aggressive
+set GOGC=50
+:: Clear memory more frequently
+set GODEBUG=madvdontneed=1
+echo GODEBUG is '%GODEBUG%'
 
 echo Running command^(in current dir^): "!exe_name!"
 REM set "LOCK_FILE=%temp%\exe_busy_%random%.tmp"
@@ -121,15 +130,29 @@ REM if exist "%LOCK_FILE%" goto wait_loop
 "!exe_name!"
 set "ec=%ERRORLEVEL%"
 
+rem 1. Capture the ISO timestamp into a variable, actually this takes 0.23sec to run
+rem for /f "delims=" %%i in ('powershell -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffK'"') do set "ts=%%i"
+:: This is nearly instantaneous (0ms delay)
+:: Use the first 8 chars of time (HH:mm:ss)
+rem set "ts=%DATE:~10,4%-%DATE:~4,2%-%DATE:~7,2%T%TIME: =0%"
+rem The command set "t=%TIME: =0%" is a string replacement trick in Batch. It looks for any spaces in the %TIME% variable and replaces them with a zero.
+set "t=%TIME: =0%"
+set "ts=%DATE%T%t%"
+:: Grab the pieces (this depends on your locale, but usually works)
+:: If your date is "Fri 04/24/2026", ~10,4 is Year, ~4,2 is Month, ~7,2 is Day
+rem set "iso_date=!DATE:~10,4!-!DATE:~4,2!-!DATE:~7,2!"
+rem set "iso_time=!TIME: =0!"
+rem set "ts=!iso_date!T!iso_time!"
+
 if "!ec!"=="130" (
-    echo "!exe_name!" exited with code 130 ^(sigint^) - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
+    echo time=!ts! "!exe_name!" exited with code 130 ^(sigint^) - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
     goto run
 )
 
 if "!ec!"=="0" (
-    echo "!exe_name!" finished successfully.
+    echo time=!ts! "!exe_name!" finished successfully.
 ) else (
-    echo "!exe_name!" exited with error code "!ec!"
+    echo time=!ts! "!exe_name!" exited with error code "!ec!"
     if "!log_file!" NEQ "" (
       if exist "!log_file!" (
         echo ---- debug log file "!log_file!" echoed below ----

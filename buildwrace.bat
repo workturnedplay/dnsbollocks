@@ -1,8 +1,11 @@
 @echo off
-echo building with race detector...
+echo building with race detector... WARNING: this adds +1 second delay on exit!
 
 rem go env GOARCH
+
+rem this is set within build.bat if BUILD_WITH_RACE_DETECTOR is set! but we keep it here too:
 set CGO_ENABLED=1
+
 rem set GOARCH=amd64
 rem set GOOS=windows
 rem go env CC
