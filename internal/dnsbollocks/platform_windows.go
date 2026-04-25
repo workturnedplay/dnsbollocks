@@ -1315,13 +1315,13 @@ var uiTemplates = template.Must(template.New("").Parse(
         outline: none;
         font-size: 0.9em;
         vertical-align: middle;
+        box-sizing: border-box;
     }
 
     /* Specialized Select/Dropdown logic */
     select {
-        appearance: none; /* Removes the default Windows 'white' arrow */
+        appearance: none; 
         -webkit-appearance: none;
-        /* Adds a custom white arrow so you can see it's a dropdown */
         background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') !important;
         background-repeat: no-repeat !important;
         background-position: right 10px center !important;
@@ -1337,9 +1337,10 @@ var uiTemplates = template.Must(template.New("").Parse(
     button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
     button:hover { background: #3d3d3d !important; }
 
-    /* 3. TABLES */
-    table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
-    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
+    /* 3. TABLES (Anti-Jump Fixes) */
+    table { width: 100%; table-layout: fixed; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
+    tr { height: 64px; } /* Locks row height to prevent vertical jumping */
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
     
     /* 4. BUTTON VARIANTS */
@@ -1347,9 +1348,16 @@ var uiTemplates = template.Must(template.New("").Parse(
     .btn-edit:hover { background-color: #005a9e !important; }
     .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
     .btn-del:hover { background-color: #a82a01 !important; }
-    .btn-cancel { background-color: #444 !important; color: white !important; border: none !important; }
+    
+    /* New Save/Cancel Buttons */
+    .btn-save { background-color: #28a745 !important; color: white !important; border: none !important; }
+    .btn-save:hover { background-color: #218838 !important; }
+    .btn-cancel { background-color: #dc3545 !important; color: white !important; border: none !important; }
+    .btn-cancel:hover { background-color: #c82333 !important; }
 
     /* 5. UTILITIES */
+    .actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
+    .actions button { font-size: 0.9rem; }
     .tag-enabled { color: #4ec9b0; font-weight: bold; }
     .tag-disabled { color: #f44747; font-weight: bold; }
     pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
@@ -1393,7 +1401,7 @@ var uiTemplates = template.Must(template.New("").Parse(
                 const formHtml = ` + "`" + `
                 <tr>
                     <td>
-                        <select name="type" id="editType_${id}">
+                        <select name="type" id="editType_${id}" style="width: 100%;">
                             ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
@@ -1403,14 +1411,14 @@ var uiTemplates = template.Must(template.New("").Parse(
 	}(), "") + `
                         </select>
                     </td>
-                    <td>${id}</td>
-                    <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
-                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}></label></td>
-                    <td>
-                        <form method="post" action="/rules" id="editForm_${id}">
+                    <td title="${id}">${id}</td>
+                    <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width: 100%;"></td>
+                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
+                    <td class="actions">
+                        <form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
                             <input type="hidden" name="id" value="${id}">
-                            <button type="submit">Save</button>
-                            <button type="button" onclick="cancelEdit('${id}')">Cancel</button>
+                            <button type="submit" class="btn-save">Save</button>
+                            <button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
                         </form>
                     </td>
                 </tr>
@@ -1466,16 +1474,23 @@ var uiTemplates = template.Must(template.New("").Parse(
 </form>
 
 <h2>Whitelist Rules</h2>
-<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>
+<table>
+    <colgroup>
+        <col style="width: 14%;">
+        <col style="width: 30%;">
+        <col style="width: 26%;">
+        <col style="width: 12%;">
+        <col style="width: 18%;">
+    </colgroup>
+    <tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>
 {{range $typ, $ruleList := .Rules}}
     {{range $ruleList}}
     <tr>
         <td>{{$typ}}</td>
-        <td>{{.ID}}</td>
-        <td>{{.Pattern}}</td>
+        <td title="{{.ID}}">{{.ID}}</td>
+        <td title="{{.Pattern}}">{{.Pattern}}</td>
 		<td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
         <td class="actions">
-            {{/* The template engine securely escapes .Pattern and .ID here automatically */}}
             <button class="btn-edit" data-edit-id="{{.ID}}" data-edit-type="{{$typ}}" data-edit-pattern="{{.Pattern}}" data-edit-enabled="{{.Enabled}}">Edit</button>
             <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
                 <input type="hidden" name="delete" value="1">
@@ -1520,11 +1535,16 @@ var uiTemplates = template.Must(template.New("").Parse(
 
     <h2>Local Hosts</h2>
     <table>
+        <colgroup>
+            <col style="width: 35%;">
+            <col style="width: 45%;">
+            <col style="width: 20%;">
+        </colgroup>
         <tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>
         {{range .Hosts}}
         <tr id="hostRow_{{.Index}}">
-            <td>{{.Pattern}}</td>
-            <td>{{.IPsDisplay}}</td>
+            <td title="{{.Pattern}}">{{.Pattern}}</td>
+            <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
             <td class="actions">
                 <button class="btn-edit" onclick="editHost(this, {{.Index}}, '{{.Pattern}}', '{{.IPsDisplay}}')">Edit</button>
                 <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
@@ -1550,10 +1570,10 @@ var uiTemplates = template.Must(template.New("").Parse(
                 <input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
             </td>
             <td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
-            <td>
-                <form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
+            <td class="actions">
+                <form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline; margin:0;">
                     <input type="hidden" name="edit" value="1">
-                    <button type="submit" class="btn-edit">Save</button>
+                    <button type="submit" class="btn-save">Save</button>
                     <button type="button" class="btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
                 </form>
             </td>
