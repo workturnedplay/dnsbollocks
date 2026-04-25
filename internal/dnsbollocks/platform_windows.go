@@ -2613,9 +2613,11 @@ func generateCertIfNeeded() {
 			logFatal("cert generation failed", err) //slog.Any("err", err))
 			//os.Exit(1)
 		}
-		mainLogger.Info("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception", slog.Any("IP", currentIP))
+		mainLogger.Warn("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception, "+
+			"or about:preferences#privacy scroll to Security click Manage Certificates and in Certificate Manager window select Servers click [Add Exception...] "+
+			"button and use this IP with that https:// scheme or use full listen_address", slog.Any("IP", currentIP), slog.Any("listen_address", config.ListenDoH))
 	} else {
-		mainLogger.Info("Existing cert is valid for host. Skipping generation.", slog.String("sni_hostname", host))
+		mainLogger.Debug("Existing cert is valid for host. Skipping generation.", slog.String("sni_hostname", host))
 	}
 
 	// Load cert/key into global for reuse
@@ -3506,17 +3508,30 @@ func initDoHClient() *http.Client { //upstreamIP, sni string) {
 		dohTransport.CloseIdleConnections()
 	}
 	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
-	const ImpliedPort string = "443"
+
 	port := upstreamURL.Port()
 	if port == "" {
 		// Log this only once when the client initializes, not on every connection!
-		mainLogger.Warn("Using implied port for DoH upstream",
-			slog.String("implied_port", ImpliedPort),
-			slog.Any("upstreamURL", upstreamURL))
-		port = ImpliedPort
+		const ImpliedPort string = "443"
+		if strings.ToLower(upstreamURL.Scheme) == "https" {
+			//don't log in this case
+			port = ImpliedPort
+		} else if upstreamURL.Scheme != "" {
+			mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+				slog.Any("upstreamURL", upstreamURL))
+		} else {
+			port = ImpliedPort
+			mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+				slog.String("implied_port", ImpliedPort),
+				slog.Any("upstreamURL", upstreamURL))
+		}
+	}
+	if port == "" {
+		panic("dev fail: port is empty")
 	}
 
 	// Create the final "IP:Port" string once
+	// Pre-joining prevents doing string manipulation inside the DialContext closure
 	dialAddr := net.JoinHostPort(upstreamIP, port)
 	// --------------------------------------
 	t := &http.Transport{
