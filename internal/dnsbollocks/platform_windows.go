@@ -2986,54 +2986,73 @@ func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *ne
 func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
-	const timeout = 5 * time.Second
+	const timeoutSeconds = 5 //XXX: that is per operation: read 2 bytes, read the body, write the response; so each 3 operations get this timeout!
+	const timeoutDuration time.Duration = timeoutSeconds * time.Second
 	const maxDNSTCPPacketSize = 65535
 
-	// FIX: Drop idle/stale TCP connections after 5 seconds to prevent goroutine leaks
-	_ = conn.SetDeadline(time.Now().Add(timeout))
+	// --- 1. READ THE LENGTH HEADER ---
+	// We give the client 5 seconds to send just these 2 bytes.
+	_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
 
 	const TWO = 2
 	buf := make([]byte, TWO)
 	if n, err := io.ReadFull(conn, buf); err != nil {
-		mainLogger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", TWO))
+		mainLogger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n),
+			slog.Int("wanted_to_read_bytes", TWO), slog.Any("timeout", timeoutDuration))
 		return
 	}
 	length := int(binary.BigEndian.Uint16(buf))
-	if length > maxDNSTCPPacketSize { // Edge: Oversize packet
-		mainLogger.Warn("too big'a'packet in TCP DNS connection, thus dropped/ignored", slog.Any("bigger_than_this", maxDNSTCPPacketSize), slog.Int("actual_bytes", length))
+	if length > maxDNSTCPPacketSize || length == 0 { // Edge: Oversize packet
+		mainLogger.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Any("max", maxDNSTCPPacketSize),
+			slog.Any("min", 1))
 		return
 	}
+
+	// --- 2. READ THE BODY ---
+	// We REFRESH the deadline. The client gets a fresh 5 seconds
+	// to finish sending the actual DNS message.
+	_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
 	wire := make([]byte, length)
 	if n, err := io.ReadFull(conn, wire); err != nil {
-		mainLogger.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length))
+		mainLogger.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", slog.Any("err", err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
+			slog.Any("timeout", timeoutDuration))
 		return
 	}
+
+	// --- 3. PROCESS ---
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
 		mainLogger.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", slog.Any("err", err))
 		return
 	}
+
 	resp := handleDNSQuery(ctx, msg, conn.RemoteAddr().String())
+	// --- 4. WRITE THE RESPONSE ---
 	if resp != nil {
 		pack, err := resp.Pack() // Ignore err
 		if err != nil {
 			mainLogger.Warn("failed to pack DNS TCP packet response thus not sent", slog.Any("err", err))
 			return
 		}
+		// Prepare the output (length + payload)
 		out := new(bytes.Buffer)
 		err = binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
 		if err != nil {
-			mainLogger.Warn("failed to write to the buffer the pack len (2 bytes) of the TCP DNS packet response", slog.Any("err", err))
+			mainLogger.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", slog.Any("err", err))
 			return
 		}
 		out.Write(pack)
+		// Set a WRITE deadline. This prevents a "slow receiver" from
+		// hanging your goroutine forever while you try to push data.
+		_ = conn.SetWriteDeadline(time.Now().Add(timeoutDuration))
 		wroteN, err := conn.Write(out.Bytes())
 		if err != nil {
-			mainLogger.Warn("failed to write to TCP the DNS packet response body (wrote the 2 bytes len before)", slog.Any("err", err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+			mainLogger.Warn("failed to write to TCP the DNS packet response body", slog.Any("err", err), slog.Int("wrote_bytes", wroteN),
+				slog.Int("shoulda_written", len(pack)), slog.Any("timeout", timeoutDuration))
 			return
 		}
 	}
-	mainLogger.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho.")
+	mainLogger.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho. FIXME")
 }
 
 // non-blocking!
