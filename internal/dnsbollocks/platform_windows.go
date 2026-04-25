@@ -1883,21 +1883,36 @@ func loadConfig() error {
 	config.SNIHostname = upstreamHost
 	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
 
-	if didClean := cleanFileName(&config.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile); didClean && !shouldSaveConfig {
-		shouldSaveConfig = true
+	// Helper closure to apply the cleaning and track if a save is needed
+	checkAndClean := func(target *string, desc, fallback string) {
+		if cleaned, changed := cleanFileName(*target, desc, fallback); changed {
+			*target = cleaned
+			if !shouldSaveConfig {
+				shouldSaveConfig = true
+			}
+		}
 	}
-	if didClean := cleanFileName(&config.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile); didClean && !shouldSaveConfig {
-		shouldSaveConfig = true
-	}
-	if didClean := cleanFileName(&config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile); didClean && !shouldSaveConfig {
-		shouldSaveConfig = true
-	}
-	if didClean := cleanFileName(&config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile); didClean && !shouldSaveConfig {
-		shouldSaveConfig = true
-	}
-	if didClean := cleanFileName(&config.HostsFile, "hosts_file", defaultConfig.HostsFile); didClean && !shouldSaveConfig {
-		shouldSaveConfig = true
-	}
+
+	checkAndClean(&config.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
+	checkAndClean(&config.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
+	checkAndClean(&config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
+	checkAndClean(&config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
+	checkAndClean(&config.HostsFile, "hosts_file", defaultConfig.HostsFile)
+	// if didClean := cleanFileName(&config.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile); didClean && !shouldSaveConfig {
+	// 	shouldSaveConfig = true
+	// }
+	// if didClean := cleanFileName(&config.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile); didClean && !shouldSaveConfig {
+	// 	shouldSaveConfig = true
+	// }
+	// if didClean := cleanFileName(&config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile); didClean && !shouldSaveConfig {
+	// 	shouldSaveConfig = true
+	// }
+	// if didClean := cleanFileName(&config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile); didClean && !shouldSaveConfig {
+	// 	shouldSaveConfig = true
+	// }
+	// if didClean := cleanFileName(&config.HostsFile, "hosts_file", defaultConfig.HostsFile); didClean && !shouldSaveConfig {
+	// 	shouldSaveConfig = true
+	// }
 
 	// After decoding config
 	err = loadQueryWhitelist()
@@ -1920,33 +1935,64 @@ func loadConfig() error {
 	return nil
 }
 
-// don't pass empty or it will panic
-func cleanFileName(what *string, description string, fallback string) (didClean bool) {
-	if what == nil {
-		panic("dev fail: nil config filename passed to cleanFileName")
-	}
+// // don't pass empty or it will panic
+// func cleanFileName(what *string, description string, fallback string) (didClean bool) {
+// 	if what == nil {
+// 		panic("dev fail: nil config filename passed to cleanFileName")
+// 	}
 
-	didClean = false
-	if *what == "" {
-		//woulda been cleaned into "." aka a dot!
-		//panic("dev fail: passed empty filename to clean for " + description)
+// 	didClean = false
+// 	if *what == "" {
+// 		//woulda been cleaned into "." aka a dot!
+// 		//panic("dev fail: passed empty filename to clean for " + description)
+// 		if fallback == "" {
+// 			panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
+// 		}
+// 		mainLogger.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
+// 		*what = fallback
+// 		didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
+// 	}
+
+// 	var cleanedFile string = filepath.Clean(*what)
+// 	//from doc: If the result of this process is an empty string, Clean returns the string ".".
+
+// 	if cleanedFile != *what {
+// 		mainLogger.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
+// 		didClean = true
+// 		*what = cleanedFile
+// 	}
+// 	return
+// }
+
+// cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
+func cleanFileName(original, description, fallback string) (string, bool) {
+	if original == "" {
 		if fallback == "" {
-			panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
+			panic(fmt.Sprintf("dev fail: passed empty filename to clean for %q and the fallback was also empty!", description))
 		}
-		mainLogger.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
-		*what = fallback
-		didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
+		mainLogger.Warn("Bad filename in config, used fallback",
+			slog.String("for_config_key", description),
+			slog.String("bad_filename", original),
+			slog.String("fallback_filename", fallback))
+
+		// Ensure the fallback itself is clean before returning
+		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice, for DRY purposes.
+		if cleaned != fallback {
+			panic(fmt.Sprintf("dev fail: fallback(%q) for config key %q had to be cleaned into %q", fallback, description, cleaned))
+		}
+		return cleaned, true
 	}
 
-	var cleanedFile string = filepath.Clean(*what)
-	//from doc: If the result of this process is an empty string, Clean returns the string ".".
-
-	if cleanedFile != *what {
-		mainLogger.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
-		didClean = true
-		*what = cleanedFile
+	cleaned := filepath.Clean(original)
+	if cleaned != original {
+		mainLogger.Debug("Cleaned filename from config file",
+			slog.String("filename_description", description),
+			slog.String("filename_before", original),
+			slog.String("filename_after", cleaned))
+		return cleaned, true
 	}
-	return
+
+	return original, false
 }
 
 // helper to return host (IP or hostname) from an URL
