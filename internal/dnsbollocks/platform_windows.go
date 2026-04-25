@@ -3536,16 +3536,25 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
 		var netErr net.Error
-		if errors.Is(err2, io.ErrUnexpectedEOF) || errors.Is(err2, io.EOF) ||
-			errors.As(err2, &netErr) && netErr.Temporary() {
+		isRetryable := errors.Is(err2, io.EOF) ||
+			errors.Is(err2, io.ErrUnexpectedEOF) ||
+			errors.Is(err2, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
+			errors.Is(err2, syscall.ECONNREFUSED) ||
+			(errors.As(err2, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+		if isRetryable {
+			// // Don't retry if the app is shutting down
+			// if backgroundCtx.Err() != nil {
+			// 	return nil
+			// }
 			// retry once
-			mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt), slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2))
-			//fmt.Println("doh_post_transient_error(retrying next tho!):", err)
+			mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt),
+				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2),
+				slog.Bool("will_retry", attempt < maxTries))
 			// small backoff: sleep a bit but respect context
 			select {
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
 			case <-backgroundCtx.Done():
-				fmt.Println("doh sensed quit...")
+				fmt.Println("doh sensed quit during retry backoff...")
 				return nil
 			}
 			continue
