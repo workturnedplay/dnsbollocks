@@ -2986,8 +2986,11 @@ func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *ne
 func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
+	const timeout = 5 * time.Second
+	const maxDNSTCPPacketSize = 65535
+
 	// FIX: Drop idle/stale TCP connections after 5 seconds to prevent goroutine leaks
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	const TWO = 2
 	buf := make([]byte, TWO)
@@ -2996,9 +2999,8 @@ func handleTCP(ctx context.Context, conn net.Conn) {
 		return
 	}
 	length := int(binary.BigEndian.Uint16(buf))
-	const TOOBIG = 65535
-	if length > TOOBIG { // Edge: Oversize packet
-		mainLogger.Warn("too big'a'packet in TCP DNS connection, thus dropped/ignored", slog.Any("bigger_than_this", TOOBIG), slog.Int("actual_bytes", length))
+	if length > maxDNSTCPPacketSize { // Edge: Oversize packet
+		mainLogger.Warn("too big'a'packet in TCP DNS connection, thus dropped/ignored", slog.Any("bigger_than_this", maxDNSTCPPacketSize), slog.Int("actual_bytes", length))
 		return
 	}
 	wire := make([]byte, length)
