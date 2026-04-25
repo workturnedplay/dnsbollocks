@@ -1882,6 +1882,9 @@ func loadConfig() error {
 
 	config.SNIHostname = upstreamHost
 	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
+	if config.SNIHostname == "" {
+		panic("dev fail: SNIHostname shouldn't be empty at this point, upstreamHost=" + upstreamHost)
+	}
 
 	// Helper closure to apply the cleaning and track if a save is needed
 	checkAndClean := func(target *string, desc, fallback string) {
@@ -3533,6 +3536,11 @@ func initDoHClient() *http.Client { //upstreamIP, sni string) {
 	// Create the final "IP:Port" string once
 	// Pre-joining prevents doing string manipulation inside the DialContext closure
 	dialAddr := net.JoinHostPort(upstreamIP, port)
+
+	if config.SNIHostname == "" {
+		panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
+	}
+
 	// --------------------------------------
 	t := &http.Transport{
 		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
