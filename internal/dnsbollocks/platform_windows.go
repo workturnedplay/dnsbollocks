@@ -1955,11 +1955,12 @@ func hostFromURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	host := u.Host
-	// Strip any port if present (e.g. "example.com:443" -> "example.com")
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
+	host := u.Hostname() // Built-in method strips the port safely
+	// host := u.Host
+	// // Strip any port if present (e.g. "example.com:443" -> "example.com")
+	// if h, _, err := net.SplitHostPort(host); err == nil {
+	// 	host = h
+	// }
 	return host, nil
 }
 
