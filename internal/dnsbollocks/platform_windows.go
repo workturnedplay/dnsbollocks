@@ -67,16 +67,17 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS       string `json:"listen_dns"`        // e.g., "127.0.0.1:53"
-	ListenDoH       string `json:"listen_doh"`        // e.g., "127.0.0.1:443"
-	UIPort          int    `json:"ui_port"`           // 8080
-	UpstreamURL     string `json:"upstream_url"`      // "https://9.9.9.9/dns-query"
-	SNIHostname     string `json:"sni_hostname"`      // Optional ""
-	BlockMode       string `json:"block_mode"`        // "nxdomain", "drop", "ip_block"
-	BlockIP         string `json:"block_ip"`          // "0.0.0.0"
-	RateQPS         int    `json:"rate_qps"`          // 100
-	CacheMinTTL     int    `json:"cache_min_ttl"`     // 300s
-	CacheMaxEntries int    `json:"cache_max_entries"` // 10000
+	ListenDNS               string `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
+	ListenDoH               string `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
+	UIPort                  int    `json:"ui_port"`                    // 8080
+	UpstreamURL             string `json:"upstream_url"`               // "https://9.9.9.9/dns-query"
+	UpstreamRetriesPerQuery int    `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
+	SNIHostname             string `json:"sni_hostname"`               // Optional ""
+	BlockMode               string `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
+	BlockIP                 string `json:"block_ip"`                   // "0.0.0.0"
+	RateQPS                 int    `json:"rate_qps"`                   // 100
+	CacheMinTTL             int    `json:"cache_min_ttl"`              // 300s
+	CacheMaxEntries         int    `json:"cache_max_entries"`          // 10000
 	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
@@ -504,16 +505,17 @@ func loadQueryWhitelist() error {
 // must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
 func DefaultConfig() Config {
 	return Config{
-		ListenDNS:       "127.0.0.1:53",
-		ListenDoH:       "127.0.0.1:443",
-		UIPort:          8080,
-		UpstreamURL:     "https://9.9.9.9/dns-query",
-		SNIHostname:     "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
-		BlockMode:       "nxdomain",
-		BlockIP:         "0.0.0.0",
-		RateQPS:         100,
-		CacheMinTTL:     300,
-		CacheMaxEntries: 10000,
+		ListenDNS:               "127.0.0.1:53",
+		ListenDoH:               "127.0.0.1:443",
+		UIPort:                  8080,
+		UpstreamURL:             "https://9.9.9.9/dns-query",
+		UpstreamRetriesPerQuery: 1,               // 1 initial try(not counted) + 1 retry(counted here)
+		SNIHostname:             "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
+		BlockMode:               "nxdomain",
+		BlockIP:                 "0.0.0.0",
+		RateQPS:                 100,
+		CacheMinTTL:             300,
+		CacheMaxEntries:         10000,
 
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
@@ -3499,7 +3501,12 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 	var resp *http.Response
 	//var attempt int
 	//for attempt = 0; attempt < 2; attempt++ {
-	for attempt := range 2 { //TODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
+	retries := config.UpstreamRetriesPerQuery
+	if retries < 1 {
+		retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
+	}
+	maxTries := 1 + retries
+	for attempt := range maxTries { //doneTODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
 		// 1. ATOMIC LOAD (Fast path, no locking)
 		dohClient := dohClientPtr.Load()
 		//Since forwardToDoH gets its own local copy of the pointer from .Load(), even if a Ctrl+R swap happens in the middle of a request, that specific request finishes
@@ -3532,7 +3539,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		if errors.Is(err2, io.ErrUnexpectedEOF) || errors.Is(err2, io.EOF) ||
 			errors.As(err2, &netErr) && netErr.Temporary() {
 			// retry once
-			mainLogger.Error("doh_post_transient_error(retrying next tho!)", slog.Any("err", err2), slog.Int("attempt", attempt))
+			mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt), slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2))
 			//fmt.Println("doh_post_transient_error(retrying next tho!):", err)
 			// small backoff: sleep a bit but respect context
 			select {
