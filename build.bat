@@ -80,10 +80,12 @@ echo using CGO_ENABLED=!CGO_ENABLED!
 
 rem -m: print inlining decisions and some escape-analysis notes.
 rem -m repeated (or -m -m): produces more detailed output (extra reasons, stack/heap decision details).
-"%goexe%" build -x -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
+rem XXX: disabled, not needed anymore (bug fixed in Go v1.26.2)
+rem "%goexe%" build -x -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
 rem go build -trimpath: Removes your local file paths (like c:\cust-Go\...) from the binary. Great for privacy/security.
 rem -ldflags="-s -w" : Strips debug information and the symbol table. Makes the EXE smaller and harder to reverse-engineer.
 rem "%goexe%" build "!LDFLAGS_HARDENED!" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+rem if errorlevel 1 goto :fail
 "%goexe%" build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail

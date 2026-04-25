@@ -82,10 +82,10 @@ echo Running go vet on everything...
 if errorlevel 1 goto :fail
 rem -m: print inlining decisions and some escape-analysis notes.
 rem -m repeated (or -m -m): produces more detailed output (extra reasons, stack/heap decision details).
-"%goexe%" build -x -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
-"%goexe%" build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+rem "%goexe%" build -x -gcflags=all="-m -m" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks >dnsbollocks.escape.log 2>&1
+rem "%goexe%" build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
-if errorlevel 1 goto :fail
+rem if errorlevel 1 goto :fail
 
 set "lintexe=%USERPROFILE%\go\bin\golangci-lint.exe"
 rem pushd internal\dnsbollocks
