@@ -3440,7 +3440,13 @@ func initDoHClient() *http.Client { //upstreamIP, sni string) {
 		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, "443")) //FIXME: port 443 is hardcoded instead of used from config.json !
+			const ImpliedPort string = "443" // Fallback to standard HTTPS if port is omitted for DoH upstream!
+			port := upstreamURL.Port()
+			if port == "" {
+				mainLogger.Warn("Using implied port for DoH upstream", slog.String("implied_port", ImpliedPort), slog.Any("upstreamURL", upstreamURL))
+				port = ImpliedPort
+			}
+			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName:         config.SNIHostname,
@@ -4134,7 +4140,9 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 						if rule.ID == id {
 							// Copy the tail over the deleted element
 							copy(rules[i:], rules[i+1:])
-							// Shrink (zeroes the old last slot)
+							// Explicitly zero the last element to prevent string memory leaks
+							rules[len(rules)-1] = RuleEntry{}
+							// Shrink the slice (wouldn't have zeroed last without the above explicit!)
 							whitelist[typ] = rules[:len(rules)-1]
 							deleted = true
 							break
