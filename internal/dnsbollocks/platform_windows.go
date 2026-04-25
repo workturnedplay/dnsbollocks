@@ -3505,18 +3505,28 @@ func initDoHClient() *http.Client { //upstreamIP, sni string) {
 	if dohTransport != nil {
 		dohTransport.CloseIdleConnections()
 	}
+	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
+	const ImpliedPort string = "443"
+	port := upstreamURL.Port()
+	if port == "" {
+		// Log this only once when the client initializes, not on every connection!
+		mainLogger.Warn("Using implied port for DoH upstream",
+			slog.String("implied_port", ImpliedPort),
+			slog.Any("upstreamURL", upstreamURL))
+		port = ImpliedPort
+	}
 
+	// Create the final "IP:Port" string once
+	dialAddr := net.JoinHostPort(upstreamIP, port)
+	// --------------------------------------
 	t := &http.Transport{
 		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 3 * time.Second}
-			const ImpliedPort string = "443" // Fallback to standard HTTPS if port is omitted for DoH upstream!
-			port := upstreamURL.Port()
-			if port == "" {
-				mainLogger.Warn("Using implied port for DoH upstream", slog.String("implied_port", ImpliedPort), slog.Any("upstreamURL", upstreamURL))
-				port = ImpliedPort
-			}
-			return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
+			d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
+			// Use the pre-computed dialAddr captured via closure!
+			mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
+			return d.DialContext(ctx, network, dialAddr)
+			//return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName:         config.SNIHostname,
