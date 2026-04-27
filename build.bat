@@ -86,7 +86,7 @@ rem go build -trimpath: Removes your local file paths (like c:\cust-Go\...) from
 rem -ldflags="-s -w" : Strips debug information and the symbol table. Makes the EXE smaller and harder to reverse-engineer.
 rem "%goexe%" build "!LDFLAGS_HARDENED!" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem if errorlevel 1 goto :fail
-"%goexe%" build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+"%goexe%" build !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 if errorlevel 1 goto :fail
 
