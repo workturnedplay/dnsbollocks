@@ -4140,7 +4140,7 @@ func startWebUI(port int) {
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
 	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
@@ -4149,7 +4149,8 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 		"Page":    "stats",
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
-	uiTemplates.Execute(w, data)
+	//uiTemplates.Execute(w, data)
+	renderTemplate(w, "stats", data)
 }
 
 func snapshotWhitelist() map[string][]RuleEntry {
@@ -4168,7 +4169,7 @@ func snapshotWhitelist() map[string][]RuleEntry {
 
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 		// ruleMutex.RLock()
 		// defer ruleMutex.RUnlock()
@@ -4228,9 +4229,10 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 		//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
 
 		// NO LOCK NEEDED HERE during Execute
-		if err := uiTemplates.Execute(w, data); err != nil {
-			mainLogger.Error("template_execute_failed", slog.Any("err", err))
-		}
+		// if err := uiTemplates.Execute(w, data); err != nil {
+		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
+		// }
+		renderTemplate(w, "rules", data)
 
 		return
 	}
@@ -4413,7 +4415,7 @@ type HostView struct {
 
 func hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 		// localHostsMu.RLock()
 		// defer localHostsMu.RUnlock()
@@ -4519,10 +4521,10 @@ func hostsHandler(w http.ResponseWriter, r *http.Request) {
 			"Hosts": viewData,
 		}
 
-		if err := uiTemplates.Execute(w, data); err != nil {
-			mainLogger.Error("template_error", slog.Any("err", err))
-		}
-
+		// if err := uiTemplates.Execute(w, data); err != nil {
+		// 	mainLogger.Error("template_error", slog.Any("err", err))
+		// }
+		renderTemplate(w, "hosts", data)
 		return
 	}
 
@@ -4637,9 +4639,34 @@ func hostsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// renderTemplate is a DRY helper to execute templates safely into a buffer
+// before writing to the network, preventing "established connection aborted" errors
+// from being logged as template execution failures.
+func renderTemplate(w http.ResponseWriter, pageName string, data any) {
+	var buf bytes.Buffer
+	if err := uiTemplates.Execute(&buf, data); err != nil {
+		mainLogger.Error("template_render_failed",
+			slog.String("page", pageName),
+			slog.Any("err", err))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// Set content type before writing the buffer
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if _, err := buf.WriteTo(w); err != nil {
+		// Log as Debug/Info because this is usually just a client (browser)
+		// closing the connection or refreshing the page mid-download.
+		mainLogger.Debug("client_disconnected_during_ui_write",
+			slog.String("page", pageName),
+			slog.Any("err", err))
+	}
+}
+
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// var body strings.Builder
 		// body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
 		// func() {
@@ -4663,9 +4690,21 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			"Blocks": blocksCopy,
 		}
 
-		if err := uiTemplates.Execute(w, data); err != nil {
-			mainLogger.Error("template_execute_failed", slog.Any("err", err))
-		}
+		// if err := uiTemplates.Execute(w, data); err != nil {
+		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
+		// }
+		// var buf bytes.Buffer
+		// if err := uiTemplates.Execute(&buf, data); err != nil {
+		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
+		// 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		// 	return
+		// }
+
+		// if _, err := buf.WriteTo(w); err != nil {
+		// 	// Downgrade to Debug (or completely ignore) because it just means the browser closed the tab/connection early.
+		// 	mainLogger.Debug("client_disconnected_during_ui_write", slog.Any("err", err))
+		// }
+		renderTemplate(w, "blocks", data)
 		return
 	}
 	if r.Method == "POST" {
@@ -4743,8 +4782,9 @@ func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filt
 		"Content": strings.Join(filtered, "\n"),
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	uiTemplates.Execute(w, renderData)
+	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	//uiTemplates.Execute(w, renderData)
+	renderTemplate(w, "logs", renderData)
 }
 
 func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
