@@ -20,6 +20,7 @@ package dnsbollocks
 //import "dnsbollocks/internal/dnsbollocks"
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -4748,42 +4749,129 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Helper to keep things clean
-func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		// If file doesn't exist yet, don't crash, just show empty
-		data = []byte("")
-	}
+// // Helper to keep things clean
+// func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+// 	data, err := os.ReadFile(filePath)
+// 	if err != nil {
+// 		// If file doesn't exist yet, don't crash, just show empty
+// 		data = []byte("")
+// 	}
 
-	lines := strings.Split(string(data), "\n")
-	var filtered []string
+// 	lines := strings.Split(string(data), "\n")
+// 	var filtered []string
+
+// 	searchLower := strings.ToLower(filter)
+// 	for _, line := range lines {
+// 		if line == "" {
+// 			continue
+// 		}
+// 		if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
+// 			filtered = append(filtered, line)
+// 		}
+// 	}
+
+// 	// We reverse them so the newest logs are at the top
+// 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+// 		filtered[i], filtered[j] = filtered[j], filtered[i]
+// 	}
+
+// 	renderData := map[string]any{
+// 		"Page":    "logs",
+// 		"Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
+// 		"Title":   title,
+// 		"Filter":  filter,
+// 		"Content": strings.Join(filtered, "\n"),
+// 	}
+
+// 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// 	//uiTemplates.Execute(w, renderData)
+// 	renderTemplate(w, "logs", renderData)
+// }
+
+func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		// Fallback if file doesn't exist yet
+		renderTemplate(w, "logs", map[string]any{
+			"Page": "logs", "Path": r.URL.Path, "Title": title, "Filter": filter, "Content": "No log entries found.",
+		})
+		return
+	}
+	defer file.Close()
 
 	searchLower := strings.ToLower(filter)
-	for _, line := range lines {
+
+	// Cap the output to the last 5000 matches to save RAM and prevent browser crashes
+	const maxLines = 5000
+	ring := make([]string, maxLines)
+	count := 0
+
+	// Stream the file line-by-line instead of loading it all at once
+	scanner := bufio.NewScanner(file)
+	// This tells the scanner:
+	// 1. Start with a 64KB internal buffer.
+	// 2. Allow it to grow automatically up to 1MB if it finds a very long line.
+	const maxCapacity = 1024 * 1024 // 1 MB
+	lineBuf := make([]byte, 2*1024) // 2 KB initial size
+	scanner.Buffer(lineBuf, maxCapacity)
+	for scanner.Scan() {
+		line := scanner.Text()
 		if line == "" {
 			continue
 		}
-		if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
-			filtered = append(filtered, line)
+
+		if searchLower == "" || strings.Contains(strings.ToLower(line), searchLower) {
+			// Overwrite the oldest entry when we exceed maxLines
+			ring[count%maxLines] = line
+			count++
 		}
 	}
 
-	// We reverse them so the newest logs are at the top
+	// ALWAYS check for errors after the loop.
+	// If a line was too long ( > 1MB), the scanner stops here.
+	if err := scanner.Err(); err != nil {
+		if err == bufio.ErrTooLong {
+			mainLogger.Error("A log line exceeded the bytes-per-line limit", slog.Any("line_limit_bytes", maxCapacity), slog.Any("line_number", count), slog.Any("filename", filePath))
+		}
+	}
+
+	// Extract the lines from the ring buffer in chronological order
+	var filtered []string
+	start := 0
+	limit := count
+	if count > maxLines {
+		start = count % maxLines
+		limit = maxLines
+	}
+
+	for i := 0; i < limit; i++ {
+		filtered = append(filtered, ring[(start+i)%maxLines])
+	}
+
+	// Reverse so the newest lines are at the top
 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
 		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
 
-	renderData := map[string]any{
-		"Page":    "logs",
-		"Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
-		"Title":   title,
-		"Filter":  filter,
-		"Content": strings.Join(filtered, "\n"),
+	var content string
+	if err := scanner.Err(); err != nil {
+		content = fmt.Sprintf("Error reading log: %v\n\n", err) + strings.Join(filtered, "\n")
+	} else {
+		content = strings.Join(filtered, "\n")
+		// Add a helpful warning if we truncated the results
+		if count > maxLines {
+			content = fmt.Sprintf("... showing only the last %d out of %d matches to reduce RAM usage ...\n\n", maxLines, count) + content
+		}
 	}
 
-	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	//uiTemplates.Execute(w, renderData)
+	renderData := map[string]any{
+		"Page":    "logs",
+		"Path":    r.URL.Path,
+		"Title":   title,
+		"Filter":  filter,
+		"Content": content,
+	}
+
 	renderTemplate(w, "logs", renderData)
 }
 
