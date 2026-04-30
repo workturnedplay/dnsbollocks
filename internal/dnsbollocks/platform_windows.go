@@ -15,6 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package dnsbollocks see: https://github.com/workturnedplay/dnsbollocks
 package dnsbollocks
 
 //import "dnsbollocks/internal/dnsbollocks"
@@ -35,6 +36,7 @@ import (
 	"errors"
 	"expvar"
 	"reflect"
+	"sort"
 	"sync/atomic"
 
 	"fmt"
@@ -68,17 +70,17 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS               string `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
-	ListenDoH               string `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
-	UIPort                  int    `json:"ui_port"`                    // 8080
-	UpstreamURL             string `json:"upstream_url"`               // "https://9.9.9.9/dns-query"
-	UpstreamRetriesPerQuery int    `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
-	SNIHostname             string `json:"sni_hostname"`               // Optional ""
-	BlockMode               string `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
-	BlockIP                 string `json:"block_ip"`                   // "0.0.0.0"
-	RateQPS                 int    `json:"rate_qps"`                   // 100
-	CacheMinTTL             int    `json:"cache_min_ttl"`              // 300s
-	CacheMaxEntries         int    `json:"cache_max_entries"`          // 10000
+	ListenDNS               string   `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
+	ListenDoH               string   `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
+	UIPort                  int      `json:"ui_port"`                    // 8080
+	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
+	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
+	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
+	BlockMode               string   `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
+	BlockIP                 string   `json:"block_ip"`                   // "0.0.0.0"
+	RateQPS                 int      `json:"rate_qps"`                   // 100
+	CacheMinTTL             int      `json:"cache_min_ttl"`              // 300s
+	CacheMaxEntries         int      `json:"cache_max_entries"`          // 10000
 	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
@@ -144,7 +146,7 @@ func loadResponseBlacklist() error {
 			return fmt.Errorf("read blacklist %q: %w", blacklistFileName, err)
 		} else {
 			mainLogger.Warn("Blacklist file not found → using built-in defaults\n", slog.String("file", blacklistFileName))
-			raw = DefaultResponseBlacklist() // see below
+			raw = defaultResponseBlacklist() // see below
 			shouldSave = true
 		}
 	} else {
@@ -205,7 +207,7 @@ func loadResponseBlacklist() error {
 }
 
 func saveResponseBlacklist() error {
-	cidrs := GetResponseBlacklist()
+	cidrs := getResponseBlacklist()
 	jsonFileContents := BlacklistFileFormat{
 		ResponseBlacklist: cidrs,
 	}
@@ -327,8 +329,8 @@ func saveLocalHosts() error {
 // 	return nil
 // }
 
-// Helper – returns current list (snapshot copy)
-func GetResponseBlacklist() []string {
+// getResponseBlacklist Helper – returns current list (snapshot copy)
+func getResponseBlacklist() []string {
 	responseBlacklistMu.RLock()
 	defer responseBlacklistMu.RUnlock()
 
@@ -339,8 +341,8 @@ func GetResponseBlacklist() []string {
 	return out
 }
 
-// Helper – used in filterResponse / processRR
-func IsBlockedIP(ip net.IP) bool {
+// isBlockedIP Helper – used in filterResponse / processRR
+func isBlockedIP(ip net.IP) bool {
 	responseBlacklistMu.RLock()
 	defer responseBlacklistMu.RUnlock()
 
@@ -352,7 +354,7 @@ func IsBlockedIP(ip net.IP) bool {
 	return false
 }
 
-func DefaultResponseBlacklist() []string {
+func defaultResponseBlacklist() []string {
 	return []string{
 		// IPv4 loopback – never valid for public hosts
 		"127.0.0.0/8",
@@ -502,16 +504,16 @@ func loadQueryWhitelist() error {
 	}
 }
 
-// DefaultConfig Every call produces a new map and slice backing array.
+// defaultConfig Every call produces a new map and slice backing array.
 // must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
-func DefaultConfig() Config {
+func defaultConfig() Config {
 	return Config{
 		ListenDNS:               "127.0.0.1:53",
 		ListenDoH:               "127.0.0.1:443",
 		UIPort:                  8080,
-		UpstreamURL:             "https://9.9.9.9/dns-query",
-		UpstreamRetriesPerQuery: 1,               // 1 initial try(not counted) + 1 retry(counted here)
-		SNIHostname:             "dns.quad9.net", // if empty it uses the 9.9.9.9 from url which also works!
+		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
+		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
+		UpstreamRetriesPerQuery: 1,                                               // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
 		RateQPS:                 100,
@@ -689,7 +691,7 @@ func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) b
 // 	return h.Inner.Handle(ctx, r)
 // }
 
-// XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+// Handle XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
 func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.UseColor {
 		// ────────────────────────────────
@@ -888,11 +890,10 @@ func parseConsoleLogLevel(s string) slog.Level {
 // Globals.
 var dohCert tls.Certificate // Loaded once for DoH listener
 var (
-	config      Config
-	upstreamIP  string
-	upstreamURL *url.URL
-	// queryLogger    *slog.Logger
-	// errorLogger    *slog.Logger
+	config         Config
+	upstreamIPs    []string
+	upstreamURLs   []*url.URL
+	upstreamSNIs   []string
 	cacheStore     *cache.Cache
 	globalLimiter  *rate.Limiter
 	clientLimiters sync.Map               // map[string]*rate.Limiter
@@ -1020,16 +1021,16 @@ var dnsNameRE = regexp.MustCompile(
 	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`,
 )
 
-func IsValidDNSName(s string) bool {
+func isValidDNSName(s string) bool {
 	if len(s) == 0 || len(s) > 253 {
 		return false
 	}
 	return dnsNameRE.MatchString(s)
 }
 
-// SanitizeDomainInput removes any characters not explicitly allowed.
+// ianitizeDomainInput removes any characters not explicitly allowed.
 // Safe for logs and DNS-related handling.
-func SanitizeDomainInput(input string) (sanitized string, modified bool) {
+func ianitizeDomainInput(input string) (sanitized string, modified bool) {
 	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!"
 
 	var b strings.Builder
@@ -1696,12 +1697,13 @@ func OldMain() {
 	if err := validateUpstream(); err != nil {
 		logFatal("Upstream validation failed:", err)
 	}
-	fmt.Printf("Upstream validated: %q (IP: %q)\n", config.UpstreamURL, upstreamIP)
+	//fmt.Printf("Upstream validated: %q (IP: %q)\n", config.UpstreamURL, upstreamIP)
+	mainLogger.Debug("Upstreams validated", slog.Any("upstreamURLs", config.UpstreamURLs), slog.Any("upstreamIPs", upstreamIPs))
 
 	generateCertIfNeeded() // For DoH
 	//mainLogger.Debug("Cert checked/generated if needed")
 
-	initDoHClient()
+	initDoHClients()
 	// Sequential launches for ordered logging
 	fmt.Println("Launching listeners sequentially...")
 	startDNSListener(config.ListenDNS) // Blocks until complete/fail
@@ -1730,7 +1732,7 @@ func OldMain() {
 			} else {
 				mainLogger.Debug("Local hosts reloaded")
 			}
-			_ = initDoHClient()
+			_ = initDoHClients()
 			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
 		},
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
@@ -1781,7 +1783,7 @@ func loadConfig() error {
 	// this way missing keys from config.json file will be set to default value!
 	// 1. ALWAYS start by filling the global config with defaults.
 	// This is critical because Decode only overwrites what is in the file.
-	defaultConfig := DefaultConfig()
+	defaultConfig := defaultConfig()
 	config = defaultConfig // deep copy, presumably! FIXME?
 
 	data, err := os.ReadFile(cfgFname)
@@ -1869,23 +1871,43 @@ func loadConfig() error {
 		fmt.Println("Warning: cache_min_ttl clamped to 60s")
 	}
 
-	var upstreamHost string
-	if config.SNIHostname == "" {
-		upstreamHost, err = hostFromURL(config.UpstreamURL)
-		if err != nil {
-			// handle parse error (return SERVFAIL or log)
-			fmt.Println("invalid upstream URL:", err)
-			return fmt.Errorf("invalid upstream URL: %w", err)
+	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
+	for i := len(config.SNIHostnames); i < len(config.UpstreamURLs); i++ {
+		host, err2 := hostFromURL(config.UpstreamURLs[i])
+		if err2 != nil {
+			return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
 		}
-	} else {
-		upstreamHost = config.SNIHostname
+		config.SNIHostnames = append(config.SNIHostnames, host)
+		shouldSaveConfig = true
 	}
+	for i := range config.UpstreamURLs {
+		if config.SNIHostnames[i] == "" {
+			host, err2 := hostFromURL(config.UpstreamURLs[i])
+			if err2 != nil {
+				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
+			}
+			config.SNIHostnames[i] = host
+			shouldSaveConfig = true
+		}
+	}
+	mainLogger.Debug("Using upstream SNI hostnames:", slog.Any("SNI_hostnames", config.SNIHostnames))
 
-	config.SNIHostname = upstreamHost
-	fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
-	if config.SNIHostname == "" {
-		panic("dev fail: SNIHostname shouldn't be empty at this point, upstreamHost=" + upstreamHost)
-	}
+	// var upstreamHost string
+	// if config.SNIHostname == "" {
+	// 	upstreamHost, err = hostFromURL(config.UpstreamURL)
+	// 	if err != nil {
+	// 		// handle parse error (return SERVFAIL or log)
+	// 		fmt.Println("invalid upstream URL:", err)
+	// 		return fmt.Errorf("invalid upstream URL: %w", err)
+	// 	}
+	// } else {
+	// 	upstreamHost = config.SNIHostname
+	// }
+	// config.SNIHostname = upstreamHost
+	// fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
+	// if config.SNIHostname == "" {
+	// 	panic("dev fail: SNIHostname shouldn't be empty at this point, upstreamHost=" + upstreamHost)
+	// }
 
 	// Helper closure to apply the cleaning and track if a save is needed
 	checkAndClean := func(target *string, desc, fallback string) {
@@ -2011,6 +2033,9 @@ func hostFromURL(raw string) (string, error) {
 	// if h, _, err := net.SplitHostPort(host); err == nil {
 	// 	host = h
 	// }
+	if strings.TrimSpace(host) == "" {
+		return "", fmt.Errorf("hostname/IP is empty for %q", raw)
+	}
 	return host, nil
 }
 
@@ -2127,16 +2152,52 @@ func rotateIfNeeded(path string, maxMB int) {
 }
 
 func validateUpstream() error {
-	var err error
-	upstreamURL, err = url.Parse(config.UpstreamURL)
-	if err != nil || upstreamURL.Scheme != "https" {
-		return errors.New("invalid upstream URL, must be similar to this: https://IP/dns-query However, while /dns-query is the \"well-known\" default DoH Path (or Template) used by many providers (like Google and Cloudflare), the RFC 8484 standard allows server operators to configure any path they choose to handle incoming DNS queries.")
+	upstreamURLs = nil
+	upstreamIPs = nil
+	upstreamSNIs = nil
+
+	if len(config.UpstreamURLs) == 0 {
+		return errors.New("upstream_urls list is empty")
 	}
-	upstreamIP = upstreamURL.Hostname() // Host for IP
-	if ip := net.ParseIP(upstreamIP); ip == nil {
-		return errors.New("upstream host must be IP literal (no resolution)")
+
+	for i, rawURL := range config.UpstreamURLs {
+		u, err := url.Parse(rawURL)
+		if err != nil || u.Scheme != "https" {
+			return fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
+		}
+		port := u.Port()
+		if port == "" {
+			port = "443" // since we're allowing only https scheme, this should always be 443
+			// mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+			// 	slog.String("implied_port", ImpliedPort),
+			// 	slog.Any("upstreamURL", u))
+			// This is how you add the port back into the URL object
+			u.Host = net.JoinHostPort(u.Hostname(), port)
+		}
+		if u.Port() == "" {
+			panic("dev fail: port is empty")
+		}
+		upstreamURLs = append(upstreamURLs, u)
+
+		ip := u.Hostname()
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
+		}
+		upstreamIPs = append(upstreamIPs, ip)
+		upstreamSNIs = append(upstreamSNIs, config.SNIHostnames[i])
 	}
+
 	return nil
+	// var err error
+	// upstreamURL, err = url.Parse(config.UpstreamURL)
+	// if err != nil || upstreamURL.Scheme != "https" {
+	// 	return errors.New("invalid upstream URL, must be similar to this: https://IP/dns-query However, while /dns-query is the \"well-known\" default DoH Path (or Template) used by many providers (like Google and Cloudflare), the RFC 8484 standard allows server operators to configure any path they choose to handle incoming DNS queries.")
+	// }
+	// upstreamIP = upstreamURL.Hostname() // Host for IP
+	// if ip := net.ParseIP(upstreamIP); ip == nil {
+	// 	return errors.New("upstream host must be IP literal (no resolution)")
+	// }
+	// return nil
 }
 
 func countRules(wl map[string][]RuleEntry) int {
@@ -3424,7 +3485,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
 		negResp := servfailResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_NXDOMAIN", matchedID, ips, negResp)
+		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_SERVFAIL", matchedID, ips, negResp)
 		// Cache negatives short
 		//cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		// FIX: Store a copy of the negative response as well
@@ -3479,15 +3540,15 @@ func computeTTL(msg *dns.Msg) int {
 
 var (
 	//dohClient    *http.Client
-	dohTransport *http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
-	//dohMu        sync.RWMutex
-	//atomicDohClient atomic.Pointer[http.Client]
-	dohClientPtr atomic.Pointer[http.Client]
-	dohMu        sync.Mutex // Only used for initialization/reloads
+	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
+	dohClientsPtr     atomic.Pointer[[]*http.Client]
+	dohMu             sync.Mutex // Only used for initialization/reloads
 )
 
+//const ImpliedPort string = "443"
+
 // call once at startup or when upstream config changes
-func initDoHClient() *http.Client { //upstreamIP, sni string) {
+func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	//What this function does is purely preparatory. You are assembling a plan for future connections, not executing one.
 	//Here’s why nothing goes on the network yet:
 	//The http.Transport you create is just configuration.
@@ -3502,77 +3563,147 @@ func initDoHClient() *http.Client { //upstreamIP, sni string) {
 	// 4. DOUBLE CHECK
 	// While we were waiting for the lock, someone else might
 	// have finished the initialization. Check again.
-	if current := dohClientPtr.Load(); current != nil {
-		return current
+	if current := dohClientsPtr.Load(); current != nil {
+		return *current
 	}
 	// 5. DO THE ACTUAL WORK
 	// Build your transport, tls config, etc.
 
-	if dohTransport != nil {
-		dohTransport.CloseIdleConnections()
-	}
-	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
-
-	port := upstreamURL.Port()
-	if port == "" {
-		// Log this only once when the client initializes, not on every connection!
-		const ImpliedPort string = "443"
-		if strings.ToLower(upstreamURL.Scheme) == "https" {
-			//don't log in this case
-			port = ImpliedPort
-		} else if upstreamURL.Scheme != "" {
-			mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
-				slog.Any("upstreamURL", upstreamURL))
-		} else {
-			port = ImpliedPort
-			mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-				slog.String("implied_port", ImpliedPort),
-				slog.Any("upstreamURL", upstreamURL))
+	for _, dT := range dohTransportsPtrs {
+		if dT != nil {
+			dT.CloseIdleConnections()
 		}
 	}
-	if port == "" {
-		panic("dev fail: port is empty")
-	}
+	// if dohTransport != nil {
+	// 	dohTransport.CloseIdleConnections()
+	// }
+	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
+	var newClients []*http.Client
 
-	// Create the final "IP:Port" string once
-	// Pre-joining prevents doing string manipulation inside the DialContext closure
-	dialAddr := net.JoinHostPort(upstreamIP, port)
+	for i, u := range upstreamURLs {
+		ip := upstreamIPs[i]
+		port := u.Port()
+		// if port == "" {
+		// 	//port = "443"
+		// 	// Log this only once when the client initializes, not on every connection!
+		// 	if strings.ToLower(u.Scheme) == "https" {
+		// 		//don't log in this case
+		// 		port = ImpliedPort
+		// 	} else if u.Scheme != "" {
+		// 		mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+		// 			slog.Any("upstreamURL", u))
+		// 	} else {
+		// 		port = ImpliedPort
+		// 		mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+		// 			slog.String("implied_port", ImpliedPort),
+		// 			slog.Any("upstreamURL", u))
+		// 	}
+		// }
+		if port == "" {
+			panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
+		}
 
-	if config.SNIHostname == "" {
-		panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
-	}
+		// Create the final "IP:Port" string once
+		// Pre-joining prevents doing string manipulation inside the DialContext closure
+		dialAddr := net.JoinHostPort(ip, port)
+		sniHost := upstreamSNIs[i]
+		if sniHost == "" {
+			panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + dialAddr)
+		}
 
-	// --------------------------------------
-	t := &http.Transport{
-		// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
-			// Use the pre-computed dialAddr captured via closure!
-			mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
-			return d.DialContext(ctx, network, dialAddr)
-			//return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
-		},
-		TLSClientConfig: &tls.Config{
-			ServerName:         config.SNIHostname,
-			InsecureSkipVerify: false,
-		},
-		Proxy:               nil,              // avoid proxy interference
-		ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-		IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-	}
-
-	dohTransport = t
-	newDoHClient := &http.Client{
-		Timeout:   5 * time.Second, // overall per-request timeout
-		Transport: dohTransport,
+		t := &http.Transport{
+			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
+				// Use the pre-computed dialAddr captured via closure!
+				mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
+				return d.DialContext(ctx, network, dialAddr)
+			},
+			TLSClientConfig: &tls.Config{
+				ServerName:         sniHost,
+				InsecureSkipVerify: false,
+			},
+			Proxy:               nil,              // avoid proxy interference
+			ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+			IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+		}
+		dohTransportsPtrs = append(dohTransportsPtrs, t) //they're both pointers
+		if dohTransportsPtrs[i] != t {
+			panic("dev fail: dohTransportsPtrs[i] != t")
+		}
+		newClients = append(newClients, &http.Client{
+			Timeout:   5 * time.Second, // overall per-request timeout, TODO: make configurable
+			Transport: t,
+		})
 	}
 	// 6. ATOMIC STORE
-	dohClientPtr.Store(newDoHClient)
-	mainLogger.Info("DoH client initialized/reloaded")
-	mainLogger.Debug("ending initDoHClient()")
-	return newDoHClient
+	dohClientsPtr.Store(&newClients)
+	mainLogger.Info("DoH clients initialized", slog.Int("count", len(newClients)))
+	mainLogger.Debug("ending initDoHClients()")
+	return newClients
+
+	// port := upstreamURL.Port()
+	// if port == "" {
+	// 	// Log this only once when the client initializes, not on every connection!
+	// 	const ImpliedPort string = "443"
+	// 	if strings.ToLower(upstreamURL.Scheme) == "https" {
+	// 		//don't log in this case
+	// 		port = ImpliedPort
+	// 	} else if upstreamURL.Scheme != "" {
+	// 		mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+	// 			slog.Any("upstreamURL", upstreamURL))
+	// 	} else {
+	// 		port = ImpliedPort
+	// 		mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+	// 			slog.String("implied_port", ImpliedPort),
+	// 			slog.Any("upstreamURL", upstreamURL))
+	// 	}
+	// }
+	// if port == "" {
+	// 	panic("dev fail: port is empty")
+	// }
+
+	// // Create the final "IP:Port" string once
+	// // Pre-joining prevents doing string manipulation inside the DialContext closure
+	// dialAddr := net.JoinHostPort(upstreamIP, port)
+
+	// if config.SNIHostname == "" {
+	// 	panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
+	// }
+
+	// // --------------------------------------
+	// t := &http.Transport{
+	// 	// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
+	// 	DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+	// 		d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
+	// 		// Use the pre-computed dialAddr captured via closure!
+	// 		mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
+	// 		return d.DialContext(ctx, network, dialAddr)
+	// 		//return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
+	// 	},
+	// 	TLSClientConfig: &tls.Config{
+	// 		ServerName:         config.SNIHostname,
+	// 		InsecureSkipVerify: false,
+	// 	},
+	// 	Proxy:               nil,              // avoid proxy interference
+	// 	ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+	// 	IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
+	// 	MaxIdleConns:        100,
+	// 	MaxIdleConnsPerHost: 10,
+	// }
+
+	// dohTransport = t
+	// newDoHClient := &http.Client{
+	// 	Timeout:   5 * time.Second, // overall per-request timeout
+	// 	Transport: dohTransport,
+	// }
+	// 6. ATOMIC STORE
+	// dohClientPtr.Store(newDoHClient)
+	// mainLogger.Info("DoH client initialized/reloaded")
+	// mainLogger.Debug("ending initDoHClient()")
+	// return newDoHClient
 }
 
 // forwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
@@ -3580,57 +3711,216 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 	reqBytes, err := req.Pack()
 	if err != nil {
 		mainLogger.Error("doh_prepost_pack_failed", slog.Any("err", err))
-		//fmt.Println("Failed to pack query for upstreaming it to DNS server:", err)
 		return nil
 	}
 
-	// create request with supplied context so caller controls deadline/cancel
-	makeReq := func() (*http.Request, error) {
-		r, err2 := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
-		if err2 != nil {
-			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
-			//fmt.Println("Failed to create upstream request:", err)
-			return nil, err2
-		}
-		r.Header.Set("Content-Type", "application/dns-message")
-		if config.SNIHostname != "" {
-			r.Host = config.SNIHostname
-			//fmt.Println("Using http header hostname:", r.Host)
-		}
-		return r, nil
+	clientsPtr := dohClientsPtr.Load()
+	if clientsPtr == nil {
+		c := initDoHClients()
+		clientsPtr = &c
 	}
-	//fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
-	var resp *http.Response
-	//var attempt int
-	//for attempt = 0; attempt < 2; attempt++ {
+	clients := *clientsPtr
+
+	type result struct {
+		msg *dns.Msg
+		err error
+	}
+
+	results := make([]result, len(clients))
+	var wg sync.WaitGroup
+
+	// Fire all queries concurrently
+	for i, client := range clients {
+		if client == nil {
+			panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! shouldn't happen! upstreamURL=%s SNI=%s", i, upstreamURLs[i], upstreamSNIs[i]))
+		}
+		wg.Add(1)
+		go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
+			defer wg.Done()
+			results[idx].msg, results[idx].err = doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+		}(i, client, upstreamURLs[i], upstreamSNIs[i])
+	}
+
+	wg.Wait()
+
+	var reference *dns.Msg
+	var refIdx int
+
+	// Compare responses
+	for i, res := range results {
+		if res.err != nil || res.msg == nil {
+			mainLogger.Error("upstream failed or returned nil", slog.String("url", upstreamURLs[i].String()), slog.Any("err", res.err))
+			return nil // Refuse to resolve if any upstream completely fails
+		}
+
+		if reference == nil {
+			reference = res.msg
+			refIdx = i
+		} else {
+			if !compareDNSResponses(reference, res.msg) {
+				// Extract IPs for the log message
+				refIPs := extractIPs(reference)
+				curIPs := extractIPs(res.msg)
+				mainLogger.Warn("upstream DNS response mismatch! dropping query to protect client",
+					slog.String("query", req.Question[0].Name),
+					slog.String("upstream_DoH_url1", upstreamURLs[refIdx].String()),
+					slog.Any("ips_returned1", refIPs),
+					slog.String("upstream_DoH_url2", upstreamURLs[i].String()),
+					slog.Any("ips_returned2", curIPs),
+					slog.Any("reference", reference),
+					slog.Any("current", res.msg),
+				)
+				return nil // Drop the query because of answer discrepancy
+			}
+		}
+	}
+
+	return reference //FIXME: uncomment this!
+
+	// // create request with supplied context so caller controls deadline/cancel
+	// makeReq := func() (*http.Request, error) {
+	// 	r, err2 := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
+	// 	if err2 != nil {
+	// 		mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
+	// 		return nil, err2
+	// 	}
+	// 	r.Header.Set("Content-Type", "application/dns-message")
+	// 	if config.SNIHostname != "" {
+	// 		r.Host = config.SNIHostname
+	// 	}
+	// 	return r, nil
+	// }
+	// fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
+	// var resp *http.Response
+	// retries := config.UpstreamRetriesPerQuery
+	// if retries < 1 {
+	// 	retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
+	// }
+	// maxTries := 1 + retries
+	// for attempt := range maxTries { //doneTODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
+	// 	// 1. ATOMIC LOAD (Fast path, no locking)
+	// 	dohClient := dohClientPtr.Load()
+	// 	//Since forwardToDoH gets its own local copy of the pointer from .Load(), even if a Ctrl+R swap happens in the middle of a request, that specific request finishes
+	// 	// using the "old" client safely. The old client is then garbage collected naturally when the function returns.
+
+	// 	if dohClient == nil {
+	// 		// defensive: initialize if not yet done (use current config)
+	// 		dohClient = initDoHClients() // Inside this, you already have a Lock()
+	// 	}
+	// 	if dohClient == nil {
+	// 		panic("dohClient still nil after init! shouldn't happen")
+	// 	}
+
+	// 	req2, err2 := makeReq()
+	// 	if err2 != nil {
+	// 		mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
+	// 		return nil
+	// 	}
+
+	// 	resp, err2 = dohClient.Do(req2) // this is concurrency safe
+	// 	if err2 == nil {
+	// 		//success!
+	// 		break
+	// 	}
+
+	// 	// decide if error is transient/retryable
+	// 	// common retryable errors: temporary network errors, EOF, connection reset
+	// 	var netErr net.Error
+	// 	isRetryable := errors.Is(err2, io.EOF) ||
+	// 		errors.Is(err2, io.ErrUnexpectedEOF) ||
+	// 		errors.Is(err2, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
+	// 		errors.Is(err2, syscall.ECONNREFUSED) ||
+	// 		(errors.As(err2, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+	// 	if isRetryable {
+	// 		// // Don't retry if the app is shutting down
+	// 		// if backgroundCtx.Err() != nil {
+	// 		// 	return nil
+	// 		// }
+	// 		// retry once
+	// 		mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt),
+	// 			slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2),
+	// 			slog.Bool("will_retry", attempt < maxTries))
+	// 		// small backoff: sleep a bit but respect context
+	// 		select {
+	// 		case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
+	// 		case <-backgroundCtx.Done():
+	// 			fmt.Println("doh sensed quit during retry backoff...")
+	// 			return nil
+	// 		}
+	// 		continue
+	// 	}
+
+	// 	// non-retryable error
+	// 	mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err2))
+	// 	//fmt.Println("Failed to query upstream DNS server:", err)
+	// 	return nil
+	// }
+
+	// if resp == nil {
+	// 	// last attempt produced no response (shouldn't happen), treat as failure
+	// 	mainLogger.Error("doh_no_response")
+	// 	return nil
+	// }
+	// defer resp.Body.Close()
+
+	// body, err := io.ReadAll(resp.Body)
+	// if err != nil {
+	// 	mainLogger.Error("doh_readbody_failed", slog.Any("err", err))
+	// 	return nil
+	// }
+
+	// // debug/log non-200 or unexpected content-type
+	// if resp.StatusCode != 200 {
+	// 	mainLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
+	// 	//fmt.Println("Upstream HTTP status:", resp.Status)
+	// }
+	// ct := resp.Header.Get("Content-Type")
+	// if ct != "application/dns-message" {
+	// 	mainLogger.Error("doh_upstream_content_type isn't the expected application/dns-message", slog.Any("content_type", ct))
+	// 	//fmt.Println("Upstream Content-Type:", ct)
+	// }
+	// if len(body) < 12 {
+	// 	mainLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
+	// 	//fmt.Println("Upstream body too short:", len(body))
+	// }
+	// upMsg := new(dns.Msg)
+	// if err := upMsg.Unpack(body); err != nil {
+	// 	n := len(body)
+	// 	mainLogger.Error("doh_unpack_failed", slog.Any("err", err),
+	// 		slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x\n", n, body[:n])),
+	// 		slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q\n", n, body[:n])),
+	// 	)
+	// 	return nil
+	// }
+	// return upMsg
+
+}
+
+func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, reqBytes []byte) (*dns.Msg, error) {
 	retries := config.UpstreamRetriesPerQuery
 	if retries < 1 {
 		retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
 	}
 	maxTries := 1 + retries
-	for attempt := range maxTries { //doneTODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
-		// 1. ATOMIC LOAD (Fast path, no locking)
-		dohClient := dohClientPtr.Load()
-		//Since forwardToDoH gets its own local copy of the pointer from .Load(), even if a Ctrl+R swap happens in the middle of a request, that specific request finishes
-		// using the "old" client safely. The old client is then garbage collected naturally when the function returns.
 
-		if dohClient == nil {
-			// defensive: initialize if not yet done (use current config)
-			dohClient = initDoHClient() // Inside this, you already have a Lock()
-		}
-		if dohClient == nil {
-			panic("dohClient still nil after init! shouldn't happen")
+	var resp *http.Response
+	var err error
+
+	for attempt := range maxTries {
+		// create request with supplied context so caller controls deadline/cancel
+		req, errReq := http.NewRequestWithContext(backgroundCtx, "POST", targetURL.String(), bytes.NewReader(reqBytes))
+		if errReq != nil {
+			//mainLogger.Error("doh_newrequest_failed", slog.Any("err", errReq)) // not here!
+			return nil, errReq
 		}
 
-		req2, err2 := makeReq()
-		if err2 != nil {
-			mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
-			//fmt.Println("Failed to create upstream request:", err)
-			return nil
+		req.Header.Set("Content-Type", "application/dns-message")
+		if sni != "" {
+			req.Host = sni
 		}
 
-		resp, err2 = dohClient.Do(req2) // this is concurrency safe
-		if err2 == nil {
+		resp, err = client.Do(req) // this is concurrency safe
+		if err == nil {
 			//success!
 			break
 		}
@@ -3638,63 +3928,67 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
 		var netErr net.Error
-		isRetryable := errors.Is(err2, io.EOF) ||
-			errors.Is(err2, io.ErrUnexpectedEOF) ||
-			errors.Is(err2, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
-			errors.Is(err2, syscall.ECONNREFUSED) ||
-			(errors.As(err2, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+		isRetryable := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+			errors.Is(err, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
+			errors.Is(err, syscall.ECONNREFUSED) ||
+			(errors.As(err, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+
 		if isRetryable {
-			// // Don't retry if the app is shutting down
-			// if backgroundCtx.Err() != nil {
-			// 	return nil
-			// }
-			// retry once
-			mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt),
-				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2),
+			mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err), slog.Int("attempt", attempt),
+				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req),
 				slog.Bool("will_retry", attempt < maxTries))
 			// small backoff: sleep a bit but respect context
 			select {
 			case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
 			case <-backgroundCtx.Done():
-				fmt.Println("doh sensed quit during retry backoff...")
-				return nil
+				mainLogger.Debug("doh sensed quit during retry backoff...")
+				return nil, backgroundCtx.Err()
 			}
 			continue
 		}
-
 		// non-retryable error
-		mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err2))
-		//fmt.Println("Failed to query upstream DNS server:", err)
-		return nil
-	}
+		// --- NEW DIAGNOSTIC BLOCK ---
+		if strings.Contains(err.Error(), "tls:") || strings.Contains(err.Error(), "x509:") {
+			mainLogger.Error("TLS verification failed when tried to query upstream DNS server",
+				slog.String("url", targetURL.String()),
+				slog.String("sni_used", sni),
+				slog.Any("error", err))
+
+			// Run a manual probe to see what the server is actually sending
+			logCertDetails(targetURL.Hostname(), targetURL.Port(), sni)
+		} else {
+			mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err))
+		}
+		// --- END DIAGNOSTIC BLOCK ---
+		return nil, err
+	} //for retries
 
 	if resp == nil {
 		// last attempt produced no response (shouldn't happen), treat as failure
 		mainLogger.Error("doh_no_response")
-		return nil
+		return nil, errors.New("no response")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		mainLogger.Error("doh_readbody_failed", slog.Any("err", err))
-		return nil
+		return nil, err
 	}
 
 	// debug/log non-200 or unexpected content-type
 	if resp.StatusCode != 200 {
 		mainLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
-		//fmt.Println("Upstream HTTP status:", resp.Status)
+		return nil, fmt.Errorf("upstream status %s", resp.Status)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct != "application/dns-message" {
 		mainLogger.Error("doh_upstream_content_type isn't the expected application/dns-message", slog.Any("content_type", ct))
-		//fmt.Println("Upstream Content-Type:", ct)
 	}
 	if len(body) < 12 {
 		mainLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
-		//fmt.Println("Upstream body too short:", len(body))
 	}
+
 	upMsg := new(dns.Msg)
 	if err := upMsg.Unpack(body); err != nil {
 		n := len(body)
@@ -3702,10 +3996,83 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x\n", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q\n", n, body[:n])),
 		)
-		return nil
+		return nil, err
 	}
-	return upMsg
+	return upMsg, nil
+}
 
+func logCertDetails(ip, port, sni string) {
+	if port == "" {
+		//port = "443"
+		panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
+		// port = ImpliedPort
+		// mainLogger.Warn("dev fail, port shoulda been already set in initDoHClients! Using default tho.",
+		// 	slog.String("implied_port", ImpliedPort),
+		// 	slog.Any("sni", sni))
+	}
+	addr := net.JoinHostPort(ip, port)
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second} //TODO: make it configurable or const, use same one from initDoHClients() !
+	// We use InsecureSkipVerify: true ONLY for this probe so we can read the cert
+	// that was otherwise rejected.
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+		ServerName:         sni,
+		InsecureSkipVerify: true,
+	})
+
+	if err != nil {
+		mainLogger.Error("Diagnostic probe failed", slog.String("addr", addr), slog.Any("err", err))
+		return
+	}
+	defer conn.Close()
+
+	state := conn.ConnectionState()
+	mainLogger.Info("--- TLS Diagnostic Probe ---", slog.String("remote_addr", addr), slog.String("sni_sent", sni))
+
+	for i, cert := range state.PeerCertificates {
+		mainLogger.Info(fmt.Sprintf("Certificate [%d] in chain", i),
+			slog.String("subject", cert.Subject.String()),
+			slog.String("issuer", cert.Issuer.String()),
+			slog.Any("dns_names", cert.DNSNames), // This is the most important part
+			slog.Any("ips", cert.IPAddresses),
+			slog.Time("expires", cert.NotAfter),
+		)
+	}
+}
+
+func compareDNSResponses(a, b *dns.Msg) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Rcode != b.Rcode {
+		return false
+	}
+	if len(a.Answer) != len(b.Answer) {
+		return false
+	}
+
+	// Normalize answers by stripping out TTLs (as different caches will return different TTLs)
+	// and sorting them (as DNS Round Robin changes order).
+	getNorms := func(msg *dns.Msg) []string {
+		norms := make([]string, 0, len(msg.Answer))
+		for _, rr := range msg.Answer {
+			clone := dns.Copy(rr)
+			clone.Header().Ttl = 0
+			norms = append(norms, clone.String())
+		}
+		sort.Strings(norms)
+		return norms
+	}
+
+	normsA := getNorms(a)
+	normsB := getNorms(b)
+
+	for i := range normsA {
+		if normsA[i] != normsB[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Globals for static data
@@ -3882,13 +4249,13 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
 	switch r := rr.(type) {
 	case *dns.A:
-		if IsBlockedIP(r.A) {
+		if isBlockedIP(r.A) {
 			return false, nil
 		}
 		return true, r
 
 	case *dns.AAAA:
-		if IsBlockedIP(r.AAAA) {
+		if isBlockedIP(r.AAAA) {
 			return false, nil
 		}
 		return true, r
@@ -3950,7 +4317,7 @@ func extractIPs(msg *dns.Msg) []string {
 	return ips
 }
 
-// NEW: action-specific colors (only used for category=query lines)
+// QueryActionColors : action-specific colors (only used for category=query lines)
 var QueryActionColors = map[string]uint16{
 	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
 	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
@@ -3958,7 +4325,7 @@ var QueryActionColors = map[string]uint16{
 	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
 	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
 	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
-	"forwarded_but_FAILED_so_NXDOMAIN":   wincoe.FOREGROUND_BRIGHT_RED,
+	"forwarded_but_FAILED_so_SERVFAIL":   wincoe.FOREGROUND_BRIGHT_RED,
 	"local_host_override":                wincoe.FOREGROUND_BRIGHT_CYAN,
 	// you can add more action → color mappings here
 	// unknown actions → fall back to level-based color
@@ -3981,7 +4348,7 @@ var QueryActionColors = map[string]uint16{
 // 	queryLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
 // }
 
-const TIMESTAMPS_FORMAT string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
+const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
 func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg) {
 	if ctx == nil {
@@ -3991,7 +4358,7 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 		return
 	}
 
-	var ts string = time.Now().Format(TIMESTAMPS_FORMAT)
+	var ts string = time.Now().Format(TimeStampsFormat)
 
 	var attrs []any = []any{
 		slog.String("domain", domain),
@@ -4027,11 +4394,11 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 			slog.Any("clientAddr", info.clientAddr),
 		)
 		//To avoid cluttering the console, at least.
-		num_services := len(info.services)
-		if num_services != 0 {
+		numServices := len(info.services)
+		if numServices != 0 {
 			attrs = append(attrs,
 				slog.Any("services", info.services),
-				slog.Int("num_services", num_services),
+				slog.Int("num_services", numServices),
 			)
 		}
 		if info.err != nil {
@@ -4043,7 +4410,7 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 			slog.String("elapsed", elapsed.String()),
 			//slog.Int64("elapsed_ms", elapsed.Milliseconds()),
 			slog.Int64("elapsed_ns", elapsed.Nanoseconds()),
-			slog.String("client_connected_at_ts", info.startTime.Format(TIMESTAMPS_FORMAT)),
+			slog.String("client_connected_at_ts", info.startTime.Format(TimeStampsFormat)),
 			slog.String("log_ts", ts),
 		)
 	} else {
@@ -4089,8 +4456,8 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 const hostForUIListener string = "127.0.0.1" //TODO: add this to config, but should start with 127. for security reasons.
 
 func startWebUI(port int) {
-	hostOrIp := hostForUIListener
-	fmt.Printf("Starting web UI on %s:%d...\n", hostOrIp, port) //FIXME: hardcoded IP
+	hostOrIP := hostForUIListener
+	fmt.Printf("Starting web UI on %s:%d...\n", hostOrIP, port) //FIXME: hardcoded IP
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", statsHandler)
@@ -4102,16 +4469,16 @@ func startWebUI(port int) {
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIp, port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
 		//errStr := fmt.Sprintf("UI listener failed on :%d: %v", port, err)
 		//fmt.Fprintln(os.Stderr, "  Attempting UI bind...Failed\n"+errStr)
 		//errorLogger.Error(errStr)
-		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIp), slog.Int("port", port), slog.Any("err", err))
+		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIP), slog.Int("port", port), slog.Any("err", err))
 		os.Exit(1) // Fail-fast serial
 	}
 	fmt.Println("  Attempting UI bind...Success")
-	fmt.Printf("Web UI listening on %s:%d (stats at /debug/vars)\n", hostOrIp, port) //FIXME: hardcoded IP
+	fmt.Printf("Web UI listening on %s:%d (stats at /debug/vars)\n", hostOrIP, port) //FIXME: hardcoded IP
 
 	uiSrv := &http.Server{Handler: mux}
 	// Listen for the global shutdown signal to gracefully close the Web UI
@@ -4144,7 +4511,8 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
-	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
+	//fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
+	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", stats.String(), cacheStore.ItemCount(), upstreamIPs)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
 		"Page":    "stats",
@@ -4712,9 +5080,9 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		//domain := r.FormValue("domain")
 		raw := r.FormValue("domain")
 
-		sanitized, modified := SanitizeDomainInput(raw)
+		sanitized, modified := ianitizeDomainInput(raw)
 
-		if modified || !IsValidDNSName(sanitized) { //TODO: check if this is valid upon querying too!
+		if modified || !isValidDNSName(sanitized) { //TODO: check if this is valid upon querying too!
 			//TODO:
 			// re-render form with:
 			// - error message

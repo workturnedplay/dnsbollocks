@@ -1,9 +1,14 @@
 {
-  "listen_dns": "127.0.0.1:53",
-  "listen_doh": "127.0.0.1:443",
-  "ui_port": 3405,
-  "upstream_url": "https://9.9.9.9/dns-query",
-  "sni_hostname": "dns.quad9.net",
+  "listen_dns": "127.0.0.2:53",
+  "listen_doh": "127.0.0.2:443",
+  "ui_port": 3406,
+  "upstream_urls": [
+    "https://9.9.9.9/dns-query"
+  ],
+  "upstream_retries_per_query": 1,
+  "sni_hostnames": [
+    "dns.quad9.net"
+  ],
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
   "rate_qps": 100,
@@ -11,9 +16,12 @@
   "cache_max_entries": 10000,
   "whitelist_file": "query_whitelist.json",
   "blacklist_file": "response_blacklist.json",
+  "hosts_file": "hosts2ip.json",
   "log_queries": "queries.log",
   "log_errors": "errors.log",
+  "console_log_level": "debug",
   "log_max_size_mb": 4095,
   "allow_run_as_admin": false,
-  "block_aaaa_as_empty_noerror": true
+  "block_aaaa_as_empty_noerror": true,
+  "allow_https_if_a_allowed": true
 }
