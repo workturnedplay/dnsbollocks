@@ -553,7 +553,7 @@ var mainLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 func initBootstrapLogging() {
 	// Use the exact same colored handler you already have (it gracefully falls back if no console)
 	bootstrapLevel := slog.LevelDebug // hard-coded for bootstrap — only ~8 lines anyway
-	mainLogger = slog.New(newColoredConsoleHandler(bootstrapLevel))
+	mainLogger = slog.New(NewColoredConsoleHandler(bootstrapLevel))
 
 	// This line is now the very first log in the entire program
 	mainLogger.Info("DNSbollocks starting... bootstrap-logging inited.")
@@ -563,246 +563,345 @@ func initBootstrapLogging() {
 // Colored console handler (Windows-only, uses your exact color request)
 // -----------------------------------------------------------------------------
 
-// LevelToAttr maps slog levels to Win32 console attributes exactly as you asked.
-var LevelToAttr = map[slog.Level]uint16{
-	slog.LevelDebug: wincoe.FOREGROUND_GRAY,   // dark grey
-	slog.LevelInfo:  wincoe.FOREGROUND_NORMAL, // normal / light grey (we actually restore original, but fallback)
-	slog.LevelWarn:  wincoe.FOREGROUND_BRIGHT_MAGENTA,
-	slog.LevelError: wincoe.FOREGROUND_RED,
-}
+// // LevelToAttr maps slog levels to Win32 console attributes exactly as you asked.
+// var LevelToAttr = map[slog.Level]uint16{
+// 	slog.LevelDebug: wincoe.FOREGROUND_GRAY,   // dark grey
+// 	slog.LevelInfo:  wincoe.FOREGROUND_NORMAL, // normal / light grey (we actually restore original, but fallback)
+// 	slog.LevelWarn:  wincoe.FOREGROUND_BRIGHT_MAGENTA,
+// 	slog.LevelError: wincoe.FOREGROUND_RED,
+// }
 
-// ColoredConsoleHandler sets color before the inner TextHandler writes, then restores.
-// If there is no console (service, piped, etc.) it silently falls back to plain text.
+// // ColoredConsoleHandler sets color before the inner TextHandler writes, then restores.
+// // If there is no console (service, piped, etc.) it silently falls back to plain text.
+// type ColoredConsoleHandler struct {
+// 	Inner    slog.Handler
+// 	HStdout  windows.Handle
+// 	OrigAttr uint16
+// 	UseColor bool
+// 	Mu       sync.Mutex
+// }
+
+// func newColoredConsoleHandler(level slog.Level) slog.Handler {
+// 	inner := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+// 		Level: level,
+// 		// ReplaceAttr can be extended later for timestamps, etc.
+// 	})
+// 	//hStdout := windows.Handle(wincoe.STD_OUTPUT_HANDLE) // BAD, won't work.
+// 	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) //this will.
+// 	if hStdout == windows.InvalidHandle || err != nil {
+// 		// No console → plain text fallback
+// 		//FIXME: figure out if this would recuse infinitely:
+// 		mainLogger.Warn("failed to select console, falling back to plain text", slog.Any("err", err))
+// 		//goto normalPlainTextHandler
+// 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+// 	}
+
+// 	origAttr, err := wincoe.GetConsoleScreenBufferAttributes(hStdout) // your new helper
+// 	if err != nil {
+// 		// fallback
+// 		//FIXME: figure out if this would recuse infinitely:
+// 		mainLogger.Warn("failed to select colored console, falling back to plain text", slog.Any("err", err))
+// 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+// 	}
+
+// 	return &ColoredConsoleHandler{
+// 		Inner:    inner,
+// 		HStdout:  hStdout,
+// 		OrigAttr: origAttr,
+// 		UseColor: true,
+// 	}
+
+// 	// normalPlainTextHandler:
+// 	//
+// 	//	return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+// }
+
+// func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
+// 	return h.Inner.Enabled(ctx, level)
+// }
+
+// // Handle XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
+// func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
+// 	if h.UseColor {
+// 		// ────────────────────────────────
+// 		//  Decide which color to use
+// 		// ────────────────────────────────
+
+// 		var color uint16
+// 		var isQuery bool
+// 		var action string
+
+// 		// Scan attributes once — look for category and action
+// 		r.Attrs(func(a slog.Attr) bool {
+// 			switch a.Key {
+// 			case "category":
+// 				if a.Value.String() == "query" {
+// 					isQuery = true
+// 				}
+// 			case "action":
+// 				action = a.Value.String()
+// 			}
+// 			return true // keep scanning
+// 		})
+
+// 		if isQuery && action != "" {
+// 			// Query line → try to use action-based color
+// 			if c, ok := QueryActionColors[action]; ok {
+// 				color = c
+// 			} else {
+// 				// unknown action → fall back to level-based color
+// 				color = LevelToAttr[r.Level]
+// 				// if color == 0 {
+// 				// 	color = h.origAttr
+// 				// }
+// 			}
+// 		} else {
+// 			// Normal (non-query) log line → classic level-based coloring
+// 			color = LevelToAttr[r.Level]
+// 			// if color == 0 {
+// 			// 	color = h.origAttr
+// 			// }
+// 		}
+// 		// color := levelToAttr[r.Level]
+// 		if color == 0 {
+// 			color = h.OrigAttr // safety
+// 		}
+// 		// ────────────────────────────────
+// 		//  Apply the chosen color
+// 		// ────────────────────────────────
+// 		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
+// 		h.Mu.Lock()
+// 		defer h.Mu.Unlock()
+// 		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
+// 		if err == nil {
+// 			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
+// 			// }
+// 			// Important: restore color AFTER writing — even on error paths
+// 			defer func() {
+// 				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
+// 			}()
+// 		} // ignore if couldn't set the text attribute/color!
+// 	}
+
+// 	writeErr := h.Inner.Handle(ctx, r)
+
+// 	if writeErr != nil {
+// 		return fmt.Errorf("inner handler failed: %w", writeErr)
+// 	}
+// 	return nil
+// }
+
+// func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+// 	return &ColoredConsoleHandler{
+// 		Inner:    h.Inner.WithAttrs(attrs),
+// 		HStdout:  h.HStdout,
+// 		OrigAttr: h.OrigAttr,
+// 		UseColor: h.UseColor,
+// 	}
+// }
+
+// func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
+// 	return &ColoredConsoleHandler{
+// 		Inner:    h.Inner.WithGroup(name),
+// 		HStdout:  h.HStdout,
+// 		OrigAttr: h.OrigAttr,
+// 		UseColor: h.UseColor,
+// 	}
+// }
+
 type ColoredConsoleHandler struct {
-	Inner    slog.Handler
-	HStdout  windows.Handle
-	OrigAttr uint16
-	UseColor bool
-	Mu       sync.Mutex
+	Level slog.Level
+	Out   io.Writer
+	Mu    *sync.Mutex
+	Attrs []slog.Attr
+	Group string
 }
 
-func newColoredConsoleHandler(level slog.Level) slog.Handler {
-	inner := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-		// ReplaceAttr can be extended later for timestamps, etc.
-	})
-	//hStdout := windows.Handle(wincoe.STD_OUTPUT_HANDLE) // BAD, won't work.
-	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) //this will.
-	if hStdout == windows.InvalidHandle || err != nil {
-		// No console → plain text fallback
-		//FIXME: figure out if this would recuse infinitely:
-		mainLogger.Warn("failed to select console, falling back to plain text", slog.Any("err", err))
-		//goto normalPlainTextHandler
-		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-	}
-
-	origAttr, err := wincoe.GetConsoleScreenBufferAttributes(hStdout) // your new helper
-	if err != nil {
-		// fallback
-		//FIXME: figure out if this would recuse infinitely:
-		mainLogger.Warn("failed to select colored console, falling back to plain text", slog.Any("err", err))
-		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-	}
+func NewColoredConsoleHandler(level slog.Level) slog.Handler {
+	// Activate Windows VT Processing globally
+	_ = wincoe.EnableVirtualTerminalProcessing()
 
 	return &ColoredConsoleHandler{
-		Inner:    inner,
-		HStdout:  hStdout,
-		OrigAttr: origAttr,
-		UseColor: true,
+		Level: level,
+		Out:   os.Stdout,
+		Mu:    &sync.Mutex{},
 	}
-
-	// normalPlainTextHandler:
-	//
-	//	return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 }
 
 func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.Inner.Enabled(ctx, level)
+	return level >= h.Level
 }
 
-// // what Grok 4.20 Expert says is the fixed one(he's not right):
-// func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-// 	if !h.UseColor {
-// 		return h.Inner.Handle(ctx, r)
-// 	}
-
-// 	h.Mu.Lock()
-// 	defer h.Mu.Unlock() // ← full critical section; unlock happens even on panic
-
-// 	// ──────────────────────────────────────────────────────────────
-// 	// 1. Decide color exactly once while holding the lock
-// 	// ──────────────────────────────────────────────────────────────
-// 	var color uint16
-// 	var isQuery bool
-// 	var action string
-
-// 	r.Attrs(func(a slog.Attr) bool {
-// 		switch a.Key {
-// 		case "category":
-// 			if a.Value.String() == "query" {
-// 				isQuery = true
-// 			}
-// 		case "action":
-// 			action = a.Value.String()
-// 		}
-// 		return true
-// 	})
-
-// 	if isQuery && action != "" {
-// 		if c, ok := QueryActionColors[action]; ok {
-// 			color = c
-// 		} else {
-// 			color = LevelToAttr[r.Level]
-// 		}
-// 	} else {
-// 		color = LevelToAttr[r.Level]
-// 	}
-// 	if color == 0 {
-// 		color = h.OrigAttr // never leave console in undefined state
-// 	}
-
-// 	// ──────────────────────────────────────────────────────────────
-// 	// 3. Restore on every exit path (including panic)
-// 	// ──────────────────────────────────────────────────────────────
-// 	defer func() {
-// 		if resetErr := wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr); resetErr != nil {
-// 			// We are already inside a locked section and returning an error;
-// 			// we do not want to swallow the original error, so we only log.
-// 			// Never panic here — that would mask the real problem.
-// 			//FIXME: figure out if this would recuse infinitely:
-// 			mainLogger.Warn("SetConsoleTextAttribute restore failed",
-// 				slog.Uint64("original_attr", uint64(h.OrigAttr)),
-// 				slog.Any("err", resetErr))
-// 		}
-// 	}()
-
-// 	// ──────────────────────────────────────────────────────────────
-// 	// 2. Apply color — never ignore errors
-// 	// ──────────────────────────────────────────────────────────────
-// 	if err := wincoe.SetConsoleTextAttribute(h.HStdout, color); err != nil {
-// 		// restore immediately on failure, then propagate
-// 		//_ = wincoe.SetConsoleTextAttribute(h.hStdout, h.origAttr) // best-effort
-// 		return fmt.Errorf("SetConsoleTextAttribute (set color %d): %w", color, err)
-// 	}
-
-// 	// ──────────────────────────────────────────────────────────────
-// 	// 4. Delegate to the real handler while color is active
-// 	// ──────────────────────────────────────────────────────────────
-// 	return h.Inner.Handle(ctx, r)
-// }
-
-// Handle XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
 func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.UseColor {
-		// ────────────────────────────────
-		//  Decide which color to use
-		// ────────────────────────────────
+	h.Mu.Lock()
+	defer h.Mu.Unlock()
 
-		var color uint16
-		var isQuery bool
-		var action string
+	baseColor := "\x1b[37m" // Default to White
+	if r.Level <= slog.LevelDebug {
+		baseColor = "\x1b[90m" // Gray
+	}
 
-		// Scan attributes once — look for category and action
-		r.Attrs(func(a slog.Attr) bool {
-			switch a.Key {
-			case "category":
-				if a.Value.String() == "query" {
-					isQuery = true
-				}
-			case "action":
-				action = a.Value.String()
+	levelColor := baseColor
+	switch r.Level {
+	case slog.LevelWarn:
+		levelColor = "\x1b[93m" // Yellow
+	case slog.LevelError:
+		levelColor = "\x1b[91m" // Red
+	}
+
+	// --- NEW: Pre-scan for action color ---
+	var statusColor string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "action" {
+			statusColor = QueryActionANSI[a.Value.String()]
+			return false // Stop iterating
+		}
+		return true
+	})
+	// --------------------------------------
+
+	timeStr := r.Time.Format(TimeStampsFormat) //"15:04:05.000")
+
+	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+
+	// Base color, time
+	buf.WriteString(baseColor)
+	buf.WriteString(timeStr)
+	buf.WriteString(" ")
+
+	// Level string (colored)
+	buf.WriteString(levelColor)
+	buf.WriteString(r.Level.String())
+	buf.WriteString(baseColor)
+	buf.WriteString(" ")
+
+	// Process msg with potential <color> tags
+	buf.WriteString(formatColorTags(r.Message, baseColor))
+
+	var processAttr func(a slog.Attr, prefix string)
+	processAttr = func(a slog.Attr, prefix string) {
+		a.Value = a.Value.Resolve()
+		if a.Equal(slog.Attr{}) {
+			return
+		}
+		if a.Value.Kind() == slog.KindGroup {
+			attrs := a.Value.Group()
+			if len(attrs) == 0 {
+				return
 			}
-			return true // keep scanning
-		})
-
-		if isQuery && action != "" {
-			// Query line → try to use action-based color
-			if c, ok := QueryActionColors[action]; ok {
-				color = c
-			} else {
-				// unknown action → fall back to level-based color
-				color = LevelToAttr[r.Level]
-				// if color == 0 {
-				// 	color = h.origAttr
-				// }
+			if a.Key != "" {
+				prefix += a.Key + "."
 			}
+			for _, ga := range attrs {
+				// Note: In a real group scenario, you might need to pass
+				// statusColor recursively if domain/proto are inside groups.
+				processAttr(ga, prefix)
+			}
+			return
+		}
+
+		key := prefix + a.Key
+		valStr := a.Value.String()
+
+		valColor := baseColor
+
+		// Auto-color matching actions/errors
+
+		// if key == "action" {
+		// 	if c, ok := QueryActionANSI[valStr]; ok {
+		// 		valColor = c
+		// 	}
+		// } else if key == "err" || key == "error" {
+		// 	if valStr != "<nil>" {
+		// 		valColor = "\x1b[91m" // Red
+		// 	}
+		// }
+
+		// --- MODIFIED LOGIC ---
+		// If the key is action, domain, proto, or type, use the status color
+
+		// if key == "action" || key == "domain" || key == "proto" || key == "type" || key == "ips" {
+		// 	if statusColor != "" {
+		// 		valColor = statusColor
+		// 	}
+		// } else if key == "err" || key == "error" {
+		// 	if valStr != "<nil>" {
+		// 		valColor = "\x1b[91m" // Red
+		// 	}
+		// }
+
+		// valColor logic using a tagged switch
+		switch key {
+		case "action", "domain", "proto", "type", "ips":
+			if statusColor != "" {
+				valColor = statusColor
+			}
+		case "err", "error":
+			if valStr != "<nil>" {
+				valColor = "\x1b[91m" // Red
+			}
+		}
+		// ----------------------
+
+		// Support explicit <color> overrides in value
+		valStrFormatted := formatColorTags(valStr, valColor)
+
+		// Uncomment the line below if you want to force everything onto one line
+		valStrFormatted = strings.ReplaceAll(valStrFormatted, "\n", "\\n")
+
+		buf.WriteString(" ")
+		buf.WriteString(key)
+		buf.WriteString("=")
+		buf.WriteString(valColor)
+
+		needsQuotes := strings.ContainsAny(valStrFormatted, " \t\n\r=") || len(valStrFormatted) == 0
+		if needsQuotes {
+			buf.WriteString(`"`)
+			escaped := strings.ReplaceAll(valStrFormatted, `\`, `\\`)
+			escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+			buf.WriteString(escaped)
+			buf.WriteString(`"`)
 		} else {
-			// Normal (non-query) log line → classic level-based coloring
-			color = LevelToAttr[r.Level]
-			// if color == 0 {
-			// 	color = h.origAttr
-			// }
+			buf.WriteString(valStrFormatted)
 		}
-		// color := levelToAttr[r.Level]
-		if color == 0 {
-			color = h.OrigAttr // safety
-		}
-		// ────────────────────────────────
-		//  Apply the chosen color
-		// ────────────────────────────────
-		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
-		h.Mu.Lock()
-		defer h.Mu.Unlock()
-		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
-		if err == nil {
-			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
-			// }
-			// Important: restore color AFTER writing — even on error paths
-			defer func() {
-				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
-			}()
-		} // ignore if couldn't set the text attribute/color!
+		buf.WriteString(baseColor)
 	}
 
-	writeErr := h.Inner.Handle(ctx, r)
-
-	if writeErr != nil {
-		return fmt.Errorf("inner handler failed: %w", writeErr)
+	for _, a := range h.Attrs {
+		processAttr(a, h.Group)
 	}
-	return nil
+	r.Attrs(func(a slog.Attr) bool {
+		processAttr(a, h.Group)
+		return true
+	})
+
+	buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
+
+	_, err := h.Out.Write(buf.Bytes())
+	return err
 }
-
-// // isQueryLine checks whether this record is one of our DNS query logs
-// func isQueryLine(r slog.Record) bool {
-// 	isQuery := false
-// 	r.Attrs(func(a slog.Attr) bool {
-// 		if a.Key == "category" && a.Value.String() == "query" {
-// 			isQuery = true
-// 			return false // early exit
-// 		}
-// 		return true
-// 	})
-// 	return isQuery
-// }
-
-// // getActionFromRecord extracts the "action" value if present
-// func getActionFromRecord(r slog.Record) string {
-// 	var action string
-// 	r.Attrs(func(a slog.Attr) bool {
-// 		if a.Key == "action" {
-// 			action = a.Value.String()
-// 			return false // early exit
-// 		}
-// 		return true
-// 	})
-// 	return action
-// }
 
 func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &ColoredConsoleHandler{
-		Inner:    h.Inner.WithAttrs(attrs),
-		HStdout:  h.HStdout,
-		OrigAttr: h.OrigAttr,
-		UseColor: h.UseColor,
+		Level: h.Level,
+		Out:   h.Out,
+		Mu:    h.Mu,
+		Attrs: append(h.Attrs[:len(h.Attrs):len(h.Attrs)], attrs...),
+		Group: h.Group,
 	}
 }
 
 func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
+	prefix := h.Group
+	if name != "" {
+		prefix += name + "."
+	}
 	return &ColoredConsoleHandler{
-		Inner:    h.Inner.WithGroup(name),
-		HStdout:  h.HStdout,
-		OrigAttr: h.OrigAttr,
-		UseColor: h.UseColor,
+		Level: h.Level,
+		Out:   h.Out,
+		Mu:    h.Mu,
+		Attrs: h.Attrs,
+		Group: prefix,
 	}
 }
 
@@ -2114,13 +2213,16 @@ func initFullLogging() { //qpath, epath string) {
 	// errorLogger = slog.New(eh)
 
 	fullHandler := slog.NewJSONHandler(openLog(config.LogErrorsFile), &slog.HandlerOptions{
-		Level: slog.LevelDebug, // full log gets EVERYTHING
+		Level:       slog.LevelDebug, // full log gets EVERYTHING
+		ReplaceAttr: stripColorTags,  // Strips tags safely for files
 	})
 
-	consoleH := newColoredConsoleHandler(consoleLevel) // now uses the real config level
+	consoleH := NewColoredConsoleHandler(consoleLevel) // now uses the real config level
 
 	queryH := queryFilterHandler{
-		Handler: slog.NewJSONHandler(openLog(config.LogQueriesFile), nil),
+		Handler: slog.NewJSONHandler(openLog(config.LogQueriesFile), &slog.HandlerOptions{
+			ReplaceAttr: stripColorTags, // Strips tags safely for files
+		}),
 	}
 
 	// root := multiHandler{
@@ -4317,18 +4419,80 @@ func extractIPs(msg *dns.Msg) []string {
 	return ips
 }
 
-// QueryActionColors : action-specific colors (only used for category=query lines)
-var QueryActionColors = map[string]uint16{
-	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
-	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
-	"blocked":                            wincoe.FOREGROUND_BRIGHT_RED,
-	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
-	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
-	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
-	"forwarded_but_FAILED_so_SERVFAIL":   wincoe.FOREGROUND_BRIGHT_RED,
-	"local_host_override":                wincoe.FOREGROUND_BRIGHT_CYAN,
-	// you can add more action → color mappings here
-	// unknown actions → fall back to level-based color
+// // QueryActionColors : action-specific colors (only used for category=query lines)
+// var QueryActionColors = map[string]uint16{
+// 	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
+// 	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
+// 	"blocked":                            wincoe.FOREGROUND_BRIGHT_RED,
+// 	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
+// 	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
+// 	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
+// 	"forwarded_but_FAILED_so_SERVFAIL":   wincoe.FOREGROUND_BRIGHT_RED,
+// 	"local_host_override":                wincoe.FOREGROUND_BRIGHT_CYAN,
+// 	// you can add more action → color mappings here
+// 	// unknown actions → fall back to level-based color
+// }
+
+var QueryActionANSI = map[string]string{
+	"forwarded":                          "\x1b[92m", // Bright Green
+	"cache_hit":                          "\x1b[93m", // Bright Yellow
+	"blocked":                            "\x1b[91m", // Bright Red
+	"rate_limit_exceeded":                "\x1b[31m", // Red
+	"blockedByUpstream_ORIGINAL":         "\x1b[91m",
+	"blockedByUpstream_RETURNEDMODIFIED": "\x1b[91m",
+	"forwarded_but_FAILED_so_SERVFAIL":   "\x1b[91m",
+	"local_host_override":                "\x1b[96m", // Bright Cyan
+}
+
+var colorTagsRegex = regexp.MustCompile(`<(/?)(green|red|yellow|cyan|gray|white|magenta)>`)
+
+// formatColorTags parses tags like <green>word</green> into ANSI codes
+func formatColorTags(s string, baseColor string) string {
+	if !strings.Contains(s, "<") {
+		return s
+	}
+	return colorTagsRegex.ReplaceAllStringFunc(s, func(match string) string {
+		if strings.HasPrefix(match, "</") {
+			return baseColor
+		}
+		switch match {
+		case "<green>":
+			return "\x1b[92m"
+		case "<red>":
+			return "\x1b[91m"
+		case "<yellow>":
+			return "\x1b[93m"
+		case "<cyan>":
+			return "\x1b[96m"
+		case "<gray>":
+			return "\x1b[90m"
+		case "<white>":
+			return "\x1b[97m"
+		case "<magenta>":
+			return "\x1b[95m"
+		}
+		return match
+	})
+}
+
+// stripColorTags will be used by the JSON (File) handlers to strip out <color> tags entirely
+var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
+	if a.Value.Kind() == slog.KindString {
+		str := a.Value.String()
+		if strings.Contains(str, "<") {
+			str = colorTagsRegex.ReplaceAllString(str, "")
+			a.Value = slog.StringValue(str)
+		}
+	} else if a.Value.Kind() == slog.KindAny {
+		if err, ok := a.Value.Any().(error); ok {
+			str := err.Error()
+			if strings.Contains(str, "<") {
+				str = colorTagsRegex.ReplaceAllString(str, "")
+				a.Value = slog.AnyValue(errors.New(str))
+			}
+		}
+	}
+	return a
 }
 
 // func logQuery(client, domain, typ, action, ruleID string, ips []string) {
