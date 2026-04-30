@@ -134,6 +134,26 @@ const (
 // Ensure MaxExtendedPath is at least as large as the legacy MAX_PATH (260).
 var _ = [MaxExtendedPath - 260]byte{}
 
+const ENABLE_VIRTUAL_TERMINAL_PROCESSING uint32 = 0x0004
+
+func EnableVirtualTerminalProcessing() error {
+	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	if err != nil {
+		return fmt.Errorf("GetStdHandle failed: %w", err)
+	}
+	if hStdout == windows.InvalidHandle {
+		return errors.New("invalid stdout handle")
+	}
+
+	var mode uint32
+	if err := windows.GetConsoleMode(hStdout, &mode); err != nil {
+		return fmt.Errorf("GetConsoleMode failed: %w", err)
+	}
+
+	mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING
+	return windows.SetConsoleMode(hStdout, mode)
+}
+
 // WithConsoleColor temporarily changes text attribute, runs fn, then restores original
 func WithConsoleColor(outputHandle windows.Handle, color uint16, fn func()) (errRet error) {
 	originalColor, err := GetConsoleScreenBufferAttributes(outputHandle)

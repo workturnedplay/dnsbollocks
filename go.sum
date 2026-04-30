@@ -6,8 +6,8 @@ github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12 h1:sfdz2rhLlzMml8zmv3
 github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12/go.mod h1:hBcNfObhP6OL8tg/LRRiRxqToCk64JmTahUFw2q39GM=
 github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaRUnok+kx1WdO15EQc=
 github.com/patrickmn/go-cache v2.1.0+incompatible/go.mod h1:3Qf8kWWT7OJRJbdiICTKqZju1ZixQ/KpMGzzAfe6+WQ=
-github.com/workturnedplay/wincoe v0.0.15 h1:Z1DFaW//Gw3QoHdj7mz3adskYmH7M+jqMo+mHMeT/h4=
-github.com/workturnedplay/wincoe v0.0.15/go.mod h1:w2Ez8oPxbinPg8SekSF1EOQ7lliI7rCEy2URIhnOydg=
+github.com/workturnedplay/wincoe v0.0.16 h1:zoc7VhvHiJJrNJqycNhT0j+u9Ww5Y7WI05U8iRaIJ9E=
+github.com/workturnedplay/wincoe v0.0.16/go.mod h1:w2Ez8oPxbinPg8SekSF1EOQ7lliI7rCEy2URIhnOydg=
 golang.org/x/mod v0.35.0 h1:Ww1D637e6Pg+Zb2KrWfHQUnH2dQRLBQyAtpr/haaJeM=
 golang.org/x/mod v0.35.0/go.mod h1:+GwiRhIInF8wPm+4AoT6L0FA1QWAad3OMdTRx4tFYlU=
 golang.org/x/net v0.53.0 h1:d+qAbo5L0orcWAr0a9JweQpjXF19LMXJE8Ey7hwOdUA=
