@@ -736,8 +736,10 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
 
+	isDebug := false
 	baseColor := "\x1b[37m" // Default to White
 	if r.Level <= slog.LevelDebug {
+		isDebug = true
 		baseColor = "\x1b[90m" // Gray
 	}
 
@@ -832,9 +834,15 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 		// valColor logic using a tagged switch
 		switch key {
-		case "action", "domain", "proto", "type", "ips":
+		case "action", "domain", "type", "ips":
 			if statusColor != "" {
 				valColor = statusColor
+			}
+		case "exe", "services", "proto":
+			if isDebug {
+				valColor = "\x1b[34m" // (dark)blue
+			} else {
+				valColor = "\x1b[94m" // bright blue
 			}
 		case "err", "error":
 			if valStr != "<nil>" {
@@ -3141,13 +3149,14 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		//services = []string{"<service-lookup-disabled-for-debug>"}
 		//fmt.Println("!after")
 		if err != nil {
-			serviceInfo = fmt.Sprintf("err:%v", err)
+			serviceInfo = fmt.Sprintf("err=%v", err)
 		} else {
-			if len(services) > 0 {
-				serviceInfo = fmt.Sprintf("%d service(s): %v", len(services), services)
-			} else {
-				serviceInfo = "no services"
-			}
+			serviceInfo = fmt.Sprintf("%v", services)
+			// if len(services) > 0 {
+			// 	serviceInfo = fmt.Sprintf("%d services: %v", len(services), services)
+			// } else {
+			// 	serviceInfo = "no services"
+			// }
 		}
 	}
 
@@ -3156,7 +3165,7 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		slog.Any("clientAddr", clientAddr),
 		slog.Any("pid", pid),
 		slog.String("exe", exe),
-		slog.String("service", serviceInfo),
+		slog.String("services", serviceInfo),
 		slog.Any("err", err),
 	)
 
@@ -4552,11 +4561,7 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 	if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok {
 		elapsed := time.Since(info.startTime)
 		attrs = append(attrs,
-			slog.Uint64("pid", uint64(info.pid)),
-			slog.String("exe", info.exe),
-			slog.String("proto", info.protocol),
-			slog.Any("clientAddr", info.clientAddr),
-		)
+			slog.String("exe", info.exe))
 		//To avoid cluttering the console, at least.
 		numServices := len(info.services)
 		if numServices != 0 {
@@ -4565,6 +4570,11 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 				slog.Int("num_services", numServices),
 			)
 		}
+		attrs = append(attrs,
+			slog.String("proto", info.protocol),
+			slog.Any("clientAddr", info.clientAddr),
+			slog.Uint64("pid", uint64(info.pid)),
+		)
 		if info.err != nil {
 			attrs = append(attrs,
 				slog.Any("err", info.err),
