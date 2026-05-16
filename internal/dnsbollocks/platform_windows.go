@@ -341,8 +341,8 @@ func getResponseBlacklist() []string {
 	return out
 }
 
-// isBlockedIP Helper – used in filterResponse / processRR
-func isBlockedIP(ip net.IP) bool {
+// isBlacklistedIP Helper – used in filterResponse / processRR
+func isBlacklistedIP(ip net.IP) bool {
 	responseBlacklistMu.RLock()
 	defer responseBlacklistMu.RUnlock()
 
@@ -1972,6 +1972,10 @@ func loadConfig() error {
 		// 	shouldSaveConfig = true
 		// }
 	}
+
+	config.BlockMode = strings.ToLower(config.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
+
 	// Validate loaded config
 	if config.CacheMinTTL < 60 {
 		config.CacheMinTTL = 60 // Min reasonable
@@ -3452,7 +3456,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		return formerrResponse(msg)
 	}
 	q := msg.Question[0]
-	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowecase it for matchPattern below! at least.
+	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowercase it for matchPattern below! at least.
 	if domain == "" {                                          // Edge: Empty domain
 		return formerrResponse(msg)
 	}
@@ -3463,8 +3467,10 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst, FIXME: is this in config.json ? or should it be!
 	cl := clIface.(*rate.Limiter)
 	if !gl || !cl.Allow() {
-		mainLogger.Warn("rate_limit_exceeded", slog.String("client", clientAddr))
-		return servfailResponse(msg)
+		mainLogger.Warn(rateLimitExceeded, slog.String("client", clientAddr))
+		sfr := servfailResponse(msg)
+		logQuery(ctx, clientAddr, domain, qtype, rateLimitExceeded, "", nil, sfr)
+		return sfr
 	}
 
 	// Whitelist
@@ -3512,7 +3518,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			//blockMutex.Unlock()
 		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, "blocked", "", nil, blocked)
+		logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked)
 		return blocked
 	}
 
@@ -3528,7 +3534,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		resp.Id = msg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
-		logQuery(ctx, clientAddr, domain, qtype, "cache_hit", matchedID, ips, resp)
+		logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp)
 		return resp
 	}
 
@@ -3573,7 +3579,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		// Cache this override so subsequent queries bypass the pattern loop
 		cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
 
-		logQuery(ctx, clientAddr, domain, qtype, "local_host_override", "", extractIPs(resp), resp)
+		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp)
 		return resp
 	}
 	// --- END Local Hosts Override ---
@@ -3596,7 +3602,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
 		negResp := servfailResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, "forwarded_but_FAILED_so_SERVFAIL", matchedID, ips, negResp)
+		logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp)
 		// Cache negatives short
 		//cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		// FIX: Store a copy of the negative response as well
@@ -3604,18 +3610,23 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		return negResp
 	}
 
-	ips := extractIPs(resp) //before 'resp' gets mutated, and its IPs deleted.
+	//ips := extractIPs(resp) //before 'resp' gets mutated, and its IPs deleted.
+	// Use a copy of the original upstream response so we can log exactly what they tried to send
+	originalCopy := resp.Copy()
+	originalIPs := extractIPs(originalCopy)
 	// Filter
-	filtered := filterResponse(resp) //, responseBlacklist)
+	filtered, filterReason := filterResponse(resp) // XXX: resp gets mutated here!
 	if filtered == nil {
+		// filterReason now holds exact info like "blockedByUpstream_ZeroIP" or "dns_rebinding_protection"
+
 		logQuery(ctx, clientAddr, domain, qtype,
-			"blockedByUpstream_ORIGINAL", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, ips, resp)         //FIXME: 'resp' here isn't the original, we should make a copy of it like we did above for its 'ips' and use that here.
+			filterReason+originalSTR, //blockedByUpstream_ORIGINAL //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+			matchedID, originalIPs, originalCopy)
 		blocked := blockResponse(msg)
-		ips = extractIPs(blocked)
+		blockedIPs := extractIPs(blocked)
 		logQuery(ctx, clientAddr, domain, qtype,
-			"blockedByUpstream_RETURNEDMODIFIED", //FIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, ips, blocked)
+			filterReason+returnedModifiedSTR, //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
+			matchedID, blockedIPs, blocked)
 		return blocked
 	}
 
@@ -3630,8 +3641,8 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	// FIX: Store a copy in the cache, not the pointer you are about to return
 	cacheStore.Set(key, filtered.Copy(), expiry)
 
-	ips = extractIPs(filtered)
-	logQuery(ctx, clientAddr, domain, qtype, "forwarded", matchedID, ips, filtered)
+	ips := extractIPs(filtered)
+	logQuery(ctx, clientAddr, domain, qtype, forwardedSTR, matchedID, ips, filtered)
 
 	return filtered
 }
@@ -4231,11 +4242,11 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	}
 
 	//in Go, implicit 'break' after each 'case'
-	switch config.BlockMode {
+	switch config.BlockMode { //XXX: it's already lowercased!
 	case "nxdomain":
 		msg.SetRcode(msg, dns.RcodeNameError)
 	case "ip_block", "block_ip":
-		ttl := uint32(300)
+		ttl := uint32(300) //TODO: const or config this?
 		blockIP := net.ParseIP(config.BlockIP)
 		if blockIP == nil {
 			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this!
@@ -4245,7 +4256,7 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
 			rr.A = blockIP
 			msg.Answer = []dns.RR{rr}
-		} else { // AAAA stub
+		} else { // AAAA stub, FIXME: what we doing here?! also, no IP?
 			rr := new(dns.AAAA)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
 			msg.Answer = []dns.RR{rr}
@@ -4302,8 +4313,15 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 
 }
 
+const NODATA string = "upstream_nodata"
+const BlockedZeroIP string = "blocked_ZeroIP"
+const BlockedBlacklistedIP string = "blocked_blacklisted_ip"
+const StrippedRRSIG string = "stripped_rrsig"
+
+const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
+
 // mutates the passed arg
-func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
+func filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) {
 	if msg == nil {
 		panic("msg was nil, unexpected bad programming/code ;p")
 	}
@@ -4326,50 +4344,109 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) *dns.Msg {
 	// 	}
 	// }
 
-	var goodAnswer, goodExtra []dns.RR
-	for _, rr := range msg.Answer {
-		if keep, modifiedRR := processRR(rr); keep {
-			goodAnswer = append(goodAnswer, modifiedRR)
-			//fmt.Println("Good inAnswer:",rr)
-		} else {
-			mainLogger.Warn("Dropped inAnswer from upstream due to containing blocked ip", slog.Any("query_type", qtype), slog.Any("rr", rr))
-		}
-	}
-	for _, rr := range msg.Extra {
-		if keep, modifiedRR := processRR(rr); keep {
-			goodExtra = append(goodExtra, modifiedRR)
-			//fmt.Println("Good inExtra:",rr)
-		} else {
-			mainLogger.Warn("Dropped inExtra from upstream due to containing blocked ip:", slog.Any("query_type", qtype), slog.Any("rr", rr))
-		}
+	// FIX: If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
+	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
+		return msg, NODATA
 	}
 
-	msg.Answer = goodAnswer
-	msg.Extra = goodExtra
+	var dropReasons []string
+
+	// var goodAnswer, goodExtra []dns.RR
+	// //doneTODO: DRY these 2 'for' blocks:
+	// for _, rr := range msg.Answer {
+	// 	if keep, modifiedRR, reason := processRR(rr); keep {
+	// 		goodAnswer = append(goodAnswer, modifiedRR)
+	// 		//fmt.Println("Good inAnswer:",rr)
+	// 	} else {
+	// 		dropReasons = append(dropReasons, reason)
+	// 		mainLogger.Warn("Dropped inAnswer from upstream", slog.String("reason", reason), slog.Any("query_type", qtype), slog.Any("rr", rr))
+	// 	}
+	// }
+	// for _, rr := range msg.Extra {
+	// 	if keep, modifiedRR, reason := processRR(rr); keep {
+	// 		goodExtra = append(goodExtra, modifiedRR)
+	// 		//fmt.Println("Good inExtra:",rr)
+	// 	} else {
+	// 		dropReasons = append(dropReasons, reason)
+	// 		mainLogger.Warn("Dropped inExtra from upstream", slog.String("reason", reason), slog.Any("query_type", qtype), slog.Any("rr", rr))
+	// 	}
+	// }
+
+	// msg.Answer = goodAnswer
+	// msg.Extra = goodExtra
+
+	// Define a local closure to process any arbitrary DNS section
+	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
+		var good []dns.RR
+		for _, rr := range records {
+			if keep, modifiedRR, reason := processRR(rr); keep {
+				good = append(good, modifiedRR)
+			} else {
+				// Captures and mutates 'dropReasons' from the outer scope automatically
+				dropReasons = append(dropReasons, reason)
+
+				mainLogger.Warn("Dropped "+sectionName+" from upstream",
+					slog.String("reason", reason),
+					slog.Any("query_type", qtype),
+					slog.Any("rr", rr),
+				)
+			}
+		}
+		return good
+	}
+
+	// Re-assign the filtered slices directly back to the message
+	msg.Answer = filterSection(msg.Answer, "inAnswer")
+	msg.Extra = filterSection(msg.Extra, "inExtra")
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
-		mainLogger.Warn("response_filtered_all", slog.Any("query_type", qtype), slog.String("domain", q.Name))
-		return nil
+		mainLogger.Warn("response_filtered_all", slog.Any("query_type", qtype), slog.String("domain", q.Name), slog.Any("drop_reasons", dropReasons))
+		hasZeroIP := false
+		hasBlacklistedIP := false
+		for _, r := range dropReasons {
+			if r == BlockedZeroIP {
+				hasZeroIP = true
+			}
+			if r == BlockedBlacklistedIP {
+				hasBlacklistedIP = true
+			}
+		}
+
+		// Tell handleDNSQuery EXACTLY why this was zeroed out
+		if hasZeroIP {
+			return nil, BlockedByUpstream
+		}
+		if hasBlacklistedIP {
+			return nil, BlockedBlacklistedIP
+		}
+		return nil, "filtered_all_records"
+		//return nil
 	}
-	return msg
+	return msg, ""
 }
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
+func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, string) {
 	switch r := rr.(type) {
 	case *dns.A:
-		if isBlockedIP(r.A) {
-			return false, nil
+		if r.A.IsUnspecified() { // Matches 0.0.0.0
+			return false, nil, BlockedZeroIP
 		}
-		return true, r
+		if isBlacklistedIP(r.A) {
+			return false, nil, BlockedBlacklistedIP
+		}
+		return true, r, ""
 
 	case *dns.AAAA:
-		if isBlockedIP(r.AAAA) {
-			return false, nil
+		if r.AAAA.IsUnspecified() { // Matches ::
+			return false, nil, BlockedZeroIP
 		}
-		return true, r
+		if isBlacklistedIP(r.AAAA) {
+			return false, nil, BlockedBlacklistedIP
+		}
+		return true, r, ""
 
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
@@ -4393,16 +4470,16 @@ func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR) {
 			}
 		}
 		r.Value = newParams
-		return true, r
+		return true, r, ""
 
 	case *dns.RRSIG:
 		// Always drop signatures because we are modifying the RRsets they sign.
 		// A missing signature is better than a broken one.
-		return false, nil
+		return false, nil, StrippedRRSIG
 
 	default:
 		// Keep other types (MX, TXT, CNAME, etc.)
-		return true, rr
+		return true, rr, ""
 	}
 }
 
@@ -4428,29 +4505,26 @@ func extractIPs(msg *dns.Msg) []string {
 	return ips
 }
 
-// // QueryActionColors : action-specific colors (only used for category=query lines)
-// var QueryActionColors = map[string]uint16{
-// 	"forwarded":                          wincoe.FOREGROUND_BRIGHT_GREEN,
-// 	"cache_hit":                          wincoe.FOREGROUND_BRIGHT_YELLOW,
-// 	"blocked":                            wincoe.FOREGROUND_BRIGHT_RED,
-// 	"rate_limit_exceeded":                wincoe.FOREGROUND_RED,
-// 	"blockedByUpstream_ORIGINAL":         wincoe.FOREGROUND_BRIGHT_RED,
-// 	"blockedByUpstream_RETURNEDMODIFIED": wincoe.FOREGROUND_BRIGHT_RED,
-// 	"forwarded_but_FAILED_so_SERVFAIL":   wincoe.FOREGROUND_BRIGHT_RED,
-// 	"local_host_override":                wincoe.FOREGROUND_BRIGHT_CYAN,
-// 	// you can add more action → color mappings here
-// 	// unknown actions → fall back to level-based color
-// }
+const originalSTR string = "_ORIGINAL"
+const returnedModifiedSTR string = "_RETURNEDMODIFIED"
+const forwardedButFailedSoSERVFAIL string = "forwarded_but_FAILED_so_SERVFAIL"
+const forwardedSTR string = "forwarded"
+const localHostOverride string = "local_host_override"
+const cacheHit string = "cache_hit"
+const blockedSTR string = "blocked"
+const rateLimitExceeded string = "rate_limit_exceeded"
 
 var QueryActionANSI = map[string]string{
-	"forwarded":                          "\x1b[92m", // Bright Green
-	"cache_hit":                          "\x1b[93m", // Bright Yellow
-	"blocked":                            "\x1b[91m", // Bright Red
-	"rate_limit_exceeded":                "\x1b[31m", // Red
-	"blockedByUpstream_ORIGINAL":         "\x1b[91m",
-	"blockedByUpstream_RETURNEDMODIFIED": "\x1b[91m",
-	"forwarded_but_FAILED_so_SERVFAIL":   "\x1b[91m",
-	"local_host_override":                "\x1b[96m", // Bright Cyan
+	forwardedSTR:                       "\x1b[92m", // Bright Green
+	cacheHit:                           "\x1b[93m", // Bright Yellow
+	blockedSTR:                         "\x1b[91m", // Bright Red
+	rateLimitExceeded:                  "\x1b[31m", // Red
+	BlockedBlacklistedIP + originalSTR: "\x1b[91m",
+	BlockedBlacklistedIP + returnedModifiedSTR: "\x1b[91m",
+	BlockedByUpstream + originalSTR:            "\x1b[91m",
+	BlockedByUpstream + returnedModifiedSTR:    "\x1b[91m",
+	forwardedButFailedSoSERVFAIL:               "\x1b[91m",
+	localHostOverride:                          "\x1b[96m", // Bright Cyan
 }
 
 var colorTagsRegex = regexp.MustCompile(`<(/?)(green|red|yellow|cyan|gray|white|magenta)>`)
