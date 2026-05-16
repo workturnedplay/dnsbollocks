@@ -1618,7 +1618,11 @@ var uiTemplates = template.Must(template.New("").Parse(
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
-<h2>Recent Blocks (Quick Unblock)</h2><ul>
+<h2>Recent Blocks (Quick Unblock)</h2>
+<p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
+    Note: Only queries blocked locally by DNSbollocks are shown here. Blocks applied by upstream providers (like Quad9 or NextDNS) are not tracked.
+</p>
+<ul>
 {{range .Blocks}}
     <li>{{.Domain}} ({{.Type}}) 
         <form method="post" action="/blocks" style="display:inline;">
@@ -3506,16 +3510,40 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	// --- END OF NEW CODE ---
 
 	ruleMutex.RUnlock()
+	// if !matched {
+	// 	stats.Add(1)
+	// 	func() {
+	// 		blockMutex.Lock()
+	// 		defer blockMutex.Unlock() // Executes even if the code below panics
+	// 		recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
+	// 		if len(recentBlocks) > 50 {
+	// 			recentBlocks = recentBlocks[1:]
+	// 		}
+	// 		//blockMutex.Unlock()
+	// 	}() // Notice the parens here to call it immediately
+	// 	blocked := blockResponse(msg)
 	if !matched {
 		stats.Add(1)
 		func() {
 			blockMutex.Lock()
-			defer blockMutex.Unlock() // Executes even if the code below panics
-			recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
-			if len(recentBlocks) > 50 {
-				recentBlocks = recentBlocks[1:]
+			defer blockMutex.Unlock()
+
+			// 1. Remove duplicate if it already exists (same domain and type)
+			for i := 0; i < len(recentBlocks); i++ {
+				if recentBlocks[i].Domain == domain && recentBlocks[i].Type == qtype {
+					recentBlocks = append(recentBlocks[:i], recentBlocks[i+1:]...)
+					break
+				}
 			}
-			//blockMutex.Unlock()
+
+			// 2. Prepend the new blocked query (so it appears at the top of the UI)
+			newBlock := BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
+			recentBlocks = append([]BlockedQuery{newBlock}, recentBlocks...)
+
+			// 3. Keep the list size to a maximum of 50
+			if len(recentBlocks) > 50 {
+				recentBlocks = recentBlocks[:50]
+			}
 		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
 		logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked)
