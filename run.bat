@@ -24,7 +24,7 @@ if "%~1"=="--resized" goto :MAIN_LOGIC
 :: -d: Start in current directory
 :: "%~f0": The full path to THIS script
 :: --resized: A flag we pass so the script knows it's already resized
-wt -w 1 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized
+wt -w 100 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized
 exit /b
 
 :MAIN_LOGIC
