@@ -1472,6 +1472,31 @@ var uiTemplates = template.Must(template.New("").Parse(
     .tag-enabled { color: #4ec9b0; font-weight: bold; }
     .tag-disabled { color: #f44747; font-weight: bold; }
     pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
+
+	/* 6. ERROR ALERTS */
+    .alert-error {
+        background-color: #2a1818;
+        color: #f44747;
+        border: 1px solid #5a2424;
+        border-left: 4px solid #dc3545;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        box-sizing: border-box;
+    }
+    .alert-error code {
+        background-color: #1a1111;
+        color: #ffffff;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: Consolas, Monaco, monospace;
+        font-size: 0.95em;
+    }
+    .alert-error small {
+        color: #aaaaaa;
+        display: block;
+        margin-top: 5px;
+    }
 </style></head><body>` +
 		noScriptWarningHTML + `
     <div class="container">
@@ -1618,6 +1643,12 @@ var uiTemplates = template.Must(template.New("").Parse(
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
+{{if .ErrorMessage}}
+    <div class="alert-error">
+        <strong>Error:</strong> {{.ErrorMessage}}
+        <small>Processed input value: <code>{{.EnteredValue}}</code></small>
+    </div>
+{{end}}
 <h2>Recent Blocks (Quick Unblock)</h2>
 <p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
     Note: Only queries blocked locally by DNSbollocks are shown here. Blocks applied by upstream providers (like Quad9 or NextDNS) are not tracked.
@@ -5359,12 +5390,35 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 		sanitized, modified := ianitizeDomainInput(raw)
 
 		if modified || !isValidDNSName(sanitized) { //TODO: check if this is valid upon querying too!
-			//TODO:
-			// re-render form with:
-			// - error message
-			// - escaped original raw input
-			lastEditedPatternEscaped := template.HTMLEscapeString(raw)
-			fmt.Printf("Invalid domain, raw: %q\n sanitized: %q\n modified: %t\n escaped: %q", raw, sanitized, modified, lastEditedPatternEscaped)
+			// //doneTODO:
+			// // re-render form with:
+			// // - error message
+			// // - escaped original raw input
+			// lastEditedPatternEscaped := template.HTMLEscapeString(raw)
+			// fmt.Printf("Invalid domain, raw: %q\n sanitized: %q\n modified: %t\n escaped: %q", raw, sanitized, modified, lastEditedPatternEscaped)
+			// return
+			//lastEditedPatternEscaped := template.HTMLEscapeString(raw)
+			mainLogger.Warn("Invalid domain input submitted via blocks handler",
+				slog.String("raw", raw),
+				slog.String("sanitized", sanitized),
+				slog.Bool("modified", modified),
+			)
+
+			// Re-fetch the blocks copy so we can re-render the page correctly with data
+			blockMutex.Lock()
+			blocksCopy := make([]BlockedQuery, len(recentBlocks))
+			copy(blocksCopy, recentBlocks)
+			blockMutex.Unlock()
+
+			// Re-render the form containing the error message and previous input
+			data := map[string]any{
+				"Page":         "blocks",
+				"Blocks":       blocksCopy,
+				"ErrorMessage": "Invalid domain format. Please enter a valid domain name.",
+				"EnteredValue": raw, // "Go's built-in html/template library provides context-aware contextual auto-escaping. When you write {{.EnteredValue}} inside your HTML source code, Go analyzes the context (knowing it sits inside raw text or an attribute) and automatically transforms dangerous characters like <, >, &, and " into their safe HTML entity representations."
+			}
+
+			renderTemplate(w, "blocks", data)
 			return
 		}
 		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
