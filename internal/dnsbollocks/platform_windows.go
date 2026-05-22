@@ -3492,7 +3492,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	}
 	q := msg.Question[0]
 	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowercase it for matchPattern below! at least.
-	if domain == "" {                                          // Edge: Empty domain
+	if domain == "" || !isValidDNSName(domain) {               // Edge: Empty domain
 		return formerrResponse(msg)
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
