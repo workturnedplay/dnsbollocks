@@ -1135,9 +1135,9 @@ func isValidDNSName(s string) bool {
 	return dnsNameRE.MatchString(s)
 }
 
-// ianitizeDomainInput removes any characters not explicitly allowed.
+// sanitizeDomainInput removes any characters not explicitly allowed.
 // Safe for logs and DNS-related handling.
-func ianitizeDomainInput(input string) (sanitized string, modified bool) {
+func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!"
 
 	var b strings.Builder
@@ -1497,6 +1497,18 @@ var uiTemplates = template.Must(template.New("").Parse(
         display: block;
         margin-top: 5px;
     }
+
+	/* 7. SUCCESS ALERTS */
+    .alert-success {
+        background-color: #162419;
+        color: #4ec9b0;
+        border: 1px solid #1e3a24;
+        border-left: 4px solid #28a745;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        box-sizing: border-box;
+    }
 </style></head><body>` +
 		noScriptWarningHTML + `
     <div class="container">
@@ -1647,6 +1659,11 @@ var uiTemplates = template.Must(template.New("").Parse(
     <div class="alert-error">
         <strong>Error:</strong> {{.ErrorMessage}}
         <small>Processed input value: <code>{{.EnteredValue}}</code></small>
+    </div>
+{{end}}
+{{if .SuccessMessage}}
+    <div class="alert-success">
+        <strong>Success:</strong> {{.SuccessMessage}}
     </div>
 {{end}}
 <h2>Recent Blocks (Quick Unblock)</h2>
@@ -5340,80 +5357,43 @@ func renderTemplate(w http.ResponseWriter, pageName string, data any) {
 	}
 }
 
+func getRecentBlocksCopy() []BlockedQuery {
+	blockMutex.Lock()
+	defer blockMutex.Unlock()
+
+	// Make a copy so we don't hold the lock while template renders
+	blocksCopy := make([]BlockedQuery, len(recentBlocks))
+	copy(blocksCopy, recentBlocks)
+	return blocksCopy
+}
+
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// var body strings.Builder
-		// body.WriteString("<h2>Recent Blocks (Quick Unblock)</h2><ul>")
-		// func() {
-		// 	blockMutex.Lock()
-		// 	defer blockMutex.Unlock()
-		// 	for _, b := range recentBlocks {
-		// 		body.WriteString(fmt.Sprintf("<li>%q (%q) <form method=post action=/blocks><input type=hidden name=domain value=%q><input type=hidden name=type value=A><button>Unblock A</button></form> <button onclick=\"location.href='/blocks?type=AAAA&domain=%s'\">Unblock AAAA</button></li>",
-		// 			b.Domain, b.Type, b.Domain, b.Domain))
-		// 	}
-		// }()
-		// body.WriteString("</ul>")
-		// uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
-		blockMutex.Lock()
-		// Make a copy so we don't hold the lock while template renders
-		blocksCopy := make([]BlockedQuery, len(recentBlocks))
-		copy(blocksCopy, recentBlocks)
-		blockMutex.Unlock()
-
 		data := map[string]any{
 			"Page":   "blocks",
-			"Blocks": blocksCopy,
+			"Blocks": getRecentBlocksCopy(),
 		}
 
-		// if err := uiTemplates.Execute(w, data); err != nil {
-		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
-		// }
-		// var buf bytes.Buffer
-		// if err := uiTemplates.Execute(&buf, data); err != nil {
-		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
-		// 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		// 	return
-		// }
-
-		// if _, err := buf.WriteTo(w); err != nil {
-		// 	// Downgrade to Debug (or completely ignore) because it just means the browser closed the tab/connection early.
-		// 	mainLogger.Debug("client_disconnected_during_ui_write", slog.Any("err", err))
-		// }
 		renderTemplate(w, "blocks", data)
 		return
 	}
 	if r.Method == "POST" {
-		//domain := r.FormValue("domain")
 		raw := r.FormValue("domain")
 
-		sanitized, modified := ianitizeDomainInput(raw)
+		sanitized, modified := sanitizeDomainInput(raw)
 
-		if modified || !isValidDNSName(sanitized) { //TODO: check if this is valid upon querying too!
-			// //doneTODO:
-			// // re-render form with:
-			// // - error message
-			// // - escaped original raw input
-			// lastEditedPatternEscaped := template.HTMLEscapeString(raw)
-			// fmt.Printf("Invalid domain, raw: %q\n sanitized: %q\n modified: %t\n escaped: %q", raw, sanitized, modified, lastEditedPatternEscaped)
-			// return
-			//lastEditedPatternEscaped := template.HTMLEscapeString(raw)
-			mainLogger.Warn("Invalid domain input submitted via blocks handler",
+		if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern via Quick Unblock here, but an actual valid DNS query domain (and without ending in a dot)
+			mainLogger.Warn("Invalid domain input submitted via Quick Unblock",
 				slog.String("raw", raw),
 				slog.String("sanitized", sanitized),
 				slog.Bool("modified", modified),
 			)
 
-			// Re-fetch the blocks copy so we can re-render the page correctly with data
-			blockMutex.Lock()
-			blocksCopy := make([]BlockedQuery, len(recentBlocks))
-			copy(blocksCopy, recentBlocks)
-			blockMutex.Unlock()
-
 			// Re-render the form containing the error message and previous input
 			data := map[string]any{
-				"Page":         "blocks",
-				"Blocks":       blocksCopy,
+				"Page": "blocks",
+				// Re-fetch the blocks copy so we can re-render the page correctly with data
+				"Blocks":       getRecentBlocksCopy(),
 				"ErrorMessage": "Invalid domain format. Please enter a valid domain name.",
 				"EnteredValue": raw, // "Go's built-in html/template library provides context-aware contextual auto-escaping. When you write {{.EnteredValue}} inside your HTML source code, Go analyzes the context (knowing it sits inside raw text or an attribute) and automatically transforms dangerous characters like <, >, &, and " into their safe HTML entity representations."
 			}
@@ -5425,26 +5405,22 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		// accept sanitized
 		typ := r.FormValue("type")
+		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
 			func() { // anonymous function just for scoping defer
 				ruleMutex.Lock()
 				defer ruleMutex.Unlock()
-				// // Add rule for typ
-				// newRule := RuleEntry{ID: newUniqueID(whitelist), // this can panic
-				// 	Pattern: domainLowercased, Enabled: true}
-				// // if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
-				// // 	whitelist[typ] = []Rule{}
-				// // }
-				// whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
 				found := false
 				for i, rule := range whitelist[typ] {
 					if rule.Pattern == domainLowercased {
 						if !rule.Enabled {
 							whitelist[typ][i].Enabled = true
+							successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
 							mainLogger.Info("Quick unblock: enabled existing paused rule",
 								slog.String("domainLowercased", domainLowercased),
 								slog.String("DNSType", typ))
 						} else {
+							successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
 							mainLogger.Info("Quick unblock: ignored, rule is already active",
 								slog.String("domainLowercased", domainLowercased),
 								slog.String("DNSType", typ))
@@ -5460,19 +5436,36 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 						Pattern: domainLowercased,
 						Enabled: true,
 					}
-					whitelist[typ] = append(whitelist[typ], newRule)
+					whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+					successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
 					mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
 				}
 			}() // lock released here
 			if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
-				//mainLogger.Error("save_whitelist_failed_after_quick_unblock", slog.Any("err", err))
 				logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
-			//mainLogger.Info("Quick unblock added", slog.String("domainLowercased", domainLowercased), slog.String("DNSType", typ))
+			// Render the page directly with our success context!
+			data := map[string]any{
+				"Page":           "blocks",
+				"Blocks":         getRecentBlocksCopy(),
+				"SuccessMessage": successMessage,
+			}
+			renderTemplate(w, "blocks", data)
+			return
 		}
-		http.Redirect(w, r, "/blocks", http.StatusSeeOther)
+		//http.Redirect(w, r, "/blocks", http.StatusSeeOther)
+		// Re-render the form with an explicit payload error message showing what was passed
+		payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
+		data := map[string]any{
+			"Page":         "blocks",
+			"Blocks":       getRecentBlocksCopy(),
+			"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
+		}
+
+		renderTemplate(w, "blocks", data)
+		return
 	}
 }
 
