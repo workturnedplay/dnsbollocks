@@ -1103,9 +1103,10 @@ var dnsTypes = []string{
 }
 
 type BlockedQuery struct {
-	Domain string    `json:"domain"`
-	Type   string    `json:"type"`
-	Time   time.Time `json:"time"`
+	Domain      string    `json:"domain"`
+	Type        string    `json:"type"`
+	Time        time.Time `json:"time"`
+	IsUnblocked bool      `json:"-"` // dynamically set for the UI
 }
 
 /*
@@ -1537,6 +1538,21 @@ var uiTemplates = template.Must(template.New("").Parse(
     </div>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
+		// Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
+		document.addEventListener('keydown', function(e) {
+			// Only trigger if we aren't typing inside an input field
+			if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+				
+				// Check for F5 OR Ctrl+R
+				const isF5 = e.key === 'F5';
+				const isCtrlR = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r';
+
+				if (isF5 || isCtrlR) {
+					e.preventDefault(); // Stop Firefox from doing a POST-reload
+					window.location.href = '/blocks'; // Perform a clean GET-reload instead
+				}
+			}
+		});
         document.querySelectorAll('button[data-edit-id]').forEach(btn => {
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
@@ -1666,7 +1682,10 @@ var uiTemplates = template.Must(template.New("").Parse(
         <strong>Success:</strong> {{.SuccessMessage}}
     </div>
 {{end}}
-<h2>Recent Blocks (Quick Unblock)</h2>
+<div style="margin-top: 40px; border-bottom: 2px solid #333; padding-bottom: 10px;">
+    <h2 style="display: inline-block; margin: 0; border: none; padding: 0; vertical-align: middle;">Recent Blocks (Quick Unblock)</h2>
+    <button type="button" class="btn-edit" style="display: inline-block; margin-left: 15px; vertical-align: middle;" onclick="window.location.href='/blocks'">🔄 Refresh Page (Ctrl+R or F5)</button>
+</div>
 <p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
     Note: Only queries blocked locally by DNSbollocks are shown here. Blocks applied by upstream providers (like Quad9 or NextDNS) are not tracked.
 </p>
@@ -1674,11 +1693,22 @@ var uiTemplates = template.Must(template.New("").Parse(
 {{range .Blocks}}
     <li>
         <code>{{.Domain}}</code> <span class="tag-disabled">({{.Type}})</span>
+        
+        {{if .IsUnblocked}}
         <form method="post" action="/blocks" style="display:inline;">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="reblock">
+            <button type="submit" class="btn-cancel">Re-block (Pause)</button>
+        </form>
+        {{else}}
+        <form method="post" action="/blocks" style="display:inline;">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="unblock">
             <button type="submit" class="btn-edit">Unblock {{.Type}}</button>
-        </form> 
+        </form>
+        {{end}}
     </li>
 {{end}}
 </ul>
@@ -5358,12 +5388,30 @@ func renderTemplate(w http.ResponseWriter, pageName string, data any) {
 }
 
 func getRecentBlocksCopy() []BlockedQuery {
-	blockMutex.Lock()
-	defer blockMutex.Unlock()
+	blocksCopy := func() []BlockedQuery {
+		blockMutex.Lock()
+		defer blockMutex.Unlock()
 
-	// Make a copy so we don't hold the lock while template renders
-	blocksCopy := make([]BlockedQuery, len(recentBlocks))
-	copy(blocksCopy, recentBlocks)
+		// Make a copy so we don't hold the lock while template renders
+		blocksCopy := make([]BlockedQuery, len(recentBlocks))
+		copy(blocksCopy, recentBlocks)
+		return blocksCopy
+	}() // defer triggers before this returned
+	// Check live whitelist to see if these domains are currently unblocked
+	ruleMutex.RLock()
+	defer ruleMutex.RUnlock()
+	for i := range blocksCopy {
+		b := &blocksCopy[i]
+		b.IsUnblocked = false
+		if rules, ok := whitelist[b.Type]; ok {
+			for _, r := range rules { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
+				if r.Pattern == b.Domain && r.Enabled {
+					b.IsUnblocked = true
+					break
+				}
+			}
+		}
+	}
 	return blocksCopy
 }
 
@@ -5405,42 +5453,92 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		// accept sanitized
 		typ := r.FormValue("type")
+		action := r.FormValue("action")
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
 			func() { // anonymous function just for scoping defer
 				ruleMutex.Lock()
 				defer ruleMutex.Unlock()
-				found := false
-				for i, rule := range whitelist[typ] {
-					if rule.Pattern == domainLowercased {
-						if !rule.Enabled {
-							whitelist[typ][i].Enabled = true
-							successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-							mainLogger.Info("Quick unblock: enabled existing paused rule",
-								slog.String("domainLowercased", domainLowercased),
-								slog.String("DNSType", typ))
-						} else {
-							successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-							mainLogger.Info("Quick unblock: ignored, rule is already active",
-								slog.String("domainLowercased", domainLowercased),
-								slog.String("DNSType", typ))
-						}
-						found = true
-						break
-					}
-				}
+				// found := false
+				// for i, rule := range whitelist[typ] {
+				// 	if rule.Pattern == domainLowercased {
+				// 		if !rule.Enabled {
+				// 			whitelist[typ][i].Enabled = true
+				// 			successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
+				// 			mainLogger.Info("Quick unblock: enabled existing paused rule",
+				// 				slog.String("domainLowercased", domainLowercased),
+				// 				slog.String("DNSType", typ))
+				// 		} else {
+				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
+				// 			mainLogger.Info("Quick unblock: ignored, rule is already active",
+				// 				slog.String("domainLowercased", domainLowercased),
+				// 				slog.String("DNSType", typ))
+				// 		}
+				// 		found = true
+				// 		break
+				// 	}
+				// }
 
-				if !found {
-					newRule := RuleEntry{
-						ID:      newUniqueID(whitelist),
-						Pattern: domainLowercased,
-						Enabled: true,
+				// if !found {
+				// 	newRule := RuleEntry{
+				// 		ID:      newUniqueID(whitelist),
+				// 		Pattern: domainLowercased,
+				// 		Enabled: true,
+				// 	}
+				// 	whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+				// 	successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
+				// 	mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
+				// 		slog.String("domainLowercased", domainLowercased),
+				// 		slog.String("DNSType", typ))
+				// }
+				if action == "reblock" {
+					for i, rule := range whitelist[typ] {
+						if rule.Pattern == domainLowercased {
+							if rule.Enabled {
+								whitelist[typ][i].Enabled = false
+								successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
+								mainLogger.Info("Quick re-block: paused existing rule",
+									slog.String("domainLowercased", domainLowercased),
+									slog.String("DNSType", typ))
+							} else {
+								successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
+							}
+							break
+						}
 					}
-					whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
-					successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-					mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
-						slog.String("domainLowercased", domainLowercased),
-						slog.String("DNSType", typ))
+				} else {
+					found := false
+					for i, rule := range whitelist[typ] {
+						if rule.Pattern == domainLowercased {
+							if !rule.Enabled {
+								whitelist[typ][i].Enabled = true
+								successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
+								mainLogger.Info("Quick unblock: enabled existing paused rule",
+									slog.String("domainLowercased", domainLowercased),
+									slog.String("DNSType", typ))
+							} else {
+								successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
+								mainLogger.Info("Quick unblock: ignored, rule is already active",
+									slog.String("domainLowercased", domainLowercased),
+									slog.String("DNSType", typ))
+							}
+							found = true
+							break
+						}
+					}
+
+					if !found {
+						newRule := RuleEntry{
+							ID:      newUniqueID(whitelist),
+							Pattern: domainLowercased,
+							Enabled: true,
+						}
+						whitelist[typ] = append(whitelist[typ], newRule)
+						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
+						mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
+							slog.String("domainLowercased", domainLowercased),
+							slog.String("DNSType", typ))
+					}
 				}
 			}() // lock released here
 			if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
