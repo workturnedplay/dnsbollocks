@@ -1006,13 +1006,15 @@ var (
 	clientLimiters sync.Map               // map[string]*rate.Limiter
 	whitelist      map[string][]RuleEntry // type -> rules
 	ruleMutex      sync.RWMutex
-	recentBlocks   = make([]BlockedQuery, 0, 50) // For UI
+	recentBlocks   = make([]BlockedQuery, 0, keepTrackOfThisManyRecentBlocks) // For UI
 	blockMutex     sync.Mutex
 	stats          = expvar.NewInt("blocks") // Simple stats
 
 	backgroundCtx, cancel = context.WithCancel(context.Background())
 	shutdownWG            sync.WaitGroup
 )
+
+const keepTrackOfThisManyRecentBlocks = 100 //TODO: maybe make this configurable in config.json
 
 var dnsTypes = []string{
 	//most used first
@@ -3618,9 +3620,9 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			newBlock := BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
 			recentBlocks = append([]BlockedQuery{newBlock}, recentBlocks...)
 
-			// 3. Keep the list size to a maximum of 50
-			if len(recentBlocks) > 50 {
-				recentBlocks = recentBlocks[:50]
+			// 3. Keep the list size to a maximum of keepTrackOfThisManyRecentBlocks
+			if len(recentBlocks) > keepTrackOfThisManyRecentBlocks {
+				recentBlocks = recentBlocks[:keepTrackOfThisManyRecentBlocks]
 			}
 		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
