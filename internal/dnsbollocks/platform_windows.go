@@ -5375,19 +5375,48 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			func() { // anonymous function just for scoping defer
 				ruleMutex.Lock()
 				defer ruleMutex.Unlock()
-				// Add rule for typ
-				newRule := RuleEntry{ID: newUniqueID(whitelist), // this can panic
-					Pattern: domainLowercased, Enabled: true}
-				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
-				// 	whitelist[typ] = []Rule{}
-				// }
-				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+				// // Add rule for typ
+				// newRule := RuleEntry{ID: newUniqueID(whitelist), // this can panic
+				// 	Pattern: domainLowercased, Enabled: true}
+				// // if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
+				// // 	whitelist[typ] = []Rule{}
+				// // }
+				// whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+				found := false
+				for i, rule := range whitelist[typ] {
+					if rule.Pattern == domainLowercased {
+						if !rule.Enabled {
+							whitelist[typ][i].Enabled = true
+							mainLogger.Info("Quick unblock: enabled existing paused rule",
+								slog.String("domainLowercased", domainLowercased),
+								slog.String("DNSType", typ))
+						} else {
+							mainLogger.Info("Quick unblock: ignored, rule is already active",
+								slog.String("domainLowercased", domainLowercased),
+								slog.String("DNSType", typ))
+						}
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					newRule := RuleEntry{
+						ID:      newUniqueID(whitelist),
+						Pattern: domainLowercased,
+						Enabled: true,
+					}
+					whitelist[typ] = append(whitelist[typ], newRule)
+					mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
+						slog.String("domainLowercased", domainLowercased),
+						slog.String("DNSType", typ))
+				}
 			}() // lock released here
 			if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
 				//mainLogger.Error("save_whitelist_failed_after_quick_unblock", slog.Any("err", err))
 				logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
-			mainLogger.Info("Quick unblock added", slog.String("domainLowercased", domainLowercased), slog.String("DNSType", typ))
+			//mainLogger.Info("Quick unblock added", slog.String("domainLowercased", domainLowercased), slog.String("DNSType", typ))
 		}
 		http.Redirect(w, r, "/blocks", http.StatusSeeOther)
 	}
