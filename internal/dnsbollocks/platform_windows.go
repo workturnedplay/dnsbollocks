@@ -1655,13 +1655,13 @@ var uiTemplates = template.Must(template.New("").Parse(
 </p>
 <ul>
 {{range .Blocks}}
-    <li>{{.Domain}} ({{.Type}}) 
+    <li>
+        <code>{{.Domain}}</code> <span class="tag-disabled">({{.Type}})</span>
         <form method="post" action="/blocks" style="display:inline;">
             <input type="hidden" name="domain" value="{{.Domain}}">
-            <input type="hidden" name="type" value="A">
-            <button type="submit">Unblock A</button>
+            <input type="hidden" name="type" value="{{.Type}}">
+            <button type="submit" class="btn-edit">Unblock {{.Type}}</button>
         </form> 
-        <button onclick="location.href='/blocks?type=AAAA&domain={{.Domain}}'">Unblock AAAA</button>
     </li>
 {{end}}
 </ul>
