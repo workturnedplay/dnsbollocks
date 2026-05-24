@@ -1175,237 +1175,6 @@ const noScriptWarningHTML = `
 </noscript>
 `
 
-// var uiTemplates = template.Must(template.New("").Parse(
-// 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
-//     <style>
-// body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
-//         .container { max-width: 1000px; margin: auto; }
-//         h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
-//         table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
-//         th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
-//         th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
-//         .btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
-//         .btn-edit { background: #0078d4; color: white; }
-//         .btn-del { background: #d83b01; color: white; margin-left: 5px; }
-//         .btn-cancel { background: #444; color: white; }\n        .actions { white-space: nowrap; }
-//         .hidden { display: none; }
-//         input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
-
-//         thead th {
-//             position: sticky;
-//             top: 0;
-//             background: #1e1e1e;
-//             z-index: 2;
-//         }
-
-// .actions {
-//     white-space: nowrap;
-// }
-// .actions form {
-//     display: inline;
-//     margin: 0;
-// }
-// .actions button {
-//     display: inline-block;
-//     vertical-align: middle;
-// }
-
-// /* --- UI stability fixes --- */
-// table {
-//   border-collapse: collapse;
-// }
-// thead th {
-//   position: sticky;
-//   top: 0;
-//   background: #222;
-//   z-index: 3;
-// }
-// .actions {
-//   white-space: nowrap;
-// }
-// .actions form {
-//   display: inline;
-//   margin: 0;
-// }
-// .actions button {
-//   display: inline-block;
-//   vertical-align: middle;
-// }
-// /* Prevent edit row from changing height */
-// tr td {
-//   vertical-align: middle;
-// }
-
-// </style></head><body>` +
-// 		noScriptWarningHTML + `
-//     <div class="container">
-//     <h1>DNSbollocks</h1>
-//     <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Local Hosts</a> | <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-//     {{.Body}}
-//     </div>
-//     <script>
-//     document.addEventListener('DOMContentLoaded', function() {
-//         document.querySelectorAll('button[data-edit-id]').forEach(btn => {
-//             btn.addEventListener('click', function(e) {
-//                 e.preventDefault();
-//                 const row = this.closest('tr');
-//                 const typ = this.dataset.editType;
-//                 const id = this.dataset.editId;
-//                 const oldPattern = this.dataset.editPattern;
-//                 const enabled = this.dataset.editEnabled === 'true';
-//                 row.style.display = 'none';
-//                 const formHtml = ` + "`" + `
-//                 <tr>
-//                     <td>
-//                         <select name="type" id="editType_${id}">
-//                             ` + strings.Join(func() []string {
-// 		var opts []string
-// 		for _, t := range dnsTypes {
-// 			//dnsTypes is from our Go code not user input, can use %s here. Also puting user input here would be bad for this templating too!
-// 			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
-// 		}
-// 		return opts
-// 	}(), "") + `
-//                         </select>
-//                     </td>
-//                     <td>${id}</td>
-//                     <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width:100%"></td>
-//                     <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''}></label></td>
-//                     <td>
-//                         <form method="post" action="/rules" id="editForm_${id}">
-//                             <input type="hidden" name="id" value="${id}">
-//                             <button type="submit">Save</button>
-//                             <button type="button" onclick="cancelEdit('${id}')">Cancel</button>
-//                         </form>
-//                     </td>
-//                 </tr>
-//                 ` + "`" + `;
-//                 row.insertAdjacentHTML('afterend', formHtml);
-// 				const select = document.getElementById('editType_' + id);
-// 				if (select) {
-// 					select.value = typ;
-// 					// Guard: detect impossible / stale / corrupted types
-// 					if (![...select.options].some(o => o.value === typ)) {
-// 						console.warn(
-// 							'Unknown DNS type for rule',
-// 							{ id, typ, known: [...select.options].map(o => o.value) }
-// 						);
-// 						select.selectedIndex = 0;
-// 					}
-// 				}
-//                 const form = document.getElementById('editForm_' + id);
-//                 form.addEventListener('submit', function(e) {
-//                     e.preventDefault();
-//                     const newPattern = document.getElementById('editPattern_' + id).value.trim();
-//                     const enabledChecked = document.getElementById('editEnabled_' + id).checked;
-//                     const newType = document.getElementById('editType_' + id).value;
-//                     if (newPattern === '') {
-//                         alert('Pattern cannot be empty');
-//                         return;
-//                     }
-//                     const formData = new FormData();
-//                     formData.append('id', id);
-//                     formData.append('pattern', newPattern);
-//                     formData.append('type', newType);
-//                     formData.append('enabled', enabledChecked ? 'true' : 'false');
-//                     fetch('/rules', {method: 'POST', body: formData})
-//                         .then(() => location.reload())
-//                         .catch(err => console.error('Save failed:', err));
-//                 });
-//             });
-//         });
-//         window.cancelEdit = function(id) {
-//             const formElem = document.querySelector('#editForm_' + id);
-//             if (!formElem) return;
-//             const tr = formElem.closest('tr');
-//             if (tr) tr.remove();
-//             const originalBtn = document.querySelector('button[data-edit-id="' + id + '"]');
-//             if (originalBtn) {
-//                 const originalRow = originalBtn.closest('tr');
-//                 if (originalRow) originalRow.style.display = '';
-//             }
-//         };
-//     });
-//     </script>
-
-// <script>
-// // Preserve scroll position across form submits / reloads
-// (function() {
-//   const key = "scrollY";
-//   window.addEventListener("beforeunload", function () {
-//     try { sessionStorage.setItem(key, window.scrollY); } catch(e) {}
-//   });
-//   window.addEventListener("load", function () {
-//     try {
-//       const y = sessionStorage.getItem(key);
-//       if (y !== null) window.scrollTo(0, parseInt(y, 10));
-//     } catch(e) {}
-//   });
-// })();
-// </script>
-
-// </body></html>`,
-// ))
-
-// body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; padding: 40px; }
-//
-//	.container { max-width: 1000px; margin: auto; }
-//	h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; }
-//	table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
-//	th, td { padding: 15px; text-align: left; border-bottom: 1px solid #333; }
-//	th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; }
-//	.btn { padding: 6px 12px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
-//	.btn-edit { background: #0078d4; color: white; }
-//	.btn-del { background: #d83b01; color: white; margin-left: 5px; }
-//	.btn-cancel { background: #444; color: white; }
-//	.actions { white-space: nowrap; }
-//	.hidden { display: none; }
-//	input[type="text"] { background: #2d2d2d; color: white; border: 1px solid #444; padding: 6px; width: 70%; }
-//	thead th { position: sticky; top: 0; background: #1e1e1e; z-index: 2; }
-//	.actions form { display: inline; margin: 0; }
-//	.actions button { display: inline-block; vertical-align: middle; }
-//	tr td { vertical-align: middle; }
-
-// <style>
-// 		body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
-//         .container { max-width: 1100px; margin: auto; }
-//         h1 { color: #0078d4; margin-bottom: 20px; }
-//         h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
-
-//         /* GLOBAL FORM STYLES (The Dark Mode Fix) */
-//         input[type="text"], select, button {
-//             background: #2d2d2d;
-//             color: #ffffff;
-//             border: 1px solid #444;
-//             padding: 8px 12px;
-//             border-radius: 4px;
-//             outline: none;
-//             font-size: 0.9em;
-//         }
-//         input[type="text"]:focus, select:focus { border-color: #0078d4; }
-//         button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
-//         button:hover { background: #3d3d3d; }
-
-//         /* Tables */
-//         table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; }
-//         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
-//         th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
-
-//         /* Specialized Buttons */
-//         .btn-edit { background: #0078d4; color: white; border: none; }
-//         .btn-edit:hover { background: #005a9e; }
-//         .btn-del { background: #d83b01; color: white; border: none; }
-//         .btn-del:hover { background: #a82a01; }
-//         .btn-cancel { background: #444; color: white; border: none; }
-
-//	nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
-//	nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
-//	nav a:hover { text-decoration: underline; }
-//	.tag-enabled { color: #4ec9b0; font-weight: bold; }
-//	.tag-disabled { color: #f44747; font-weight: bold; }
-//	pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; }
-//
-// </style>
 var uiTemplates = template.Must(template.New("").Parse(
 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
 <style>
@@ -1512,6 +1281,11 @@ var uiTemplates = template.Must(template.New("").Parse(
         border-radius: 4px;
         box-sizing: border-box;
     }
+
+	/* Sorting Styles */
+    th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
+    th.sortable:hover { background: #333; color: #fff; }
+    .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
 </style></head><body>` +
 		noScriptWarningHTML + `
     <div class="container">
@@ -1622,6 +1396,60 @@ var uiTemplates = template.Must(template.New("").Parse(
             }
         };
     });
+	// --- Client-Side Table Sorting Logic ---
+		const table = document.getElementById('rulesTable');
+		if (table) {
+			const tbody = table.querySelector('tbody');
+			const headers = table.querySelectorAll('th.sortable');
+			// Store original row order to revert back to 'none'
+			const originalRows = Array.from(tbody.rows);
+			originalRows.forEach((row, i) => row.dataset.origIndex = i);
+
+			headers.forEach(th => {
+				th.dataset.sortDir = 'none'; // none, asc, desc
+				
+				th.addEventListener('click', () => {
+					// 1. Cancel any active inline edits so they don't break during sort
+					document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+
+					const colIndex = parseInt(th.dataset.col);
+					const currentDir = th.dataset.sortDir;
+					let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
+
+					// Reset all headers
+					headers.forEach(h => {
+						h.dataset.sortDir = 'none';
+						h.querySelector('.sort-icon').textContent = '';
+					});
+
+					// Update clicked header
+					th.dataset.sortDir = newDir;
+					const icon = th.querySelector('.sort-icon');
+					if (newDir === 'asc') icon.textContent = '▲';
+					if (newDir === 'desc') icon.textContent = '▼';
+
+					let rowsArray = Array.from(tbody.rows);
+
+					if (newDir === 'none') {
+						// Revert to original order
+						rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
+					} else {
+						// Sort ascending or descending
+						rowsArray.sort((a, b) => {
+							let valA = a.cells[colIndex].innerText.trim().toLowerCase();
+							let valB = b.cells[colIndex].innerText.trim().toLowerCase();
+							
+							if (valA < valB) return newDir === 'asc' ? -1 : 1;
+							if (valA > valB) return newDir === 'asc' ? 1 : -1;
+							return 0;
+						});
+					}
+
+					// Append rows back to tbody in sorted order
+					rowsArray.forEach(row => tbody.appendChild(row));
+				});
+			});
+		}
     </script>
 </body></html>
 
@@ -1640,7 +1468,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 </form>
 
 <h2>Whitelist Rules</h2>
-<table>
+<table id="rulesTable">
     <colgroup>
         <col style="width: 14%;">
         <col style="width: 30%;">
@@ -1648,26 +1476,34 @@ var uiTemplates = template.Must(template.New("").Parse(
         <col style="width: 12%;">
         <col style="width: 18%;">
     </colgroup>
-    <tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>
-{{range $typ, $ruleList := .Rules}}
-    {{range $ruleList}}
+    <thead>
+        <tr>
+            <th class="sortable" data-col="0">Type <span class="sort-icon"></span></th>
+            <th class="sortable" data-col="1">ID <span class="sort-icon"></span></th>
+            <th class="sortable" data-col="2">Pattern <span class="sort-icon"></span></th>
+            <th class="sortable" data-col="3">Enabled <span class="sort-icon"></span></th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    {{range .Rules}}
     <tr>
-        <td>{{$typ}}</td>
+        <td>{{.Type}}</td>
         <td title="{{.ID}}">{{.ID}}</td>
         <td title="{{.Pattern}}">{{.Pattern}}</td>
 		<td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
         <td class="actions">
-            <button class="btn-edit" data-edit-id="{{.ID}}" data-edit-type="{{$typ}}" data-edit-pattern="{{.Pattern}}" data-edit-enabled="{{.Enabled}}">Edit</button>
+            <button class="btn-edit" data-edit-id="{{.ID}}" data-edit-type="{{.Type}}" data-edit-pattern="{{.Pattern}}" data-edit-enabled="{{.Enabled}}">Edit</button>
             <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
                 <input type="hidden" name="delete" value="1">
                 <input type="hidden" name="id" value="{{.ID}}">
-                <input type="hidden" name="type" value="{{$typ}}">
+                <input type="hidden" name="type" value="{{.Type}}">
                 <button type="submit" class="btn-del">Delete</button>
             </form>
         </td>
     </tr>
     {{end}}
-{{end}}
+    </tbody>
 </table>
 {{end}}
 
@@ -3558,25 +3394,14 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	}
 
 	// Whitelist
-	ruleMutex.RLock()
-	rules := whitelist[qtype]
 	matchedID := "" // must be empty, used in 2 logical places, one's here.
 	matched := false
-	for _, rule := range rules {
-		if !rule.Enabled {
-			continue
-		}
-		if matchPattern(rule.Pattern, domain) {
-			matchedID = rule.ID
-			matched = true
-			break
-		}
-	}
+	func() { //for 'defer'
+		ruleMutex.RLock()
+		defer ruleMutex.RUnlock()
 
-	// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
-	// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
-	if config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
-		for _, rule := range whitelist["A"] {
+		rules := whitelist[qtype]
+		for _, rule := range rules {
 			if !rule.Enabled {
 				continue
 			}
@@ -3586,10 +3411,25 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 				break
 			}
 		}
-	}
-	// --- END OF NEW CODE ---
 
-	ruleMutex.RUnlock()
+		// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
+		// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
+		if config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
+			for _, rule := range whitelist["A"] {
+				if !rule.Enabled {
+					continue
+				}
+				if matchPattern(rule.Pattern, domain) {
+					matchedID = rule.ID
+					matched = true
+					break
+				}
+			}
+		}
+		// --- END OF NEW CODE ---
+
+		// ruleMutex.RUnlock()
+	}()
 	// if !matched {
 	// 	stats.Add(1)
 	// 	func() {
@@ -4892,73 +4732,54 @@ func snapshotWhitelist() map[string][]RuleEntry {
 	return copyMap
 }
 
+type RuleView struct {
+	Type    string
+	ID      string
+	Pattern string
+	Enabled bool
+}
+
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// data := map[string]any{
+		// 	"Page":     "rules",
+		// 	"DNSTypes": dnsTypes,
+		// 	"Rules":    snapshotWhitelist(), // Safe, independent copy
+		// }
 
-		// ruleMutex.RLock()
-		// defer ruleMutex.RUnlock()
+		// Flatten the map into a single slice for unified table rendering
+		rulesSnapshot := snapshotWhitelist() // Safe, independent copy
+		// var flatRules []RuleView
+		// for typ, rules := range rulesSnapshot {
+		// 	for _, rule := range rules {
+		// 1. Extract and sort the keys (DNS Types) to stop random UI shuffling
+		var types []string
+		for typ := range rulesSnapshot {
+			types = append(types, typ)
+		}
+		sort.Strings(types) // "A" will now consistently appear before "HTTPS"
+
+		// 2. Build the flat list using the sorted types
+		var flatRules []RuleView
+		for _, typ := range types {
+			rules := rulesSnapshot[typ]
+			for _, rule := range rules {
+				flatRules = append(flatRules, RuleView{
+					Type:    typ,
+					ID:      rule.ID,
+					Pattern: rule.Pattern,
+					Enabled: rule.Enabled,
+				})
+			}
+		}
 
 		data := map[string]any{
 			"Page":     "rules",
 			"DNSTypes": dnsTypes,
-			"Rules":    snapshotWhitelist(), // Safe, independent copy
+			"Rules":    flatRules, // Passing the flattened slice now
 		}
 
-		// var body strings.Builder
-
-		// // Add form
-		// body.WriteString("<h2>Add New Rule</h2>")
-		// body.WriteString("<form method=\"post\" action=\"/rules\">")
-		// body.WriteString("<select name=\"type\">")
-		// for _, t := range dnsTypes {
-		// 	fmt.Fprintf(&body, "<option value=%q>%s</option>", t, t)
-		// }
-		// body.WriteString("</select> ")
-		// body.WriteString("<input type=\"text\" name=\"pattern\" placeholder=\"pattern\" required> ")
-		// body.WriteString("<label><input type=\"checkbox\" name=\"enabled\" checked> Enabled</label> ")
-		// body.WriteString("<button type=\"submit\">Add Rule</button>")
-		// body.WriteString("</form>")
-
-		// // Table
-		// body.WriteString("<h2>Whitelist Rules</h2>")
-		// body.WriteString("<table><tr><th>Type</th><th>ID</th><th>Pattern</th><th>Enabled</th><th>Actions</th></tr>")
-
-		// for typ, rules := range whitelist {
-		// 	for _, rule := range rules {
-		// 		enabled := "Yes"
-		// 		if !rule.Enabled {
-		// 			enabled = "No"
-		// 		}
-		// 		escapedPattern := html.EscapeString(rule.Pattern)
-		// 		body.WriteString(fmt.Sprintf(`
-		// <tr>
-		//     <td>%q</td>
-		//     <td>%q</td>
-		//     <td>%q</td>
-		//     <td>%q</td>
-		//     <td class="actions">
-		//         <button class="btn btn-edit" data-edit-id=%q data-edit-type=%q data-edit-pattern=%q data-edit-enabled="%t">Edit</button>
-		//         <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
-		//             <input type="hidden" name="delete" value="1">
-		//             <input type="hidden" name="id" value=%q>
-		//             <input type="hidden" name="type" value=%q>
-		//             <button type="submit">Delete</button>
-		//         </form>
-		//     </td>
-		// </tr>`, typ, rule.ID, escapedPattern, enabled, rule.ID, typ, escapedPattern, rule.Enabled, rule.ID, typ))
-		// 	}
-		// }
-		// body.WriteString("</table>")
-		// Pass the raw data. The template handles the HTML.
-		//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
-
-		// NO LOCK NEEDED HERE during Execute
-		// if err := uiTemplates.Execute(w, data); err != nil {
-		// 	mainLogger.Error("template_execute_failed", slog.Any("err", err))
-		// }
 		renderTemplate(w, "rules", data)
-
 		return
 	}
 
@@ -4982,59 +4803,20 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				if rules, ok := whitelist[typ]; ok {
 					for i, rule := range rules {
 						if rule.ID == id {
-							// Copy the tail over the deleted element
-							copy(rules[i:], rules[i+1:])
-							// Explicitly zero the last element to prevent string memory leaks
-							rules[len(rules)-1] = RuleEntry{}
-							// Shrink the slice (wouldn't have zeroed last without the above explicit!)
-							whitelist[typ] = rules[:len(rules)-1]
+							// 	// Copy the tail over the deleted element
+							// 	copy(rules[i:], rules[i+1:])
+							// 	// Explicitly zero the last element to prevent string memory leaks
+							// 	rules[len(rules)-1] = RuleEntry{}
+							// 	// Shrink the slice (wouldn't have zeroed last without the above explicit!)
+							// 	whitelist[typ] = rules[:len(rules)-1]
+
+							// Replaces the shifting copy hacks with an isolated fresh array allocation
+							whitelist[typ] = withRuleRemovedAt(rules, i)
 							deleted = true
 							break
 						}
 					}
 				}
-
-				// if rules, ok := whitelist[typ]; ok && len(rules) > 0 {
-				// 	for i := range rules {
-				// 		if rules[i].ID == id {
-				// 			// Move the last element into the hole, even if it is itself
-				// 			rules[i] = rules[len(rules)-1]
-				// 			// Shrink slice (zero the old last element for GC friendliness)
-				// 			whitelist[typ] = rules[:len(rules)-1]
-				// 			deleted = true
-				// 			break
-				// 		}
-				// 	}
-				// }
-
-				// if rules, ok := whitelist[typ]; ok {
-				// 	// all operations on 'rules' are known to be on a non-nil slice
-				// 	for i, rule := range rules {
-				// 		if rule.ID == id {
-				// 			whitelist[typ] = append(rules[:i], rules[i+1:]...)
-				// 			fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", rule.Pattern, id, typ)
-				// 			deleted = true
-				// 			break
-				// 		}
-				// 	}
-				// }
-
-				// rules := whitelist[typ]
-				// for _, rr := range rules {
-				// 	if rr.ID == id {
-				// 		//config.Whitelist[typ] = append(rules[:i], rules[i+1:]...)
-				// 		wr := whitelist[typ]
-				// 		for j, wrr := range wr {
-				// 			if wrr.ID == id {
-				// 				whitelist[typ] = append(wr[:j], wr[j+1:]...)
-				// 				fmt.Printf("Rule deleted: %q id:%q (type: %q)\n", wr[j].Pattern, id, typ)
-				// 				deleted = true
-				// 				break
-				// 			}
-				// 		}
-
-				// 	}
-				// }
 			}() // lock released here
 			if deleted {
 				if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
@@ -5059,54 +4841,135 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		func() {
+		// Run the update/add logic inside a thread-safe closure that bubbles up errors
+		err := func() error {
 			ruleMutex.Lock()
 			defer ruleMutex.Unlock()
 
-			if id != "" {
-				// ruleMutex.Lock()
-				// defer ruleMutex.Unlock()
-				// Edit: Find and update (search all types)
-				found := false
-			outerfor:
-				for oldTyp, rules := range whitelist {
-					for i, rule := range rules {
-						if rule.ID == id {
-							// Remove from old type
-							//config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-							whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-							found = true
-							break outerfor
+			if id != "" { //this is an EDIT attempt
+				// 	// Edit: Find and update (search all types)
+				// 	found := false
+				// outerfor:
+				// 	for oldTyp, rules := range whitelist {
+				// 		for i, rule := range rules {
+				// 			if rule.ID == id {
+				// 				// Remove from old type
+				// 				//config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+				// 				whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
+				// 				found = true
+				// 				break outerfor
+				// 			}
+				// 		}
+				// 		if found {
+				// 			panic("shouldn't be hit, else the break label is wrong!?")
+				// 			//break
+				// 		}
+				// 	}
+				// 	if !found {
+				// 		http.Error(w, "Rule not found", http.StatusNotFound)
+				// 		return
+				// 	}
+
+				// 	// Add to new type
+				// 	newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+				// 	// if _, ok := whitelist[typ]; !ok {
+				// 	// 	//config.Whitelist[typ] = []Rule{}
+				// 	// 	whitelist[typ] = []Rule{}
+				// 	// }
+				// 	//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
+
+				// 	//whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+
+				// 	// Prepend to put the new rule at the top of this type's list
+				// 	whitelist[typ] = append([]RuleEntry{newRule}, whitelist[typ]...)
+
+				// 	fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
+				// --- EDIT MODE ---
+				var foundOldRule bool
+				var oldType string
+				var oldIndex int
+
+				// 1. Find where the rule currently lives
+				for t, rules := range whitelist {
+					for i, r := range rules {
+						if r.ID == id {
+							foundOldRule = true
+							oldType = t
+							oldIndex = i
+							break
 						}
 					}
-					if found {
-						panic("shouldn't be hit, else the break label is wrong!?")
-						//break
+					if foundOldRule {
+						break
 					}
 				}
-				if !found {
-					http.Error(w, "Rule not found", http.StatusNotFound)
-					return
+
+				if !foundOldRule {
+					return fmt.Errorf("rule not found")
 				}
 
-				// Add to new type
-				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-				// if _, ok := whitelist[typ]; !ok {
-				// 	//config.Whitelist[typ] = []Rule{}
-				// 	whitelist[typ] = []Rule{}
-				// }
-				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+				// 2. Check for pattern conflicts in the TARGET type group
+				for _, rule := range whitelist[typ] {
+					if rule.ID != id && rule.Pattern == patternLowercased {
+						return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
+					}
+				}
 
-				fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
-			} else {
+				// if oldType == typ {
+				// 	// Type didn't change -> Update fully IN-PLACE without mutating underlying array
+				// 	oldEntries := whitelist[typ]
+				// 	newEntries := make([]RuleEntry, len(oldEntries))
+				// 	copy(newEntries, oldEntries)
+
+				// 	newEntries[oldIndex].Pattern = patternLowercased
+				// 	newEntries[oldIndex].Enabled = enabledBool
+
+				// 	whitelist[typ] = newEntries
+				// } else {
+				// 	// Type changed -> Safely remove from old slice, safely prepend to new slice
+				// 	oldEntries := whitelist[oldType]
+				// 	newOldEntries := make([]RuleEntry, 0, len(oldEntries)-1)
+				// 	newOldEntries = append(newOldEntries, oldEntries[:oldIndex]...)
+				// 	newOldEntries = append(newOldEntries, oldEntries[oldIndex+1:]...)
+				// 	whitelist[oldType] = newOldEntries
+
+				// 	targetEntries := whitelist[typ]
+				// 	newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+
+				// 	newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
+				// 	newTargetEntries = append(newTargetEntries, newRule)
+				// 	newTargetEntries = append(newTargetEntries, targetEntries...)
+				// 	whitelist[typ] = newTargetEntries
+				// }
+				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+				if oldType == typ {
+					// Type didn't change -> Update fully IN-PLACE cleanly using our new function
+					whitelist[typ] = withRuleUpdatedAtIndex(whitelist[typ], oldIndex, newRule)
+				} else {
+					// Type changed -> Safely remove from old slice, safely prepend to new slice
+
+					// 1. Remove from old slice using copy (avoids the ... unpack allocation loop)
+					// oldEntries := whitelist[oldType]
+					// newOldEntries := make([]RuleEntry, len(oldEntries)-1)
+					// copy(newOldEntries[:oldIndex], oldEntries[:oldIndex])
+					// copy(newOldEntries[oldIndex:], oldEntries[oldIndex+1:])
+					// whitelist[oldType] = newOldEntries
+
+					whitelist[oldType] = withRuleRemovedAt(whitelist[oldType], oldIndex)
+
+					// 2. Prepend smoothly to the new category using your new function
+					whitelist[typ] = withRulePrepended(whitelist[typ], newRule)
+				}
+				fmt.Printf("Rule edited via WebUI → ID: %q, Pattern: %q, Enabled: %t\n", id, patternLowercased, enabledBool)
+			} else { // this is an ADD new rule
+				// --- ADD MODE ---
 				// Add new: Prevent duplicate (same type + pattern, case-insensitive)
 				//lowerPattern := strings.ToLower(pattern)
 				for _, rule := range whitelist[typ] {
 					//if strings.ToLower(rule.Pattern) == lowerPattern {
 					if rule.Pattern /*already lowercase!*/ == patternLowercased {
-						http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
-						return
+						//http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
+						return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
 					}
 				}
 
@@ -5119,17 +4982,96 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				// // 	whitelist[typ] = []Rule{}
 				// // }
 				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-				whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+
+				//whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
+
+				// whitelist[typ] = append([]RuleEntry{newRule}, whitelist[typ]...)
+
+				// // Prepend cleanly by allocating a fresh slice wrapper with known capacity
+				// targetEntries := whitelist[typ]
+				// // newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
+				// // newTargetEntries = append(newTargetEntries, newRule)
+				// // newTargetEntries = append(newTargetEntries, targetEntries...)
+				// newTargetEntries := make([]RuleEntry, len(targetEntries)+1)
+				// // 1. Copy old entries into the new slice, starting at index 1
+				// copy(newTargetEntries[1:], targetEntries)
+				// // 2. Insert the new rule at index 0
+				// newTargetEntries[0] = newRule
+				// whitelist[typ] = newTargetEntries
+
+				// Replaces all the manual make() and copy() steps with your new helper function
+				whitelist[typ] = withRulePrepended(whitelist[typ], newRule)
 
 				fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
 			}
+			return nil
 		}() // lock released here
+		// Handle any error returned by the thread-safe operations
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 
 		if err := /*uses lock!*/ saveQueryWhitelist(); err != nil {
 			logFatal("failed to save whitelist after rule add/edit from webUI", err)
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	}
+}
+
+// withRuleRemovedAt safely returns a new slice with the RuleEntry at the given index removed,
+// leaving the original underlying array completely untouched for concurrent readers.
+func withRuleRemovedAt(entries []RuleEntry, index int) []RuleEntry {
+	// If the slice is empty or index is out of bounds, return it safely
+	if index < 0 || index >= len(entries) {
+		return entries
+	}
+
+	newEntries := make([]RuleEntry, len(entries)-1)
+
+	// Copy everything up to the index
+	copy(newEntries[:index], entries[:index])
+
+	// Copy everything after the index
+	copy(newEntries[index:], entries[index+1:])
+
+	return newEntries
+}
+
+// withRulePrepended safely inserts a new RuleEntry at the beginning of a slice
+// without mutating the underlying array of existing readers.
+func withRulePrepended(entries []RuleEntry, newRule RuleEntry) []RuleEntry {
+	newTargetEntries := make([]RuleEntry, len(entries)+1)
+
+	// Copy old entries starting at index 1
+	copy(newTargetEntries[1:], entries)
+
+	// Drop the new item at index 0
+	newTargetEntries[0] = newRule
+
+	return newTargetEntries
+}
+
+// withRuleAppended safely inserts a new RuleEntry at the end of a slice
+// without mutating the underlying array of existing readers.
+func withRuleAppended(entries []RuleEntry, newBlock RuleEntry) []RuleEntry {
+	newTargetEntries := make([]RuleEntry, len(entries)+1)
+
+	// Copy old entries starting at index 0
+	copy(newTargetEntries, entries)
+
+	// Drop the new item at the very last index position
+	newTargetEntries[len(entries)] = newBlock
+
+	return newTargetEntries
+}
+
+// withRuleUpdatedAtIndex safely updates a rule at a specific index without mutating the original array.
+func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntry) []RuleEntry {
+	newEntries := make([]RuleEntry, len(entries))
+	copy(newEntries, entries)
+	newEntries[index] = updatedRule
+	return newEntries
 }
 
 type HostView struct {
@@ -5461,38 +5403,6 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			func() { // anonymous function just for scoping defer
 				ruleMutex.Lock()
 				defer ruleMutex.Unlock()
-				// found := false
-				// for i, rule := range whitelist[typ] {
-				// 	if rule.Pattern == domainLowercased {
-				// 		if !rule.Enabled {
-				// 			whitelist[typ][i].Enabled = true
-				// 			successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-				// 			mainLogger.Info("Quick unblock: enabled existing paused rule",
-				// 				slog.String("domainLowercased", domainLowercased),
-				// 				slog.String("DNSType", typ))
-				// 		} else {
-				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-				// 			mainLogger.Info("Quick unblock: ignored, rule is already active",
-				// 				slog.String("domainLowercased", domainLowercased),
-				// 				slog.String("DNSType", typ))
-				// 		}
-				// 		found = true
-				// 		break
-				// 	}
-				// }
-
-				// if !found {
-				// 	newRule := RuleEntry{
-				// 		ID:      newUniqueID(whitelist),
-				// 		Pattern: domainLowercased,
-				// 		Enabled: true,
-				// 	}
-				// 	whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
-				// 	successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-				// 	mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
-				// 		slog.String("domainLowercased", domainLowercased),
-				// 		slog.String("DNSType", typ))
-				// }
 				if action == "reblock" {
 					for i, rule := range whitelist[typ] {
 						if rule.Pattern == domainLowercased {
@@ -5535,7 +5445,11 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 							Pattern: domainLowercased,
 							Enabled: true,
 						}
-						whitelist[typ] = append(whitelist[typ], newRule)
+						// whitelist[typ] = append(whitelist[typ], newRule)
+
+						// Replace the standard append with your safe helper function
+						whitelist[typ] = withRulePrepended(whitelist[typ], newRule)
+
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
 						mainLogger.Info("Quick unblock: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
