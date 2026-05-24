@@ -1323,9 +1323,10 @@ var uiTemplates = template.Must(template.New("").Parse(
 				const isF5 = e.key === 'F5';
 				const isCtrlR = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r';
 
-				if (isF5 || isCtrlR) {
+				if (isF5 || isCtrlR) { // && window.location.pathname === '/blocks') {
 					e.preventDefault(); // Stop Firefox from doing a POST-reload
-					window.location.href = '/blocks'; // Perform a clean GET-reload instead
+					//window.location.href = '/blocks'; // Perform a clean GET-reload instead
+					window.location.href = window.location.pathname; // Clean GET-reload for the current page
 				}
 			}
 		});
@@ -4659,7 +4660,7 @@ func startWebUI(port int) {
 	mux.HandleFunc("/", statsHandler)
 	mux.HandleFunc("/rules", rulesHandler)
 	mux.HandleFunc("/hosts", hostsHandler)
-	mux.HandleFunc("/blocks", blocksHandler)
+	mux.HandleFunc("/blocks", blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
 	mux.HandleFunc("/logs", logsHandler)
 	mux.HandleFunc("/logs_queries", logsQueriesHandler)
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
