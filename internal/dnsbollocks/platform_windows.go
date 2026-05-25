@@ -42,7 +42,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"log/slog"
 	"math/big"
 	"net"
@@ -179,7 +178,7 @@ func loadResponseBlacklist() error {
 			seen[s] = struct{}{}
 			deduped = append(deduped, n)
 		} else {
-			fmt.Printf("blacklisted %q is duplicate, removing it", s)
+			mainLogger.Warn("Duplicate blacklist entry found, removing it", slog.String("entry", s))
 			if !shouldSave {
 				shouldSave = true
 			}
@@ -187,7 +186,7 @@ func loadResponseBlacklist() error {
 	}
 	dups := len(parsed) - len(deduped)
 	if dups > 0 {
-		fmt.Printf("Removed %d duplicate CIDRs from blacklist file %q\n", len(parsed)-len(deduped), blacklistFileName)
+		mainLogger.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
 		parsed = deduped
 	}
 
@@ -195,12 +194,12 @@ func loadResponseBlacklist() error {
 	responseBlacklist = parsed
 	responseBlacklistMu.Unlock()
 
-	fmt.Printf("Loaded %d CIDR entries (%d were dups) from %q\n", len(responseBlacklist), dups, blacklistFileName)
+	mainLogger.Info("Loaded CIDR entries from blacklist file", slog.Int("count", len(responseBlacklist)), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
 	if shouldSave {
 		if err := saveResponseBlacklist(); err != nil {
 			return fmt.Errorf("failed to save blacklist file %q, err: %w", blacklistFileName, err)
 		} else {
-			fmt.Printf("Saved blacklist file %q\n", blacklistFileName)
+			mainLogger.Info("Saved blacklist file", slog.String("file", blacklistFileName))
 		}
 	}
 	return nil
@@ -223,7 +222,7 @@ func saveResponseBlacklist() error {
 	if err := os.WriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
-		fmt.Printf("Saved blacklist file %q\n", blacklistFileName)
+		mainLogger.Info("Saved blacklist file", slog.String("file", blacklistFileName))
 	}
 	return nil
 }
@@ -233,12 +232,11 @@ func loadLocalHosts() error {
 	if path == "" {
 		panic("dev: didn't set the default hosts filename!")
 	}
-	//fmt.Printf("Path before:%s", path) // hmm why is it "." with quotes!
 	path = filepath.Clean(path)
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		fmt.Printf("Hosts file %q not found → starting with empty local hosts\n", path)
+		mainLogger.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", path))
 		localHostsMu.Lock()
 		localHosts = nil
 		localHostsMu.Unlock()
@@ -275,7 +273,7 @@ func loadLocalHosts() error {
 	localHosts = parsed
 	localHostsMu.Unlock()
 
-	fmt.Printf("Loaded %d host rules from %q\n", len(localHosts), path)
+	mainLogger.Info("Loaded host rules", slog.Int("count", len(localHosts)), slog.String("path", path))
 	return nil
 }
 
@@ -434,7 +432,7 @@ func loadQueryWhitelist() error {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		fmt.Printf("Whitelist file %q not found → starting with empty whitelist\n", path)
+		mainLogger.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", path))
 		func() {
 			ruleMutex.Lock()
 			defer ruleMutex.Unlock()
@@ -466,7 +464,7 @@ func loadQueryWhitelist() error {
 				// XXX: it may not have an ID set at this point
 				if r.ID == "" {
 					nid := newUniqueID(rulesByType)
-					fmt.Println("Making new ID for rule that had none: ", nid)
+					mainLogger.Warn("Making new ID for rule that had none", slog.String("id", nid))
 					r.ID = nid
 					changed++
 				}
@@ -493,13 +491,16 @@ func loadQueryWhitelist() error {
 			panic("bad coding: lost some rules, shouldn't happen unless we dedupped- but we didn't")
 		}
 
-		fmt.Printf("Loaded %d types / %d rules from %q", len(whitelist), countRules(whitelist), path)
+		mainLogger.Info("Loaded whitelist and normalized(aka changed) rules",
+			slog.Int("types", len(whitelist)),
+			slog.Int("rules", countRules(whitelist)),
+			slog.Any("changed_count", changed),
+			slog.String("path", path),
+		)
 	}() // lock released here
 	if changed > 0 {
-		fmt.Printf(" and had to change/normalize %d of them. Thus, saving file: %q\n", changed, path)
 		return saveQueryWhitelist() //uses lock!
 	} else {
-		fmt.Println()
 		return nil // no error
 	}
 }
@@ -1725,7 +1726,6 @@ func OldMain() {
 	if err := validateUpstream(); err != nil {
 		logFatal("Upstream validation failed:", err)
 	}
-	//fmt.Printf("Upstream validated: %q (IP: %q)\n", config.UpstreamURL, upstreamIP)
 	mainLogger.Debug("Upstreams validated", slog.Any("upstreamURLs", config.UpstreamURLs), slog.Any("upstreamIPs", upstreamIPs))
 
 	generateCertIfNeeded() // For DoH
@@ -1733,7 +1733,7 @@ func OldMain() {
 
 	initDoHClients()
 	// Sequential launches for ordered logging
-	fmt.Println("Launching listeners sequentially...")
+	mainLogger.Debug("Launching listeners sequentially...")
 	startDNSListener(config.ListenDNS) // Blocks until complete/fail
 	startDoHListener(config.ListenDoH) // Blocks until complete/fail
 	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
@@ -1761,10 +1761,13 @@ func OldMain() {
 				mainLogger.Debug("Local hosts reloaded")
 			}
 			_ = initDoHClients()
-			log.Printf("Reloading of %q wasn't done, you should restart for changes there. This reload was meant to work only for reloading whitelist and blacklist changes!", configFileName)
+			mainLogger.Warn(
+				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
+				slog.String("config_file", configFileName),
+			)
 		},
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
-			fmt.Println("Shutdown signal received, clean exit.")
+			mainLogger.Debug("Shutdown signal received, clean exit.")
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			shutdown(0) // clean exit
@@ -1795,7 +1798,6 @@ func OldMain() {
 		shutdown(4) // some error happened
 	}
 
-	//fmt.Println("Shutdown signal received, SIGINT exit.")
 	mainLogger.Error("unreachable")
 	//cancel()     // Cancel context for graceful close
 	shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
@@ -1805,7 +1807,7 @@ var shutdownOnce sync.Once
 
 func loadConfig() error {
 	const cfgFname = configFileName
-	fmt.Printf("Loading config file %q\n", cfgFname)
+	mainLogger.Info("Loading config file", slog.String("config_file", cfgFname))
 	var shouldSaveConfig = false
 	// ---> FIX: Pre-populate the global config with defaults BEFORE reading/decoding
 	// this way missing keys from config.json file will be set to default value!
@@ -1822,7 +1824,7 @@ func loadConfig() error {
 		} else {
 			// not admin, auto create config file with defaults
 			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
-			fmt.Printf("Config file %q not found or unreadable; using defaults and creating new file.\n", cfgFname)
+			mainLogger.Warn("Config file not found or unreadable; using defaults and creating new file", slog.String("config_file", cfgFname))
 		}
 		// Defaults
 		// REMOVED: config = DefaultConfig() because it is already set above
@@ -1897,10 +1899,11 @@ func loadConfig() error {
 	config.BlockMode = strings.ToLower(config.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
+	const CacheMinTTLClamp = 60 // seconds
 	// Validate loaded config
-	if config.CacheMinTTL < 60 {
-		config.CacheMinTTL = 60 // Min reasonable
-		fmt.Println("Warning: cache_min_ttl clamped to 60s")
+	if config.CacheMinTTL < CacheMinTTLClamp {
+		config.CacheMinTTL = CacheMinTTLClamp // Min reasonable
+		mainLogger.Warn("cache_min_ttl clamped", slog.Any("to_seconds", CacheMinTTLClamp))
 	}
 
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
@@ -1924,23 +1927,6 @@ func loadConfig() error {
 	}
 	mainLogger.Debug("Using upstream SNI hostnames:", slog.Any("SNI_hostnames", config.SNIHostnames))
 
-	// var upstreamHost string
-	// if config.SNIHostname == "" {
-	// 	upstreamHost, err = hostFromURL(config.UpstreamURL)
-	// 	if err != nil {
-	// 		// handle parse error (return SERVFAIL or log)
-	// 		fmt.Println("invalid upstream URL:", err)
-	// 		return fmt.Errorf("invalid upstream URL: %w", err)
-	// 	}
-	// } else {
-	// 	upstreamHost = config.SNIHostname
-	// }
-	// config.SNIHostname = upstreamHost
-	// fmt.Println("Using upstream SNI hostname:", config.SNIHostname)
-	// if config.SNIHostname == "" {
-	// 	panic("dev fail: SNIHostname shouldn't be empty at this point, upstreamHost=" + upstreamHost)
-	// }
-
 	// Helper closure to apply the cleaning and track if a save is needed
 	checkAndClean := func(target *string, desc, fallback string) {
 		if cleaned, changed := cleanFileName(*target, desc, fallback); changed {
@@ -1956,21 +1942,6 @@ func loadConfig() error {
 	checkAndClean(&config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
 	checkAndClean(&config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
 	checkAndClean(&config.HostsFile, "hosts_file", defaultConfig.HostsFile)
-	// if didClean := cleanFileName(&config.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile); didClean && !shouldSaveConfig {
-	// 	shouldSaveConfig = true
-	// }
-	// if didClean := cleanFileName(&config.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile); didClean && !shouldSaveConfig {
-	// 	shouldSaveConfig = true
-	// }
-	// if didClean := cleanFileName(&config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile); didClean && !shouldSaveConfig {
-	// 	shouldSaveConfig = true
-	// }
-	// if didClean := cleanFileName(&config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile); didClean && !shouldSaveConfig {
-	// 	shouldSaveConfig = true
-	// }
-	// if didClean := cleanFileName(&config.HostsFile, "hosts_file", defaultConfig.HostsFile); didClean && !shouldSaveConfig {
-	// 	shouldSaveConfig = true
-	// }
 
 	// After decoding config
 	err = loadQueryWhitelist()
@@ -2179,9 +2150,9 @@ func rotateIfNeeded(path string, maxMB int) {
 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
 		old := path + ".old"
 		if err := os.Rename(path, old); err != nil {
-			fmt.Fprintf(os.Stderr, "Log rotation failed for %q: %v\n", path, err)
+			mainLogger.Error("Log rotation failed", slog.String("path", path), slog.Any("error", err))
 		} else {
-			fmt.Printf("Rotated log %q to %q (size exceeded %dMB)\n", path, old, maxMB)
+			mainLogger.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
 		}
 	}
 }
@@ -2709,7 +2680,6 @@ func generateCertIfNeeded() {
 			slog.String("sni_hostname", host))
 		if err = generateCert(certFile, keyFile, host); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
-			//fmt.Printf("Cert generation failed, err: '%v'", err)
 			logFatal("cert generation failed", err) //slog.Any("err", err))
 			//os.Exit(1)
 		}
@@ -2815,10 +2785,10 @@ type clientMetadata struct {
 func startDNSListener(addr string) {
 	//	listenerErrs.Add(1)
 	//	defer listenerErrs.Done()
-	mainLogger.Info("Starting DNS listener", slog.String("addr", addr))
+	mainLogger.Debug("Starting DNS listener", slog.String("addr", addr))
 
 	// UDP
-	mainLogger.Info("Attempting UDP bind for DNS listener...")
+	mainLogger.Debug("Attempting UDP bind for DNS listener...")
 
 	// Assuming addr is a string like "127.0.0.1:53"
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
@@ -2881,7 +2851,6 @@ func startDNSListener(addr string) {
 					} //select
 				} //if err2
 
-				//fmt.Printf("UDP dns client connected(early printf logging), addr=%v\n", clientAddr)
 				mainLogger.Debug("client connected(early logging)",
 					slog.String("proto", "UDP"),
 					slog.Any("clientAddr", clientAddr),
@@ -2920,12 +2889,11 @@ func startDNSListener(addr string) {
 	} // else
 
 	// TCP
-	mainLogger.Info("Attempting TCP bind for DNS listener...")
+	mainLogger.Debug("Attempting TCP bind for DNS listener...")
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
 	if err != nil {
 		// errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %q: %v", addr, err)
-		// fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		//errorLogger.Error(errStr)
 		mainLogger.Error("invalid TCP address", slog.String("addr", addr), slog.Any("err", err))
 		os.Exit(1)
@@ -2934,7 +2902,6 @@ func startDNSListener(addr string) {
 
 	if err != nil {
 		//errStr := fmt.Sprintf("TCP bind failed on %q: %v", addr, err)
-		//fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		//errorLogger.Error(errStr)
 		mainLogger.Error("TCP bind/listen failed", slog.String("addr", addr), slog.Any("err", err))
 		os.Exit(1)
@@ -2956,8 +2923,7 @@ func startDNSListener(addr string) {
 				<-backgroundCtx.Done()
 				closer() // This wakes up Accept() with an error safely
 			}()
-			fmt.Println("Success")
-			fmt.Printf("TCP DNS listening on %q\n", addr)
+			mainLogger.Info("TCP DNS listening", slog.String("address", addr))
 
 			// // Then simplify your loop
 			// for {
@@ -2999,7 +2965,6 @@ func startDNSListener(addr string) {
 						// }
 
 						// non-temporary error: log, backoff a bit to avoid hot loop, continue
-						//fmt.Println("tcp accept error:", err)
 						mainLogger.Warn("tcp_accept_error", slog.Any("err", err))
 
 						// if backoff == 0 {
@@ -3207,25 +3172,22 @@ func handleTCP(ctx context.Context, conn net.Conn) {
 
 // non-blocking!
 func startDoHListener(addr string) {
-	fmt.Printf("Starting DoH listener on %q...\n", addr)
+	mainLogger.Debug("Starting DoH listener", slog.String("address", addr))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", dohHandler)
 
-	fmt.Print("  Attempting TLS bind...")
 	listener, err := tls.Listen("tcp", addr, &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{dohCert}, // Use loaded cert
 	})
 	if err != nil {
 		// errStr := fmt.Sprintf("DoH listener failed on %q: %v", addr, err)
-		// fmt.Fprintln(os.Stderr, "Failed\n"+errStr)
 		// errorLogger.Error(errStr)
 		mainLogger.Error("DoH listener failed to bind/listen", slog.String("addr", addr), slog.Any("err", err))
 		os.Exit(1) // Fail-fast serial
 	}
-	fmt.Println("Success")
-	fmt.Printf("DoH listening on %q\n", addr)
+	mainLogger.Info("DoH listening", slog.String("address", addr))
 
 	dohSrv := &http.Server{Handler: mux,
 		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
@@ -3266,7 +3228,7 @@ func startDoHListener(addr string) {
 			errChan <- fmt.Errorf("DoH server failed: %w", err)
 		}
 	}()
-	fmt.Println("DoH server loop launched in goroutine - func returning")
+	mainLogger.Debug("DoH server loop launched in goroutine")
 }
 
 func getSecureID() uint16 {
@@ -3846,125 +3808,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		}
 	}
 
-	return reference //FIXME: uncomment this!
-
-	// // create request with supplied context so caller controls deadline/cancel
-	// makeReq := func() (*http.Request, error) {
-	// 	r, err2 := http.NewRequestWithContext(backgroundCtx, "POST", upstreamURL.String(), bytes.NewReader(reqBytes))
-	// 	if err2 != nil {
-	// 		mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
-	// 		return nil, err2
-	// 	}
-	// 	r.Header.Set("Content-Type", "application/dns-message")
-	// 	if config.SNIHostname != "" {
-	// 		r.Host = config.SNIHostname
-	// 	}
-	// 	return r, nil
-	// }
-	// fmt.Println("Using servername: !", config.SNIHostname,"! and upstreamIP: !",upstreamIP,"!")
-	// var resp *http.Response
-	// retries := config.UpstreamRetriesPerQuery
-	// if retries < 1 {
-	// 	retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
-	// }
-	// maxTries := 1 + retries
-	// for attempt := range maxTries { //doneTODO: make this setable or const: number of tries to forward the DNS query to upstream if it failed.
-	// 	// 1. ATOMIC LOAD (Fast path, no locking)
-	// 	dohClient := dohClientPtr.Load()
-	// 	//Since forwardToDoH gets its own local copy of the pointer from .Load(), even if a Ctrl+R swap happens in the middle of a request, that specific request finishes
-	// 	// using the "old" client safely. The old client is then garbage collected naturally when the function returns.
-
-	// 	if dohClient == nil {
-	// 		// defensive: initialize if not yet done (use current config)
-	// 		dohClient = initDoHClients() // Inside this, you already have a Lock()
-	// 	}
-	// 	if dohClient == nil {
-	// 		panic("dohClient still nil after init! shouldn't happen")
-	// 	}
-
-	// 	req2, err2 := makeReq()
-	// 	if err2 != nil {
-	// 		mainLogger.Error("doh_newrequest_failed", slog.Any("err", err2))
-	// 		return nil
-	// 	}
-
-	// 	resp, err2 = dohClient.Do(req2) // this is concurrency safe
-	// 	if err2 == nil {
-	// 		//success!
-	// 		break
-	// 	}
-
-	// 	// decide if error is transient/retryable
-	// 	// common retryable errors: temporary network errors, EOF, connection reset
-	// 	var netErr net.Error
-	// 	isRetryable := errors.Is(err2, io.EOF) ||
-	// 		errors.Is(err2, io.ErrUnexpectedEOF) ||
-	// 		errors.Is(err2, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
-	// 		errors.Is(err2, syscall.ECONNREFUSED) ||
-	// 		(errors.As(err2, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
-	// 	if isRetryable {
-	// 		// // Don't retry if the app is shutting down
-	// 		// if backgroundCtx.Err() != nil {
-	// 		// 	return nil
-	// 		// }
-	// 		// retry once
-	// 		mainLogger.Error("doh_post_transient_error for this query", slog.Any("err", err2), slog.Int("attempt", attempt),
-	// 			slog.Int("current_try", attempt), slog.Int("max_tries", maxTries), slog.Any("query", req2),
-	// 			slog.Bool("will_retry", attempt < maxTries))
-	// 		// small backoff: sleep a bit but respect context
-	// 		select {
-	// 		case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
-	// 		case <-backgroundCtx.Done():
-	// 			fmt.Println("doh sensed quit during retry backoff...")
-	// 			return nil
-	// 		}
-	// 		continue
-	// 	}
-
-	// 	// non-retryable error
-	// 	mainLogger.Error("Failed to query upstream DNS server", slog.Any("err", err2))
-	// 	//fmt.Println("Failed to query upstream DNS server:", err)
-	// 	return nil
-	// }
-
-	// if resp == nil {
-	// 	// last attempt produced no response (shouldn't happen), treat as failure
-	// 	mainLogger.Error("doh_no_response")
-	// 	return nil
-	// }
-	// defer resp.Body.Close()
-
-	// body, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	mainLogger.Error("doh_readbody_failed", slog.Any("err", err))
-	// 	return nil
-	// }
-
-	// // debug/log non-200 or unexpected content-type
-	// if resp.StatusCode != 200 {
-	// 	mainLogger.Error("doh_upstream_status", slog.Any("status", resp.Status))
-	// 	//fmt.Println("Upstream HTTP status:", resp.Status)
-	// }
-	// ct := resp.Header.Get("Content-Type")
-	// if ct != "application/dns-message" {
-	// 	mainLogger.Error("doh_upstream_content_type isn't the expected application/dns-message", slog.Any("content_type", ct))
-	// 	//fmt.Println("Upstream Content-Type:", ct)
-	// }
-	// if len(body) < 12 {
-	// 	mainLogger.Error("doh_upstream_body_too_short", slog.Any("len", len(body)))
-	// 	//fmt.Println("Upstream body too short:", len(body))
-	// }
-	// upMsg := new(dns.Msg)
-	// if err := upMsg.Unpack(body); err != nil {
-	// 	n := len(body)
-	// 	mainLogger.Error("doh_unpack_failed", slog.Any("err", err),
-	// 		slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x\n", n, body[:n])),
-	// 		slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q\n", n, body[:n])),
-	// 	)
-	// 	return nil
-	// }
-	// return upMsg
-
+	return reference
 }
 
 func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, reqBytes []byte) (*dns.Msg, error) {
@@ -4300,30 +4144,6 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) 
 
 	var dropReasons []string
 
-	// var goodAnswer, goodExtra []dns.RR
-	// //doneTODO: DRY these 2 'for' blocks:
-	// for _, rr := range msg.Answer {
-	// 	if keep, modifiedRR, reason := processRR(rr); keep {
-	// 		goodAnswer = append(goodAnswer, modifiedRR)
-	// 		//fmt.Println("Good inAnswer:",rr)
-	// 	} else {
-	// 		dropReasons = append(dropReasons, reason)
-	// 		mainLogger.Warn("Dropped inAnswer from upstream", slog.String("reason", reason), slog.Any("query_type", qtype), slog.Any("rr", rr))
-	// 	}
-	// }
-	// for _, rr := range msg.Extra {
-	// 	if keep, modifiedRR, reason := processRR(rr); keep {
-	// 		goodExtra = append(goodExtra, modifiedRR)
-	// 		//fmt.Println("Good inExtra:",rr)
-	// 	} else {
-	// 		dropReasons = append(dropReasons, reason)
-	// 		mainLogger.Warn("Dropped inExtra from upstream", slog.String("reason", reason), slog.Any("query_type", qtype), slog.Any("rr", rr))
-	// 	}
-	// }
-
-	// msg.Answer = goodAnswer
-	// msg.Extra = goodExtra
-
 	// Define a local closure to process any arbitrary DNS section
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
 		var good []dns.RR
@@ -4410,10 +4230,6 @@ func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, string) {
 			// We only keep keys that AREN'T hints
 			if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
 				newParams = append(newParams, param)
-				//} else {
-				//	fmt.Println("Dropping IP hint from the reply:", param);
-				//fmt.Println("NOT Dropping IP hint from the reply:", param);
-				//newParams = append(newParams, param)
 			} else {
 				mainLogger.Warn("Dropping IP hint from the HTTPS reply", slog.Any("param", param))
 			}
@@ -4653,8 +4469,7 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 const hostForUIListener string = "127.0.0.1" //TODO: add this to config, but should start with 127. for security reasons.
 
 func startWebUI(port int) {
-	hostOrIP := hostForUIListener
-	fmt.Printf("Starting web UI on %s:%d...\n", hostOrIP, port) //FIXME: hardcoded IP
+	hostOrIP := hostForUIListener //FIXME: hardcoded IP
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", statsHandler)
@@ -4668,14 +4483,10 @@ func startWebUI(port int) {
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
-		//errStr := fmt.Sprintf("UI listener failed on :%d: %v", port, err)
-		//fmt.Fprintln(os.Stderr, "  Attempting UI bind...Failed\n"+errStr)
-		//errorLogger.Error(errStr)
 		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIP), slog.Int("port", port), slog.Any("err", err))
 		os.Exit(1) // Fail-fast serial
 	}
-	fmt.Println("  Attempting UI bind...Success")
-	fmt.Printf("Web UI listening on %s:%d (stats at /debug/vars)\n", hostOrIP, port) //FIXME: hardcoded IP
+	mainLogger.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
 
 	uiSrv := &http.Server{Handler: mux}
 	// Listen for the global shutdown signal to gracefully close the Web UI
@@ -4700,15 +4511,14 @@ func startWebUI(port int) {
 			//os.Exit(1) // Fail-fast serial
 		}
 	}()
-	fmt.Println("UI server loop launched")
-	fmt.Println("Use Ctrl+X to clean exit, but Ctrl+C works too. Ctrl+R to reload config without exiting.")
+	mainLogger.Debug("UI server loop launched")
+	mainLogger.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload (partial)config, Ctrl+C to break gracefully")
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
-	//fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IP: %q</p>", stats.String(), cacheStore.ItemCount(), upstreamIP)
 	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", stats.String(), cacheStore.ItemCount(), upstreamIPs)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
@@ -4849,42 +4659,6 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 			if id != "" { //this is an EDIT attempt
 				// 	// Edit: Find and update (search all types)
-				// 	found := false
-				// outerfor:
-				// 	for oldTyp, rules := range whitelist {
-				// 		for i, rule := range rules {
-				// 			if rule.ID == id {
-				// 				// Remove from old type
-				// 				//config.Whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-				// 				whitelist[oldTyp] = append(rules[:i], rules[i+1:]...)
-				// 				found = true
-				// 				break outerfor
-				// 			}
-				// 		}
-				// 		if found {
-				// 			panic("shouldn't be hit, else the break label is wrong!?")
-				// 			//break
-				// 		}
-				// 	}
-				// 	if !found {
-				// 		http.Error(w, "Rule not found", http.StatusNotFound)
-				// 		return
-				// 	}
-
-				// 	// Add to new type
-				// 	newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-				// 	// if _, ok := whitelist[typ]; !ok {
-				// 	// 	//config.Whitelist[typ] = []Rule{}
-				// 	// 	whitelist[typ] = []Rule{}
-				// 	// }
-				// 	//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-
-				// 	//whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
-
-				// 	// Prepend to put the new rule at the top of this type's list
-				// 	whitelist[typ] = append([]RuleEntry{newRule}, whitelist[typ]...)
-
-				// 	fmt.Printf("Rule edited: %q → %q (ID: %q, Enabled: %t)\n", id, patternLowercased, id, enabledBool)
 				// --- EDIT MODE ---
 				var foundOldRule bool
 				var oldType string
@@ -4961,7 +4735,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 					// 2. Prepend smoothly to the new category using your new function
 					whitelist[typ] = withRulePrepended(whitelist[typ], newRule)
 				}
-				fmt.Printf("Rule edited via WebUI → ID: %q, Pattern: %q, Enabled: %t\n", id, patternLowercased, enabledBool)
+				mainLogger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("pattern", patternLowercased), slog.Bool("enabled", enabledBool))
 			} else { // this is an ADD new rule
 				// --- ADD MODE ---
 				// Add new: Prevent duplicate (same type + pattern, case-insensitive)
@@ -5003,7 +4777,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				// Replaces all the manual make() and copy() steps with your new helper function
 				whitelist[typ] = withRulePrepended(whitelist[typ], newRule)
 
-				fmt.Printf("Rule added: %q (type: %q, ID: %q, Enabled: %t)\n", patternLowercased, typ, newID, enabledBool)
+				mainLogger.Info("Rule added via WebUI", slog.String("pattern", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
 			}
 			return nil
 		}() // lock released here
@@ -5083,90 +4857,6 @@ type HostView struct {
 
 func hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		//w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-		// localHostsMu.RLock()
-		// defer localHostsMu.RUnlock()
-
-		// var body strings.Builder
-
-		// // Disclaimer per request
-		// body.WriteString(`<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">`)
-		// body.WriteString(`<strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.`)
-		// body.WriteString(`</div>`)
-
-		// // Add form
-		// body.WriteString("<h2>Add New Local Host</h2>")
-		// body.WriteString(`<form method="post" action="/hosts">`)
-		// body.WriteString(`<input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> `)
-		// body.WriteString(`<input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> `)
-		// body.WriteString(`<button type="submit">Add Host</button>`)
-		// body.WriteString(`</form>`)
-
-		// // Table
-		// body.WriteString("<h2>Local Hosts</h2>")
-		// body.WriteString("<table><tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>")
-
-		// for i, rule := range localHosts {
-		// 	escapedPattern := html.EscapeString(rule.Pattern)
-		// 	var ipsStr []string
-		// 	for _, ip := range rule.IPs {
-		// 		ipsStr = append(ipsStr, ip.String())
-		// 	}
-		// 	joinedIPs := html.EscapeString(strings.Join(ipsStr, ", "))
-
-		// 	//body.WriteString(fmt.Sprintf(`
-		// 	fmt.Fprintf(&body, `
-		// 	<tr id="hostRow_%d">
-		// 		<td>%s</td>
-		// 		<td>%s</td>
-		// 		<td class="actions">
-		// 			<button class="btn btn-edit" onclick="editHost(this, %d, '%s', '%s')">Edit</button>
-		// 			<form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
-		// 				<input type="hidden" name="delete" value="1">
-		// 				<input type="hidden" name="pattern" value="%s">
-		// 				<button class="btn btn-del" type="submit">Delete</button>
-		// 			</form>
-		// 		</td>
-		// 	</tr>`, i, escapedPattern, joinedIPs, i, escapedPattern, joinedIPs, escapedPattern)
-		// 	//)
-		// }
-		// body.WriteString("</table>")
-
-		// // Isolated script for Local Hosts inline editing
-		// body.WriteString(`
-		// <script>
-		// function editHost(btn, index, pat, ips) {
-		// 	const row = document.getElementById('hostRow_' + index);
-		// 	row.style.display = 'none';
-		// 	const formHtml = ` + "`" + `
-		// 	<tr id="editHostRow_${index}">
-		// 		<td>
-		// 			<input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
-		// 			<input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
-		// 		</td>
-		// 		<td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
-		// 		<td>
-		// 			<form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline;">
-		// 				<input type="hidden" name="edit" value="1">
-		// 				<button type="submit" class="btn btn-edit">Save</button>
-		// 				<button type="button" class="btn btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
-		// 			</form>
-		// 		</td>
-		// 	</tr>
-		// 	` + "`" + `;
-		// 	row.insertAdjacentHTML('afterend', formHtml);
-		// }
-		// function cancelHostEdit(index) {
-		// 	const editRow = document.getElementById('editHostRow_' + index);
-		// 	if (editRow) editRow.remove();
-		// 	const row = document.getElementById('hostRow_' + index);
-		// 	if (row) row.style.display = '';
-		// }
-		// </script>
-		// `)
-		//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body.String())})
-
 		// 1. Snapshot the data under lock
 		localHostsMu.RLock()
 		viewData := make([]HostView, len(localHosts))
@@ -5625,48 +5315,6 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 	renderLogPage(w, r, "System & Error Logs", config.LogErrorsFile, filter)
 }
 
-// func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-// 	domainFilter := r.URL.Query().Get("domain")
-// 	// Basic file read/filter stub
-// 	data, err := os.ReadFile(config.LogQueriesFile)
-// 	if err != nil {
-// 		http.Error(w, "Log read failed", http.StatusInternalServerError)
-// 		return
-// 	}
-// 	lines := strings.Split(string(data), "\n")
-// 	var filtered []string
-// 	for _, line := range lines {
-// 		if strings.Contains(line, domainFilter) || domainFilter == "" {
-// 			filtered = append(filtered, line)
-// 		}
-// 	}
-// 	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
-
-// 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
-// }
-
-// func logsHandler(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-// 	domainFilter := r.URL.Query().Get("domain") //FIXME: filter by what? should be any string since this is the full log, not just queries in it.
-// 	// Basic file read/filter stub
-// 	data, err := os.ReadFile(config.LogErrorsFile)
-// 	if err != nil {
-// 		http.Error(w, "Log read failed", http.StatusInternalServerError)
-// 		return
-// 	}
-// 	lines := strings.Split(string(data), "\n")
-// 	var filtered []string
-// 	for _, line := range lines {
-// 		if strings.Contains(line, domainFilter) || domainFilter == "" {
-// 			filtered = append(filtered, line)
-// 		}
-// 	}
-// 	body := fmt.Sprintf("<h2>Logs (filtered by %q)</h2><pre style=\"max-height:400px;overflow:auto;\">%q</pre>", domainFilter, strings.Join(filtered, "\n"))
-
-// 	uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
-// }
-
 func shutdown(exitCode int) {
 	shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
 		mainLogger.Info("Shutting down...")
@@ -5708,7 +5356,7 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 	buf := make([]byte, 3)
 
 	for {
-		fmt.Print(".")
+		fmt.Print(".") //TODO: delete this? then the next 6 \n Print(s) as well
 		n, err := os.Stdin.Read(buf)
 		if err != nil || n == 0 {
 			continue
@@ -5716,14 +5364,16 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 
 		// Ctrl+X (0x18)
 		if buf[0] == 0x18 {
-			fmt.Println("\nCtrl+X detected → clean exit")
+			fmt.Print("\n")
+			mainLogger.Info("Ctrl+X detected → clean exit")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
 
 		// Ctrl+R (0x12)
 		if buf[0] == 0x12 {
-			fmt.Println("\nCtrl+R detected → reloading config")
+			fmt.Print("\n")
+			mainLogger.Info("Ctrl+R detected → reloading config")
 			//_ = term.Restore(fd, oldState)
 			// NO restore needed here because we want to stay in Raw mode
 			// to catch the next keypress after the reload.
@@ -5732,7 +5382,8 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 
 		// Ctrl+C (0x03) or else can't break the program except with Ctrl+Break !
 		if buf[0] == 0x03 {
-			fmt.Println("\nCtrl+C detected → breaking gracefully")
+			fmt.Print("\n")
+			mainLogger.Info("Ctrl+C detected → breaking gracefully")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
@@ -5741,11 +5392,13 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 		if buf[0] == 0x1b && n >= 2 {
 			switch buf[1] {
 			case 'x', 'X':
-				fmt.Println("\nAlt+X detected → clean exit")
+				fmt.Print("\n")
+				mainLogger.Info("Alt+X detected → clean exit")
 				_ = term.Restore(fd, oldState)
 				cleanExitFn()
 			case 'r', 'R':
-				fmt.Println("\nAlt+R detected → reloading config")
+				fmt.Print("\n")
+				mainLogger.Info("Alt+R detected → reloading config")
 				//_ = term.Restore(fd, oldState)
 				reloadFn()
 			}
@@ -5753,7 +5406,8 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 
 		_, err = term.MakeRaw(fd)
 		if err != nil {
-			fmt.Println("\nFailed to makeraw the terminal...")
+			fmt.Print("\n")
+			mainLogger.Error("Failed to make the terminal raw", slog.Any("error", err))
 			return
 		}
 	}
