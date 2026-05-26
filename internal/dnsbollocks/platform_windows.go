@@ -101,6 +101,24 @@ type Config struct {
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
 }
 
+func (c Config) Clone() Config {
+	// 1. Shallow copy all primitive fields and string headers at once
+	dst := c
+
+	// 2. Explicitly allocate and copy slices/maps
+	if c.UpstreamURLs != nil {
+		dst.UpstreamURLs = make([]string, len(c.UpstreamURLs))
+		copy(dst.UpstreamURLs, c.UpstreamURLs)
+	}
+
+	if c.SNIHostnames != nil {
+		dst.SNIHostnames = make([]string, len(c.SNIHostnames))
+		copy(dst.SNIHostnames, c.SNIHostnames)
+	}
+
+	return dst
+}
+
 type LocalHostRule struct {
 	Pattern string
 	IPs     []net.IP
@@ -1507,9 +1525,6 @@ func OldMain() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	mainLogger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
 
-	//errChan := make(chan error, 10)
-	//mainLogger.Debug("Error channel ready")
-
 	if err := loadConfig(); err != nil {
 		logFatal("Config load failed:", err)
 		// mainLogger.Error("Config load failed", slog.Any("err", err))
@@ -1622,7 +1637,8 @@ func loadConfig() error {
 	// 1. ALWAYS start by filling the global config with defaults.
 	// This is critical because Decode only overwrites what is in the file.
 	defaultConfig := defaultConfig()
-	config = defaultConfig // deep copy, presumably! FIXME?
+	//config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
+	config = defaultConfig.Clone() // deep copy
 
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
