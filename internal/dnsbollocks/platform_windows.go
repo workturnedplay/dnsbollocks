@@ -299,34 +299,6 @@ func saveLocalHosts() error {
 	return nil
 }
 
-// func saveAndSetResponseBlacklist(cidrs []string) error {
-// 	data, err := json.MarshalIndent(cidrs, "", "  ")
-// 	if err != nil {
-// 		return err
-// 	}
-// 	fname := config.BlacklistFile
-// 	if fname == "" {
-// 		panic("dev. didn't set the default blacklist filename!")
-// 	}
-// 	if err := os.WriteFile(fname, data, 0600); err != nil {
-// 		return fmt.Errorf("cannot write blacklist file %q: %w", fname, err)
-// 	}
-
-// 	parsed := make([]*net.IPNet, 0, len(cidrs))
-// 	for _, c := range cidrs {
-// 		_, n, err := net.ParseCIDR(c)
-// 		if err != nil {
-// 			return err // should not happen if we just saved it
-// 		}
-// 		parsed = append(parsed, n)
-// 	}
-
-// 	responseBlacklistMu.Lock()
-// 	responseBlacklist = parsed
-// 	responseBlacklistMu.Unlock()
-// 	return nil
-// }
-
 // getResponseBlacklist Helper – returns current list (snapshot copy)
 func getResponseBlacklist() []string {
 	responseBlacklistMu.RLock()
@@ -564,151 +536,7 @@ func initBootstrapLogging() {
 // Colored console handler (Windows-only, uses your exact color request)
 // -----------------------------------------------------------------------------
 
-// // LevelToAttr maps slog levels to Win32 console attributes exactly as you asked.
-// var LevelToAttr = map[slog.Level]uint16{
-// 	slog.LevelDebug: wincoe.FOREGROUND_GRAY,   // dark grey
-// 	slog.LevelInfo:  wincoe.FOREGROUND_NORMAL, // normal / light grey (we actually restore original, but fallback)
-// 	slog.LevelWarn:  wincoe.FOREGROUND_BRIGHT_MAGENTA,
-// 	slog.LevelError: wincoe.FOREGROUND_RED,
-// }
-
-// // ColoredConsoleHandler sets color before the inner TextHandler writes, then restores.
-// // If there is no console (service, piped, etc.) it silently falls back to plain text.
-// type ColoredConsoleHandler struct {
-// 	Inner    slog.Handler
-// 	HStdout  windows.Handle
-// 	OrigAttr uint16
-// 	UseColor bool
-// 	Mu       sync.Mutex
-// }
-
-// func newColoredConsoleHandler(level slog.Level) slog.Handler {
-// 	inner := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-// 		Level: level,
-// 		// ReplaceAttr can be extended later for timestamps, etc.
-// 	})
-// 	//hStdout := windows.Handle(wincoe.STD_OUTPUT_HANDLE) // BAD, won't work.
-// 	hStdout, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) //this will.
-// 	if hStdout == windows.InvalidHandle || err != nil {
-// 		// No console → plain text fallback
-// 		//FIXME: figure out if this would recuse infinitely:
-// 		mainLogger.Warn("failed to select console, falling back to plain text", slog.Any("err", err))
-// 		//goto normalPlainTextHandler
-// 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-// 	}
-
-// 	origAttr, err := wincoe.GetConsoleScreenBufferAttributes(hStdout) // your new helper
-// 	if err != nil {
-// 		// fallback
-// 		//FIXME: figure out if this would recuse infinitely:
-// 		mainLogger.Warn("failed to select colored console, falling back to plain text", slog.Any("err", err))
-// 		return inner //slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-// 	}
-
-// 	return &ColoredConsoleHandler{
-// 		Inner:    inner,
-// 		HStdout:  hStdout,
-// 		OrigAttr: origAttr,
-// 		UseColor: true,
-// 	}
-
-// 	// normalPlainTextHandler:
-// 	//
-// 	//	return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-// }
-
-// func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
-// 	return h.Inner.Enabled(ctx, level)
-// }
-
-// // Handle XXX: original code: Grok 4.20 thinks this causes the crash(he's not right, the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well this commit first https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! due to console corruptions when the set color fails and i don't restore it AND i continue printing text.
-// func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
-// 	if h.UseColor {
-// 		// ────────────────────────────────
-// 		//  Decide which color to use
-// 		// ────────────────────────────────
-
-// 		var color uint16
-// 		var isQuery bool
-// 		var action string
-
-// 		// Scan attributes once — look for category and action
-// 		r.Attrs(func(a slog.Attr) bool {
-// 			switch a.Key {
-// 			case "category":
-// 				if a.Value.String() == "query" {
-// 					isQuery = true
-// 				}
-// 			case "action":
-// 				action = a.Value.String()
-// 			}
-// 			return true // keep scanning
-// 		})
-
-// 		if isQuery && action != "" {
-// 			// Query line → try to use action-based color
-// 			if c, ok := QueryActionColors[action]; ok {
-// 				color = c
-// 			} else {
-// 				// unknown action → fall back to level-based color
-// 				color = LevelToAttr[r.Level]
-// 				// if color == 0 {
-// 				// 	color = h.origAttr
-// 				// }
-// 			}
-// 		} else {
-// 			// Normal (non-query) log line → classic level-based coloring
-// 			color = LevelToAttr[r.Level]
-// 			// if color == 0 {
-// 			// 	color = h.origAttr
-// 			// }
-// 		}
-// 		// color := levelToAttr[r.Level]
-// 		if color == 0 {
-// 			color = h.OrigAttr // safety
-// 		}
-// 		// ────────────────────────────────
-// 		//  Apply the chosen color
-// 		// ────────────────────────────────
-// 		//This version prevents two goroutines from changing color at the same time, which is exactly what causes the second line to lose its color when queries arrive almost simultaneously.
-// 		h.Mu.Lock()
-// 		defer h.Mu.Unlock()
-// 		err := wincoe.SetConsoleTextAttribute(h.HStdout, color)
-// 		if err == nil {
-// 			// 	return fmt.Errorf("SetConsoleTextAttribute failed: %w", err)
-// 			// }
-// 			// Important: restore color AFTER writing — even on error paths
-// 			defer func() {
-// 				_ = wincoe.SetConsoleTextAttribute(h.HStdout, h.OrigAttr) //nolint:errcheck // because nothing to do with the error.
-// 			}()
-// 		} // ignore if couldn't set the text attribute/color!
-// 	}
-
-// 	writeErr := h.Inner.Handle(ctx, r)
-
-// 	if writeErr != nil {
-// 		return fmt.Errorf("inner handler failed: %w", writeErr)
-// 	}
-// 	return nil
-// }
-
-// func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-// 	return &ColoredConsoleHandler{
-// 		Inner:    h.Inner.WithAttrs(attrs),
-// 		HStdout:  h.HStdout,
-// 		OrigAttr: h.OrigAttr,
-// 		UseColor: h.UseColor,
-// 	}
-// }
-
-// func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
-// 	return &ColoredConsoleHandler{
-// 		Inner:    h.Inner.WithGroup(name),
-// 		HStdout:  h.HStdout,
-// 		OrigAttr: h.OrigAttr,
-// 		UseColor: h.UseColor,
-// 	}
-// }
+// XXX: bad Go v1.26.0 causes a crash(heisenbug), the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well the cause is this commit first: https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! See also: https://gist.github.com/bradfitz/46c4b69ee8d6db639f3f7bf52594675a
 
 type ColoredConsoleHandler struct {
 	Level slog.Level
@@ -720,7 +548,10 @@ type ColoredConsoleHandler struct {
 
 func NewColoredConsoleHandler(level slog.Level) slog.Handler {
 	// Activate Windows VT Processing globally
-	_ = wincoe.EnableVirtualTerminalProcessing()
+	err := wincoe.EnableVirtualTerminalProcessing()
+	if err != nil {
+		mainLogger.Warn("EnableVirtualTerminalProcessing failed", slog.Any("err", err)) //itwontFIXME: figure out if this would recuse infinitely
+	}
 
 	return &ColoredConsoleHandler{
 		Level: level,
@@ -809,29 +640,6 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 		valColor := baseColor
 
 		// Auto-color matching actions/errors
-
-		// if key == "action" {
-		// 	if c, ok := QueryActionANSI[valStr]; ok {
-		// 		valColor = c
-		// 	}
-		// } else if key == "err" || key == "error" {
-		// 	if valStr != "<nil>" {
-		// 		valColor = "\x1b[91m" // Red
-		// 	}
-		// }
-
-		// --- MODIFIED LOGIC ---
-		// If the key is action, domain, proto, or type, use the status color
-
-		// if key == "action" || key == "domain" || key == "proto" || key == "type" || key == "ips" {
-		// 	if statusColor != "" {
-		// 		valColor = statusColor
-		// 	}
-		// } else if key == "err" || key == "error" {
-		// 	if valStr != "<nil>" {
-		// 		valColor = "\x1b[91m" // Red
-		// 	}
-		// }
 
 		// valColor logic using a tagged switch
 		switch key {
