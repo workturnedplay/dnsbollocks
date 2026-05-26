@@ -1642,12 +1642,12 @@ const configFileName = "config.json"
 
 func logFatal(msg string, err error) {
 	mainLogger.Error(msg, slog.Any("err", err))
-	os.Exit(1) // replaced log.Fatal
+	shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
 func logFatal2(msg string) {
 	mainLogger.Error(msg)
-	os.Exit(1) // replaced log.Fatal
+	shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
 // 2. New error channel for service failures
@@ -2087,7 +2087,7 @@ func initFullLogging() { //qpath, epath string) {
 		if err != nil {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
 			mainLogger.Error("cannot open log file", slog.String("file", path), slog.Any("err", err))
-			os.Exit(1)
+			shutdown(1) //os.Exit(1)
 			//panic(fmt.Errorf("cannot open log %q: %w", path, err))
 		}
 		return f
@@ -2794,7 +2794,7 @@ func startDNSListener(addr string) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		mainLogger.Error("invalid UDP address", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1) //FIXME: see the below comment
+		shutdown(1) //os.Exit(1) //FIXME: see the below comment
 	}
 	udpLn, err := net.ListenUDP("udp", udpAddr)
 
@@ -2896,7 +2896,7 @@ func startDNSListener(addr string) {
 		// errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %q: %v", addr, err)
 		//errorLogger.Error(errStr)
 		mainLogger.Error("invalid TCP address", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1)
+		shutdown(1) //os.Exit(1)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
 
@@ -2904,7 +2904,7 @@ func startDNSListener(addr string) {
 		//errStr := fmt.Sprintf("TCP bind failed on %q: %v", addr, err)
 		//errorLogger.Error(errStr)
 		mainLogger.Error("TCP bind/listen failed", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1)
+		shutdown(1) //os.Exit(1)
 	} else {
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		shutdownWG.Add(1) // +1 for the Main TCP Loop
@@ -3185,7 +3185,7 @@ func startDoHListener(addr string) {
 		// errStr := fmt.Sprintf("DoH listener failed on %q: %v", addr, err)
 		// errorLogger.Error(errStr)
 		mainLogger.Error("DoH listener failed to bind/listen", slog.String("addr", addr), slog.Any("err", err))
-		os.Exit(1) // Fail-fast serial
+		shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
 	mainLogger.Info("DoH listening", slog.String("address", addr))
 
@@ -4484,7 +4484,7 @@ func startWebUI(port int) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
 		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIP), slog.Int("port", port), slog.Any("err", err))
-		os.Exit(1) // Fail-fast serial
+		shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
 	mainLogger.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
 
@@ -5322,8 +5322,10 @@ func shutdown(exitCode int) {
 		cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
 		mainLogger.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
-		cacheStore.Flush()
-		mainLogger.Debug("Cache flushed")
+		if cacheStore != nil {
+			cacheStore.Flush()
+			mainLogger.Debug("Cache flushed")
+		}
 		//doneTODO: webUI shutdown (done via cancel() above)
 		//mainLogger.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
