@@ -4,7 +4,7 @@ Originally located here: [https://github.com/workturnedplay/dnsbollocks](https:/
 
 (unless you got it from a fork, try `git remote -v` to check)
 
-`dnsbollocks` is a local DNS proxy/filter written in Go that I run on Windows 11. The codebase was initially generated with AI assistance and is under active iteration, testing, and hardening using AI assistance.
+`dnsbollocks` is a local DNS proxy/filter written in Go that I used to use and run on Windows 11(before I decided to switch to Linux). The codebase was initially generated with AI assistance(via chat only, no agents) and is no longer under active iteration anymore(because I'm switching to Linux mainly because the requirement for having signed drivers in Win11 if I wanted to make it a firewall or use a modified version of portmaster firewall), testing, and hardening using AI assistance.
 
 Its core behavior is simple: **block every DNS request by default unless explicitly whitelisted**.
 
