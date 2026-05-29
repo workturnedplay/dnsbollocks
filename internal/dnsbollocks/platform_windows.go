@@ -1153,7 +1153,8 @@ var uiTemplates = template.Must(template.New("").Parse(
 				if (isF5 || isCtrlR) { // && window.location.pathname === '/blocks') {
 					e.preventDefault(); // Stop Firefox from doing a POST-reload
 					//window.location.href = '/blocks'; // Perform a clean GET-reload instead
-					window.location.href = window.location.pathname; // Clean GET-reload for the current page
+					//window.location.href = window.location.pathname; // Clean GET-reload for the current page, this resets scroll position to top
+					window.location.reload(); // tells the browser's engine: "This is a refresh of the exact same context," which allows it to fire up its native scroll restoration feature and keep your position locked exactly where you left it!
 				}
 			}
 		});
