@@ -1244,6 +1244,10 @@ var uiTemplates = template.Must(template.New("").Parse(
 					const currentDir = th.dataset.sortDir;
 					let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
 
+					// 2. Save the new sorting state to sessionStorage so it survives page reloads
+					sessionStorage.setItem('rulesTable_sortCol', colIndex);
+					sessionStorage.setItem('rulesTable_sortDir', newDir);
+
 					// Reset all headers
 					headers.forEach(h => {
 						h.dataset.sortDir = 'none';
@@ -1277,6 +1281,20 @@ var uiTemplates = template.Must(template.New("").Parse(
 					rowsArray.forEach(row => tbody.appendChild(row));
 				});
 			});
+
+			// --- Restore sort state on page load ---
+			const savedCol = sessionStorage.getItem('rulesTable_sortCol');
+			const savedDir = sessionStorage.getItem('rulesTable_sortDir');
+
+			if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
+				const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+				if (targetHeader) {
+					// Set the current direction to the logical "previous" state, 
+					// so that calling .click() toggles it to our desired saved state.
+					targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
+					targetHeader.click();
+				}
+			}
 		}
     </script>
 </body></html>
