@@ -24,10 +24,36 @@ if "%~1"=="--resized" goto :MAIN_LOGIC
 :: -d: Start in current directory
 :: "%~f0": The full path to THIS script
 :: --resized: A flag we pass so the script knows it's already resized
-wt -w 100 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized
+wt -w 100 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized %*
 exit /b
 
 :MAIN_LOGIC
+shift
+rem in Windows, shift does not affect %*
+rem In Batch, %* means "the raw string of arguments passed to the script at the very moment it was launched."
+rem When you run the shift command:
+rem     It updates %1, %2, %3, etc., moving them down the line (%2 becomes %1).
+rem    It completely ignores %*. %* remains frozen in time, holding the exact original command-line string, including that --resized flag.
+
+rem :: Capture all arguments EXCEPT the first one (--resized)
+set "SHIFTED_ARGS="
+set /a count=0
+rem already did 'shift' above
+rem using loop means "--resized" doesn't have to be updated in two places if it's ever changed in the future
+rem however this means the arg count is broken when using spaces(nope), ie. this: --config "my file.txt" doesn't do this: %1 becomes --config and %2 becomes "my file.txt" if we use this method (false, it still does this anyway)
+:loop_args
+if "%~1" NEQ "" (
+    set /a count+=1
+    set "SHIFTED_ARGS=!SHIFTED_ARGS! %1"
+    shift
+    goto loop_args
+)
+
+rem I don't see a diff between that and this:
+rem set "ALL_ARGS=%*"
+rem set "SHIFTED_ARGS=!ALL_ARGS:--resized =!"
+
+
 :: 3. Now you are in the correct window size. 
 :: You can run your EXE directly, and standard Batch rules apply.
 
@@ -113,7 +139,7 @@ set GOGC=50
 set GODEBUG=madvdontneed=1
 echo GODEBUG is '%GODEBUG%'
 
-echo Running command^(in current dir^): "!exe_name!"
+echo Running command^(in current dir^): "!exe_name!" with !count! args: !SHIFTED_ARGS!
 REM set "LOCK_FILE=%temp%\exe_busy_%random%.tmp"
 REM :: Create the lock file
 REM echo busy > "%LOCK_FILE%"
@@ -127,7 +153,7 @@ REM :wait_loop
 REM timeout /t 1 /nobreak >nul
 REM if exist "%LOCK_FILE%" goto wait_loop
 
-"!exe_name!"
+"!exe_name!" !SHIFTED_ARGS!
 set "ec=%ERRORLEVEL%"
 
 rem 1. Capture the ISO timestamp into a variable, actually this takes 0.23sec to run

@@ -52,7 +52,6 @@ import (
 	"path/filepath"
 	"regexp"
 
-	//"html"
 	"strings"
 	"sync"
 	"syscall"
@@ -65,6 +64,9 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 	"golang.org/x/time/rate"
+
+	"flag"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Config holds the JSON configuration.
@@ -99,6 +101,9 @@ type Config struct {
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
 	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
+
+	WebUIPasswordHash string `json:"webui_password_hash"`
+	WebUIUseTLS       bool   `json:"webui_use_tls"`
 }
 
 func (c Config) Clone() Config {
@@ -522,6 +527,7 @@ func defaultConfig() Config {
 		AllowRunAsAdmin:         false,
 		BlockAAAAasEmptyNoError: true,
 		AllowHTTPSIfAAllowed:    true,
+		WebUIUseTLS:             true,
 	}
 }
 
@@ -1495,6 +1501,20 @@ func logFatal2(msg string) {
 	shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
+func getWebUIPasswordHashJSONTag() string {
+	var cfg Config
+	t := reflect.TypeOf(cfg)
+	if field, found := t.FieldByName("WebUIPasswordHash"); found {
+		tag := field.Tag.Get("json")
+		// Strip away options like ,omitempty if present
+		if idx := strings.Index(tag, ","); idx != -1 {
+			return tag[:idx]
+		}
+		return tag
+	}
+	return "webui_password_hash" // Fallback safety
+}
+
 // 2. New error channel for service failures
 // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 var errChan chan error = make(chan error, 10)
@@ -1534,7 +1554,20 @@ func OldMain() {
 	// }()
 
 	//flag.Parse() // For future flags
-
+	hashCmd := flag.Bool("hash-password", false, "Securely prompt for a password, output the bcrypt hash, and exit")
+	flag.Parse()
+	if *hashCmd {
+		hash, err := promptAndHashPassword()
+		if err != nil {
+			logFatal2("Failed to set password: " + err.Error())
+		}
+		//fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for \"webui_password_hash\":\n%s\n", configFileName, hash)
+		// Dynamic tag extraction
+		var jsonTag string = getWebUIPasswordHashJSONTag()
+		fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for %q:\n%s\n", configFileName, jsonTag, hash)
+		mainLogger.Debug("Generated new hash password(not logging it) via cmd line arg, not saved in config.", slog.String("config", configFileName))
+		shutdown(0)
+	}
 	// if len(os.Args) > 1 {
 	// 	configPath = os.Args[1]
 	// }
@@ -1542,6 +1575,7 @@ func OldMain() {
 	// Signals setup FIRST: Catch interrupts from init onward
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 	mainLogger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
 
 	if err := loadConfig(); err != nil {
@@ -1570,7 +1604,7 @@ func OldMain() {
 	}
 	mainLogger.Debug("Upstreams validated", slog.Any("upstreamURLs", config.UpstreamURLs), slog.Any("upstreamIPs", upstreamIPs))
 
-	generateCertIfNeeded() // For DoH
+	generateCertIfNeeded() // For DoH and webUI!
 	//mainLogger.Debug("Cert checked/generated if needed")
 
 	initDoHClients()
@@ -1729,7 +1763,7 @@ func loadConfig() error {
 		}
 
 		if len(missing) > 0 {
-			mainLogger.Warn("Config file has missing keys; using defaults", slog.String("config_file", cfgFname), slog.Any("missing", missing))
+			mainLogger.Warn("Config file has missing keys - using default values for those keys", slog.String("config_file", cfgFname), slog.Any("missing", missing))
 			shouldSaveConfig = true
 		}
 		// if theReadConfig != config {
@@ -1797,6 +1831,26 @@ func loadConfig() error {
 	}
 	if err = loadLocalHosts(); err != nil {
 		return err
+	}
+
+	// NEW: Enforce password setup if it's missing from the config
+	if config.WebUIPasswordHash == "" {
+		mainLogger.Warn("No WebUI password configured. Securing WebUI now...")
+		fmt.Println("\n========================================================")
+		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
+		fmt.Println("========================================================")
+		hash, err2 := promptAndHashPassword()
+		if err2 != nil {
+			logFatal2("Failed to setup password (aborted): " + err2.Error())
+		}
+
+		// Update live config instance
+		config.WebUIPasswordHash = hash
+
+		mainLogger.Info("WebUI password successfully set.")
+		if !shouldSaveConfig {
+			shouldSaveConfig = true
+		}
 	}
 
 	if shouldSaveConfig {
@@ -4324,14 +4378,46 @@ func startWebUI(port int) {
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
+	baseListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
 		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIP), slog.Int("port", port), slog.Any("err", err))
 		shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
-	mainLogger.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
 
-	uiSrv := &http.Server{Handler: mux}
+	// 2. Adaptive Upgrading: Intercept listener if TLS is requested
+	var finalListener net.Listener = baseListener
+	// // Using a closure looks up finalListener at the moment the function returns
+	// defer func() {
+	// 	if finalListener != nil {
+	// 		finalListener.Close()
+	// 	}
+	// }()
+	protocolScheme := "http"
+
+	//mainLogger.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
+	if config.WebUIUseTLS {
+		// Leverage the global certificate loaded/generated during startup
+		tlsConfig := &tls.Config{
+			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
+			Certificates: []tls.Certificate{dohCert}, // Reuse the global keypair directly!
+			MinVersion:   tls.VersionTLS12,
+		}
+
+		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
+		finalListener = tls.NewListener(baseListener, tlsConfig)
+		protocolScheme = "https"
+	}
+
+	//uiSrv := &http.Server{Handler: mux}
+	// CHANGED: Wrap the mux in our new authMiddleware
+	uiSrv := &http.Server{Handler: authMiddleware(mux)}
+	mainLogger.Info("Web UI listening",
+		slog.String("scheme", protocolScheme),
+		slog.String("host", hostOrIP),
+		slog.Int("port", port),
+		slog.String("url", fmt.Sprintf("%s://%s:%d", protocolScheme, hostOrIP, port)),
+	)
+
 	// Listen for the global shutdown signal to gracefully close the Web UI
 	shutdownWG.Add(1)
 	go func() {
@@ -4347,11 +4433,9 @@ func startWebUI(port int) {
 	go func() {
 		defer shutdownWG.Done()
 
-		defer listener.Close() // Graceful close
-		if err := uiSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			//errorLogger.Error("ui_serve_failed", slog.Any("err", err))
+		defer finalListener.Close() // Graceful close
+		if err := uiSrv.Serve(finalListener); err != nil && err != http.ErrServerClosed {
 			logFatal("ui_serve_failed", err)
-			//os.Exit(1) // Fail-fast serial
 		}
 	}()
 	mainLogger.Debug("UI server loop launched")
@@ -5256,4 +5340,116 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 			return
 		}
 	}
+}
+
+func promptAndHashPassword() (string, error) {
+	fd := int(os.Stdin.Fd())
+
+	// 1. Create a channel to catch the Ctrl+C signal
+	// keeping this abortChan separate from sigChan for some reason: "it is much safer and cleaner to keep them separate" - Geminig 3.5 Flash
+	abortChan := make(chan os.Signal, 1)
+	// Tell Go to stop routing signals to this channel when the function returns
+	defer signal.Stop(abortChan)
+	signal.Notify(abortChan, os.Interrupt, syscall.SIGTERM)
+
+	// 2. Create a lifetime channel to clean up our goroutine if the user completes the prompt normally
+	done := make(chan struct{})
+	defer close(done)
+
+	var abortedByUser atomic.Bool
+	var injectionFailed atomic.Bool
+
+	// 3. Spin up a background thread to watch for the abort signal
+	go func() {
+		select {
+		case <-abortChan:
+			fmt.Println()
+			abortedByUser.Store(true)
+			// If Ctrl+C is pressed, this case fires instantly
+			mainLogger.Debug("[Aborted] Password setup cancelled by user.")
+			//shutdown(1)
+			// Synthesize a dummy key event record (Carriage Return / Enter)
+
+			// If Windows API fails or didn't write anything, flag it
+			// Inject a dummy enter key to wake up the main thread
+			if err := wincoe.InjectConsoleEnter(); err != nil {
+				injectionFailed.Store(true)
+			}
+			return
+		case <-done:
+			// If the user types their password successfully, this case fires to exit cleanly
+			return
+		}
+	}()
+
+	mainLogger.Debug("Prompting user to set a new password, on console")
+	fmt.Print("Enter new WebUI password (or Ctrl+C to abort): ")
+	pwd1, err := term.ReadPassword(fd)
+	if abortedByUser.Load() {
+		if injectionFailed.Load() {
+			fmt.Println("(Note: Signal injection failed. You will need to press an extra key to clear the terminal prompt buffer.)")
+		}
+		return "", errors.New("action cancelled by user")
+	}
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	if len(pwd1) == 0 {
+		return "", errors.New("password cannot be empty")
+	}
+
+	fmt.Print("Re-enter password to confirm: ")
+	pwd2, err := term.ReadPassword(fd)
+	if abortedByUser.Load() {
+		if injectionFailed.Load() {
+			fmt.Println("(Note: Signal injection failed. You will need to press an extra key to clear the terminal prompt buffer.)")
+		}
+		return "", errors.New("action cancelled by user")
+	}
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+
+	if string(pwd1) != string(pwd2) {
+		return "", fmt.Errorf("passwords do not match, len1:%d vs len2:%d", len(pwd1), len(pwd2))
+	}
+
+	// DefaultCost is 10, which is perfectly balanced for modern hardware
+	hash, err := bcrypt.GenerateFromPassword(pwd1, bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+
+	return string(hash), nil
+}
+
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Safety fallback: if somehow the hash is still blank, DON'T allow access
+		if config.WebUIPasswordHash == "" {
+			panic("no webUI password was set, this shouldn't be possible, dev fail?")
+			//next.ServeHTTP(w, r)
+			//return
+		}
+
+		// Extract the Basic Auth credentials provided by the browser
+		username, pass, ok := r.BasicAuth()
+		if username != "" {
+			mainLogger.Warn("Username ignored.", slog.String("username", username))
+		}
+
+		// Compare the provided password against our stored bcrypt hash.
+		// If headers are missing (!ok) or the password is wrong (err != nil), block them.
+		if !ok || bcrypt.CompareHashAndPassword([]byte(config.WebUIPasswordHash), []byte(pass)) != nil {
+			// This header triggers the browser's native login modal
+			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
+			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
+			return
+		}
+
+		// Password is correct, let the request pass through to the target handler
+		next.ServeHTTP(w, r)
+	})
 }
