@@ -71,9 +71,10 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS               string   `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
-	ListenDoH               string   `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
-	UIPort                  int      `json:"ui_port"`                    // 8080
+	ListenDNS string `json:"listen_dns"` // e.g., "127.0.0.1:53"
+	ListenDoH string `json:"listen_doh"` // e.g., "127.0.0.1:443"
+	//UIPort                  int      `json:"ui_port"`                    // 8080
+	ListenUI                string   `json:"listen_ui"`
 	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
 	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
@@ -504,9 +505,10 @@ func loadQueryWhitelist() error {
 // must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
 func defaultConfig() Config {
 	return Config{
-		ListenDNS:               "127.0.0.1:53",
-		ListenDoH:               "127.0.0.1:443",
-		UIPort:                  8080,
+		ListenDNS: "127.0.0.1:53",
+		ListenDoH: "127.0.0.1:443",
+		//UIPort:                  8080,
+		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
 		UpstreamRetriesPerQuery: 1,                                               // 1 initial try(not counted) + 1 retry(counted here)
@@ -1612,7 +1614,7 @@ func OldMain() {
 	mainLogger.Debug("Launching listeners sequentially...")
 	startDNSListener(config.ListenDNS) // Blocks until complete/fail
 	startDoHListener(config.ListenDoH) // Blocks until complete/fail
-	go startWebUI(config.UIPort)       // Concurrent server (blocks forever, but post-serial)
+	go startWebUI(config.ListenUI)     // Concurrent server (blocks forever, but post-serial)
 
 	go watchKeys(
 		func() { // Ctrl+R aka reloadFn
@@ -4363,11 +4365,7 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-const hostForUIListener string = "127.0.0.1" //TODO: add this to config, but should start with 127. for security reasons.
-
-func startWebUI(port int) {
-	hostOrIP := hostForUIListener //FIXME: hardcoded IP
-
+func startWebUI(addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", statsHandler)
 	mux.HandleFunc("/rules", rulesHandler)
@@ -4378,9 +4376,11 @@ func startWebUI(port int) {
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
-	baseListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", hostOrIP, port))
+	baseListener, err := net.Listen("tcp", addr) //fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
-		mainLogger.Error("UI listener failed to bind/listen", slog.String("hostOrIp", hostOrIP), slog.Int("port", port), slog.Any("err", err))
+		mainLogger.Error("UI listener failed to bind/listen", slog.String("addr", addr),
+			//slog.String("hostOrIp", hostOrIP), slog.Int("port", port),
+			slog.Any("err", err))
 		shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
 
@@ -4411,11 +4411,23 @@ func startWebUI(port int) {
 	//uiSrv := &http.Server{Handler: mux}
 	// CHANGED: Wrap the mux in our new authMiddleware
 	uiSrv := &http.Server{Handler: authMiddleware(mux)}
+	// BETTER APPROACH: Query the active listener for its real bound address.
+	// This is guaranteed to be split-safe, and correctly exposes the port
+	// if the user passes ":0" for a dynamically allocated port.
+	boundAddr := baseListener.Addr().String()
+	host, portStr, err := net.SplitHostPort(boundAddr)
+	//// Split the address for the logger to maintain your existing clean log output
+	//host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		panic(fmt.Errorf("this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
+		//host = addr
+		//portStr = "unknown"
+	}
 	mainLogger.Info("Web UI listening",
 		slog.String("scheme", protocolScheme),
-		slog.String("host", hostOrIP),
-		slog.Int("port", port),
-		slog.String("url", fmt.Sprintf("%s://%s:%d", protocolScheme, hostOrIP, port)),
+		slog.String("host", host),
+		slog.String("port", portStr),
+		slog.String("url", fmt.Sprintf("%s://%s", protocolScheme, boundAddr)),
 	)
 
 	// Listen for the global shutdown signal to gracefully close the Web UI
