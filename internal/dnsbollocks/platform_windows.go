@@ -78,6 +78,7 @@ type Config struct {
 	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
 	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
+	StrictUpstreamMatch     bool     `json:"strict_upstream_match"`      // if true, IPs returned for queries from all upstreams must match or the host/reply will be blocked.
 	BlockMode               string   `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
 	BlockIP                 string   `json:"block_ip"`                   // "0.0.0.0"
 	RateQPS                 int      `json:"rate_qps"`                   // 100
@@ -511,7 +512,8 @@ func defaultConfig() Config {
 		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
-		UpstreamRetriesPerQuery: 1,                                               // 1 initial try(not counted) + 1 retry(counted here)
+		StrictUpstreamMatch:     false,
+		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
 		RateQPS:                 100,
@@ -1833,6 +1835,13 @@ func loadConfig() error {
 	}
 	if err = loadLocalHosts(); err != nil {
 		return err
+	}
+
+	// Add your new clear architectural description line here:
+	if config.StrictUpstreamMatch {
+		mainLogger.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
+	} else {
+		mainLogger.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
 	}
 
 	// NEW: Enforce password setup if it's missing from the config
@@ -3656,58 +3665,102 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 	type result struct {
 		msg *dns.Msg
 		err error
+		idx int // Useful for tracking which upstream won or failed
 	}
+	if config.StrictUpstreamMatch {
+		// ==========================================
+		// OLD LOGIC: Wait for all & strict compare
+		// ==========================================
+		results := make([]result, len(clients))
+		var wg sync.WaitGroup
 
-	results := make([]result, len(clients))
-	var wg sync.WaitGroup
-
-	// Fire all queries concurrently
-	for i, client := range clients {
-		if client == nil {
-			panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! shouldn't happen! upstreamURL=%s SNI=%s", i, upstreamURLs[i], upstreamSNIs[i]))
-		}
-		wg.Add(1)
-		go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
-			defer wg.Done()
-			results[idx].msg, results[idx].err = doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
-		}(i, client, upstreamURLs[i], upstreamSNIs[i])
-	}
-
-	wg.Wait()
-
-	var reference *dns.Msg
-	var refIdx int
-
-	// Compare responses
-	for i, res := range results {
-		if res.err != nil || res.msg == nil {
-			mainLogger.Error("upstream failed or returned nil", slog.String("url", upstreamURLs[i].String()), slog.Any("err", res.err))
-			return nil // Refuse to resolve if any upstream completely fails
+		// Fire all queries concurrently
+		for i, client := range clients {
+			if client == nil {
+				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! shouldn't happen! upstreamURL=%s SNI=%s", i, upstreamURLs[i], upstreamSNIs[i]))
+			}
+			wg.Add(1)
+			go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
+				defer wg.Done()
+				//results[idx].msg, results[idx].err = doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+				msg, err := doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+				results[idx] = result{msg: msg, err: err, idx: idx}
+			}(i, client, upstreamURLs[i], upstreamSNIs[i])
 		}
 
-		if reference == nil {
-			reference = res.msg
-			refIdx = i
-		} else {
-			if !compareDNSResponses(reference, res.msg) {
-				// Extract IPs for the log message
-				refIPs := extractIPs(reference)
-				curIPs := extractIPs(res.msg)
-				mainLogger.Warn("upstream DNS response mismatch! dropping query to protect client",
-					slog.String("query", req.Question[0].Name),
-					slog.String("upstream_DoH_url1", upstreamURLs[refIdx].String()),
-					slog.Any("ips_returned1", refIPs),
-					slog.String("upstream_DoH_url2", upstreamURLs[i].String()),
-					slog.Any("ips_returned2", curIPs),
-					slog.Any("reference", reference),
-					slog.Any("current", res.msg),
-				)
-				return nil // Drop the query because of answer discrepancy
+		wg.Wait()
+
+		var reference *dns.Msg
+		var refIdx int
+
+		// Compare responses
+		for i, res := range results {
+			if res.err != nil || res.msg == nil {
+				mainLogger.Error("upstream failed or returned nil", slog.String("url", upstreamURLs[i].String()), slog.Any("err", res.err))
+				return nil // Refuse to resolve if any upstream completely fails
+			}
+
+			if reference == nil {
+				reference = res.msg
+				refIdx = i
+			} else {
+				if !compareDNSResponses(reference, res.msg) {
+					// Extract IPs for the log message
+					refIPs := extractIPs(reference)
+					curIPs := extractIPs(res.msg)
+					mainLogger.Warn("upstream DNS response mismatch! dropping query to protect client",
+						slog.String("query", req.Question[0].Name),
+						slog.String("upstream_DoH_url1", upstreamURLs[refIdx].String()),
+						slog.Any("ips_returned1", refIPs),
+						slog.String("upstream_DoH_url2", upstreamURLs[i].String()),
+						slog.Any("ips_returned2", curIPs),
+						slog.Any("reference", reference),
+						slog.Any("current", res.msg),
+					)
+					return nil // Drop the query because of answer discrepancy
+				}
 			}
 		}
-	}
 
-	return reference
+		return reference
+	} else {
+		// ==========================================
+		// NEW LOGIC: Fastest successful response wins
+		// ==========================================
+		// Use a buffered channel equal to the number of clients so slower goroutines
+		// don't block forever trying to write their results after the function returns.
+		resChan := make(chan result, len(clients))
+
+		for i, client := range clients {
+			if client == nil {
+				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! shouldn't happen! upstreamURL=%s SNI=%s", i, upstreamURLs[i], upstreamSNIs[i]))
+			}
+			go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
+				msg, err := doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+				resChan <- result{msg: msg, err: err, idx: idx}
+			}(i, client, upstreamURLs[i], upstreamSNIs[i])
+		}
+
+		var lastErr error
+		//for i := 0; i < len(clients); i++ {
+		for range len(clients) {
+			res := <-resChan
+
+			// If we got a valid DNS response (even an NXDOMAIN), return it immediately
+			if res.err == nil && res.msg != nil {
+				return res.msg
+			}
+
+			// Keep track of the error in case they ALL fail
+			if res.err != nil {
+				lastErr = res.err
+			}
+		}
+
+		// If we reach here, every single upstream request failed
+		mainLogger.Error("all upstreams failed to provide a valid response", slog.Any("last_err", lastErr))
+		return nil
+	}
 }
 
 func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, reqBytes []byte) (*dns.Msg, error) {
