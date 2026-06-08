@@ -5276,6 +5276,7 @@ func shutdown(exitCode int) {
 		mainLogger.Debug("All goroutines exited.")
 		//mainLogger.Debug("waited 1 sec for port cleanup")
 
+		UnstickStdinRead()
 		if !wincoe.WaitAnyKeyIfInteractive() {
 			mainLogger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
 		}
@@ -5285,6 +5286,35 @@ func shutdown(exitCode int) {
 	})
 }
 
+// Add a global channel for fatal errors to trigger shutdown
+var signalTheUnstick = make(chan struct{}, 1)
+var isStdinReading atomic.Bool // needed so we know if to inject an Enter key or not, to unstuck it
+
+// this is basically to avoid having to press a key twice when prompted to press a key to exit! due to reading for a key from two concurrent goroutines!
+func UnstickStdinRead() {
+	// Signal the channel safely
+	select {
+	case signalTheUnstick <- struct{}{}:
+		//this is entered here only because the channel is buffered (size 1) and thus will send
+		//mainLogger.Debug("sent1")
+	default:
+		// Already shutting down
+	}
+	//mainLogger.Debug("cont2")
+	// Wake up watchKeys goroutine by injecting an Enter key event
+	// into the console buffer. It will unblock Stdin.Read, see
+	// abortedByUser is true, restore terminal state, and exit safely.
+	if isStdinReading.Load() {
+		mainLogger.Debug("watchKeys is blocked in Stdin.Read; injecting console Enter")
+		if err := wincoe.InjectConsoleEnter(); err != nil {
+			//injecting a key here will cause the os.Stdin.Read(buf) below(in watchKeys) to exit
+			mainLogger.Warn("Signal injection failed. User must press a key one more time when prompted to exit.")
+		}
+	} else {
+		mainLogger.Debug("watchKeys is not in Stdin.Read; skipping console injection")
+	}
+}
+
 func watchKeys(reloadFn func(), cleanExitFn func()) {
 	fd := int(os.Stdin.Fd())
 
@@ -5292,16 +5322,41 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 	if err != nil {
 		return
 	}
+	// This defer is critical! It ensures the terminal exits RAW mode
+	// when the goroutine finishes, preventing a corrupted command prompt.
 	defer term.Restore(fd, oldState)
 
 	buf := make([]byte, 3)
 
 	for {
-		fmt.Print(".") //TODO: delete this? then the next 6 \n Print(s) as well
+		// 1. Check if an external fatal error triggered a shutdown
+		select {
+		case <-signalTheUnstick:
+			//XXX: this is to avoid waiting for an extra keypress when prompted to press a key to exit
+			//mainLogger.Debug("1 watchKeys exiting due to external fatal error")
+			return
+		default:
+			// Continue to read
+		}
+
+		// 1. Mark that we are entering the blocking OS call
+		isStdinReading.Store(true)
 		n, err := os.Stdin.Read(buf)
+		isStdinReading.Store(false) // 2. Mark that we came out (due to a key, Ctrl+C, or error)
+
 		if err != nil || n == 0 {
+			fmt.Print("?")
 			continue
 		}
+		// 2. Check AGAIN immediately after waking up
+		select {
+		case <-signalTheUnstick:
+			//XXX: this is to avoid waiting for an extra keypress when prompted to press a key to exit
+			//mainLogger.Debug("2 watchKeys woke up and saw external fatal error")
+			return
+		default:
+		}
+		fmt.Print(".") //noTODO: delete this? then the next 6 \n Print(s) as well
 
 		// Ctrl+X (0x18)
 		if buf[0] == 0x18 {
@@ -5345,6 +5400,7 @@ func watchKeys(reloadFn func(), cleanExitFn func()) {
 			}
 		}
 
+		// Re-ensure raw mode if anything temporarily reset it
 		_, err = term.MakeRaw(fd)
 		if err != nil {
 			fmt.Print("\n")
