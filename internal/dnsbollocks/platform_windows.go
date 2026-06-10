@@ -244,6 +244,8 @@ func saveResponseBlacklist() error {
 	if blacklistFileName == "" {
 		panic("bad coding: dev. didn't set the default blacklist filename!")
 	}
+	fileWriteMu.Lock()
+	defer fileWriteMu.Unlock()
 	if err := os.WriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
@@ -445,7 +447,7 @@ func saveQueryWhitelist() error {
 func loadQueryWhitelist() error {
 	path := config.WhitelistFile
 	if path == "" {
-		panic("dev. didn't set the default blacklist filename!")
+		panic("dev. didn't set the default whitelist filename!")
 	}
 	path = filepath.Clean(config.WhitelistFile)
 
@@ -3046,8 +3048,7 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := new(dns.Msg)
 	if err2 := msg.Unpack(body); err2 != nil {
-		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusInternalServerError)
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusBadRequest)
 		return
 	}
 	resp := handleDNSQuery(ctx, msg, r.RemoteAddr) // Field, not method
