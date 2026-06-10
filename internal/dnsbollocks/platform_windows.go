@@ -598,12 +598,17 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 	isDebug := false
 	baseColor := "\x1b[37m" // Default to White
+	var equalsColor string
 	if r.Level <= slog.LevelDebug {
 		isDebug = true
-		baseColor = "\x1b[90m" // Gray
+		baseColor = "\x1b[90m"   // Gray
+		equalsColor = "\x1b[37m" // White
+	} else {
+		equalsColor = "\x1b[95m" // Light Magenta / Purple
 	}
 
 	levelColor := baseColor
+
 	switch r.Level {
 	case slog.LevelInfo:
 		levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
@@ -706,7 +711,7 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 		buf.WriteString(" ")
 		buf.WriteString(key)
 
-		buf.WriteString(levelColor)
+		buf.WriteString(equalsColor)
 		buf.WriteString("=")
 		buf.WriteString(valColor)
 
