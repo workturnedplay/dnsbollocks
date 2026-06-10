@@ -1544,18 +1544,16 @@ func OldMain() {
 	// if true {
 	// 	panic("deliberate panic")
 	// }
-	// TEMPORARY: race detector smoke test — remove before release
-	if false {
-		var raceTest int
-		done := make(chan struct{})
-		go func() {
-			raceTest = 1 // concurrent write
-			close(done)
-		}()
-		raceTest = 2 // concurrent write
-		<-done
-		_ = raceTest
-	}
+	// // TEMPORARY: race detector smoke test — remove before release
+	// 	var raceTest int
+	// 	done := make(chan struct{})
+	// 	go func() {
+	// 		raceTest = 1 // concurrent write
+	// 		close(done)
+	// 	}()
+	// 	raceTest = 2 // concurrent write
+	// 	<-done
+	// 	_ = raceTest
 
 	initBootstrapLogging() // ← FIRST LINE — colored console, mainLogger now exists
 	// go func() {
