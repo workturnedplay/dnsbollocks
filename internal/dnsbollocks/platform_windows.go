@@ -3466,11 +3466,12 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	}
 
 	// Cache with clamped TTL
-	ttl := computeTTL(filtered)
-	expiry := time.Duration(ttl) * time.Second
-	if expiry < time.Duration(config.CacheMinTTL)*time.Second {
-		expiry = time.Duration(config.CacheMinTTL) * time.Second
-	}
+	//ttl := computeTTL(filtered)
+	//expiry := time.Duration(ttl) * time.Second
+	expiry := max(computeTTL(filtered), time.Duration(config.CacheMinTTL)*time.Second)
+	// if expiry < time.Duration(config.CacheMinTTL)*time.Second {
+	// 	expiry = time.Duration(config.CacheMinTTL) * time.Second
+	// }
 
 	//cacheStore.Set(key, filtered, expiry)
 	// FIX: Store a copy in the cache, not the pointer you are about to return
@@ -3482,17 +3483,49 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	return filtered
 }
 
-func computeTTL(msg *dns.Msg) int {
-	minTTL := 3600 // Default 1h
+func computeTTL(msg *dns.Msg) time.Duration {
+	//To correctly handle upstream negative caching responses (like NXDOMAIN or NODATA), we need to check both the Answer section and the Ns (Authority) section. Additionally, if an SOA (Start of Authority) record is found in the Authority section, RFC 2308 mandates that the negative cache TTL should be capped by the SOA's Minttl value.
+	var minTTL uint32 = 3600 // Default 1 hour,  not: //86400 // 24 hours
+	// for _, rr := range msg.Answer {
+	// 	if int(rr.Header().Ttl) < minTTL {
+	// 		minTTL = int(rr.Header().Ttl)
+	// 	}
+	// }
+	// if minTTL == 0 { // Edge: Zero TTL
+	// 	minTTL = 60
+	// }
+	// return minTTL
+	found := false
+
+	// 1. Check the Answer section
 	for _, rr := range msg.Answer {
-		if int(rr.Header().Ttl) < minTTL {
-			minTTL = int(rr.Header().Ttl)
+		found = true
+		if rr.Header().Ttl < minTTL {
+			minTTL = rr.Header().Ttl
 		}
 	}
-	if minTTL == 0 { // Edge: Zero TTL
-		minTTL = 60
+
+	// 2. Check the Authority (Ns) section for negative responses (e.g., SOA)
+	for _, rr := range msg.Ns {
+		found = true
+		if rr.Header().Ttl < minTTL {
+			minTTL = rr.Header().Ttl
+		}
+		// RFC 2308: For negative caching, use the minimum of the SOA TTL and its MinTTL field
+		if soa, ok := rr.(*dns.SOA); ok {
+			if soa.Minttl < minTTL {
+				minTTL = soa.Minttl
+			}
+		}
 	}
-	return minTTL
+
+	if !found {
+		minTTL = 300 // * time.Second
+	}
+	if minTTL < 10 { //XXX: hardcoded minimum 10 seconds TTL, FIXME: note about it in config.CacheMinTTL !
+		minTTL = 10
+	}
+	return time.Duration(minTTL) * time.Second
 }
 
 var (
@@ -3531,6 +3564,8 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 			dT.CloseIdleConnections()
 		}
 	}
+	dohTransportsPtrs = nil
+
 	// if dohTransport != nil {
 	// 	dohTransport.CloseIdleConnections()
 	// }
