@@ -303,21 +303,32 @@ func loadLocalHosts() error {
 }
 
 func saveLocalHosts() error {
-	localHostsMu.RLock()
-	raw := make(map[string][]string)
-	for _, rule := range localHosts {
-		var ips []string
-		for _, ip := range rule.IPs {
-			ips = append(ips, ip.String())
-		}
-		raw[rule.Pattern] = ips
-	}
-	localHostsMu.RUnlock()
+	var data []byte
+	var err error
 
-	data, err := json.MarshalIndent(raw, "", "  ")
+	// 1. Snapshot the data
+	func() {
+		localHostsMu.RLock()
+		defer localHostsMu.RUnlock()
+		raw := make(map[string][]string)
+		for _, rule := range localHosts {
+			var ips []string
+			for _, ip := range rule.IPs {
+				ips = append(ips, ip.String())
+			}
+			raw[rule.Pattern] = ips
+		}
+		data, err = json.MarshalIndent(raw, "", "  ")
+	}()
+
 	if err != nil {
 		return fmt.Errorf("hosts file marshal failed: %w", err)
 	}
+
+	// 2. Serialize the disk write
+	fileWriteMu.Lock()
+	defer fileWriteMu.Unlock()
+
 	if err := os.WriteFile(config.HostsFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write hosts file %q: %w", config.HostsFile, err)
 	}
@@ -406,13 +417,24 @@ func defaultResponseBlacklist() []string {
 }
 
 func saveQueryWhitelist() error {
-	ruleMutex.RLock()
-	defer ruleMutex.RUnlock()
+	var data []byte
+	var err error
 
-	data, err := json.MarshalIndent(whitelist, "", "  ")
+	// 1. Snapshot the data quickly under RLock to prevent blocking DNS queries during slow I/O
+	func() {
+		ruleMutex.RLock()
+		defer ruleMutex.RUnlock()
+		data, err = json.MarshalIndent(whitelist, "", "  ")
+	}()
+
 	if err != nil {
 		return fmt.Errorf("whitelist marshal failed: %w", err)
 	}
+
+	// 2. Serialize the disk write so concurrent WebUI saves don't corrupt the file
+	fileWriteMu.Lock()
+	defer fileWriteMu.Unlock()
+
 	if err := os.WriteFile(config.WhitelistFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write whitelist file %q: %w", config.WhitelistFile, err)
 	}
@@ -859,6 +881,7 @@ var (
 	clientLimiters sync.Map               // map[string]*rate.Limiter
 	whitelist      map[string][]RuleEntry // type -> rules
 	ruleMutex      sync.RWMutex
+	fileWriteMu    sync.Mutex
 	recentBlocks   = make([]BlockedQuery, 0, keepTrackOfThisManyRecentBlocks) // For UI
 	blockMutex     sync.Mutex
 	stats          = expvar.NewInt("blocks") // Simple stats
