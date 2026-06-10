@@ -1654,7 +1654,14 @@ func OldMain() {
 			} else {
 				mainLogger.Debug("Local hosts reloaded")
 			}
+
+			func() {
+				dohMu.Lock()
+				defer dohMu.Unlock()
+				dohClientsPtr.Store(nil)
+			}()
 			_ = initDoHClients()
+
 			mainLogger.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
 				slog.String("config_file", configFileName),
@@ -3347,6 +3354,7 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 
 	for _, dT := range dohTransportsPtrs {
 		if dT != nil {
+			mainLogger.Debug("Closed DoH idle connection", slog.Any("transport", dT))
 			dT.CloseIdleConnections()
 		}
 	}
