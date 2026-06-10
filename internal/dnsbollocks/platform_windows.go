@@ -626,13 +626,6 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 	buf := bytes.NewBuffer(make([]byte, 0, 1024))
 
-	//// Base color, time
-	//buf.WriteString(baseColor)
-	// Write the timestamp using the level color (e.g., Yellow for WARN, Red for ERROR)
-	buf.WriteString(levelColor)
-	buf.WriteString(timeStr)
-	buf.WriteString(" ")
-
 	// Level string (colored)
 	// Write the level text (also in the level color)
 	buf.WriteString(levelColor)
@@ -640,6 +633,13 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 	// Reset back to the base color for the message text
 	buf.WriteString(baseColor)
+	buf.WriteString(" ")
+
+	// Base color, time
+	//buf.WriteString(baseColor)
+	//// Write the timestamp using the level color (e.g., Yellow for WARN, Red for ERROR)
+	//buf.WriteString(levelColor)
+	buf.WriteString(timeStr)
 	buf.WriteString(" ")
 
 	// Process msg with potential <color> tags
