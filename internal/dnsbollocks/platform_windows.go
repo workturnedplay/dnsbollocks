@@ -605,8 +605,12 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 	levelColor := baseColor
 	switch r.Level {
+	case slog.LevelInfo:
+		levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
 	case slog.LevelWarn:
-		levelColor = "\x1b[93m" // Yellow
+		//levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
+		levelColor = "\x1b[95m" // Light Magenta / Purple
+		//levelColor = "\x1b[38;5;208m" // Vibrant Orange
 	case slog.LevelError:
 		levelColor = "\x1b[91m" // Red
 	}
@@ -701,6 +705,8 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 		buf.WriteString(" ")
 		buf.WriteString(key)
+
+		buf.WriteString(levelColor)
 		buf.WriteString("=")
 		buf.WriteString(valColor)
 
