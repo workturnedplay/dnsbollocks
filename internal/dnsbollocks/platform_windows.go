@@ -3086,13 +3086,35 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// Rate limit
+	var rateLimited string
 	gl := globalLimiter.Allow()
-	clIface, _ := clientLimiters.LoadOrStore(clientAddr, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst, FIXME: is this in config.json ? or should it be!
-	cl := clIface.(*rate.Limiter)
-	if !gl || !cl.Allow() {
-		mainLogger.Warn(rateLimitExceeded, slog.String("client", clientAddr))
+	if !gl {
+		rateLimited = globalRateLimitExceeded
+	} else {
+
+		// 1. Extract only the IP address to strip away the ephemeral port
+		clientIP, _, err := net.SplitHostPort(clientAddr)
+		if err != nil {
+			// Fallback safety: if string parsing fails, default back to the raw string
+			mainLogger.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
+			clientIP = clientAddr
+		}
+		// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+		if parsedIP := net.ParseIP(clientIP); parsedIP != nil && parsedIP.IsLoopback() {
+			clientIP = "localhost"
+		}
+		// 3. Use the clean IP as the sync.Map key
+		clIface, _ := clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst, FIXME: this isn't in config.json and it's per client(IP) limit
+		//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
+		cl := clIface.(*rate.Limiter)
+		if !cl.Allow() {
+			rateLimited = clientRateLimitExceeded
+		}
+	}
+	if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
+		mainLogger.Warn(rateLimited, slog.String("client", clientAddr))
 		sfr := servfailResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, rateLimitExceeded, "", nil, sfr)
+		logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr)
 		return sfr
 	}
 
@@ -4097,13 +4119,15 @@ const forwardedSTR string = "forwarded"
 const localHostOverride string = "local_host_override"
 const cacheHit string = "cache_hit"
 const blockedSTR string = "blocked"
-const rateLimitExceeded string = "rate_limit_exceeded"
+const globalRateLimitExceeded string = "rate_limit_exceeded_globally"
+const clientRateLimitExceeded string = "rate_limit_exceeded_for_client"
 
 var QueryActionANSI = map[string]string{
 	forwardedSTR:                       "\x1b[92m", // Bright Green
 	cacheHit:                           "\x1b[93m", // Bright Yellow
 	blockedSTR:                         "\x1b[91m", // Bright Red
-	rateLimitExceeded:                  "\x1b[31m", // Red
+	globalRateLimitExceeded:            "\x1b[31m", // Red
+	clientRateLimitExceeded:            "\x1b[31m", // Red
 	BlockedBlacklistedIP + originalSTR: "\x1b[91m",
 	BlockedBlacklistedIP + returnedModifiedSTR: "\x1b[91m",
 	BlockedByUpstream + originalSTR:            "\x1b[91m",
