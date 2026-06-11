@@ -1223,76 +1223,94 @@ var uiTemplates = template.Must(template.New("").Parse(
                 filterInput.blur(); // Drops focus cleanly
             }
         });
-        document.querySelectorAll('.btn-edit').forEach(btn => { // A dot (.) means "Look for a class name" (e.g., .btn-edit).
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-                const row = this.closest('tr');
-                
-                // Grab the data cleanly from the row dataset
-                const id = row.dataset.ruleId;
-                const typ = row.dataset.ruleType;
-                const oldPattern = row.dataset.rulePattern;
-                const enabled = row.dataset.ruleEnabled === 'true';
+        document.addEventListener('click', function(e) {
+            // 1. Check if the element clicked (or its nested contents) matches our class
+            const editBtn = e.target.closest('.btn-edit');
+            if (!editBtn) return; // Ignore clicks on anything else
 
-                // Tag the original row with a unique layout ID so Cancel/Save can find it
-                row.id = 'rule-row-' + id;
+            e.preventDefault();
 
-                row.style.display = 'none';
-                const formHtml = ` + "`" + `
-                <tr>
-                    <td>
-                        <select name="type" id="editType_${id}" style="width: 100%;">
-                            ` + strings.Join(func() []string {
+            // 2. Safely grab the closest table row relative to the button
+            const row = editBtn.closest('tr');
+            if (!row) return; // Safety guard: stop if it's somehow not in a row
+
+            // 3. Grab the data cleanly from the row dataset
+            const id = row.dataset.ruleId;
+            const typ = row.dataset.ruleType;
+            const oldPattern = row.dataset.rulePattern;
+            const enabled = row.dataset.ruleEnabled === 'true';
+
+            // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
+            row.id = 'rule-row-' + id;
+            row.style.display = 'none';
+
+            // 5. Generate and insert the inline edit form
+            const formHtml = ` + "`" + `
+            <tr>
+                <td>
+                    <select name="type" id="editType_${id}" style="width: 100%;">
+                        ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
 			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
 		}
 		return opts
 	}(), "") + `
-                        </select>
-                    </td>
-                    <td title="${id}">${id}</td>
-                    <td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
-                    <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
-                    <td class="actions">
-                        <form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
-                            <input type="hidden" name="id" value="${id}">
-                            <button type="submit" class="btn-save">Save</button>
-                            <button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
-                        </form>
-                    </td>
-                </tr>
-                ` + "`" + `;
-                row.insertAdjacentHTML('afterend', formHtml);
+                    </select>
+                </td>
+                <td title="${id}">${id}</td>
+                <td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
+                <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
+                <td class="actions">
+                    <form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
+                        <input type="hidden" name="id" value="${id}">
+                        <button type="submit" class="btn-save">Save</button>
+                        <button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
+                    </form>
+                </td>
+            </tr>
+            ` + "`" + `;
+            row.insertAdjacentHTML('afterend', formHtml);
+            
+            // 6. Safely populate the dropdown type selection
+            const select = document.getElementById('editType_' + id);
+            if (select) { select.value = typ; }
+
+            // 7. Safely populate the text input field as plain text
+            const patternInput = document.getElementById('editPattern_' + id);
+            if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
+
+            // 8. Handle the form submission for saving the rule
+            const form = document.getElementById('editForm_' + id);
+            form.addEventListener('submit', function(eSubmit) {
+                // Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
+                eSubmit.preventDefault();
+                const newPattern = patternInput.value.trim();
+                const enabledChecked = document.getElementById('editEnabled_' + id).checked;
+                const newType = document.getElementById('editType_' + id).value;
+                if (newPattern === '') { alert('newPattern cannot be empty'); return; }
                 
-                // 2. Safely populate the dropdown type selection
-                const select = document.getElementById('editType_' + id);
-                if (select) { select.value = typ; }
+                const formData = new FormData();
+                formData.append('id', id);
+                formData.append('pattern', newPattern);
+                formData.append('type', newType);
+                formData.append('enabled', enabledChecked ? 'true' : 'false');
+                
+                // --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
+                // Construct the EXACT same text signature format the filter checks against
+                // Using array join to keep it completely safe from Go raw string literal backticks!
+                const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
 
-                // 3. Safely populate the text input field as plain text
-                const patternInput = document.getElementById('editPattern_' + id);
-                if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
-
-                const form = document.getElementById('editForm_' + id);
-                form.addEventListener('submit', function(eSubmit) {
-                    eSubmit.preventDefault();
-                    const newPattern = patternInput.value.trim();
-                    const enabledChecked = document.getElementById('editEnabled_' + id).checked;
-                    const newType = document.getElementById('editType_' + id).value;
-                    if (newPattern === '') { alert('newPattern cannot be empty'); return; }
-                    const formData = new FormData();
-                    formData.append('id', id);
-                    formData.append('pattern', newPattern);
-                    formData.append('type', newType);
-                    formData.append('enabled', enabledChecked ? 'true' : 'false');
-                    // --- 2B: SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
-                    sessionStorage.setItem('rulesTable_lastInteracted', newPattern);
-                    fetch('/rules', {method: 'POST', body: formData,
+                // Save the unique signature instead of just the pattern
+                sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
+                
+                fetch('/rules', {
+                    method: 'POST',
+                    body: formData,
                     redirect: 'manual' // Stops fetch from following the redirect in the background
-                    })
-                        .then(() => location.reload())
-                        .catch(err => console.error('Save failed:', err));
-                });
+                })
+                .then(() => location.reload())
+                .catch(err => console.error('Save failed:', err));
             });
         });
         window.cancelEdit = function(id) {
@@ -1359,7 +1377,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 
                 // FREE PASS: If this row is the one we just added/edited, force it to show!
                 // 4. Free Pass logic (using our clean variable)
-                if (lastInteracted && pattern === lastInteracted) {
+                if (lastInteracted && searchTargetText === lastInteracted) {
                     isMatch = true;
                 }
 
