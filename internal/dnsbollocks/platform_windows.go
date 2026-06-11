@@ -1109,7 +1109,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     .btn-edit:hover { background-color: #005a9e !important; }
     .btn-add { background-color: #0078d4 !important; color: white !important; border: none !important; }
     .btn-add:hover { background-color: #005a9e !important; }
-	.btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
+    .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
     .btn-del:hover { background-color: #a82a01 !important; }
     
     /* New Save/Cancel Buttons */
@@ -1228,29 +1228,29 @@ var uiTemplates = template.Must(template.New("").Parse(
         document.addEventListener('click', function(e) {
             // 1. Check if the element clicked (or its nested contents) matches our class
             const editBtn = e.target.closest('.btn-edit');
-            if (!editBtn) return; // Ignore clicks on anything else
+            //if (!editBtn) return; // Ignore clicks on anything else
+			if (editBtn) {
+				// 2. Safely grab the closest table row relative to the button
+				const row = editBtn.closest('tr');
+				if (!row) return; // Safety guard: stop if it's somehow not in a row
 
-            // 2. Safely grab the closest table row relative to the button
-            const row = editBtn.closest('tr');
-            if (!row) return; // Safety guard: stop if it's somehow not in a row
+				e.preventDefault();
 
-			e.preventDefault();
+				// 3. Grab the data cleanly from the row dataset
+				const id = row.dataset.ruleId;
+				const typ = row.dataset.ruleType;
+				const oldPattern = row.dataset.rulePattern;
+				const enabled = row.dataset.ruleEnabled === 'true';
 
-            // 3. Grab the data cleanly from the row dataset
-            const id = row.dataset.ruleId;
-            const typ = row.dataset.ruleType;
-            const oldPattern = row.dataset.rulePattern;
-            const enabled = row.dataset.ruleEnabled === 'true';
+				// 4. Tag the original row with a unique layout ID so Cancel/Save can find it
+				row.id = 'rule-row-' + id;
+				row.style.display = 'none';
 
-            // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
-            row.id = 'rule-row-' + id;
-            row.style.display = 'none';
-
-            // 5. Generate and insert the inline edit form
-            const formHtml = ` + "`" + `
-            <tr>
-                <td>
-                    <select name="type" id="editType_${id}" style="width: 100%;">
+				// 5. Generate and insert the inline edit form
+				const formHtml = ` + "`" + `
+				<tr>
+					<td>
+						<select name="type" id="editType_${id}" style="width: 100%;">
                         ` + strings.Join(func() []string {
 		var opts []string
 		for _, t := range dnsTypes {
@@ -1258,63 +1258,99 @@ var uiTemplates = template.Must(template.New("").Parse(
 		}
 		return opts
 	}(), "") + `
-                    </select>
-                </td>
-                <td title="${id}">${id}</td>
-                <td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
-                <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
-                <td class="actions">
-                    <form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
-                        <input type="hidden" name="id" value="${id}">
-                        <button type="submit" class="btn-save">Save</button>
-                        <button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
-                    </form>
-                </td>
-            </tr>
-            ` + "`" + `;
-            row.insertAdjacentHTML('afterend', formHtml);
-            
-            // 6. Safely populate the dropdown type selection
-            const select = document.getElementById('editType_' + id);
-            if (select) { select.value = typ; }
+						</select>
+					</td>
+					<td title="${id}">${id}</td>
+					<td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
+					<td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
+					<td class="actions">
+						<form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
+							<input type="hidden" name="id" value="${id}">
+							<button type="submit" class="btn-save">Save</button>
+							<button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
+						</form>
+					</td>
+				</tr>
+				` + "`" + `;
+				row.insertAdjacentHTML('afterend', formHtml);
+				
+				// 6. Safely populate the dropdown type selection
+				const select = document.getElementById('editType_' + id);
+				if (select) { select.value = typ; }
 
-            // 7. Safely populate the text input field as plain text
-            const patternInput = document.getElementById('editPattern_' + id);
-            if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
+				// 7. Safely populate the text input field as plain text
+				const patternInput = document.getElementById('editPattern_' + id);
+				if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
 
-            // 8. Handle the form submission for saving the edited rule(which means it has a ruleid already)
-            const form = document.getElementById('editForm_' + id);
-            form.addEventListener('submit', function(eSubmit) {
-                // Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
-                eSubmit.preventDefault();
-                const newPattern = patternInput.value.trim();
-                const enabledChecked = document.getElementById('editEnabled_' + id).checked;
-                const newType = document.getElementById('editType_' + id).value;
-                if (newPattern === '') { alert('newPattern cannot be empty'); return; }
-                
-                const formData = new FormData();
-                formData.append('id', id);
-                formData.append('pattern', newPattern);
-                formData.append('type', newType);
-                formData.append('enabled', enabledChecked ? 'true' : 'false');
-                
-                // --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
-                // Construct the EXACT same text signature format the filter checks against
-                // Using array join to keep it completely safe from Go raw string literal backticks!
-                const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
+				// 8. Handle the form submission for saving the edited rule(which means it has a ruleid already)
+				const form = document.getElementById('editForm_' + id);
+				form.addEventListener('submit', function(eSubmit) {
+					// Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
+					eSubmit.preventDefault();
+					const newPattern = patternInput.value.trim();
+					const enabledChecked = document.getElementById('editEnabled_' + id).checked;
+					const newType = document.getElementById('editType_' + id).value;
+					if (newPattern === '') { alert('newPattern cannot be empty'); return; }
+					
+					const formData = new FormData();
+					formData.append('id', id);
+					formData.append('pattern', newPattern);
+					formData.append('type', newType);
+					formData.append('enabled', enabledChecked ? 'true' : 'false');
+					
+					// --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
+					// Construct the EXACT same text signature format the filter checks against
+					// Using array join to keep it completely safe from Go raw string literal backticks!
+					const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
 
-                // Save the unique signature instead of just the pattern
-                sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
-                
-                fetch('/rules', {
-                    method: 'POST',
-                    body: formData,
-                    redirect: 'manual' // Stops fetch from following the redirect in the background
-                })
-                .then(() => location.reload())
-                .catch(err => console.error('Save failed:', err));
-            });
-        });
+					// Save the unique signature instead of just the pattern
+					sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
+					
+					fetch('/rules', {
+						method: 'POST',
+						body: formData,
+						redirect: 'manual' // Stops fetch from following the redirect in the background
+					})
+					.then(() => location.reload())
+					.catch(err => console.error('Save failed:', err));
+				});
+			} // end of 'if editBtn'
+			
+            // --- DELETE BUTTON INTERCEPTOR ---
+            const delBtn = e.target.closest('.btn-del');
+            if (delBtn) {
+                const row = delBtn.closest('tr');
+                if (!row) return;
+
+				e.preventDefault(); // Stop native link/button submission
+
+                const id = row.dataset.ruleId;
+                const typ = row.dataset.ruleType;
+                const pattern = row.dataset.rulePattern;
+
+                // Native confirmation dialog
+                if (!confirm('Delete rule: ' + pattern + '?')) return;
+
+                // Clear out the free pass if we are deleting the item that had it
+                const ruleSignature = [id, typ, pattern].join(" ").toLowerCase();
+                if (sessionStorage.getItem('rulesTable_lastInteracted') === ruleSignature) {
+                    sessionStorage.removeItem('rulesTable_lastInteracted');
+                }
+
+                // Submit in the background and reload cleanly
+                const delForm = delBtn.closest('form');
+                if (delForm) {
+                    fetch(delForm.action, {
+                        method: 'POST',
+                        body: new FormData(delForm),
+                        redirect: 'manual'
+                    })
+                    .then(() => location.reload())
+                    .catch(err => console.error('Delete failed:', err));
+                }
+                return;
+            }
+        }); // end of 'click' listener
         window.cancelEdit = function(id) {
             // 1. Find and remove the temporary edit form row
             const formElem = document.querySelector('#editForm_' + id);
@@ -1352,58 +1388,97 @@ var uiTemplates = template.Must(template.New("").Parse(
             // Run IMMEDIATELY on boot load so the table stays filtered!
             window.applyRulesFilter();
         }
+        // --- ADD RULE INTERCEPTOR ---
+        const addForm = document.getElementById('addRuleForm');
+        if (addForm) {
+            addForm.addEventListener('submit', function(e) {
+                e.preventDefault(); // Stop native browser submission
+
+                const patternInput = addForm.querySelector('[name="pattern"]');
+                const typeSelect = addForm.querySelector('[name="type"]');
+                if (!patternInput || !typeSelect) return;
+
+                const pattern = patternInput.value.trim().toLowerCase();
+                const type = typeSelect.value.toLowerCase();
+                if (pattern === '') return;
+
+                // Generate signature with an empty string for the missing ID
+                const ruleSignature = ["", type, pattern].join(" ").toLowerCase();
+                sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
+
+                // Submit in the background and reload cleanly
+                fetch(addForm.action, {
+                    method: 'POST',
+                    body: new FormData(addForm),
+                    redirect: 'manual'
+                })
+                .then(() => location.reload())
+                .catch(err => console.error('Add failed:', err));
+            });
+        }
     }); // end of domcontentloaded
-	// --- Client-Side Table Ordered-Substring Filter Logic ---
-	//properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
-	window.applyRulesFilter = function(clearingInteracted = false) {
-		const filterInput = document.getElementById('rulesFilter');
-		if (!filterInput) return;
+    // --- Client-Side Table Ordered-Substring Filter Logic ---
+    //properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
+    window.applyRulesFilter = function(clearingInteracted = false) {
+        const filterInput = document.getElementById('rulesFilter');
+        if (!filterInput) return;
 
-		const raw = filterInput.value.trim().toLowerCase();
-		sessionStorage.setItem('rulesTable_filter', raw);
+        const raw = filterInput.value.trim().toLowerCase();
+        sessionStorage.setItem('rulesTable_filter', raw);
 
-		const terms = raw.split(/\s+/).filter(term => term.length > 0);
-		const tbody = document.querySelector('#rulesTable tbody');
-		if (!tbody) return;
+        const terms = raw.split(/\s+/).filter(term => term.length > 0);
+        const tbody = document.querySelector('#rulesTable tbody');
+        if (!tbody) return;
 
-		// Retrieve the item that gets a "free pass" to stay visible
-		const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
+        // Retrieve the item that gets a "free pass" to stay visible
+        const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
 
-		function matchesOrderedTerms(text, searchTerms) {
-			let pos = 0;
-			for (const term of searchTerms) {
-				const found = text.indexOf(term, pos);
-				if (found === -1) return false;
-				pos = found + term.length;
+        function matchesOrderedTerms(text, searchTerms) {
+            let pos = 0;
+            for (const term of searchTerms) {
+                const found = text.indexOf(term, pos);
+                if (found === -1) return false;
+                pos = found + term.length;
+            }
+            return true;
+        }
+
+        Array.from(tbody.rows).forEach(row => {
+            //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
+            // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
+            const pattern = row.dataset.rulePattern || "";
+            const id = row.dataset.ruleId || "";
+            const type = row.dataset.ruleType || "";
+
+            // 2. Combine the actual data fields for filtering (ignoring UI button text!)
+            // 2. Combine them using regular string concatenation
+            //const searchTargetText = (id + " " + type + " " + pattern).toLowerCase();
+            // Joins them with spaces, completely avoiding backticks or string quotes
+            const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
+
+            // 3. Evaluate the filter terms against our clean data string
+            let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
+
+            // FREE PASS: If this row is the one we just added/edited, force it to show!
+            // 4. Free Pass logic (using our clean variable)
+            if (lastInteracted) {
+			    if (lastInteracted.startsWith(" ")) {
+			        // Added rule: ID was unknown, so it starts with a space.
+			        // We check if the new row's string ENDS with our type and pattern.
+			        if (searchTargetText.endsWith(lastInteracted)) {
+			            isMatch = true;
+			        }
+			    } else {
+			        // Edited rule: ID was exact.
+			        if (searchTargetText === lastInteracted) {
+			            isMatch = true;
+			        }
+			    }
 			}
-			return true;
-		}
 
-		Array.from(tbody.rows).forEach(row => {
-			//You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
-			// NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
-			const pattern = row.dataset.rulePattern || "";
-			const id = row.dataset.ruleId || "";
-			const type = row.dataset.ruleType || "";
-
-			// 2. Combine the actual data fields for filtering (ignoring UI button text!)
-			// 2. Combine them using regular string concatenation
-			//const searchTargetText = (id + " " + type + " " + pattern).toLowerCase();
-			// Joins them with spaces, completely avoiding backticks or string quotes
-			const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
-
-			// 3. Evaluate the filter terms against our clean data string
-			let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
-
-			// FREE PASS: If this row is the one we just added/edited, force it to show!
-			// 4. Free Pass logic (using our clean variable)
-			if (lastInteracted && searchTargetText === lastInteracted) {
-				isMatch = true;
-			}
-
-			row.style.display = isMatch ? '' : 'none';
-		});
-	}
+            row.style.display = isMatch ? '' : 'none';
+        });
+    }
     // --- Client-Side Table Sorting Logic ---
         const table = document.getElementById('rulesTable');
         if (table) {
@@ -1485,7 +1560,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <h2>Add New Rule</h2>
-<form id="addRuleForm" method="post" action="/rules" onsubmit="const p=this.pattern.value.trim().toLowerCase(); const t=this.type.value.toLowerCase(); sessionStorage.setItem('rulesTable_lastInteracted', ['', t, p].join(' '));">
+<form id="addRuleForm" method="post" action="/rules">
     <select name="type">
     {{range .DNSTypes}}
         <option value="{{.}}">{{.}}</option>
@@ -1532,7 +1607,7 @@ var uiTemplates = template.Must(template.New("").Parse(
         <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
         <td class="actions">
             <button class="btn-edit">Edit</button> 
-            <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+            <form method="post" action="/rules" style="display:inline;margin-left:6px">
                 <input type="hidden" name="delete" value="1">
                 <input type="hidden" name="id" value="{{.ID}}">
                 <input type="hidden" name="type" value="{{.Type}}">
