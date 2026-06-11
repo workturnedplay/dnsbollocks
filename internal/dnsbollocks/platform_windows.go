@@ -1282,7 +1282,7 @@ var uiTemplates = template.Must(template.New("").Parse(
             const patternInput = document.getElementById('editPattern_' + id);
             if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
 
-            // 8. Handle the form submission for saving the rule
+            // 8. Handle the form submission for saving the edited rule(which means it has a ruleid already)
             const form = document.getElementById('editForm_' + id);
             form.addEventListener('submit', function(eSubmit) {
                 // Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
@@ -1485,7 +1485,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <h2>Add New Rule</h2>
-<form id="addRuleForm" method="post" action="/rules" onsubmit="sessionStorage.setItem('rulesTable_lastInteracted', this.pattern.value.trim());">
+<form id="addRuleForm" method="post" action="/rules" onsubmit="const p=this.pattern.value.trim().toLowerCase(); const t=this.type.value.toLowerCase(); sessionStorage.setItem('rulesTable_lastInteracted', ['', t, p].join(' '));">
     <select name="type">
     {{range .DNSTypes}}
         <option value="{{.}}">{{.}}</option>
