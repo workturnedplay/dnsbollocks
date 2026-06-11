@@ -1220,6 +1220,9 @@ var uiTemplates = template.Must(template.New("").Parse(
 				const oldPattern = row.dataset.rulePattern;
 				const enabled = row.dataset.ruleEnabled === 'true';
 
+				// Tag the original row with a unique layout ID so Cancel/Save can find it
+				row.id = 'rule-row-' + id;
+
                 row.style.display = 'none';
                 const formHtml = ` + "`" + `
                 <tr>
@@ -1279,15 +1282,18 @@ var uiTemplates = template.Must(template.New("").Parse(
             });
         });
         window.cancelEdit = function(id) {
+			// 1. Find and remove the temporary edit form row
             const formElem = document.querySelector('#editForm_' + id);
             if (!formElem) return;
-            const tr = formElem.closest('tr');
-            if (tr) tr.remove();
-            const originalBtn = document.querySelector('button[data-edit-id="' + id + '"]');
-            if (originalBtn) {
-                const originalRow = originalBtn.closest('tr');
-                if (originalRow) originalRow.style.display = '';
-            }
+            const activeFormRow = formElem.closest('tr');
+			if (activeFormRow) activeFormRow.remove();
+			
+			// 2. Find the original row using our clean layout ID hook
+			const originalRow = document.getElementById('rule-row-' + id);
+			if (originalRow) {
+				originalRow.style.display = ''; // Bring it back into view!
+				originalRow.removeAttribute('id'); // Clean up the temporary ID
+			}
 			
 			//// Re-apply filter if active to keep canceled row hidden if it shouldn't be here
             //if (typeof applyFilter === 'function') {
