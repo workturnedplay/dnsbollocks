@@ -1472,7 +1472,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     </select>
     <input type="text" name="pattern" placeholder="pattern" required> 
     <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
-    <button type="submit" class="btn-edit">Add Rule</button>
+    <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
 <div style="margin-top: 25px;">
