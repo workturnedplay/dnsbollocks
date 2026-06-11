@@ -1209,14 +1209,17 @@ var uiTemplates = template.Must(template.New("").Parse(
 				}
 			}
 		});
-        document.querySelectorAll('button[data-edit-id]').forEach(btn => {
+        document.querySelectorAll('.btn-edit').forEach(btn => {
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
                 const row = this.closest('tr');
-                const typ = this.dataset.editType;
-                const id = this.dataset.editId;
-                const oldPattern = this.dataset.editPattern;
-                const enabled = this.dataset.editEnabled === 'true';
+				
+				// Grab the data cleanly from the row dataset
+				const id = row.dataset.ruleId;
+				const typ = row.dataset.ruleType;
+				const oldPattern = row.dataset.rulePattern;
+				const enabled = row.dataset.ruleEnabled === 'true';
+
                 row.style.display = 'none';
                 const formHtml = ` + "`" + `
                 <tr>
@@ -1319,10 +1322,11 @@ var uiTemplates = template.Must(template.New("").Parse(
 			}
 
 			Array.from(tbody.rows).forEach(row => {
-				// We'll check the Pattern column (Cell index 2) or ID to identify the rule
-				const patternCell = row.cells[2] ? row.cells[2].innerText.trim() : "";
+				//You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
+				// NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
+				const patternCell = row.dataset.rulePattern || "";
 				const text = row.innerText.toLowerCase();
-				
+
 				let isMatch = terms.length === 0 || matchesOrderedTerms(text, terms);
 				
 				// FREE PASS: If this row is the one we just added/edited, force it to show!
@@ -1471,21 +1475,21 @@ var uiTemplates = template.Must(template.New("").Parse(
     </thead>
     <tbody>
     {{range .Rules}}
-    <tr>
-        <td>{{.Type}}</td>
-        <td title="{{.ID}}">{{.ID}}</td>
-        <td title="{{.Pattern}}">{{.Pattern}}</td>
+	<tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}">
+		<td>{{.Type}}</td>
+		<td title="{{.ID}}">{{.ID}}</td>
+		<td title="{{.Pattern}}">{{.Pattern}}</td>
 		<td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-        <td class="actions">
-            <button class="btn-edit" data-edit-id="{{.ID}}" data-edit-type="{{.Type}}" data-edit-pattern="{{.Pattern}}" data-edit-enabled="{{.Enabled}}">Edit</button>
-            <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
-                <input type="hidden" name="delete" value="1">
-                <input type="hidden" name="id" value="{{.ID}}">
-                <input type="hidden" name="type" value="{{.Type}}">
-                <button type="submit" class="btn-del">Delete</button>
-            </form>
-        </td>
-    </tr>
+		<td class="actions">
+			<button class="btn-edit">Edit</button> 
+			<form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+				<input type="hidden" name="delete" value="1">
+				<input type="hidden" name="id" value="{{.ID}}">
+				<input type="hidden" name="type" value="{{.Type}}">
+				<button type="submit" class="btn-del">Delete</button>
+			</form>
+		</td>
+	</tr>
     {{end}}
     </tbody>
 </table>
