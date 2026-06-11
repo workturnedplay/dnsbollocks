@@ -1274,8 +1274,8 @@ var uiTemplates = template.Must(template.New("").Parse(
                 if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
 
                 const form = document.getElementById('editForm_' + id);
-                form.addEventListener('submit', function(e) {
-                    e.preventDefault();
+                form.addEventListener('submit', function(eSubmit) {
+                    eSubmit.preventDefault();
                     const newPattern = patternInput.value.trim();
                     const enabledChecked = document.getElementById('editEnabled_' + id).checked;
                     const newType = document.getElementById('editType_' + id).value;
