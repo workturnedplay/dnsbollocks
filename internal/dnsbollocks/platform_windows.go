@@ -1230,11 +1230,11 @@ var uiTemplates = template.Must(template.New("").Parse(
             const editBtn = e.target.closest('.btn-edit');
             if (!editBtn) return; // Ignore clicks on anything else
 
-            e.preventDefault();
-
             // 2. Safely grab the closest table row relative to the button
             const row = editBtn.closest('tr');
             if (!row) return; // Safety guard: stop if it's somehow not in a row
+
+			e.preventDefault();
 
             // 3. Grab the data cleanly from the row dataset
             const id = row.dataset.ruleId;
