@@ -1330,13 +1330,22 @@ var uiTemplates = template.Must(template.New("").Parse(
             Array.from(tbody.rows).forEach(row => {
                 //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
                 // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
-                const patternCell = row.dataset.rulePattern || "";
-                const text = row.innerText.toLowerCase();
+                const pattern = row.dataset.rulePattern || "";
+                const id = row.dataset.ruleId || "";
+                const type = row.dataset.ruleType || "";
 
-                let isMatch = terms.length === 0 || matchesOrderedTerms(text, terms);
-                
+                // 2. Combine the actual data fields for filtering (ignoring UI button text!)
+                // 2. Combine them using regular string concatenation
+                //const searchTargetText = (id + " " + type + " " + pattern).toLowerCase();
+                // Joins them with spaces, completely avoiding backticks or string quotes
+                const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
+
+                // 3. Evaluate the filter terms against our clean data string
+                let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
+
                 // FREE PASS: If this row is the one we just added/edited, force it to show!
-                if (lastInteracted && patternCell === lastInteracted) {
+                // 4. Free Pass logic (using our clean variable)
+                if (lastInteracted && pattern === lastInteracted) {
                     isMatch = true;
                 }
 
