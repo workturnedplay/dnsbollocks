@@ -1333,57 +1333,7 @@ var uiTemplates = template.Must(template.New("").Parse(
             //}
         };
 
-        // --- Client-Side Table Ordered-Substring Filter Logic ---
-        //properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
-        window.applyRulesFilter = function(clearingInteracted = false) {
-            const filterInput = document.getElementById('rulesFilter');
-            if (!filterInput) return;
-
-            const raw = filterInput.value.trim().toLowerCase();
-            sessionStorage.setItem('rulesTable_filter', raw);
-
-            const terms = raw.split(/\s+/).filter(term => term.length > 0);
-            const tbody = document.querySelector('#rulesTable tbody');
-            if (!tbody) return;
-
-            // Retrieve the item that gets a "free pass" to stay visible
-            const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
-
-            function matchesOrderedTerms(text, searchTerms) {
-                let pos = 0;
-                for (const term of searchTerms) {
-                    const found = text.indexOf(term, pos);
-                    if (found === -1) return false;
-                    pos = found + term.length;
-                }
-                return true;
-            }
-
-            Array.from(tbody.rows).forEach(row => {
-                //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
-                // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
-                const pattern = row.dataset.rulePattern || "";
-                const id = row.dataset.ruleId || "";
-                const type = row.dataset.ruleType || "";
-
-                // 2. Combine the actual data fields for filtering (ignoring UI button text!)
-                // 2. Combine them using regular string concatenation
-                //const searchTargetText = (id + " " + type + " " + pattern).toLowerCase();
-                // Joins them with spaces, completely avoiding backticks or string quotes
-                const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
-
-                // 3. Evaluate the filter terms against our clean data string
-                let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
-
-                // FREE PASS: If this row is the one we just added/edited, force it to show!
-                // 4. Free Pass logic (using our clean variable)
-                if (lastInteracted && searchTargetText === lastInteracted) {
-                    isMatch = true;
-                }
-
-                row.style.display = isMatch ? '' : 'none';
-            });
-        }
+        
 
         // Bind event-listeners and pick up existing sessionStorage configuration
         const filterInput = document.getElementById('rulesFilter');
@@ -1400,7 +1350,58 @@ var uiTemplates = template.Must(template.New("").Parse(
             // Run IMMEDIATELY on boot load so the table stays filtered!
             window.applyRulesFilter();
         }
-    });
+    }); // end of domcontentloaded
+	// --- Client-Side Table Ordered-Substring Filter Logic ---
+	//properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
+	window.applyRulesFilter = function(clearingInteracted = false) {
+		const filterInput = document.getElementById('rulesFilter');
+		if (!filterInput) return;
+
+		const raw = filterInput.value.trim().toLowerCase();
+		sessionStorage.setItem('rulesTable_filter', raw);
+
+		const terms = raw.split(/\s+/).filter(term => term.length > 0);
+		const tbody = document.querySelector('#rulesTable tbody');
+		if (!tbody) return;
+
+		// Retrieve the item that gets a "free pass" to stay visible
+		const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
+
+		function matchesOrderedTerms(text, searchTerms) {
+			let pos = 0;
+			for (const term of searchTerms) {
+				const found = text.indexOf(term, pos);
+				if (found === -1) return false;
+				pos = found + term.length;
+			}
+			return true;
+		}
+
+		Array.from(tbody.rows).forEach(row => {
+			//You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
+			// NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
+			const pattern = row.dataset.rulePattern || "";
+			const id = row.dataset.ruleId || "";
+			const type = row.dataset.ruleType || "";
+
+			// 2. Combine the actual data fields for filtering (ignoring UI button text!)
+			// 2. Combine them using regular string concatenation
+			//const searchTargetText = (id + " " + type + " " + pattern).toLowerCase();
+			// Joins them with spaces, completely avoiding backticks or string quotes
+			const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
+
+			// 3. Evaluate the filter terms against our clean data string
+			let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
+
+			// FREE PASS: If this row is the one we just added/edited, force it to show!
+			// 4. Free Pass logic (using our clean variable)
+			if (lastInteracted && searchTargetText === lastInteracted) {
+				isMatch = true;
+			}
+
+			row.style.display = isMatch ? '' : 'none';
+		});
+	}
     // --- Client-Side Table Sorting Logic ---
         const table = document.getElementById('rulesTable');
         if (table) {
