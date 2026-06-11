@@ -1265,7 +1265,11 @@ var uiTemplates = template.Must(template.New("").Parse(
                     formData.append('pattern', newPattern);
                     formData.append('type', newType);
                     formData.append('enabled', enabledChecked ? 'true' : 'false');
-                    fetch('/rules', {method: 'POST', body: formData})
+					// --- 2B: SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
+    				sessionStorage.setItem('rulesTable_lastInteracted', newPattern);
+                    fetch('/rules', {method: 'POST', body: formData,
+					redirect: 'manual' // Stops fetch from following the redirect in the background
+					})
                         .then(() => location.reload())
                         .catch(err => console.error('Save failed:', err));
                 });
@@ -1281,7 +1285,69 @@ var uiTemplates = template.Must(template.New("").Parse(
                 const originalRow = originalBtn.closest('tr');
                 if (originalRow) originalRow.style.display = '';
             }
+			
+			//// Re-apply filter if active to keep canceled row hidden if it shouldn't be here
+            //if (typeof applyFilter === 'function') {
+            //    applyFilter();
+            //}
         };
+
+		// --- Client-Side Table Ordered-Substring Filter Logic ---
+		function applyRulesFilter(clearingInteracted = false) {
+			const filterInput = document.getElementById('rulesFilter');
+			if (!filterInput) return;
+
+			const raw = filterInput.value.trim().toLowerCase();
+			sessionStorage.setItem('rulesTable_filter', raw);
+
+			const terms = raw.split(/\s+/).filter(term => term.length > 0);
+			const tbody = document.querySelector('#rulesTable tbody');
+			if (!tbody) return;
+
+			// Retrieve the item that gets a "free pass" to stay visible
+			const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
+
+			function matchesOrderedTerms(text, searchTerms) {
+				let pos = 0;
+				for (const term of searchTerms) {
+					const found = text.indexOf(term, pos);
+					if (found === -1) return false;
+					pos = found + term.length;
+				}
+				return true;
+			}
+
+			Array.from(tbody.rows).forEach(row => {
+				// We'll check the Pattern column (Cell index 2) or ID to identify the rule
+				const patternCell = row.cells[2] ? row.cells[2].innerText.trim() : "";
+				const text = row.innerText.toLowerCase();
+				
+				let isMatch = terms.length === 0 || matchesOrderedTerms(text, terms);
+				
+				// FREE PASS: If this row is the one we just added/edited, force it to show!
+				if (lastInteracted && patternCell === lastInteracted) {
+					isMatch = true;
+				}
+
+				row.style.display = isMatch ? '' : 'none';
+			});
+		}
+
+		// Bind event-listeners and pick up existing sessionStorage configuration
+		const filterInput = document.getElementById('rulesFilter');
+		if (filterInput) {
+			const savedFilter = sessionStorage.getItem('rulesTable_filter') || '';
+			filterInput.value = savedFilter;
+			
+			// Typing clears the free pass so the table filters normally again
+			filterInput.addEventListener('input', () => {
+				sessionStorage.removeItem('rulesTable_lastInteracted');
+				applyRulesFilter();
+			});
+			
+			// Run IMMEDIATELY on boot load so the table stays filtered!
+			applyRulesFilter();
+		}
     });
 	// --- Client-Side Table Sorting Logic ---
 		const table = document.getElementById('rulesTable');
@@ -1338,6 +1404,9 @@ var uiTemplates = template.Must(template.New("").Parse(
 
 					// Append rows back to tbody in sorted order
 					rowsArray.forEach(row => tbody.appendChild(row));
+
+					// Re-apply filter immediately after sorting array structure changes
+					applyRulesFilter();
 				});
 			});
 
@@ -1361,7 +1430,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <h2>Add New Rule</h2>
-<form method="post" action="/rules">
+<form id="addRuleForm" method="post" action="/rules" onsubmit="sessionStorage.setItem('rulesTable_lastInteracted', this.pattern.value.trim());">
     <select name="type">
     {{range .DNSTypes}}
         <option value="{{.}}">{{.}}</option>
@@ -1371,6 +1440,15 @@ var uiTemplates = template.Must(template.New("").Parse(
     <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
     <button type="submit" class="btn-edit">Add Rule</button>
 </form>
+
+<div style="margin-top: 25px;">
+    <input
+        type="text"
+        id="rulesFilter"
+        placeholder="Filter rules (ordered match, e.g., 'en dia org')"
+        style="width: 100%;"
+    >
+</div>
 
 <h2>Whitelist Rules</h2>
 <table id="rulesTable">
