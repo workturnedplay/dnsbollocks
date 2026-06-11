@@ -1107,7 +1107,9 @@ var uiTemplates = template.Must(template.New("").Parse(
     /* 4. BUTTON VARIANTS */
     .btn-edit { background-color: #0078d4 !important; color: white !important; border: none !important; }
     .btn-edit:hover { background-color: #005a9e !important; }
-    .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
+    .btn-add { background-color: #0078d4 !important; color: white !important; border: none !important; }
+    .btn-add:hover { background-color: #005a9e !important; }
+	.btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
     .btn-del:hover { background-color: #a82a01 !important; }
     
     /* New Save/Cancel Buttons */
@@ -1491,7 +1493,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     </select>
     <input type="text" name="pattern" placeholder="pattern" required> 
     <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
-    <button type="submit" class="btn-edit">Add Rule</button>
+    <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
 <div style="margin-top: 25px;">
@@ -4843,6 +4845,7 @@ func withRuleRemovedAt(entries []RuleEntry, index int) []RuleEntry {
 	// Copy everything after the index
 	copy(newEntries[index:], entries[index+1:])
 
+	mainLogger.Warn("Deleted rule", slog.Any("rule", entries[index]))
 	return newEntries
 }
 
@@ -4856,6 +4859,7 @@ func withRulePrepended(entries []RuleEntry, newRule RuleEntry) []RuleEntry {
 
 	// Drop the new item at index 0
 	newTargetEntries[0] = newRule
+	mainLogger.Debug("Prepended rule", slog.Any("rule", newRule))
 
 	return newTargetEntries
 }
