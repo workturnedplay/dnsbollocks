@@ -500,10 +500,10 @@ func loadQueryWhitelist() error {
 			// seen := make(map[string]struct{})
 			// deduped := cleaned[:0]
 			// for _, r := range cleaned {
-			// 	if _, ok := seen[r.ID]; !ok {
-			// 		seen[r.ID] = struct{}{}
-			// 		deduped = append(deduped, r)
-			// 	}
+			//     if _, ok := seen[r.ID]; !ok {
+			//         seen[r.ID] = struct{}{}
+			//         deduped = append(deduped, r)
+			//     }
 			// }
 			whitelist[typ] = cleaned
 		}
@@ -1123,7 +1123,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     .tag-disabled { color: #f44747; font-weight: bold; }
     pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
 
-	/* 6. ERROR ALERTS */
+    /* 6. ERROR ALERTS */
     .alert-error {
         background-color: #2a1818;
         color: #f44747;
@@ -1148,7 +1148,7 @@ var uiTemplates = template.Must(template.New("").Parse(
         margin-top: 5px;
     }
 
-	/* 7. SUCCESS ALERTS */
+    /* 7. SUCCESS ALERTS */
     .alert-success {
         background-color: #162419;
         color: #4ec9b0;
@@ -1160,7 +1160,7 @@ var uiTemplates = template.Must(template.New("").Parse(
         box-sizing: border-box;
     }
 
-	/* Sorting Styles */
+    /* Sorting Styles */
     th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
     th.sortable:hover { background: #333; color: #fff; }
     .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
@@ -1168,21 +1168,21 @@ var uiTemplates = template.Must(template.New("").Parse(
 		noScriptWarningHTML + `
     <div class="container">
     <h1>DNSbollocks</h1>
-	<nav>
+    <nav>
     <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Hosts</a> | 
-	<a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | 
-	<a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
+    <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | 
+    <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     </nav>
     <hr>
     
     {{/* This acts as a router inside the template */}}
     {{if eq .Page "rules"}}
         {{template "rules" .}}
-	{{else if eq .Page "hosts"}}
+    {{else if eq .Page "hosts"}}
         {{template "hosts" .}}
     {{else if eq .Page "blocks"}}
         {{template "blocks" .}}
-	{{else if eq .Page "logs"}}
+    {{else if eq .Page "logs"}}
         {{template "logs" .}}
     {{else}}
         {{/* Fallback for Stats / Legacy*/}}
@@ -1192,36 +1192,36 @@ var uiTemplates = template.Must(template.New("").Parse(
     </div>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-		// Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
-		document.addEventListener('keydown', function(e) {
-			// Only trigger if we aren't typing inside an input field
-			if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
-				
-				// Check for F5 OR Ctrl+R
-				const isF5 = e.key === 'F5';
-				const isCtrlR = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r';
+        // Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
+        document.addEventListener('keydown', function(e) {
+            // Only trigger if we aren't typing inside an input field
+            if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+                
+                // Check for F5 OR Ctrl+R
+                const isF5 = e.key === 'F5';
+                const isCtrlR = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r';
 
-				if (isF5 || isCtrlR) { // && window.location.pathname === '/blocks') {
-					e.preventDefault(); // Stop Firefox from doing a POST-reload
-					//window.location.href = '/blocks'; // Perform a clean GET-reload instead
-					//window.location.href = window.location.pathname; // Clean GET-reload for the current page, this resets scroll position to top
-					window.location.reload(); // tells the browser's engine: "This is a refresh of the exact same context," which allows it to fire up its native scroll restoration feature and keep your position locked exactly where you left it!
-				}
-			}
-		});
+                if (isF5 || isCtrlR) { // && window.location.pathname === '/blocks') {
+                    e.preventDefault(); // Stop Firefox from doing a POST-reload
+                    //window.location.href = '/blocks'; // Perform a clean GET-reload instead
+                    //window.location.href = window.location.pathname; // Clean GET-reload for the current page, this resets scroll position to top
+                    window.location.reload(); // tells the browser's engine: "This is a refresh of the exact same context," which allows it to fire up its native scroll restoration feature and keep your position locked exactly where you left it!
+                }
+            }
+        });
         document.querySelectorAll('.btn-edit').forEach(btn => {
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
                 const row = this.closest('tr');
-				
-				// Grab the data cleanly from the row dataset
-				const id = row.dataset.ruleId;
-				const typ = row.dataset.ruleType;
-				const oldPattern = row.dataset.rulePattern;
-				const enabled = row.dataset.ruleEnabled === 'true';
+                
+                // Grab the data cleanly from the row dataset
+                const id = row.dataset.ruleId;
+                const typ = row.dataset.ruleType;
+                const oldPattern = row.dataset.rulePattern;
+                const enabled = row.dataset.ruleEnabled === 'true';
 
-				// Tag the original row with a unique layout ID so Cancel/Save can find it
-				row.id = 'rule-row-' + id;
+                // Tag the original row with a unique layout ID so Cancel/Save can find it
+                row.id = 'rule-row-' + id;
 
                 row.style.display = 'none';
                 const formHtml = ` + "`" + `
@@ -1250,14 +1250,14 @@ var uiTemplates = template.Must(template.New("").Parse(
                 </tr>
                 ` + "`" + `;
                 row.insertAdjacentHTML('afterend', formHtml);
-				
-				// 2. Safely populate the dropdown type selection
-				const select = document.getElementById('editType_' + id);
-				if (select) { select.value = typ; }
+                
+                // 2. Safely populate the dropdown type selection
+                const select = document.getElementById('editType_' + id);
+                if (select) { select.value = typ; }
 
-				// 3. Safely populate the text input field as plain text
-				const patternInput = document.getElementById('editPattern_' + id);
-				if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
+                // 3. Safely populate the text input field as plain text
+                const patternInput = document.getElementById('editPattern_' + id);
+                if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
 
                 const form = document.getElementById('editForm_' + id);
                 form.addEventListener('submit', function(e) {
@@ -1271,170 +1271,170 @@ var uiTemplates = template.Must(template.New("").Parse(
                     formData.append('pattern', newPattern);
                     formData.append('type', newType);
                     formData.append('enabled', enabledChecked ? 'true' : 'false');
-					// --- 2B: SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
-    				sessionStorage.setItem('rulesTable_lastInteracted', newPattern);
+                    // --- 2B: SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
+                    sessionStorage.setItem('rulesTable_lastInteracted', newPattern);
                     fetch('/rules', {method: 'POST', body: formData,
-					redirect: 'manual' // Stops fetch from following the redirect in the background
-					})
+                    redirect: 'manual' // Stops fetch from following the redirect in the background
+                    })
                         .then(() => location.reload())
                         .catch(err => console.error('Save failed:', err));
                 });
             });
         });
         window.cancelEdit = function(id) {
-			// 1. Find and remove the temporary edit form row
+            // 1. Find and remove the temporary edit form row
             const formElem = document.querySelector('#editForm_' + id);
             if (!formElem) return;
             const activeFormRow = formElem.closest('tr');
-			if (activeFormRow) activeFormRow.remove();
-			
-			// 2. Find the original row using our clean layout ID hook
-			const originalRow = document.getElementById('rule-row-' + id);
-			if (originalRow) {
-				originalRow.style.display = ''; // Bring it back into view!
-				originalRow.removeAttribute('id'); // Clean up the temporary ID
-			}
-			
-			//// Re-apply filter if active to keep canceled row hidden if it shouldn't be here
+            if (activeFormRow) activeFormRow.remove();
+            
+            // 2. Find the original row using our clean layout ID hook
+            const originalRow = document.getElementById('rule-row-' + id);
+            if (originalRow) {
+                originalRow.style.display = ''; // Bring it back into view!
+                originalRow.removeAttribute('id'); // Clean up the temporary ID
+            }
+            
+            //// Re-apply filter if active to keep canceled row hidden if it shouldn't be here
             //if (typeof applyFilter === 'function') {
             //    applyFilter();
             //}
         };
 
-		// --- Client-Side Table Ordered-Substring Filter Logic ---
-		//properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
-		window.applyRulesFilter = function(clearingInteracted = false) {
-			const filterInput = document.getElementById('rulesFilter');
-			if (!filterInput) return;
+        // --- Client-Side Table Ordered-Substring Filter Logic ---
+        //properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
+        window.applyRulesFilter = function(clearingInteracted = false) {
+            const filterInput = document.getElementById('rulesFilter');
+            if (!filterInput) return;
 
-			const raw = filterInput.value.trim().toLowerCase();
-			sessionStorage.setItem('rulesTable_filter', raw);
+            const raw = filterInput.value.trim().toLowerCase();
+            sessionStorage.setItem('rulesTable_filter', raw);
 
-			const terms = raw.split(/\s+/).filter(term => term.length > 0);
-			const tbody = document.querySelector('#rulesTable tbody');
-			if (!tbody) return;
+            const terms = raw.split(/\s+/).filter(term => term.length > 0);
+            const tbody = document.querySelector('#rulesTable tbody');
+            if (!tbody) return;
 
-			// Retrieve the item that gets a "free pass" to stay visible
-			const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
+            // Retrieve the item that gets a "free pass" to stay visible
+            const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
 
-			function matchesOrderedTerms(text, searchTerms) {
-				let pos = 0;
-				for (const term of searchTerms) {
-					const found = text.indexOf(term, pos);
-					if (found === -1) return false;
-					pos = found + term.length;
-				}
-				return true;
-			}
+            function matchesOrderedTerms(text, searchTerms) {
+                let pos = 0;
+                for (const term of searchTerms) {
+                    const found = text.indexOf(term, pos);
+                    if (found === -1) return false;
+                    pos = found + term.length;
+                }
+                return true;
+            }
 
-			Array.from(tbody.rows).forEach(row => {
-				//You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
-				// NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
-				const patternCell = row.dataset.rulePattern || "";
-				const text = row.innerText.toLowerCase();
+            Array.from(tbody.rows).forEach(row => {
+                //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
+                // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
+                const patternCell = row.dataset.rulePattern || "";
+                const text = row.innerText.toLowerCase();
 
-				let isMatch = terms.length === 0 || matchesOrderedTerms(text, terms);
-				
-				// FREE PASS: If this row is the one we just added/edited, force it to show!
-				if (lastInteracted && patternCell === lastInteracted) {
-					isMatch = true;
-				}
+                let isMatch = terms.length === 0 || matchesOrderedTerms(text, terms);
+                
+                // FREE PASS: If this row is the one we just added/edited, force it to show!
+                if (lastInteracted && patternCell === lastInteracted) {
+                    isMatch = true;
+                }
 
-				row.style.display = isMatch ? '' : 'none';
-			});
-		}
+                row.style.display = isMatch ? '' : 'none';
+            });
+        }
 
-		// Bind event-listeners and pick up existing sessionStorage configuration
-		const filterInput = document.getElementById('rulesFilter');
-		if (filterInput) {
-			const savedFilter = sessionStorage.getItem('rulesTable_filter') || '';
-			filterInput.value = savedFilter;
-			
-			// Typing clears the free pass so the table filters normally again
-			filterInput.addEventListener('input', () => {
-				sessionStorage.removeItem('rulesTable_lastInteracted');
-				window.applyRulesFilter();
-			});
-			
-			// Run IMMEDIATELY on boot load so the table stays filtered!
-			window.applyRulesFilter();
-		}
+        // Bind event-listeners and pick up existing sessionStorage configuration
+        const filterInput = document.getElementById('rulesFilter');
+        if (filterInput) {
+            const savedFilter = sessionStorage.getItem('rulesTable_filter') || '';
+            filterInput.value = savedFilter;
+            
+            // Typing clears the free pass so the table filters normally again
+            filterInput.addEventListener('input', () => {
+                sessionStorage.removeItem('rulesTable_lastInteracted');
+                window.applyRulesFilter();
+            });
+            
+            // Run IMMEDIATELY on boot load so the table stays filtered!
+            window.applyRulesFilter();
+        }
     });
-	// --- Client-Side Table Sorting Logic ---
-		const table = document.getElementById('rulesTable');
-		if (table) {
-			const tbody = table.querySelector('tbody');
-			const headers = table.querySelectorAll('th.sortable');
-			// Store original row order to revert back to 'none'
-			const originalRows = Array.from(tbody.rows);
-			originalRows.forEach((row, i) => row.dataset.origIndex = i);
+    // --- Client-Side Table Sorting Logic ---
+        const table = document.getElementById('rulesTable');
+        if (table) {
+            const tbody = table.querySelector('tbody');
+            const headers = table.querySelectorAll('th.sortable');
+            // Store original row order to revert back to 'none'
+            const originalRows = Array.from(tbody.rows);
+            originalRows.forEach((row, i) => row.dataset.origIndex = i);
 
-			headers.forEach(th => {
-				th.dataset.sortDir = 'none'; // none, asc, desc
-				
-				th.addEventListener('click', () => {
-					// 1. Cancel any active inline edits so they don't break during sort
-					document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+            headers.forEach(th => {
+                th.dataset.sortDir = 'none'; // none, asc, desc
+                
+                th.addEventListener('click', () => {
+                    // 1. Cancel any active inline edits so they don't break during sort
+                    document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
 
-					const colIndex = parseInt(th.dataset.col);
-					const currentDir = th.dataset.sortDir;
-					let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
+                    const colIndex = parseInt(th.dataset.col);
+                    const currentDir = th.dataset.sortDir;
+                    let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
 
-					// 2. Save the new sorting state to sessionStorage so it survives page reloads
-					sessionStorage.setItem('rulesTable_sortCol', colIndex);
-					sessionStorage.setItem('rulesTable_sortDir', newDir);
+                    // 2. Save the new sorting state to sessionStorage so it survives page reloads
+                    sessionStorage.setItem('rulesTable_sortCol', colIndex);
+                    sessionStorage.setItem('rulesTable_sortDir', newDir);
 
-					// Reset all headers
-					headers.forEach(h => {
-						h.dataset.sortDir = 'none';
-						h.querySelector('.sort-icon').textContent = '';
-					});
+                    // Reset all headers
+                    headers.forEach(h => {
+                        h.dataset.sortDir = 'none';
+                        h.querySelector('.sort-icon').textContent = '';
+                    });
 
-					// Update clicked header
-					th.dataset.sortDir = newDir;
-					const icon = th.querySelector('.sort-icon');
-					if (newDir === 'asc') icon.textContent = '▲';
-					if (newDir === 'desc') icon.textContent = '▼';
+                    // Update clicked header
+                    th.dataset.sortDir = newDir;
+                    const icon = th.querySelector('.sort-icon');
+                    if (newDir === 'asc') icon.textContent = '▲';
+                    if (newDir === 'desc') icon.textContent = '▼';
 
-					let rowsArray = Array.from(tbody.rows);
+                    let rowsArray = Array.from(tbody.rows);
 
-					if (newDir === 'none') {
-						// Revert to original order
-						rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
-					} else {
-						// Sort ascending or descending
-						rowsArray.sort((a, b) => {
-							let valA = a.cells[colIndex].innerText.trim().toLowerCase();
-							let valB = b.cells[colIndex].innerText.trim().toLowerCase();
-							
-							if (valA < valB) return newDir === 'asc' ? -1 : 1;
-							if (valA > valB) return newDir === 'asc' ? 1 : -1;
-							return 0;
-						});
-					}
+                    if (newDir === 'none') {
+                        // Revert to original order
+                        rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
+                    } else {
+                        // Sort ascending or descending
+                        rowsArray.sort((a, b) => {
+                            let valA = a.cells[colIndex].innerText.trim().toLowerCase();
+                            let valB = b.cells[colIndex].innerText.trim().toLowerCase();
+                            
+                            if (valA < valB) return newDir === 'asc' ? -1 : 1;
+                            if (valA > valB) return newDir === 'asc' ? 1 : -1;
+                            return 0;
+                        });
+                    }
 
-					// Append rows back to tbody in sorted order
-					rowsArray.forEach(row => tbody.appendChild(row));
+                    // Append rows back to tbody in sorted order
+                    rowsArray.forEach(row => tbody.appendChild(row));
 
-					// Re-apply filter immediately after sorting array structure changes
-					window.applyRulesFilter();
-				});
-			});
+                    // Re-apply filter immediately after sorting array structure changes
+                    window.applyRulesFilter();
+                });
+            });
 
-			// --- Restore sort state on page load ---
-			const savedCol = sessionStorage.getItem('rulesTable_sortCol');
-			const savedDir = sessionStorage.getItem('rulesTable_sortDir');
+            // --- Restore sort state on page load ---
+            const savedCol = sessionStorage.getItem('rulesTable_sortCol');
+            const savedDir = sessionStorage.getItem('rulesTable_sortDir');
 
-			if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
-				const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
-				if (targetHeader) {
-					// Set the current direction to the logical "previous" state, 
-					// so that calling .click() toggles it to our desired saved state.
-					targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
-					targetHeader.click();
-				}
-			}
-		}
+            if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
+                const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+                if (targetHeader) {
+                    // Set the current direction to the logical "previous" state, 
+                    // so that calling .click() toggles it to our desired saved state.
+                    targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
+                    targetHeader.click();
+                }
+            }
+        }
     </script>
 </body></html>
 
@@ -1481,21 +1481,21 @@ var uiTemplates = template.Must(template.New("").Parse(
     </thead>
     <tbody>
     {{range .Rules}}
-	<tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}">
-		<td>{{.Type}}</td>
-		<td title="{{.ID}}">{{.ID}}</td>
-		<td title="{{.Pattern}}">{{.Pattern}}</td>
-		<td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-		<td class="actions">
-			<button class="btn-edit">Edit</button> 
-			<form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
-				<input type="hidden" name="delete" value="1">
-				<input type="hidden" name="id" value="{{.ID}}">
-				<input type="hidden" name="type" value="{{.Type}}">
-				<button type="submit" class="btn-del">Delete</button>
-			</form>
-		</td>
-	</tr>
+    <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}">
+        <td>{{.Type}}</td>
+        <td title="{{.ID}}">{{.ID}}</td>
+        <td title="{{.Pattern}}">{{.Pattern}}</td>
+        <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+        <td class="actions">
+            <button class="btn-edit">Edit</button> 
+            <form method="post" action="/rules" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete rule?')">
+                <input type="hidden" name="delete" value="1">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <input type="hidden" name="type" value="{{.Type}}">
+                <button type="submit" class="btn-del">Delete</button>
+            </form>
+        </td>
+    </tr>
     {{end}}
     </tbody>
 </table>
@@ -1605,8 +1605,8 @@ var uiTemplates = template.Must(template.New("").Parse(
         </tr>
         ` + "`" + `;
         row.insertAdjacentHTML('afterend', formHtml);
-		
-		// 2. Safely populate values as plain text via DOM properties
+        
+        // 2. Safely populate values as plain text via DOM properties
         const oldPatternInput = document.getElementById('editHostOldPattern_' + index);
         if (oldPatternInput) { oldPatternInput.value = pat; }
 
@@ -1631,7 +1631,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     <form method="get" style="margin-bottom: 20px;">
         <input type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." style="width: 300px;">
         <button type="submit">Filter</button>
-		<button type="button" class="btn-cancel" onclick="this.form.q.value=''; this.form.submit();">Clear</button>
+        <button type="button" class="btn-cancel" onclick="this.form.q.value=''; this.form.submit();">Clear</button>
     </form>
 
     <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333;">
@@ -1673,33 +1673,33 @@ var errChan chan error = make(chan error, 10)
 func OldMain() {
 	// wincoe.InstallCrashSink()
 	// if true {
-	// 	panic("deliberate panic")
+	//     panic("deliberate panic")
 	// }
 	// // TEMPORARY: race detector smoke test — remove before release
-	// 	var raceTest int
-	// 	done := make(chan struct{})
-	// 	go func() {
-	// 		raceTest = 1 // concurrent write
-	// 		close(done)
-	// 	}()
-	// 	raceTest = 2 // concurrent write
-	// 	<-done
-	// 	_ = raceTest
+	//     var raceTest int
+	//     done := make(chan struct{})
+	//     go func() {
+	//         raceTest = 1 // concurrent write
+	//         close(done)
+	//     }()
+	//     raceTest = 2 // concurrent write
+	//     <-done
+	//     _ = raceTest
 
 	initBootstrapLogging() // ← FIRST LINE — colored console, mainLogger now exists
 	// go func() {
-	// 	ticker := time.NewTicker(5 * time.Second)
-	// 	defer ticker.Stop()
-	// 	for range ticker.C {
-	// 		mainLogger.Debug("MARK")
-	// 	}
+	//     ticker := time.NewTicker(5 * time.Second)
+	//     defer ticker.Stop()
+	//     for range ticker.C {
+	//         mainLogger.Debug("MARK")
+	//     }
 	// }()
 	// go func() {
-	// 	for {
-	// 		wincoe.Churn2()
-	// 		// No sleep here, or a very small one
-	// 		time.Sleep(20 * time.Millisecond)
-	// 	}
+	//     for {
+	//         wincoe.Churn2()
+	//         // No sleep here, or a very small one
+	//         time.Sleep(20 * time.Millisecond)
+	//     }
 	// }()
 
 	//flag.Parse() // For future flags
@@ -1718,7 +1718,7 @@ func OldMain() {
 		shutdown(0)
 	}
 	// if len(os.Args) > 1 {
-	// 	configPath = os.Args[1]
+	//     configPath = os.Args[1]
 	// }
 
 	// Signals setup FIRST: Catch interrupts from init onward
@@ -1893,14 +1893,14 @@ func loadConfig() error {
 		// missing := []string{}
 		// t := reflect.TypeOf(config)
 		// for i := 0; i < t.NumField(); i++ {
-		// 	tag := t.Field(i).Tag.Get("json")
-		// 	if tag == "" || tag == "-" {
-		// 		continue
-		// 	}
+		//     tag := t.Field(i).Tag.Get("json")
+		//     if tag == "" || tag == "-" {
+		//         continue
+		//     }
 
-		// 	if _, ok := presentKeys[tag]; !ok {
-		// 		missing = append(missing, tag)
-		// 	}
+		//     if _, ok := presentKeys[tag]; !ok {
+		//         missing = append(missing, tag)
+		//     }
 		// }
 
 		// Use TypeFor[T] (Go 1.22+) and VisibleFields (Go 1.17+)
@@ -1923,9 +1923,9 @@ func loadConfig() error {
 			shouldSaveConfig = true
 		}
 		// if theReadConfig != config {
-		// 	mainLogger.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
-		// 	config = theReadConfig
-		// 	shouldSaveConfig = true
+		//     mainLogger.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
+		//     config = theReadConfig
+		//     shouldSaveConfig = true
 		// }
 	}
 
@@ -2026,31 +2026,31 @@ func loadConfig() error {
 
 // // don't pass empty or it will panic
 // func cleanFileName(what *string, description string, fallback string) (didClean bool) {
-// 	if what == nil {
-// 		panic("dev fail: nil config filename passed to cleanFileName")
-// 	}
+//     if what == nil {
+//         panic("dev fail: nil config filename passed to cleanFileName")
+//     }
 
-// 	didClean = false
-// 	if *what == "" {
-// 		//woulda been cleaned into "." aka a dot!
-// 		//panic("dev fail: passed empty filename to clean for " + description)
-// 		if fallback == "" {
-// 			panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
-// 		}
-// 		mainLogger.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
-// 		*what = fallback
-// 		didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
-// 	}
+//     didClean = false
+//     if *what == "" {
+//         //woulda been cleaned into "." aka a dot!
+//         //panic("dev fail: passed empty filename to clean for " + description)
+//         if fallback == "" {
+//             panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
+//         }
+//         mainLogger.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
+//         *what = fallback
+//         didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
+//     }
 
-// 	var cleanedFile string = filepath.Clean(*what)
-// 	//from doc: If the result of this process is an empty string, Clean returns the string ".".
+//     var cleanedFile string = filepath.Clean(*what)
+//     //from doc: If the result of this process is an empty string, Clean returns the string ".".
 
-// 	if cleanedFile != *what {
-// 		mainLogger.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
-// 		didClean = true
-// 		*what = cleanedFile
-// 	}
-// 	return
+//     if cleanedFile != *what {
+//         mainLogger.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
+//         didClean = true
+//         *what = cleanedFile
+//     }
+//     return
 // }
 
 // cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
@@ -2094,7 +2094,7 @@ func hostFromURL(raw string) (string, error) {
 	// host := u.Host
 	// // Strip any port if present (e.g. "example.com:443" -> "example.com")
 	// if h, _, err := net.SplitHostPort(host); err == nil {
-	// 	host = h
+	//     host = h
 	// }
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("hostname/IP is empty for %q", raw)
@@ -2141,7 +2141,7 @@ func initFullLogging() { //qpath, epath string) {
 		path = filepath.Clean(path)
 		rotateIfNeeded(path, config.LogMaxSizeMB)
 		// if fi, err := os.Stat(path); err == nil && fi.Size() > int64(config.LogMaxSizeMB)*1024*1024 {
-		// 	os.Rename(path, path+".1") // one backup is enough for now
+		//     os.Rename(path, path+".1") // one backup is enough for now
 		// }
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
@@ -2153,7 +2153,7 @@ func initFullLogging() { //qpath, epath string) {
 		return f
 	}
 	// if qpath == "" || epath == "" {
-	// 	panic("one of these is empty: '" + qpath + "','" + epath + "'")
+	//     panic("one of these is empty: '" + qpath + "','" + epath + "'")
 	// }
 	// qpath = filepath.Clean(qpath)
 	// epath = filepath.Clean(epath)
@@ -2163,7 +2163,7 @@ func initFullLogging() { //qpath, epath string) {
 
 	// qfile, err := os.OpenFile(qpath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	// if err != nil {
-	// 	logFatal("Query log open failed:", err)
+	//     logFatal("Query log open failed:", err)
 	// }
 	// opts := &slog.HandlerOptions{AddSource: false}
 	// qh := slog.NewJSONHandler(qfile, opts)
@@ -2171,7 +2171,7 @@ func initFullLogging() { //qpath, epath string) {
 
 	// efile, err := os.OpenFile(epath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	// if err != nil {
-	// 	logFatal("Error log open failed:", err)
+	//     logFatal("Error log open failed:", err)
 	// }
 	// eh := slog.NewJSONHandler(efile, opts)
 	// errorLogger = slog.New(eh)
@@ -2190,7 +2190,7 @@ func initFullLogging() { //qpath, epath string) {
 	}
 
 	// root := multiHandler{
-	// 	handlers: []slog.Handler{fullHandler, consoleH, queryH},
+	//     handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	// }
 
 	// mainLogger = slog.New(root)
@@ -2235,8 +2235,8 @@ func validateUpstream() error {
 		if port == "" {
 			port = "443" // since we're allowing only https scheme, this should always be 443
 			// mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-			// 	slog.String("implied_port", ImpliedPort),
-			// 	slog.Any("upstreamURL", u))
+			//     slog.String("implied_port", ImpliedPort),
+			//     slog.Any("upstreamURL", u))
 			// This is how you add the port back into the URL object
 			u.Host = net.JoinHostPort(u.Hostname(), port)
 		}
@@ -2257,11 +2257,11 @@ func validateUpstream() error {
 	// var err error
 	// upstreamURL, err = url.Parse(config.UpstreamURL)
 	// if err != nil || upstreamURL.Scheme != "https" {
-	// 	return errors.New("invalid upstream URL, must be similar to this: https://IP/dns-query However, while /dns-query is the \"well-known\" default DoH Path (or Template) used by many providers (like Google and Cloudflare), the RFC 8484 standard allows server operators to configure any path they choose to handle incoming DNS queries.")
+	//     return errors.New("invalid upstream URL, must be similar to this: https://IP/dns-query However, while /dns-query is the \"well-known\" default DoH Path (or Template) used by many providers (like Google and Cloudflare), the RFC 8484 standard allows server operators to configure any path they choose to handle incoming DNS queries.")
 	// }
 	// upstreamIP = upstreamURL.Hostname() // Host for IP
 	// if ip := net.ParseIP(upstreamIP); ip == nil {
-	// 	return errors.New("upstream host must be IP literal (no resolution)")
+	//     return errors.New("upstream host must be IP literal (no resolution)")
 	// }
 	// return nil
 }
@@ -2317,44 +2317,44 @@ func matchPattern(pattern, name string) bool {
 
 	// idx := strings.Index(pattern, "**")
 	// if idx != -1 {
-	// 	if idx > 0 && idx+2 < len(pattern) &&
-	// 		pattern[idx-1] == '{' && pattern[idx+2] == '}' {
-	// 		// {**}
-	// 		// Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
-	// 		//The no allocs variant:
-	// 		prefix := pattern[:idx-1]
-	// 		suffix := pattern[idx+3:]
+	//     if idx > 0 && idx+2 < len(pattern) &&
+	//         pattern[idx-1] == '{' && pattern[idx+2] == '}' {
+	//         // {**}
+	//         // Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
+	//         //The no allocs variant:
+	//         prefix := pattern[:idx-1]
+	//         suffix := pattern[idx+3:]
 
-	// 		if prefix != "" && !strings.HasPrefix(name, prefix) {
-	// 			return false
-	// 		}
-	// 		if suffix != "" && !strings.HasSuffix(name, suffix) {
-	// 			return false
-	// 		}
+	//         if prefix != "" && !strings.HasPrefix(name, prefix) {
+	//             return false
+	//         }
+	//         if suffix != "" && !strings.HasSuffix(name, suffix) {
+	//             return false
+	//         }
 
-	// 		if prefix == "" && strings.HasPrefix(suffix, ".") {
-	// 			return len(name) > len(suffix)
-	// 		}
-	// 		if suffix == "" && strings.HasSuffix(prefix, ".") {
-	// 			return len(name) > len(prefix)
-	// 		}
+	//         if prefix == "" && strings.HasPrefix(suffix, ".") {
+	//             return len(name) > len(suffix)
+	//         }
+	//         if suffix == "" && strings.HasSuffix(prefix, ".") {
+	//             return len(name) > len(prefix)
+	//         }
 
-	// 		return true
-	// 	} else {
-	// 		// **
-	// 		// Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
-	// 		//The no allocs variant:
-	// 		prefix := pattern[:idx]
-	// 		suffix := pattern[idx+2:]
+	//         return true
+	//     } else {
+	//         // **
+	//         // Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
+	//         //The no allocs variant:
+	//         prefix := pattern[:idx]
+	//         suffix := pattern[idx+2:]
 
-	// 		if prefix != "" && !strings.HasPrefix(name, prefix) {
-	// 			return false
-	// 		}
-	// 		if suffix != "" && !strings.HasSuffix(name, suffix) {
-	// 			return false
-	// 		}
-	// 		return true
-	// 	}
+	//         if prefix != "" && !strings.HasPrefix(name, prefix) {
+	//             return false
+	//         }
+	//         if suffix != "" && !strings.HasSuffix(name, suffix) {
+	//             return false
+	//         }
+	//         return true
+	//     }
 	// }
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
@@ -2631,8 +2631,8 @@ type clientMetadata struct {
 
 // non-blocking! listens on both UDP and TCP ports 53
 func startDNSListener(addr string) {
-	//	listenerErrs.Add(1)
-	//	defer listenerErrs.Done()
+	//    listenerErrs.Add(1)
+	//    defer listenerErrs.Done()
 	mainLogger.Debug("Starting DNS listener", slog.String("addr", addr))
 
 	// UDP
@@ -2790,8 +2790,8 @@ func startDNSListener(addr string) {
 				// err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
 				// //err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
 				// if err != nil {
-				// 	mainLogger.Warn("can't set TCP deadline", slog.Any("err", err))
-				// 	panic("wtw")
+				//     mainLogger.Warn("can't set TCP deadline", slog.Any("err", err))
+				//     panic("wtw")
 				// }
 
 				conn, err := tcpLn.Accept()
@@ -2807,18 +2807,18 @@ func startDNSListener(addr string) {
 						// var netErr net.Error
 						// // 2. Use errors.As to check if 'err' (or anything it wraps) is a net.Error
 						// if errors.As(err, &netErr) && netErr.Timeout() {
-						// 	// reset backoff and continue
-						// 	backoff = 0
-						// 	continue
+						//     // reset backoff and continue
+						//     backoff = 0
+						//     continue
 						// }
 
 						// non-temporary error: log, backoff a bit to avoid hot loop, continue
 						mainLogger.Warn("tcp_accept_error", slog.Any("err", err))
 
 						// if backoff == 0 {
-						// 	backoff = 50 * time.Millisecond
+						//     backoff = 50 * time.Millisecond
 						// } else if backoff < 1*time.Second {
-						// 	backoff *= 2
+						//     backoff *= 2
 						// }
 						// mainLogger.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
 						// time.Sleep(backoff)
@@ -2848,8 +2848,8 @@ func startDNSListener(addr string) {
 
 				// accepted a connection; handle in new goroutine
 				// go func(c net.Conn) {
-				// 	defer func() { _ = c.Close() }()
-				// 	handleTCP(tcpPacketCtx, c)
+				//     defer func() { _ = c.Close() }()
+				//     handleTCP(tcpPacketCtx, c)
 				// }(conn)
 
 				//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
@@ -2891,9 +2891,9 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 		} else {
 			serviceInfo = fmt.Sprintf("%v", services)
 			// if len(services) > 0 {
-			// 	serviceInfo = fmt.Sprintf("%d services: %v", len(services), services)
+			//     serviceInfo = fmt.Sprintf("%d services: %v", len(services), services)
 			// } else {
-			// 	serviceInfo = "no services"
+			//     serviceInfo = "no services"
 			// }
 		}
 	}
@@ -3042,16 +3042,16 @@ func startDoHListener(addr string) {
 		WriteTimeout: 30 * time.Second, // Optional, for responses
 	}
 	/*
-			When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
+	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
 
-		    If Add(1) is inside: There is a tiny window of time where the goroutine is "scheduled" but hasn't actually started running.
-			If your shutdown() function calls Wait() during that tiny window, the WaitGroup counter is still 0. The program thinks there is no work to wait for and exits immediately,
-			killing the goroutine before it even begins.
+	       If Add(1) is inside: There is a tiny window of time where the goroutine is "scheduled" but hasn't actually started running.
+	       If your shutdown() function calls Wait() during that tiny window, the WaitGroup counter is still 0. The program thinks there is no work to wait for and exits immediately,
+	       killing the goroutine before it even begins.
 
-		    If Add(1) is outside: You increment the counter before the goroutine is even created. This ensures that Wait() will see a counter of at least 1,
-			effectively "blocking the exit" until that goroutine starts, runs, and eventually calls Done().
+	       If Add(1) is outside: You increment the counter before the goroutine is even created. This ensures that Wait() will see a counter of at least 1,
+	       effectively "blocking the exit" until that goroutine starts, runs, and eventually calls Done().
 
-		The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
+	   The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
 	*/
 	shutdownWG.Add(1)
 	// Listen for the global shutdown signal to gracefully close the DoH server
@@ -3263,17 +3263,17 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		// ruleMutex.RUnlock()
 	}()
 	// if !matched {
-	// 	stats.Add(1)
-	// 	func() {
-	// 		blockMutex.Lock()
-	// 		defer blockMutex.Unlock() // Executes even if the code below panics
-	// 		recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
-	// 		if len(recentBlocks) > 50 {
-	// 			recentBlocks = recentBlocks[1:]
-	// 		}
-	// 		//blockMutex.Unlock()
-	// 	}() // Notice the parens here to call it immediately
-	// 	blocked := blockResponse(msg)
+	//     stats.Add(1)
+	//     func() {
+	//         blockMutex.Lock()
+	//         defer blockMutex.Unlock() // Executes even if the code below panics
+	//         recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
+	//         if len(recentBlocks) > 50 {
+	//             recentBlocks = recentBlocks[1:]
+	//         }
+	//         //blockMutex.Unlock()
+	//     }() // Notice the parens here to call it immediately
+	//     blocked := blockResponse(msg)
 	if !matched {
 		stats.Add(1)
 		func() {
@@ -3415,7 +3415,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	//expiry := time.Duration(ttl) * time.Second
 	expiry := max(computeTTL(filtered), time.Duration(config.CacheMinTTL)*time.Second)
 	// if expiry < time.Duration(config.CacheMinTTL)*time.Second {
-	// 	expiry = time.Duration(config.CacheMinTTL) * time.Second
+	//     expiry = time.Duration(config.CacheMinTTL) * time.Second
 	// }
 
 	//cacheStore.Set(key, filtered, expiry)
@@ -3432,12 +3432,12 @@ func computeTTL(msg *dns.Msg) time.Duration {
 	//To correctly handle upstream negative caching responses (like NXDOMAIN or NODATA), we need to check both the Answer section and the Ns (Authority) section. Additionally, if an SOA (Start of Authority) record is found in the Authority section, RFC 2308 mandates that the negative cache TTL should be capped by the SOA's Minttl value.
 	var minTTL uint32 = 3600 // Default 1 hour,  not: //86400 // 24 hours
 	// for _, rr := range msg.Answer {
-	// 	if int(rr.Header().Ttl) < minTTL {
-	// 		minTTL = int(rr.Header().Ttl)
-	// 	}
+	//     if int(rr.Header().Ttl) < minTTL {
+	//         minTTL = int(rr.Header().Ttl)
+	//     }
 	// }
 	// if minTTL == 0 { // Edge: Zero TTL
-	// 	minTTL = 60
+	//     minTTL = 60
 	// }
 	// return minTTL
 	found := false
@@ -3513,7 +3513,7 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	dohTransportsPtrs = nil
 
 	// if dohTransport != nil {
-	// 	dohTransport.CloseIdleConnections()
+	//     dohTransport.CloseIdleConnections()
 	// }
 	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
 	var newClients []*http.Client
@@ -3522,20 +3522,20 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 		ip := upstreamIPs[i]
 		port := u.Port()
 		// if port == "" {
-		// 	//port = "443"
-		// 	// Log this only once when the client initializes, not on every connection!
-		// 	if strings.ToLower(u.Scheme) == "https" {
-		// 		//don't log in this case
-		// 		port = ImpliedPort
-		// 	} else if u.Scheme != "" {
-		// 		mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
-		// 			slog.Any("upstreamURL", u))
-		// 	} else {
-		// 		port = ImpliedPort
-		// 		mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-		// 			slog.String("implied_port", ImpliedPort),
-		// 			slog.Any("upstreamURL", u))
-		// 	}
+		//     //port = "443"
+		//     // Log this only once when the client initializes, not on every connection!
+		//     if strings.ToLower(u.Scheme) == "https" {
+		//         //don't log in this case
+		//         port = ImpliedPort
+		//     } else if u.Scheme != "" {
+		//         mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+		//             slog.Any("upstreamURL", u))
+		//     } else {
+		//         port = ImpliedPort
+		//         mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+		//             slog.String("implied_port", ImpliedPort),
+		//             slog.Any("upstreamURL", u))
+		//     }
 		// }
 		if port == "" {
 			panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
@@ -3584,23 +3584,23 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 
 	// port := upstreamURL.Port()
 	// if port == "" {
-	// 	// Log this only once when the client initializes, not on every connection!
-	// 	const ImpliedPort string = "443"
-	// 	if strings.ToLower(upstreamURL.Scheme) == "https" {
-	// 		//don't log in this case
-	// 		port = ImpliedPort
-	// 	} else if upstreamURL.Scheme != "" {
-	// 		mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
-	// 			slog.Any("upstreamURL", upstreamURL))
-	// 	} else {
-	// 		port = ImpliedPort
-	// 		mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-	// 			slog.String("implied_port", ImpliedPort),
-	// 			slog.Any("upstreamURL", upstreamURL))
-	// 	}
+	//     // Log this only once when the client initializes, not on every connection!
+	//     const ImpliedPort string = "443"
+	//     if strings.ToLower(upstreamURL.Scheme) == "https" {
+	//         //don't log in this case
+	//         port = ImpliedPort
+	//     } else if upstreamURL.Scheme != "" {
+	//         mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+	//             slog.Any("upstreamURL", upstreamURL))
+	//     } else {
+	//         port = ImpliedPort
+	//         mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+	//             slog.String("implied_port", ImpliedPort),
+	//             slog.Any("upstreamURL", upstreamURL))
+	//     }
 	// }
 	// if port == "" {
-	// 	panic("dev fail: port is empty")
+	//     panic("dev fail: port is empty")
 	// }
 
 	// // Create the final "IP:Port" string once
@@ -3608,34 +3608,34 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	// dialAddr := net.JoinHostPort(upstreamIP, port)
 
 	// if config.SNIHostname == "" {
-	// 	panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
+	//     panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
 	// }
 
 	// // --------------------------------------
 	// t := &http.Transport{
-	// 	// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
-	// 	DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-	// 		d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
-	// 		// Use the pre-computed dialAddr captured via closure!
-	// 		mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
-	// 		return d.DialContext(ctx, network, dialAddr)
-	// 		//return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
-	// 	},
-	// 	TLSClientConfig: &tls.Config{
-	// 		ServerName:         config.SNIHostname,
-	// 		InsecureSkipVerify: false,
-	// 	},
-	// 	Proxy:               nil,              // avoid proxy interference
-	// 	ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-	// 	IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
-	// 	MaxIdleConns:        100,
-	// 	MaxIdleConnsPerHost: 10,
+	//     // Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
+	//     DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+	//         d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
+	//         // Use the pre-computed dialAddr captured via closure!
+	//         mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
+	//         return d.DialContext(ctx, network, dialAddr)
+	//         //return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
+	//     },
+	//     TLSClientConfig: &tls.Config{
+	//         ServerName:         config.SNIHostname,
+	//         InsecureSkipVerify: false,
+	//     },
+	//     Proxy:               nil,              // avoid proxy interference
+	//     ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+	//     IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
+	//     MaxIdleConns:        100,
+	//     MaxIdleConnsPerHost: 10,
 	// }
 
 	// dohTransport = t
 	// newDoHClient := &http.Client{
-	// 	Timeout:   5 * time.Second, // overall per-request timeout
-	// 	Transport: dohTransport,
+	//     Timeout:   5 * time.Second, // overall per-request timeout
+	//     Transport: dohTransport,
 	// }
 	// 6. ATOMIC STORE
 	// dohClientPtr.Store(newDoHClient)
@@ -3871,8 +3871,8 @@ func logCertDetails(ip, port, sni string) {
 		panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
 		// port = ImpliedPort
 		// mainLogger.Warn("dev fail, port shoulda been already set in initDoHClients! Using default tho.",
-		// 	slog.String("implied_port", ImpliedPort),
-		// 	slog.Any("sni", sni))
+		//     slog.String("implied_port", ImpliedPort),
+		//     slog.Any("sni", sni))
 	}
 	addr := net.JoinHostPort(ip, port)
 
@@ -4076,14 +4076,14 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) 
 
 	// nets := make([]*net.IPNet, 0, len(blacklists))
 	// for _, cidr := range blacklists {
-	// 	_, ipnet, err := net.ParseCIDR(cidr)
-	// 	if err == nil {
-	// 		nets = append(nets, ipnet)
-	// 	} else {
-	// 		//hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
-	// 		errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
-	// 		panic("unreachable2, or the logger is broken")
-	// 	}
+	//     _, ipnet, err := net.ParseCIDR(cidr)
+	//     if err == nil {
+	//         nets = append(nets, ipnet)
+	//     } else {
+	//         //hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
+	//         errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
+	//         panic("unreachable2, or the logger is broken")
+	//     }
 	// }
 
 	// FIX: If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
@@ -4198,12 +4198,12 @@ func processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, string) {
 }
 
 // func ipInNets(ip net.IP, nets []*net.IPNet) bool {
-// 	for _, n := range nets {
-// 		if n.Contains(ip) {
-// 			return true
-// 		}
-// 	}
-// 	return false
+//     for _, n := range nets {
+//         if n.Contains(ip) {
+//             return true
+//         }
+//     }
+//     return false
 // }
 
 func extractIPs(msg *dns.Msg) []string {
@@ -4295,20 +4295,20 @@ var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
 }
 
 // func logQuery(client, domain, typ, action, ruleID string, ips []string) {
-// 	attrs := []any{
-// 		slog.String("client", client),
-// 		slog.String("domain", domain),
-// 		slog.String("type", typ),
-// 		slog.String("action", action),
-// 		slog.String("ts", time.Now().Format(time.RFC3339)),
-// 	}
-// 	if ruleID != "" {
-// 		attrs = append(attrs, slog.String("rule_id", ruleID))
-// 	}
-// 	if len(ips) > 0 {
-// 		attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
-// 	}
-// 	queryLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
+//     attrs := []any{
+//         slog.String("client", client),
+//         slog.String("domain", domain),
+//         slog.String("type", typ),
+//         slog.String("action", action),
+//         slog.String("ts", time.Now().Format(time.RFC3339)),
+//     }
+//     if ruleID != "" {
+//         attrs = append(attrs, slog.String("rule_id", ruleID))
+//     }
+//     if len(ips) > 0 {
+//         attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
+//     }
+//     queryLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
 // }
 
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
@@ -4335,17 +4335,17 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 	// var ok bool
 	// info, ok = val.(*clientMetadata) // ← this was the bug, shouldn't have been pointer(just as I thought was the problem, initially)
 	// if !ok || info == nil {
-	// 	// Epic Coding Fail tracker - this should never happen in production
-	// 	// attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
-	// 	// This is the "Epic Coding Fail" tracker.
-	// 	// We add a field to the query log so you can find these easily.
-	// 	attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+	//     // Epic Coding Fail tracker - this should never happen in production
+	//     // attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+	//     // This is the "Epic Coding Fail" tracker.
+	//     // We add a field to the query log so you can find these easily.
+	//     attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
 
-	// 	// Also, log a separate Error to your main system log/stderr
-	// 	// so you get alerted that a handler is broken.
-	// 	mainLogger.Warn("coding_fail: logQuery called without metadata in context",
-	// 		slog.String("client", client),
-	// 		slog.String("domain", domain))
+	//     // Also, log a separate Error to your main system log/stderr
+	//     // so you get alerted that a handler is broken.
+	//     mainLogger.Warn("coding_fail: logQuery called without metadata in context",
+	//         slog.String("client", client),
+	//         slog.String("domain", domain))
 	// } else {
 	// --- NEW: Pull the PID/Exe info from the context backpack ---
 	if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok {
@@ -4440,9 +4440,9 @@ func startWebUI(addr string) {
 	var finalListener net.Listener = baseListener
 	// // Using a closure looks up finalListener at the moment the function returns
 	// defer func() {
-	// 	if finalListener != nil {
-	// 		finalListener.Close()
-	// 	}
+	//     if finalListener != nil {
+	//         finalListener.Close()
+	//     }
 	// }()
 	protocolScheme := "http"
 
@@ -4544,16 +4544,16 @@ type RuleView struct {
 func rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		// data := map[string]any{
-		// 	"Page":     "rules",
-		// 	"DNSTypes": dnsTypes,
-		// 	"Rules":    snapshotWhitelist(), // Safe, independent copy
+		//     "Page":     "rules",
+		//     "DNSTypes": dnsTypes,
+		//     "Rules":    snapshotWhitelist(), // Safe, independent copy
 		// }
 
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := snapshotWhitelist() // Safe, independent copy
 		// var flatRules []RuleView
 		// for typ, rules := range rulesSnapshot {
-		// 	for _, rule := range rules {
+		//     for _, rule := range rules {
 		// 1. Extract and sort the keys (DNS Types) to stop random UI shuffling
 		var types []string
 		for typ := range rulesSnapshot {
@@ -4605,12 +4605,12 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				if rules, ok := whitelist[typ]; ok {
 					for i, rule := range rules {
 						if rule.ID == id {
-							// 	// Copy the tail over the deleted element
-							// 	copy(rules[i:], rules[i+1:])
-							// 	// Explicitly zero the last element to prevent string memory leaks
-							// 	rules[len(rules)-1] = RuleEntry{}
-							// 	// Shrink the slice (wouldn't have zeroed last without the above explicit!)
-							// 	whitelist[typ] = rules[:len(rules)-1]
+							//     // Copy the tail over the deleted element
+							//     copy(rules[i:], rules[i+1:])
+							//     // Explicitly zero the last element to prevent string memory leaks
+							//     rules[len(rules)-1] = RuleEntry{}
+							//     // Shrink the slice (wouldn't have zeroed last without the above explicit!)
+							//     whitelist[typ] = rules[:len(rules)-1]
 
 							// Replaces the shifting copy hacks with an isolated fresh array allocation
 							whitelist[typ] = withRuleRemovedAt(rules, i)
@@ -4649,7 +4649,7 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 			defer ruleMutex.Unlock()
 
 			if id != "" { //this is an EDIT attempt
-				// 	// Edit: Find and update (search all types)
+				//     // Edit: Find and update (search all types)
 				// --- EDIT MODE ---
 				var foundOldRule bool
 				var oldType string
@@ -4682,30 +4682,30 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// if oldType == typ {
-				// 	// Type didn't change -> Update fully IN-PLACE without mutating underlying array
-				// 	oldEntries := whitelist[typ]
-				// 	newEntries := make([]RuleEntry, len(oldEntries))
-				// 	copy(newEntries, oldEntries)
+				//     // Type didn't change -> Update fully IN-PLACE without mutating underlying array
+				//     oldEntries := whitelist[typ]
+				//     newEntries := make([]RuleEntry, len(oldEntries))
+				//     copy(newEntries, oldEntries)
 
-				// 	newEntries[oldIndex].Pattern = patternLowercased
-				// 	newEntries[oldIndex].Enabled = enabledBool
+				//     newEntries[oldIndex].Pattern = patternLowercased
+				//     newEntries[oldIndex].Enabled = enabledBool
 
-				// 	whitelist[typ] = newEntries
+				//     whitelist[typ] = newEntries
 				// } else {
-				// 	// Type changed -> Safely remove from old slice, safely prepend to new slice
-				// 	oldEntries := whitelist[oldType]
-				// 	newOldEntries := make([]RuleEntry, 0, len(oldEntries)-1)
-				// 	newOldEntries = append(newOldEntries, oldEntries[:oldIndex]...)
-				// 	newOldEntries = append(newOldEntries, oldEntries[oldIndex+1:]...)
-				// 	whitelist[oldType] = newOldEntries
+				//     // Type changed -> Safely remove from old slice, safely prepend to new slice
+				//     oldEntries := whitelist[oldType]
+				//     newOldEntries := make([]RuleEntry, 0, len(oldEntries)-1)
+				//     newOldEntries = append(newOldEntries, oldEntries[:oldIndex]...)
+				//     newOldEntries = append(newOldEntries, oldEntries[oldIndex+1:]...)
+				//     whitelist[oldType] = newOldEntries
 
-				// 	targetEntries := whitelist[typ]
-				// 	newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+				//     targetEntries := whitelist[typ]
+				//     newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 
-				// 	newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
-				// 	newTargetEntries = append(newTargetEntries, newRule)
-				// 	newTargetEntries = append(newTargetEntries, targetEntries...)
-				// 	whitelist[typ] = newTargetEntries
+				//     newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
+				//     newTargetEntries = append(newTargetEntries, newRule)
+				//     newTargetEntries = append(newTargetEntries, targetEntries...)
+				//     whitelist[typ] = newTargetEntries
 				// }
 				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 				if oldType == typ {
@@ -4742,10 +4742,10 @@ func rulesHandler(w http.ResponseWriter, r *http.Request) {
 				newID := newUniqueID(whitelist)
 				newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
 				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
-				// 	whitelist[typ] = []Rule{}
+				//     whitelist[typ] = []Rule{}
 				// }
 				// // if whitelist[typ] == nil { // does the key for 'typ' not exist? OR it exists but has nil value
-				// // 	whitelist[typ] = []Rule{}
+				// //     whitelist[typ] = []Rule{}
 				// // }
 				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
 
@@ -4871,7 +4871,7 @@ func hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// if err := uiTemplates.Execute(w, data); err != nil {
-		// 	mainLogger.Error("template_error", slog.Any("err", err))
+		//     mainLogger.Error("template_error", slog.Any("err", err))
 		// }
 		renderTemplate(w, "hosts", data)
 		return
@@ -5167,41 +5167,41 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 // // Helper to keep things clean
 // func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
-// 	data, err := os.ReadFile(filePath)
-// 	if err != nil {
-// 		// If file doesn't exist yet, don't crash, just show empty
-// 		data = []byte("")
-// 	}
+//     data, err := os.ReadFile(filePath)
+//     if err != nil {
+//         // If file doesn't exist yet, don't crash, just show empty
+//         data = []byte("")
+//     }
 
-// 	lines := strings.Split(string(data), "\n")
-// 	var filtered []string
+//     lines := strings.Split(string(data), "\n")
+//     var filtered []string
 
-// 	searchLower := strings.ToLower(filter)
-// 	for _, line := range lines {
-// 		if line == "" {
-// 			continue
-// 		}
-// 		if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
-// 			filtered = append(filtered, line)
-// 		}
-// 	}
+//     searchLower := strings.ToLower(filter)
+//     for _, line := range lines {
+//         if line == "" {
+//             continue
+//         }
+//         if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
+//             filtered = append(filtered, line)
+//         }
+//     }
 
-// 	// We reverse them so the newest logs are at the top
-// 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
-// 		filtered[i], filtered[j] = filtered[j], filtered[i]
-// 	}
+//     // We reverse them so the newest logs are at the top
+//     for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+//         filtered[i], filtered[j] = filtered[j], filtered[i]
+//     }
 
-// 	renderData := map[string]any{
-// 		"Page":    "logs",
-// 		"Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
-// 		"Title":   title,
-// 		"Filter":  filter,
-// 		"Content": strings.Join(filtered, "\n"),
-// 	}
+//     renderData := map[string]any{
+//         "Page":    "logs",
+//         "Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
+//         "Title":   title,
+//         "Filter":  filter,
+//         "Content": strings.Join(filtered, "\n"),
+//     }
 
-// 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
-// 	//uiTemplates.Execute(w, renderData)
-// 	renderTemplate(w, "logs", renderData)
+//     //w.Header().Set("Content-Type", "text/html; charset=utf-8")
+//     //uiTemplates.Execute(w, renderData)
+//     renderTemplate(w, "logs", renderData)
 // }
 
 func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
@@ -5295,7 +5295,7 @@ func logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("q")
 	//no:// If they used the old 'domain' param, support it as a fallback
 	// if filter == "" {
-	// 	filter = r.URL.Query().Get("domain")
+	//     filter = r.URL.Query().Get("domain")
 	// }
 
 	renderLogPage(w, r, "Query Logs", config.LogQueriesFile, filter)
