@@ -1232,7 +1232,7 @@ var uiTemplates = template.Must(template.New("").Parse(
                         </select>
                     </td>
                     <td title="${id}">${id}</td>
-                    <td><input type="text" id="editPattern_${id}" value="${oldPattern}" style="width: 100%;"></td>
+                    <td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
                     <td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
                     <td class="actions">
                         <form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
@@ -1244,15 +1244,22 @@ var uiTemplates = template.Must(template.New("").Parse(
                 </tr>
                 ` + "`" + `;
                 row.insertAdjacentHTML('afterend', formHtml);
+				
+				// 2. Safely populate the dropdown type selection
 				const select = document.getElementById('editType_' + id);
 				if (select) { select.value = typ; }
+
+				// 3. Safely populate the text input field as plain text
+				const patternInput = document.getElementById('editPattern_' + id);
+				if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
+
                 const form = document.getElementById('editForm_' + id);
                 form.addEventListener('submit', function(e) {
                     e.preventDefault();
-                    const newPattern = document.getElementById('editPattern_' + id).value.trim();
+                    const newPattern = patternInput.value.trim();
                     const enabledChecked = document.getElementById('editEnabled_' + id).checked;
                     const newType = document.getElementById('editType_' + id).value;
-                    if (newPattern === '') { alert('Pattern cannot be empty'); return; }
+                    if (newPattern === '') { alert('newPattern cannot be empty'); return; }
                     const formData = new FormData();
                     formData.append('id', id);
                     formData.append('pattern', newPattern);
@@ -1495,10 +1502,10 @@ var uiTemplates = template.Must(template.New("").Parse(
         const formHtml = ` + "`" + `
         <tr id="editHostRow_${index}">
             <td>
-                <input type="hidden" name="old_pattern" value="${pat}" form="editHostForm_${index}">
-                <input type="text" name="pattern" value="${pat}" form="editHostForm_${index}" style="width:100%" required>
+                <input type="hidden" name="old_pattern" id="editHostOldPattern_${index}" form="editHostForm_${index}">
+                <input type="text" name="pattern" id="editHostPattern_${index}" form="editHostForm_${index}" style="width:100%" required>
             </td>
-            <td><input type="text" name="ips" value="${ips}" form="editHostForm_${index}" style="width:100%" required></td>
+            <td><input type="text" name="ips" id="editHostIps_${index}" form="editHostForm_${index}" style="width:100%" required></td>
             <td class="actions">
                 <form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline; margin:0;">
                     <input type="hidden" name="edit" value="1">
@@ -1509,6 +1516,16 @@ var uiTemplates = template.Must(template.New("").Parse(
         </tr>
         ` + "`" + `;
         row.insertAdjacentHTML('afterend', formHtml);
+		
+		// 2. Safely populate values as plain text via DOM properties
+        const oldPatternInput = document.getElementById('editHostOldPattern_' + index);
+        if (oldPatternInput) { oldPatternInput.value = pat; }
+
+        const patternInput = document.getElementById('editHostPattern_' + index);
+        if (patternInput) { patternInput.value = pat; }
+
+        const ipsInput = document.getElementById('editHostIps_' + index);
+        if (ipsInput) { ipsInput.value = ips; }
     }
     function cancelHostEdit(index) {
         const editRow = document.getElementById('editHostRow_' + index);
