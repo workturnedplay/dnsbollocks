@@ -1209,6 +1209,20 @@ var uiTemplates = template.Must(template.New("").Parse(
                 }
             }
         });
+        document.addEventListener('keydown', function(e) {
+            const filterInput = document.getElementById('rulesFilter');
+            if (!filterInput) return;
+
+            // Trigger on '/' key, but ignore if the user is typing inside any form field
+            const activeTag = document.activeElement.tagName;
+            if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+                e.preventDefault();  // Stop the '/' from typing into the search box
+                filterInput.focus();
+                filterInput.select(); // Highlight existing text so they can immediately overwrite it
+            } else if (e.key === 'Escape' && document.activeElement === filterInput) {
+                filterInput.blur(); // Drops focus cleanly
+            }
+        });
         document.querySelectorAll('.btn-edit').forEach(btn => {
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
@@ -1465,7 +1479,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     <input
         type="text"
         id="rulesFilter"
-        placeholder="Filter rules (ordered match, e.g., 'en dia org')"
+        placeholder="Filter rules ... (Press '/' to focus) (ordered match, e.g., 'en dia org')"
         style="width: 100%;"
     >
 </div>
