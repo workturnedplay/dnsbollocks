@@ -1223,7 +1223,7 @@ var uiTemplates = template.Must(template.New("").Parse(
                 filterInput.blur(); // Drops focus cleanly
             }
         });
-        document.querySelectorAll('.btn-edit').forEach(btn => {
+        document.querySelectorAll('.btn-edit').forEach(btn => { // A dot (.) means "Look for a class name" (e.g., .btn-edit).
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
                 const row = this.closest('tr');
