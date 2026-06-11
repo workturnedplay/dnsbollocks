@@ -1293,7 +1293,8 @@ var uiTemplates = template.Must(template.New("").Parse(
         };
 
 		// --- Client-Side Table Ordered-Substring Filter Logic ---
-		function applyRulesFilter(clearingInteracted = false) {
+		//properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
+		window.applyRulesFilter = function(clearingInteracted = false) {
 			const filterInput = document.getElementById('rulesFilter');
 			if (!filterInput) return;
 
@@ -1342,11 +1343,11 @@ var uiTemplates = template.Must(template.New("").Parse(
 			// Typing clears the free pass so the table filters normally again
 			filterInput.addEventListener('input', () => {
 				sessionStorage.removeItem('rulesTable_lastInteracted');
-				applyRulesFilter();
+				window.applyRulesFilter();
 			});
 			
 			// Run IMMEDIATELY on boot load so the table stays filtered!
-			applyRulesFilter();
+			window.applyRulesFilter();
 		}
     });
 	// --- Client-Side Table Sorting Logic ---
@@ -1406,7 +1407,7 @@ var uiTemplates = template.Must(template.New("").Parse(
 					rowsArray.forEach(row => tbody.appendChild(row));
 
 					// Re-apply filter immediately after sorting array structure changes
-					applyRulesFilter();
+					window.applyRulesFilter();
 				});
 			});
 
