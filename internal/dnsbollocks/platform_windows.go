@@ -169,7 +169,7 @@ func loadResponseBlacklist() error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read blacklist %q: %w", blacklistFileName, err)
 		} else {
-			mainLogger.Warn("Blacklist file not found → using built-in defaults\n", slog.String("file", blacklistFileName))
+			mainLogger.Warn("Blacklist file not found → using built-in defaults", slog.String("file", blacklistFileName))
 			raw = defaultResponseBlacklist() // see below
 			shouldSave = true
 		}
@@ -2643,7 +2643,7 @@ func generateCertIfNeeded() {
 
 	// 3. Regen if necessary
 	if needsRegen {
-		mainLogger.Warn("Due to above, regenerating self-signed cert(files: %s and %s) for DoH at %s...\n", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
+		mainLogger.Warn("Due to above, regenerating self-signed cert(files: %s and %s) for DoH at %s...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
 			slog.String("sni_hostname", host))
 		if err = generateCert(certFile, keyFile, host); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
@@ -3976,8 +3976,8 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 	if err := upMsg.Unpack(body); err != nil {
 		n := len(body)
 		mainLogger.Error("doh_unpack_failed", slog.Any("err", err),
-			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x\n", n, body[:n])),
-			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q\n", n, body[:n])),
+			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
+			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
 		return nil, err
 	}
