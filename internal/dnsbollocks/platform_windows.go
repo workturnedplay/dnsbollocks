@@ -67,6 +67,8 @@ import (
 
 	"flag"
 	"golang.org/x/crypto/bcrypt"
+
+	"runtime/debug"
 )
 
 // Config holds the JSON configuration.
@@ -763,7 +765,7 @@ func initBootstrapLogging() {
 	mainLogger = slog.New(NewColoredConsoleHandler(bootstrapLevel))
 
 	// This line is now the very first log in the entire program
-	mainLogger.Info("DNSbollocks starting... bootstrap-logging inited.")
+	mainLogger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
 }
 
 // -----------------------------------------------------------------------------
@@ -4023,6 +4025,32 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	// mainLogger.Info("DoH client initialized/reloaded")
 	// mainLogger.Debug("ending initDoHClient()")
 	// return newDoHClient
+}
+
+// GetVersion returns the git tag or commit hash injected during build
+func GetVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+
+	for _, setting := range info.Settings {
+		// If built from a specific git tag, this will be populated (e.g. v1.0.0)
+		if setting.Key == "vcs.revision" && setting.Value != "" {
+			// Fallback if tag isn't found, use short commit hash
+			if len(setting.Value) > 7 {
+				return setting.Value[:7]
+			}
+			return setting.Value
+		}
+	}
+
+	// If installed via 'go install github.com/your/repo@v1.0.0'
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+
+	return "dev"
 }
 
 type UpstreamState struct { //doneTODO: rename Telemetry to something normal
