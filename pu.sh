@@ -3,4 +3,6 @@
 #Note: this non-anotateg tag won't be pushed: git tag v0.0.1
 #      but this will be: git tag -a v0.0.1 -m "Release v0.0.1"
 git push --follow-tags
+#push all other ones too (the lightweight tags)
+git push --tags
 echo done
