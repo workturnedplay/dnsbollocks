@@ -3,13 +3,15 @@
   "listen_doh": "127.0.0.2:443",
   "listen_ui": "127.0.0.1:3406",
   "upstream_urls": [
-    "https://9.9.9.9/dns-query"
+    "https://9.9.9.9/dns-query",
+    "https://1.1.1.1/dns-query"
   ],
   "upstream_retries_per_query": 1,
   "sni_hostnames": [
-    "dns.quad9.net"
+    "dns.quad9.net",
+    "cloudflare-dns.com"
   ],
-  "strict_upstream_match": false,
+  "upstream_selection_mode": "failover",
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
   "rate_qps": 100,

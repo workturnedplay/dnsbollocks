@@ -78,12 +78,15 @@ type Config struct {
 	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
 	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
-	StrictUpstreamMatch     bool     `json:"strict_upstream_match"`      // if true, IPs returned for queries from all upstreams must match or the host/reply will be blocked.
-	BlockMode               string   `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
-	BlockIP                 string   `json:"block_ip"`                   // "0.0.0.0"
-	RateQPS                 int      `json:"rate_qps"`                   // 100
-	CacheMinTTL             int      `json:"cache_min_ttl"`              // 300s
-	CacheMaxEntries         int      `json:"cache_max_entries"`          // 10000
+	//"parallel" (or "all"): The old default behavior where everything is queried simultaneously.
+	//"strict" (or "priority"): The existing strict rule matching behavior.
+	//"failover": The new intelligent, stateful sticky failover behavior.
+	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "parallel", "strict", or "failover"
+	BlockMode             string `json:"block_mode"`              // "nxdomain", "drop", "ip_block"
+	BlockIP               string `json:"block_ip"`                // "0.0.0.0"
+	RateQPS               int    `json:"rate_qps"`                // 100
+	CacheMinTTL           int    `json:"cache_min_ttl"`           // 300s
+	CacheMaxEntries       int    `json:"cache_max_entries"`       // 10000
 	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
@@ -106,6 +109,170 @@ type Config struct {
 
 	WebUIPasswordHash string `json:"webui_password_hash"`
 	WebUIUseTLS       bool   `json:"webui_use_tls"`
+}
+
+type FailoverSelector struct {
+	mu          sync.RWMutex
+	activeIndex int
+}
+
+// NewFailoverSelector initializes the tracker starting at the first upstream (index 0)
+func NewFailoverSelector() *FailoverSelector {
+	return &FailoverSelector{activeIndex: 0}
+}
+
+// func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []UpstreamClient, req *dns.Msg) (*dns.Msg, error) {
+// 	if len(upstreams) == 0 {
+// 		return nil, errors.New("no upstreams available")
+// 	}
+
+// 	fs.mu.RLock()
+// 	currentIdx := fs.activeIndex
+// 	fs.mu.RUnlock()
+
+// 	// Safety check if upstream list dynamically changed or shrank
+// 	if currentIdx >= len(upstreams) {
+// 		currentIdx = 0
+// 	}
+
+// 	type result struct {
+// 		index int
+// 		resp  *dns.Msg
+// 		err   error
+// 	}
+
+// 	// 1. Try the current active working upstream AND all previous higher-priority
+// 	// upstreams that failed before in parallel.
+// 	numParallel := currentIdx + 1
+// 	resChan := make(chan result, numParallel)
+
+// 	for i := 0; i < numParallel; i++ {
+// 		go func(idx int) {
+// 			// We pass the context through. If a previous upstream is down,
+// 			// it will cleanly hit its timeout here without blocking the active one.
+// 			resp, err := upstreams[idx].Exchange(ctx, req)
+// 			resChan <- result{index: idx, resp: resp, err: err}
+
+// 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
+// 			// after we already returned the active response, update the active index
+// 			// so the next DNS request automatically switches back to it.
+// 			if err == nil && idx < currentIdx {
+// 				fs.mu.Lock()
+// 				if idx < fs.activeIndex {
+// 					fs.mu.Unlock() // avoid deadlock if we read it again
+// 					fs.mu.Lock()
+// 					fs.activeIndex = idx
+// 				}
+// 				fs.mu.Unlock()
+// 			}
+// 		}(i)
+// 	}
+
+// 	// Wait and evaluate results as they arrive
+// 	receivedResults := 0
+// 	for receivedResults < numParallel {
+// 		res := <-resChan
+// 		receivedResults++
+
+// 		if res.err == nil {
+// 			// If the current active upstream or a higher priority one succeeds,
+// 			// we return immediately! This completely avoids waiting for slow/dead timeouts.
+// 			fs.mu.Lock()
+// 			if res.index < fs.activeIndex {
+// 				fs.activeIndex = res.index
+// 			}
+// 			fs.mu.Unlock()
+// 			return res.resp, nil
+// 		}
+// 	}
+
+// 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
+// 	// step down the list sequentially to find the next working backup.
+// 	for i := currentIdx + 1; i < len(upstreams); i++ {
+// 		resp, err := upstreams[i].Exchange(ctx, req)
+// 		if err == nil {
+// 			// We found a new working fallback upstream! Mark it active for future requests.
+// 			fs.mu.Lock()
+// 			fs.activeIndex = i
+// 			fs.mu.Unlock()
+// 			return resp, nil
+// 		}
+// 	}
+
+// 	return nil, errors.New("all upstreams failed to respond")
+// }
+
+func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client, reqBytes []byte) (*dns.Msg, error) {
+	if len(clients) == 0 {
+		return nil, errors.New("no upstreams available")
+	}
+
+	fs.mu.RLock()
+	currentIdx := fs.activeIndex
+	fs.mu.RUnlock()
+
+	// Safety check if upstream list dynamically changed or shrank
+	if currentIdx >= len(clients) {
+		currentIdx = 0
+	}
+
+	type result struct {
+		index int
+		resp  *dns.Msg
+		err   error
+	}
+
+	// 1. Try the current active working upstream AND all previous higher-priority
+	// upstreams that failed before in parallel.
+	numParallel := currentIdx + 1
+	resChan := make(chan result, numParallel)
+
+	for i := 0; i < numParallel; i++ {
+		go func(idx int) {
+			resp, err := doSingleDoHRequest(clients[idx], upstreamURLs[idx], upstreamSNIs[idx], reqBytes)
+			resChan <- result{index: idx, resp: resp, err: err}
+
+			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
+			// after we already returned the active response, update the active index.
+			if err == nil && idx < currentIdx {
+				fs.mu.Lock()
+				if idx < fs.activeIndex {
+					fs.activeIndex = idx
+				}
+				fs.mu.Unlock()
+			}
+		}(i)
+	}
+
+	// Wait and evaluate results as they arrive
+	receivedResults := 0
+	for receivedResults < numParallel {
+		res := <-resChan
+		receivedResults++
+
+		if res.err == nil {
+			fs.mu.Lock()
+			if res.index < fs.activeIndex {
+				fs.activeIndex = res.index
+			}
+			fs.mu.Unlock()
+			return res.resp, nil
+		}
+	}
+
+	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
+	// step down the list sequentially to find the next working backup.
+	for i := currentIdx + 1; i < len(clients); i++ {
+		resp, err := doSingleDoHRequest(clients[i], upstreamURLs[i], upstreamSNIs[i], reqBytes)
+		if err == nil {
+			fs.mu.Lock()
+			fs.activeIndex = i
+			fs.mu.Unlock()
+			return resp, nil
+		}
+	}
+
+	return nil, errors.New("all upstreams failed to respond")
 }
 
 func (c Config) Clone() Config {
@@ -547,7 +714,7 @@ func defaultConfig() Config {
 		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
-		StrictUpstreamMatch:     false,
+		UpstreamSelectionMode:   "failover",
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
@@ -902,6 +1069,7 @@ var (
 	backgroundCtx, cancel = context.WithCancel(context.Background())
 	shutdownWG            sync.WaitGroup
 )
+var failoverSelect = NewFailoverSelector()
 
 const keepTrackOfThisManyRecentBlocks = 100 //TODO: maybe make this configurable in config.json
 
@@ -2131,9 +2299,14 @@ func loadConfig() error {
 	}
 
 	// Add your new clear architectural description line here:
-	if config.StrictUpstreamMatch {
+	switch config.UpstreamSelectionMode {
+	case "strict":
 		mainLogger.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
-	} else {
+	case "failover":
+		mainLogger.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
+	case "fastest":
+		fallthrough
+	default:
 		mainLogger.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
 	}
 
@@ -3868,7 +4041,11 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		err error
 		idx int // Useful for tracking which upstream won or failed
 	}
-	if config.StrictUpstreamMatch {
+	switch config.UpstreamSelectionMode {
+	case "strict":
+		// ==========================================
+		// STRICT MODE: Wait for all & strict compare
+		// ==========================================
 		// ==========================================
 		// OLD LOGIC: Wait for all & strict compare
 		// ==========================================
@@ -3929,7 +4106,23 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		}
 
 		return reference
-	} else {
+	case "failover":
+		// ==========================================
+		// FAILOVER MODE: Priority-based with active healing
+		// ==========================================
+		resp, err := failoverSelect.Exchange(backgroundCtx, clients, reqBytes)
+		if err != nil {
+			mainLogger.Error("failover selection failed", SafeErr(err))
+			return nil
+		}
+		return resp
+
+	case "fastest":
+		fallthrough
+	default:
+		// ==========================================
+		// FASTEST MODE: Fastest successful response wins
+		// ==========================================
 		// ==========================================
 		// NEW LOGIC: Fastest successful response wins
 		// ==========================================
