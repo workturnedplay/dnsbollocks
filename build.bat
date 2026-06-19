@@ -60,7 +60,7 @@ if "!BUILD_WITH_RACE_DETECTOR!"=="" (
     rem nevermind all that from above!
     set "CGO_SETTING=0"
 ) else (
-    :: If RACE is enabled, we MUST use CGO and External Linking
+    rem If RACE is enabled, we MUST use CGO and External Linking
     rem set "LDFLAGS_HARDENED="
     rem -mguard=cf (Control Flow Guard) - this is truth!
     rem the following 2, fail like: ==1360==ERROR: ThreadSanitizer failed to allocate 0x000004cd0000 (80543744) bytes at 0x100ef9cb40000 (error code: 87) 
@@ -86,15 +86,25 @@ rem go build -trimpath: Removes your local file paths (like c:\cust-Go\...) from
 rem -ldflags="-s -w" : Strips debug information and the symbol table. Makes the EXE smaller and harder to reverse-engineer.
 rem "%goexe%" build "!LDFLAGS_HARDENED!" !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem if errorlevel 1 goto :fail
-"%goexe%" build !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
-rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
-if errorlevel 1 goto :fail
+rem echo on
+@rem :: 1. Run git describe and capture the output into the VERSION_TAG variable
+@rem FIXME: make sure no code execution happens due to tag name!
+@for /f "tokens=*" %%i in ('git describe --tags --always') do set VERSION_TAG=%%i
+@echo "Setting version: !VERSION_TAG!"
+@rem :: 2. Use the variable inside your go build command
+@rem "%goexe%" build -ldflags="-X 'github.com/workturnedplay/dnsbollocks.Version=!VERSION_TAG!'" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+@rem "%goexe%" build -ldflags="-X github.com/workturnedplay/dnsbollocks.Version=!VERSION_TAG!" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+"%goexe%" build -ldflags="-X 'main.Version=!VERSION_TAG!'" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+@rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+@if errorlevel 1 goto :fail
+@echo off
 
 echo Build succeeded.
 pause
 goto :eof
 
 :fail
+@echo off
 echo.
 echo *** BUILD FAILED ***
 pause

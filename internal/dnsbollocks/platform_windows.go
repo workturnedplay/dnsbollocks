@@ -4027,30 +4027,52 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	// return newDoHClient
 }
 
+// Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
+var Version = ""
+
 // GetVersion returns the git tag or commit hash injected during build
 func GetVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "dev"
-	}
+	var baseVersion string
+	var vcsRevision string
 
-	for _, setting := range info.Settings {
-		// If built from a specific git tag, this will be populated (e.g. v1.0.0)
-		if setting.Key == "vcs.revision" && setting.Value != "" {
-			// Fallback if tag isn't found, use short commit hash
-			if len(setting.Value) > 7 {
-				return setting.Value[:7]
-			}
-			return setting.Value
+	// 1. Determine the base version (Release tag / module path)
+	if Version != "" {
+		baseVersion = Version
+	} else if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			baseVersion = info.Main.Version
 		}
 	}
 
-	// If installed via 'go install github.com/your/repo@v1.0.0'
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+	// Default base if nothing is found yet
+	if baseVersion == "" {
+		baseVersion = "dev"
 	}
 
-	return "dev"
+	// 2. Extract the underlying VCS revision if embedded by the compiler
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				vcsRevision = setting.Value
+				// Cap to roughly 16 characters for clean visibility
+				if len(vcsRevision) > 16 {
+					vcsRevision = vcsRevision[:16]
+				}
+				break
+			}
+		}
+	}
+
+	// 3. Assemble the final version string idiomatically
+	if vcsRevision != "" {
+		// Avoid duplicating the hash if the base version string already includes it
+		if strings.Contains(baseVersion, vcsRevision) {
+			return baseVersion
+		}
+		return fmt.Sprintf("%s-%s", baseVersion, vcsRevision)
+	}
+
+	return baseVersion
 }
 
 type UpstreamState struct { //doneTODO: rename Telemetry to something normal

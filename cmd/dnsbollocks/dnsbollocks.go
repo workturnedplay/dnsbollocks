@@ -16,6 +16,13 @@ package main
 
 import "github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
 
+// The Go linker can hit this perfectly every single time
+var Version = ""
+
 func main() {
+	// Push the linker-injected value into your root package variable
+	if Version != "" {
+		dnsbollocks.Version = Version
+	}
 	dnsbollocks.OldMain()
 }
