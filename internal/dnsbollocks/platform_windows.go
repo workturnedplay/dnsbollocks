@@ -202,9 +202,9 @@ func NewFailoverSelector() *FailoverSelector {
 // 	return nil, errors.New("all upstreams failed to respond")
 // }
 
-func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client, reqBytes []byte) (*dns.Msg, error) {
+func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client, reqBytes []byte) (*dns.Msg, string, []string, error) {
 	if len(clients) == 0 {
-		return nil, errors.New("no upstreams available")
+		return nil, "", nil, errors.New("no upstreams available")
 	}
 
 	fs.mu.RLock()
@@ -226,6 +226,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 	// upstreams that failed before in parallel.
 	numParallel := currentIdx + 1
 	resChan := make(chan result, numParallel)
+	var failedUpstreams []string
 
 	for i := 0; i < numParallel; i++ {
 		go func(idx int) {
@@ -256,8 +257,10 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 				fs.activeIndex = res.index
 			}
 			fs.mu.Unlock()
-			return res.resp, nil
+			return res.resp, upstreamURLs[res.index].String(), failedUpstreams, nil
 		}
+		// Track the failure
+		failedUpstreams = append(failedUpstreams, upstreamURLs[res.index].String())
 	}
 
 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
@@ -268,11 +271,12 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 			fs.mu.Lock()
 			fs.activeIndex = i
 			fs.mu.Unlock()
-			return resp, nil
+			return resp, upstreamURLs[i].String(), failedUpstreams, nil
 		}
+		failedUpstreams = append(failedUpstreams, upstreamURLs[i].String())
 	}
 
-	return nil, errors.New("all upstreams failed to respond")
+	return nil, "", failedUpstreams, errors.New("all upstreams failed to respond")
 }
 
 func (c Config) Clone() Config {
@@ -3588,7 +3592,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
 		mainLogger.Warn(rateLimited, slog.String("client", clientAddr))
 		sfr := servfailResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr)
+		logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr, UpstreamTelemetry{Strategy: "rateLimited"})
 		return sfr
 	}
 
@@ -3665,7 +3669,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			}
 		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked)
+		logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamTelemetry{Strategy: "blockedByLackOfRuleAllowingIt"})
 		return blocked
 	}
 
@@ -3681,7 +3685,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		resp.Id = msg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
-		logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp)
+		logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, UpstreamTelemetry{Strategy: "cache"})
 		return resp
 	}
 
@@ -3726,7 +3730,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		// Cache this override so subsequent queries bypass the pattern loop
 		cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
 
-		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp)
+		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, UpstreamTelemetry{Strategy: "etc_hosts"})
 		return resp
 	}
 	// --- END Local Hosts Override ---
@@ -3736,7 +3740,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	oldID := msg.Id
 	msg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
 	// 3. DO THE ACTUAL UPSTREAM QUERY
-	resp := forwardToDoH(msg)
+	resp, telemetry := forwardToDoH(msg)
 	// 4. Restore the original ID so the client's DNS resolver accepts the answer
 	if resp != nil {
 		resp.Id = oldID
@@ -3749,7 +3753,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
 		negResp := servfailResponse(msg)
-		logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp)
+		logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, telemetry)
 		// Cache negatives short
 		//cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		// FIX: Store a copy of the negative response as well
@@ -3768,12 +3772,12 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 
 		logQuery(ctx, clientAddr, domain, qtype,
 			filterReason+originalSTR, //blockedByUpstream_ORIGINAL //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, originalIPs, originalCopy)
+			matchedID, originalIPs, originalCopy, telemetry)
 		blocked := blockResponse(msg)
 		blockedIPs := extractIPs(blocked)
 		logQuery(ctx, clientAddr, domain, qtype,
 			filterReason+returnedModifiedSTR, //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
-			matchedID, blockedIPs, blocked)
+			matchedID, blockedIPs, blocked, telemetry)
 		return blocked
 	}
 
@@ -3790,7 +3794,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	cacheStore.Set(key, filtered.Copy(), expiry)
 
 	ips := extractIPs(filtered)
-	logQuery(ctx, clientAddr, domain, qtype, forwardedSTR, matchedID, ips, filtered)
+	logQuery(ctx, clientAddr, domain, qtype, forwardedSTR, matchedID, ips, filtered, telemetry)
 
 	return filtered
 }
@@ -4021,12 +4025,21 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	// return newDoHClient
 }
 
+type UpstreamTelemetry struct { //TODO: rename Telemetry to something normal
+	Strategy        string   `json:"strategy"`
+	UpstreamUsed    string   `json:"upstream_used"`
+	FailedUpstreams []string `json:"failed_upstreams"`
+}
+
 // forwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
-func forwardToDoH(req *dns.Msg) *dns.Msg {
+func forwardToDoH(req *dns.Msg) (*dns.Msg, UpstreamTelemetry) {
+	var telemetry UpstreamTelemetry
+	telemetry.Strategy = config.UpstreamSelectionMode
+
 	reqBytes, err := req.Pack()
 	if err != nil {
 		mainLogger.Error("doh_prepost_pack_failed", SafeErr(err))
-		return nil
+		return nil, telemetry
 	}
 
 	clientsPtr := dohClientsPtr.Load()
@@ -4041,6 +4054,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 		err error
 		idx int // Useful for tracking which upstream won or failed
 	}
+
 	switch config.UpstreamSelectionMode {
 	case "strict":
 		// ==========================================
@@ -4078,14 +4092,19 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 					//slog.String("err", res.err.Error()),
 					SafeErr(res.err),
 				)
-				return nil // Refuse to resolve if any upstream completely fails
+				telemetry.FailedUpstreams = append(telemetry.FailedUpstreams, upstreamURLs[i].String())
+				return nil, telemetry // Refuse to resolve if any upstream completely fails
 			}
 
 			if reference == nil {
 				reference = res.msg
 				refIdx = i
+				telemetry.UpstreamUsed = upstreamURLs[i].String()
 			} else {
 				if !compareDNSResponses(reference, res.msg) {
+					// Mismatch means failure to agree
+					telemetry.FailedUpstreams = append(telemetry.FailedUpstreams, upstreamURLs[i].String())
+
 					// Extract IPs for the log message
 					refIPs := extractIPs(reference)
 					curIPs := extractIPs(res.msg)
@@ -4100,22 +4119,24 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 						slog.String("reference", reference.String() /*non nil*/),
 						slog.String("current", res.msg.String() /*non nil here*/),
 					)
-					return nil // Drop the query because of answer discrepancy
+					return nil, telemetry // Drop the query because of answer discrepancy
 				}
 			}
 		}
 
-		return reference
+		return reference, telemetry
 	case "failover":
 		// ==========================================
 		// FAILOVER MODE: Priority-based with active healing
 		// ==========================================
-		resp, err := failoverSelect.Exchange(backgroundCtx, clients, reqBytes)
+		resp, used, failed, err := failoverSelect.Exchange(backgroundCtx, clients, reqBytes)
+		telemetry.UpstreamUsed = used
+		telemetry.FailedUpstreams = failed
 		if err != nil {
 			mainLogger.Error("failover selection failed", SafeErr(err))
-			return nil
+			return nil, telemetry
 		}
-		return resp
+		return resp, telemetry
 
 	case "fastest":
 		fallthrough
@@ -4147,9 +4168,11 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 
 			// If we got a valid DNS response (even an NXDOMAIN), return it immediately
 			if res.err == nil && res.msg != nil {
-				return res.msg
+				telemetry.UpstreamUsed = upstreamURLs[res.idx].String()
+				return res.msg, telemetry
 			}
 
+			telemetry.FailedUpstreams = append(telemetry.FailedUpstreams, upstreamURLs[res.idx].String())
 			// Keep track of the error in case they ALL fail
 			if res.err != nil {
 				lastErr = res.err
@@ -4161,7 +4184,7 @@ func forwardToDoH(req *dns.Msg) *dns.Msg {
 			//slog.String("last_err", lastErr.Error()),
 			SafeErr2("last_err", lastErr),
 		)
-		return nil
+		return nil, telemetry
 	}
 }
 
@@ -4802,7 +4825,7 @@ func SafeSlice[T any](key string, slice []T, mapper func(T) string) slog.Attr {
 
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
-func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg) {
+func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg, telemetry UpstreamTelemetry) {
 	if ctx == nil {
 		mainLogger.Error("bad coding: logQuery called with nil context", // should never happen
 			slog.String("client", client),
@@ -4894,6 +4917,16 @@ func logQuery(ctx context.Context, client, domain, typ, action, ruleID string, i
 	)
 	if blocked != nil {
 		attrs = append(attrs, slog.String("blocked_dnsMsg", blocked.String()))
+	}
+	// Inject the upstream telemetry payload
+	if telemetry.Strategy != "" {
+		attrs = append(attrs, slog.String("strategy", telemetry.Strategy))
+	}
+	if telemetry.UpstreamUsed != "" {
+		attrs = append(attrs, slog.String("upstream_used", telemetry.UpstreamUsed))
+	}
+	if len(telemetry.FailedUpstreams) > 0 {
+		attrs = append(attrs, slog.Any("failed_upstreams", telemetry.FailedUpstreams))
 	}
 	mainLogger.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
 }
