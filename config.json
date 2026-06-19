@@ -1,7 +1,7 @@
 {
   "listen_dns": "127.0.0.2:53",
   "listen_doh": "127.0.0.2:443",
-  "ui_port": 3406,
+  "listen_ui": "127.0.0.1:3406",
   "upstream_urls": [
     "https://9.9.9.9/dns-query"
   ],
@@ -9,6 +9,7 @@
   "sni_hostnames": [
     "dns.quad9.net"
   ],
+  "strict_upstream_match": false,
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
   "rate_qps": 100,
@@ -23,5 +24,7 @@
   "log_max_size_mb": 4095,
   "allow_run_as_admin": false,
   "block_aaaa_as_empty_noerror": true,
-  "allow_https_if_a_allowed": true
+  "allow_https_if_a_allowed": true,
+  "webui_password_hash": "$2a$10$Nll0qnxtOwMYPW30QDgl2.u3hD2CQywRPIcNwIrVKx.EhOaxliqku",
+  "webui_use_tls": true
 }
