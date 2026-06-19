@@ -3476,6 +3476,11 @@ func getSecureID() uint16 {
 	panic("critical system error: failed to generate secure random entropy")
 }
 
+type CacheEntry struct {
+	Msg   *dns.Msg
+	State UpstreamState
+}
+
 func dohHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context() // Get the request context
 
@@ -3680,14 +3685,21 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
 	if cachedIf, ok := cacheStore.Get(key); ok {
-		cached := cachedIf.(*dns.Msg)
+		entry := cachedIf.(CacheEntry)
+		cached := entry.Msg
+
 		// Return a copy of cached response with the current query ID to avoid
 		// clients rejecting replies because of mismatched transaction IDs.
 		resp := cached.Copy()
 		resp.Id = msg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
-		logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, UpstreamState{Strategy: "cache"})
+
+		// Use the stored upstreamState4, but update the strategy to indicate it was loaded from cache
+		upstreamState4 := entry.State
+		//state.Strategy = "cached (was: " + state.Strategy + ")"
+
+		logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, upstreamState4)
 		return resp
 	}
 
@@ -3730,9 +3742,14 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		}
 
 		// Cache this override so subsequent queries bypass the pattern loop
-		cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
+		//cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second)
+		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
+		cacheStore.Set(key, CacheEntry{
+			Msg:   resp.Copy(),
+			State: upstreamState5,
+		}, timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
 
-		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, UpstreamState{Strategy: "etc_hosts"})
+		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
 	}
 	// --- END Local Hosts Override ---
@@ -3757,9 +3774,12 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		negResp := servfailResponse(msg)
 		logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
 		// Cache negatives short
-		//cacheStore.Set(key, negResp, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
-		// FIX: Store a copy of the negative response as well
-		cacheStore.Set(key, negResp.Copy(), 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
+		// Store a copy of the negative response as well
+		//cacheStore.Set(key, negResp.Copy(), 2*time.Second)
+		cacheStore.Set(key, CacheEntry{
+			Msg:   negResp.Copy(),
+			State: upstreamState3,
+		}, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
 		return negResp
 	}
 
@@ -3791,9 +3811,12 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	//     expiry = time.Duration(config.CacheMinTTL) * time.Second
 	// }
 
-	//cacheStore.Set(key, filtered, expiry)
-	// FIX: Store a copy in the cache, not the pointer you are about to return
-	cacheStore.Set(key, filtered.Copy(), expiry)
+	// Store a copy in the cache, not the pointer you are about to return
+	//cacheStore.Set(key, filtered.Copy(), expiry)
+	cacheStore.Set(key, CacheEntry{
+		Msg:   filtered.Copy(),
+		State: upstreamState3,
+	}, expiry)
 
 	ips := extractIPs(filtered)
 	logQuery(ctx, clientAddr, domain, qtype, forwardedSTR, matchedID, ips, filtered, upstreamState3)
