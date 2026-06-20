@@ -117,11 +117,12 @@ type FailoverSelector struct {
 	mu             sync.RWMutex
 	activeIndex    int
 	inFlightProbes sync.Map
+	allFailed      bool // Tracks if the system is coming out of a total blackout
 }
 
 // NewFailoverSelector initializes the tracker starting at the first upstream (index 0)
 func NewFailoverSelector() *FailoverSelector {
-	return &FailoverSelector{activeIndex: 0}
+	return &FailoverSelector{activeIndex: 0, allFailed: false}
 }
 
 func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client, reqBytes []byte) (*dns.Msg, string, []string, error) {
@@ -173,18 +174,37 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
 			// after we already returned the active response, update the active index.
 			// If a probe succeeds, immediately promote it back to active status
-			if err == nil && idx < currentIdx {
-				var healed bool = false // to do the logging outside of lock!
-				func() {
-					fs.mu.Lock()
-					defer fs.mu.Unlock()
+			if err == nil {
+				var healed bool = false
+				var recoveredFromBlackout bool = false
+
+				fs.mu.Lock()
+				// CASE 1: The system was completely down, and ANY upstream just brought it back
+				if fs.allFailed {
+					fs.allFailed = false
+					recoveredFromBlackout = true
+
+					// If the primary recovered, make sure activeIndex points to it
+					if idx < fs.activeIndex {
+						fs.activeIndex = idx
+					}
+				} else if idx < currentIdx {
+					// CASE 2: Normal operation, but a higher priority upstream probe succeeded
 					if idx < fs.activeIndex {
 						fs.activeIndex = idx
 						healed = true
 					}
-				}() // a func call to issue the 'defer' no matter what(ie. panic or wtw); yeah overkill here.
+				}
+				fs.mu.Unlock()
 
-				if healed {
+				// Log safely outside of the lock
+				if recoveredFromBlackout {
+					mainLogger.Warn("💚 Global blackout resolved; upstreams are responding again",
+						slog.String("url", upstreamURLs[idx].String()),
+						slog.String("sni", upstreamSNIs[idx]),
+						slog.Int("index", idx),
+					)
+				} else if healed {
 					mainLogger.Warn("⚙️ Primary upstream recovered; promoting back to active status",
 						slog.String("url", upstreamURLs[idx].String()),
 						slog.String("sni", upstreamSNIs[idx]),
@@ -223,13 +243,25 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 		resp, err := doSingleDoHRequest(clients[i], upstreamURLs[i], upstreamSNIs[i], reqBytes)
 		if err == nil {
 			fs.mu.Lock()
+			wasBlackout := fs.allFailed
+			fs.allFailed = false // Connectivity restored by a fallback!
 			fs.activeIndex = i
 			fs.mu.Unlock()
+			if wasBlackout { //TODO: DRY(see the above copy)
+				mainLogger.Warn("💚 Global blackout resolved; fallback upstream responding",
+					slog.String("url", upstreamURLs[i].String()),
+					slog.String("sni", upstreamSNIs[i]),
+					slog.Int("index", i),
+				)
+			}
 			return resp, upstreamURLs[i].String(), failedUpstreams, nil
 		}
 		failedUpstreams = append(failedUpstreams, upstreamURLs[i].String())
 	}
-
+	// If execution gets here, every single configured upstream failed
+	fs.mu.Lock()
+	fs.allFailed = true
+	fs.mu.Unlock()
 	return nil, "", failedUpstreams, errors.New("all upstreams failed to respond")
 }
 
