@@ -114,95 +114,15 @@ type Config struct {
 }
 
 type FailoverSelector struct {
-	mu          sync.RWMutex
-	activeIndex int
+	mu             sync.RWMutex
+	activeIndex    int
+	inFlightProbes sync.Map
 }
 
 // NewFailoverSelector initializes the tracker starting at the first upstream (index 0)
 func NewFailoverSelector() *FailoverSelector {
 	return &FailoverSelector{activeIndex: 0}
 }
-
-// func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []UpstreamClient, req *dns.Msg) (*dns.Msg, error) {
-// 	if len(upstreams) == 0 {
-// 		return nil, errors.New("no upstreams available")
-// 	}
-
-// 	fs.mu.RLock()
-// 	currentIdx := fs.activeIndex
-// 	fs.mu.RUnlock()
-
-// 	// Safety check if upstream list dynamically changed or shrank
-// 	if currentIdx >= len(upstreams) {
-// 		currentIdx = 0
-// 	}
-
-// 	type result struct {
-// 		index int
-// 		resp  *dns.Msg
-// 		err   error
-// 	}
-
-// 	// 1. Try the current active working upstream AND all previous higher-priority
-// 	// upstreams that failed before in parallel.
-// 	numParallel := currentIdx + 1
-// 	resChan := make(chan result, numParallel)
-
-// 	for i := 0; i < numParallel; i++ {
-// 		go func(idx int) {
-// 			// We pass the context through. If a previous upstream is down,
-// 			// it will cleanly hit its timeout here without blocking the active one.
-// 			resp, err := upstreams[idx].Exchange(ctx, req)
-// 			resChan <- result{index: idx, resp: resp, err: err}
-
-// 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
-// 			// after we already returned the active response, update the active index
-// 			// so the next DNS request automatically switches back to it.
-// 			if err == nil && idx < currentIdx {
-// 				fs.mu.Lock()
-// 				if idx < fs.activeIndex {
-// 					fs.mu.Unlock() // avoid deadlock if we read it again
-// 					fs.mu.Lock()
-// 					fs.activeIndex = idx
-// 				}
-// 				fs.mu.Unlock()
-// 			}
-// 		}(i)
-// 	}
-
-// 	// Wait and evaluate results as they arrive
-// 	receivedResults := 0
-// 	for receivedResults < numParallel {
-// 		res := <-resChan
-// 		receivedResults++
-
-// 		if res.err == nil {
-// 			// If the current active upstream or a higher priority one succeeds,
-// 			// we return immediately! This completely avoids waiting for slow/dead timeouts.
-// 			fs.mu.Lock()
-// 			if res.index < fs.activeIndex {
-// 				fs.activeIndex = res.index
-// 			}
-// 			fs.mu.Unlock()
-// 			return res.resp, nil
-// 		}
-// 	}
-
-// 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
-// 	// step down the list sequentially to find the next working backup.
-// 	for i := currentIdx + 1; i < len(upstreams); i++ {
-// 		resp, err := upstreams[i].Exchange(ctx, req)
-// 		if err == nil {
-// 			// We found a new working fallback upstream! Mark it active for future requests.
-// 			fs.mu.Lock()
-// 			fs.activeIndex = i
-// 			fs.mu.Unlock()
-// 			return resp, nil
-// 		}
-// 	}
-
-// 	return nil, errors.New("all upstreams failed to respond")
-// }
 
 func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client, reqBytes []byte) (*dns.Msg, string, []string, error) {
 	if len(clients) == 0 {
@@ -230,13 +150,29 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 	resChan := make(chan result, numParallel)
 	var failedUpstreams []string
 
-	for i := 0; i < numParallel; i++ {
-		go func(idx int) {
+	//for i := 0; i < numParallel; i++ {
+	for i := range numParallel {
+		isProbe := i < currentIdx
+		// If this is a probe to a previously failed upstream, check if we're already probing it.
+		if isProbe {
+			//LoadOrStore(i, true): This atomically checks if an operation is already in progress for that index. If loaded is true, we immediately push a dummy error to the channel and continue, bypassing doSingleDoHRequest. This kills the log spam.
+			if _, loaded := fs.inFlightProbes.LoadOrStore(i, true); loaded {
+				// Already probing this failed upstream. Skip to prevent network and log spam.
+				resChan <- result{index: i, resp: nil, err: errors.New("skipped: probe already in flight")}
+				continue
+			}
+		}
+		go func(idx int, wasProbe bool) {
+			// Clean up the probe lock when this request finishes
+			if wasProbe {
+				defer fs.inFlightProbes.Delete(idx)
+			}
 			resp, err := doSingleDoHRequest(clients[idx], upstreamURLs[idx], upstreamSNIs[idx], reqBytes)
 			resChan <- result{index: idx, resp: resp, err: err}
 
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
 			// after we already returned the active response, update the active index.
+			// If a probe succeeds, immediately promote it back to active status
 			if err == nil && idx < currentIdx {
 				fs.mu.Lock()
 				if idx < fs.activeIndex {
@@ -244,7 +180,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 				}
 				fs.mu.Unlock()
 			}
-		}(i)
+		}(i, isProbe)
 	}
 
 	// Wait and evaluate results as they arrive
