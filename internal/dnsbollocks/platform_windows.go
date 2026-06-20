@@ -4041,6 +4041,8 @@ var Version = ""
 var memoizedVersion = func() string {
 	var baseVersion string
 	var vcsRevision string
+	var vcsTime string  // the datetime of that commit(aka vcsRevision) not the build datetime!
+	var isModified bool //ie. dirty
 
 	// 1. Determine the base version (Release tag / module path)
 	if Version != "" {
@@ -4059,27 +4061,57 @@ var memoizedVersion = func() string {
 	// 2. Extract the underlying VCS revision if embedded by the compiler
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, setting := range info.Settings {
-			if setting.Key == "vcs.revision" && setting.Value != "" {
-				vcsRevision = setting.Value
-				// Cap to roughly 16 characters for clean visibility
-				if len(vcsRevision) > 16 {
-					vcsRevision = vcsRevision[:16]
+			switch setting.Key {
+			case "vcs.revision":
+				if setting.Value != "" {
+					vcsRevision = setting.Value
+					// Cap to roughly 16 characters for clean visibility
+					if len(vcsRevision) > 16 {
+						vcsRevision = vcsRevision[:16]
+					}
 				}
-				break
+			case "vcs.time":
+				if setting.Value != "" {
+					// Parse standard RFC3339 layout: "2026-06-20T20:49:57Z"
+					if t, err := time.Parse(time.RFC3339, setting.Value); err == nil {
+						// // Formats to a compact, human-readable slug: "20260620.204957"
+						// vcsTime = t.Format("20060102.150405")
+						// Formats to exact pseudo-version layout: "20260620204957"
+						vcsTime = t.Format("20060102150405")
+					} else {
+						// // Fallback if parsing fails for some unexpected compiler reason
+						// vcsTime = strings.ReplaceAll(setting.Value, ":", "")
+						// Clean fallback if parsing fails
+						vcsTime = strings.NewReplacer("-", "", "T", "", ":", "", "Z", "").Replace(setting.Value)
+					}
+				}
+			case "vcs.modified":
+				if setting.Value == "true" {
+					isModified = true
+				}
 			}
 		}
 	}
 
 	// 3. Assemble the final version string idiomatically
-	if vcsRevision != "" {
-		// Avoid duplicating the hash if the base version string already includes it
-		if strings.Contains(baseVersion, vcsRevision) {
-			return baseVersion
-		}
-		return fmt.Sprintf("%s-%s", baseVersion, vcsRevision)
+	suffix := ""
+	//like this/(via `go version -m dnsbollocks.exe`):         dep     github.com/miekg/dns    v1.1.73-0.20260402044838-d1539a788a12
+	if vcsTime != "" {
+		suffix += "-0." + vcsTime // FIXME: Hardcodes the '0' generation counter before the timestamp (can't read/get it apparently)
+	}
+	// Avoid duplicating the hash if the base version string already includes it
+	if vcsRevision != "" && !strings.Contains(baseVersion, vcsRevision) {
+		suffix += "-" + vcsRevision
+	}
+	// //datetime at the end
+	// if vcsTime != "" {
+	// 	suffix += "-" + vcsTime
+	// }
+	if isModified {
+		suffix += "+dirty"
 	}
 
-	return baseVersion
+	return baseVersion + suffix
 }() //it's a func call
 
 // GetVersion returns the cached build info string directly
