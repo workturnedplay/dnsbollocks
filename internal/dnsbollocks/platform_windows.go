@@ -4005,8 +4005,8 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 // Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
 var Version = ""
 
-// GetVersion returns the git tag or commit hash injected during build
-func GetVersion() string {
+// Compute the string exactly once at package startup
+var memoizedVersion = func() string {
 	var baseVersion string
 	var vcsRevision string
 
@@ -4048,6 +4048,11 @@ func GetVersion() string {
 	}
 
 	return baseVersion
+}() //it's a func call
+
+// GetVersion returns the cached build info string directly
+func GetVersion() string {
+	return memoizedVersion
 }
 
 type UpstreamState struct { //doneTODO: rename Telemetry to something normal
@@ -4416,21 +4421,21 @@ func compareDNSResponses(a, b *dns.Msg) bool {
 // Globals for static data
 var (
 	// This runs once at startup
-	edeText = getBlockedString()
+	edeText = func() string {
+		exePath, err := os.Executable()
+		if err != nil {
+			exePath = "DNSbollocks"
+		}
+		// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
+		// You can also use time.DateOnly (2006-01-02) if you prefer
+		startTime := time.Now().Format("2006-01-02 15:04:05-0700") // don't need more precision here!
+		version := GetVersion()
+
+		return fmt.Sprintf("Blocked by %q %q [which was started on %q]", exePath, version, startTime)
+	}() //it's a func call
+
 	edeCode = dns.ExtendedErrorCodeBlocked
 )
-
-func getBlockedString() string {
-	exePath, err := os.Executable()
-	if err != nil {
-		exePath = "DNSbollocks"
-	}
-	// Get startup time. "15:04:05" is the Go magic layout for HH:MM:SS
-	// You can also use time.DateOnly (2006-01-02) if you prefer
-	startTime := time.Now().Format("2006-01-02 15:04:05-0700") // don't need more precision here!
-
-	return fmt.Sprintf("Blocked by %q [which was started on %q]", exePath, startTime)
-}
 
 func blockResponse(msg *dns.Msg) *dns.Msg {
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.

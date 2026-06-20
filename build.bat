@@ -94,7 +94,7 @@ rem echo on
 @rem :: 2. Use the variable inside your go build command
 @rem "%goexe%" build -ldflags="-X 'github.com/workturnedplay/dnsbollocks.Version=!VERSION_TAG!'" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 @rem "%goexe%" build -ldflags="-X github.com/workturnedplay/dnsbollocks.Version=!VERSION_TAG!" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
-"%goexe%" build -ldflags="-X 'main.Version=!VERSION_TAG!'" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
+"%goexe%" build -ldflags="-X 'github.com/workturnedplay/dnsbollocks/internal/dnsbollocks.Version=!VERSION_TAG!'" !BINCOMPARE! !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 @rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 @if errorlevel 1 goto :fail
 @echo off
