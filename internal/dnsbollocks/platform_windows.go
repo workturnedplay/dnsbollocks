@@ -168,18 +168,33 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 				defer fs.inFlightProbes.Delete(idx)
 			}
 			resp, err := doSingleDoHRequest(clients[idx], upstreamURLs[idx], upstreamSNIs[idx], reqBytes)
-			resChan <- result{index: idx, resp: resp, err: err}
 
+			// 1. Do the promotion BEFORE sending to the channel
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
 			// after we already returned the active response, update the active index.
 			// If a probe succeeds, immediately promote it back to active status
 			if err == nil && idx < currentIdx {
-				fs.mu.Lock()
-				if idx < fs.activeIndex {
-					fs.activeIndex = idx
+				var healed bool = false // to do the logging outside of lock!
+				func() {
+					fs.mu.Lock()
+					defer fs.mu.Unlock()
+					if idx < fs.activeIndex {
+						fs.activeIndex = idx
+						healed = true
+					}
+				}() // a func call to issue the 'defer' no matter what(ie. panic or wtw); yeah overkill here.
+
+				if healed {
+					mainLogger.Warn("⚙️ Primary upstream recovered; promoting back to active status",
+						slog.String("url", upstreamURLs[idx].String()),
+						slog.String("sni", upstreamSNIs[idx]),
+						slog.Int("index", idx),
+					)
 				}
-				fs.mu.Unlock()
 			}
+			// 2. Push to the channel last
+			resChan <- result{index: idx, resp: resp, err: err}
+
 		}(i, isProbe)
 	}
 
@@ -190,11 +205,12 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 		receivedResults++
 
 		if res.err == nil {
-			fs.mu.Lock()
-			if res.index < fs.activeIndex {
-				fs.activeIndex = res.index
-			}
-			fs.mu.Unlock()
+			// fs.mu.Lock()
+			// if res.index < fs.activeIndex {
+			// 	fs.activeIndex = res.index
+			// }
+			// fs.mu.Unlock()
+			// No locks needed here anymore! The goroutine already handled it.
 			return res.resp, upstreamURLs[res.index].String(), failedUpstreams, nil
 		}
 		// Track the failure
