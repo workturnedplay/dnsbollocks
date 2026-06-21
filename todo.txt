@@ -1,27 +1,32 @@
+* improvements for v0.0.6 : https://gemini.google.com/app/8fba2ee635340715
 * handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
-* add a config key which says all allowed A dns type queries also allow HTTPS ones
 * check added rules to not allow hosts that aren't valid like "=accounts.google.com"
 * make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
-//* if the IP in listen_doh in config.json is changed, the cert needs to be regenerated to allow that IP to work, so need to delete cert.pem (not key.pem too) to cause regen of both .pem files with that IP setting.
-* make it 'pause' even when errors happen, else i need to wrap it in a .bat!
-//* show the IPs gotten from upstream in logs, even if cached, even if HTTPS dns type!(even tho stripped ipv4hint etc.)
 * hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
   * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
   * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
   * or like: {file:id.key}
+  * ensure the save keeps the pattern not the result after pattern got replaced with actual.
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
-* separate the whitelist and blacklist away from config.json because for example config.json may be marked as read-only (permissions wise) and the white/black list allowed to be modified!
 * link to Tinywall in readme and to Go lang to install Go.
 * add more tests, lots more
+
 * make ipv4 hints in HTTPS removable only if a config key is true (default) ie. add that key
-* add a config key that allows all HTTPS dns type queries but strips their IP hints.
-//* run both at build time:
-  //(it's part of golancgi-lint)* get staticcheck in, see(private to me chat): https://chatgpt.com/c/695bbad2-99c8-832c-8876-e8a7219ae052
-  //* look into getting github.com/golangci/golangci-lint
-* fix rules being edited get duplicated (or overwrites old?)
+* add a config key that allows all HTTPS dns type queries but strips their IP hints. Currently it happens unconditionally!
+
 * fix rules with duplicated IDs existing in config and loaded at startup without complains or purging
-* deleting/adding rules via webUI shouldn't reorder them randomly
 * make the EDE reply optional, setable from config!
 * see why Ctrl+Break key has weird behavior and needs 2 keys at press any key prompt and keeps the term in raw if terminate batch job is answered with Y ie. it's raw after our .exe exited!
 
+done:
+//* add a config key which says all allowed A dns type queries also allow HTTPS ones
+//* if the IP in listen_doh in config.json is changed, the cert needs to be regenerated to allow that IP to work, so need to delete cert.pem (not key.pem too) to cause regen of both .pem files with that IP setting.
+//* show the IPs gotten from upstream in logs, even if cached, even if HTTPS dns type!(even tho stripped ipv4hint etc.)
+//* make it 'pause' even when errors happen, else i need to wrap it in a .bat!
+//* separate the whitelist and blacklist away from config.json because for example config.json may be marked as read-only (permissions wise) and the white/black list allowed to be modified!
+//* fix rules being edited get duplicated (or overwrites old?)
+//* deleting/adding rules via webUI shouldn't reorder them randomly
+//* run both at build time:
+  //(it's part of golancgi-lint)* get staticcheck in, see(private to me chat): https://chatgpt.com/c/695bbad2-99c8-832c-8876-e8a7219ae052
+  //* look into getting github.com/golangci/golangci-lint
