@@ -791,25 +791,31 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	isDebug := false
 	baseColor := "\x1b[37m" // Default to White
 	var equalsColor string
+	var bgColor string // Track the background color for the line
 	if r.Level <= slog.LevelDebug {
 		isDebug = true
-		baseColor = "\x1b[90m"   // Gray
-		equalsColor = "\x1b[37m" // White
+		baseColor = "\x1b[90m"     // Gray
+		equalsColor = "\x1b[37m"   // White
+		bgColor = "\x1b[48;5;234m" // Very dark gray for Debug
 	} else {
-		equalsColor = "\x1b[95m" // Light Magenta / Purple
+		equalsColor = "\x1b[95m"   // Light Magenta / Purple
+		bgColor = "\x1b[48;5;235m" // Default dark gray fallback
 	}
 
 	levelColor := baseColor
 
 	switch r.Level {
 	case slog.LevelInfo:
-		levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
+		levelColor = "\x1b[93m"    // Yellow, used for cache_hit tho
+		bgColor = "\x1b[48;5;236m" // Slightly lighter dark gray for Info
 	case slog.LevelWarn:
 		//levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
 		levelColor = "\x1b[95m" // Light Magenta / Purple
 		//levelColor = "\x1b[38;5;208m" // Vibrant Orange
+		bgColor = "\x1b[48;5;53m" // Deep dark purple for Warn
 	case slog.LevelError:
-		levelColor = "\x1b[91m" // Red
+		levelColor = "\x1b[91m"   // Red
+		bgColor = "\x1b[48;5;52m" // Deep dark red for Error
 	}
 
 	// --- NEW: Pre-scan for action color ---
@@ -826,6 +832,9 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	timeStr := r.Time.Format(TimeStampsFormat) //"15:04:05.000")
 
 	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+
+	// Apply the background color right at the start of the line
+	buf.WriteString(bgColor)
 
 	// Level string (colored)
 	// Write the level text (also in the level color)
@@ -928,6 +937,9 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 		return true
 	})
 
+	// \x1b[K extends the background color to the right edge of the terminal.
+	// \x1b[0m then clears all formatting(aka full reset) before dropping to the next line.
+	//buf.WriteString("\x1b[K\x1b[0m\n")
 	buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
 
 	_, err := h.Out.Write(buf.Bytes())
