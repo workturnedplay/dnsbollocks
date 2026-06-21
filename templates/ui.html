@@ -186,88 +186,88 @@
             // 1. Check if the element clicked (or its nested contents) matches our class
             const editBtn = e.target.closest('.btn-edit');
             if (editBtn) {
-				// 2. Safely grab the closest table row relative to the button
-				const row = editBtn.closest('tr');
+                // 2. Safely grab the closest table row relative to the button
+                const row = editBtn.closest('tr');
 
-				// FIX: Stop if it's not a row, OR if it's not a Rules table row
-				if (!row|| !row.hasAttribute('data-rule-id')) return;
+                // FIX: Stop if it's not a row, OR if it's not a Rules table row
+                if (!row|| !row.hasAttribute('data-rule-id')) return;
 
-				e.preventDefault();
+                e.preventDefault();
 
-				// 3. Grab the data cleanly from the row dataset
-				const id = row.dataset.ruleId;
-				const typ = row.dataset.ruleType;
-				const oldPattern = row.dataset.rulePattern;
-				const enabled = row.dataset.ruleEnabled === 'true';
+                // 3. Grab the data cleanly from the row dataset
+                const id = row.dataset.ruleId;
+                const typ = row.dataset.ruleType;
+                const oldPattern = row.dataset.rulePattern;
+                const enabled = row.dataset.ruleEnabled === 'true';
 
-				// 4. Tag the original row with a unique layout ID so Cancel/Save can find it
-				row.id = 'rule-row-' + id;
-				row.style.display = 'none';
+                // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
+                row.id = 'rule-row-' + id;
+                row.style.display = 'none';
 
-				// 1. Clone the template natively
-				const tmpl = document.getElementById('editRuleTemplate');
-				const clone = tmpl.content.cloneNode(true);
+                // 1. Clone the template natively
+                const tmpl = document.getElementById('editRuleTemplate');
+                const clone = tmpl.content.cloneNode(true);
                 
-				// Add an ID to the <tr> to make cleanup easy
-				clone.querySelector('tr').id = 'editFormRow_' + id;
+                // Add an ID to the <tr> to make cleanup easy
+                clone.querySelector('tr').id = 'editFormRow_' + id;
 
-				// 2. Grab references to the inputs in our clone
-				const typeSelect = clone.querySelector('.edit-type');
-				const idDisplay = clone.querySelector('.edit-id-display');
-				const patternInput = clone.querySelector('.edit-pattern');
-				const enabledCheck = clone.querySelector('.edit-enabled');
-				const idInput = clone.querySelector('.edit-id-input');
-				const form = clone.querySelector('.edit-form');
-				const cancelBtn = clone.querySelector('.btn-cancel');
+                // 2. Grab references to the inputs in our clone
+                const typeSelect = clone.querySelector('.edit-type');
+                const idDisplay = clone.querySelector('.edit-id-display');
+                const patternInput = clone.querySelector('.edit-pattern');
+                const enabledCheck = clone.querySelector('.edit-enabled');
+                const idInput = clone.querySelector('.edit-id-input');
+                const form = clone.querySelector('.edit-form');
+                const cancelBtn = clone.querySelector('.btn-cancel');
 
-				// 3. Populate values securely as object properties (no string escaping needed)
-				typeSelect.value = typ;
-				idDisplay.textContent = id;
-				idDisplay.title = id;
-				patternInput.value = oldPattern;
-				enabledCheck.checked = enabled;
-				idInput.value = id;
+                // 3. Populate values securely as object properties (no string escaping needed)
+                typeSelect.value = typ;
+                idDisplay.textContent = id;
+                idDisplay.title = id;
+                patternInput.value = oldPattern;
+                enabledCheck.checked = enabled;
+                idInput.value = id;
 
-				// 4. Setup Cancel action
-				cancelBtn.onclick = () => cancelEdit(id);
+                // 4. Setup Cancel action
+                cancelBtn.onclick = () => cancelEdit(id);
 
-				// 5. Handle form submission (using closures to grab current input state)
-				form.addEventListener('submit', function(eSubmit) {
-				 	// Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
-					eSubmit.preventDefault();
-					
-					const newPattern = patternInput.value.trim();
-					const enabledChecked = enabledCheck.checked;
-					const newType = typeSelect.value;
-					
-					if (newPattern === '') { alert('newPattern cannot be empty'); return; }
-					
-					const formData = new FormData();
-					formData.append('id', id);
-					formData.append('pattern', newPattern);
-					formData.append('type', newType);
-					formData.append('enabled', enabledChecked ? 'true' : 'false');
-					
-					// --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
-					// Construct the EXACT same text signature format the filter checks against
+                // 5. Handle form submission (using closures to grab current input state)
+                form.addEventListener('submit', function(eSubmit) {
+                     // Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
+                    eSubmit.preventDefault();
+                    
+                    const newPattern = patternInput.value.trim();
+                    const enabledChecked = enabledCheck.checked;
+                    const newType = typeSelect.value;
+                    
+                    if (newPattern === '') { alert('newPattern cannot be empty'); return; }
+                    
+                    const formData = new FormData();
+                    formData.append('id', id);
+                    formData.append('pattern', newPattern);
+                    formData.append('type', newType);
+                    formData.append('enabled', enabledChecked ? 'true' : 'false');
+                    
+                    // --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
+                    // Construct the EXACT same text signature format the filter checks against
                     // Using array join to keep it completely safe from Go raw string literal backticks!
-					const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
-					// Save the unique signature instead of just the pattern
-					sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
-					
-					fetch('/rules', {
-						method: 'POST',
-						body: formData,
-						redirect: 'manual' // Stops fetch from following the redirect in the background
-					})
-					.then(() => location.reload())
-					.catch(err => console.error('Save failed:', err));
-				});
+                    const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
+                    // Save the unique signature instead of just the pattern
+                    sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
+                    
+                    fetch('/rules', {
+                        method: 'POST',
+                        body: formData,
+                        redirect: 'manual' // Stops fetch from following the redirect in the background
+                    })
+                    .then(() => location.reload())
+                    .catch(err => console.error('Save failed:', err));
+                });
 
-				// 6. Insert cleanly next to the original row
-				row.after(clone);
-			} // end of 'if editBtn'
-			
+                // 6. Insert cleanly next to the original row
+                row.after(clone);
+            } // end of 'if editBtn'
+            
             // --- DELETE BUTTON INTERCEPTOR ---
             const delBtn = e.target.closest('.btn-del');
             if (delBtn) {
@@ -275,7 +275,7 @@
                 // FIX: Stop if it's not a row, OR if it's not a Rules table row
                 if (!row || !row.hasAttribute('data-rule-id')) return;
 
-				e.preventDefault(); // Stop native link/button submission
+                e.preventDefault(); // Stop native link/button submission
 
                 const id = row.dataset.ruleId;
                 const typ = row.dataset.ruleType;
@@ -413,19 +413,19 @@
             // FREE PASS: If this row is the one we just added/edited, force it to show!
             // 4. Free Pass logic (using our clean variable)
             if (lastInteracted) {
-			    if (lastInteracted.startsWith(" ")) {
-			        // Added rule: ID was unknown, so it starts with a space.
-			        // We check if the new row's string ENDS with our type and pattern.
-			        if (searchTargetText.endsWith(lastInteracted)) {
-			            isMatch = true;
-			        }
-			    } else {
-			        // Edited rule: ID was exact.
-			        if (searchTargetText === lastInteracted) {
-			            isMatch = true;
-			        }
-			    }
-			}
+                if (lastInteracted.startsWith(" ")) {
+                    // Added rule: ID was unknown, so it starts with a space.
+                    // We check if the new row's string ENDS with our type and pattern.
+                    if (searchTargetText.endsWith(lastInteracted)) {
+                        isMatch = true;
+                    }
+                } else {
+                    // Edited rule: ID was exact.
+                    if (searchTargetText === lastInteracted) {
+                        isMatch = true;
+                    }
+                }
+            }
 
             row.style.display = isMatch ? '' : 'none';
         });
@@ -696,58 +696,58 @@
             </form>
         </td>
     </tr>
-	</template>
+    </template>
 
-	<script>
-	function editHost(btn) {
+    <script>
+    function editHost(btn) {
         // 0. Extract variables from the button itself
         const index = btn.dataset.index;
         const pat = btn.dataset.pattern;
         const ips = btn.dataset.ips;
         
-		const row = document.getElementById('hostRow_' + index);
-		row.style.display = 'none';
+        const row = document.getElementById('hostRow_' + index);
+        row.style.display = 'none';
 
-		// 1. Clone the template
-		const tmpl = document.getElementById('editHostTemplate');
-		const clone = tmpl.content.cloneNode(true);
-		
-		// 2. Track the row and form uniquely
-		const editRow = clone.querySelector('tr');
-		editRow.id = 'editHostRow_' + index;
-		
-		const form = clone.querySelector('.edit-host-form');
-		const formId = 'editHostForm_' + index;
-		form.id = formId;
+        // 1. Clone the template
+        const tmpl = document.getElementById('editHostTemplate');
+        const clone = tmpl.content.cloneNode(true);
+        
+        // 2. Track the row and form uniquely
+        const editRow = clone.querySelector('tr');
+        editRow.id = 'editHostRow_' + index;
+        
+        const form = clone.querySelector('.edit-host-form');
+        const formId = 'editHostForm_' + index;
+        form.id = formId;
 
-		// 3. Populate inputs and link them to the form using the HTML5 'form' attribute
-		// (Required because the inputs are inside table cells, not inside the <form> tag)
-		const oldPatternInput = clone.querySelector('.edit-host-old-pattern');
-		oldPatternInput.value = pat;
-		oldPatternInput.setAttribute('form', formId);
+        // 3. Populate inputs and link them to the form using the HTML5 'form' attribute
+        // (Required because the inputs are inside table cells, not inside the <form> tag)
+        const oldPatternInput = clone.querySelector('.edit-host-old-pattern');
+        oldPatternInput.value = pat;
+        oldPatternInput.setAttribute('form', formId);
 
-		const patternInput = clone.querySelector('.edit-host-pattern');
-		patternInput.value = pat;
-		patternInput.setAttribute('form', formId);
+        const patternInput = clone.querySelector('.edit-host-pattern');
+        patternInput.value = pat;
+        patternInput.setAttribute('form', formId);
 
-		const ipsInput = clone.querySelector('.edit-host-ips');
-		ipsInput.value = ips;
-		ipsInput.setAttribute('form', formId);
+        const ipsInput = clone.querySelector('.edit-host-ips');
+        ipsInput.value = ips;
+        ipsInput.setAttribute('form', formId);
 
-		// 4. Setup cancel button
-		clone.querySelector('.btn-cancel').onclick = () => cancelHostEdit(index);
+        // 4. Setup cancel button
+        clone.querySelector('.btn-cancel').onclick = () => cancelHostEdit(index);
 
-		// 5. Insert cleanly into the DOM
-		row.after(clone);
-	}
+        // 5. Insert cleanly into the DOM
+        row.after(clone);
+    }
 
-	function cancelHostEdit(index) {
-		const editRow = document.getElementById('editHostRow_' + index);
-		if (editRow) editRow.remove();
-		const row = document.getElementById('hostRow_' + index);
-		if (row) row.style.display = '';
-	}
-	</script>
+    function cancelHostEdit(index) {
+        const editRow = document.getElementById('editHostRow_' + index);
+        if (editRow) editRow.remove();
+        const row = document.getElementById('hostRow_' + index);
+        if (row) row.style.display = '';
+    }
+    </script>
 {{end}}
 
 {{define "logs"}}

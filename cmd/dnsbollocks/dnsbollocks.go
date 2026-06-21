@@ -22,7 +22,7 @@ import "github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
 func main() {
 	// // Push the linker-injected value into your root package variable
 	// if Version != "" {
-	// 	dnsbollocks.Version = Version
+	//     dnsbollocks.Version = Version
 	// }
 	dnsbollocks.OldMain()
 }

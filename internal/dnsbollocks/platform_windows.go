@@ -226,7 +226,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 		if res.err == nil {
 			// fs.mu.Lock()
 			// if res.index < fs.activeIndex {
-			// 	fs.activeIndex = res.index
+			//     fs.activeIndex = res.index
 			// }
 			// fs.mu.Unlock()
 			// No locks needed here anymore! The goroutine already handled it.
@@ -1254,7 +1254,7 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 var uiTemplates = template.Must(template.ParseFS(templates.FS, "ui.html"))
 
 //var uiTemplates = template.Must(template.New("").Parse(
-//	`
+//    `
 //`))
 
 const configFileName = "config.json"
@@ -2568,7 +2568,7 @@ func makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.
 // If the error is nil, it gracefully logs it as "<nil>" without panicking.
 func SafeErr(err error) slog.Attr {
 	// if err == nil {
-	// 	return slog.String("err", "<nil>")
+	//     return slog.String("err", "<nil>")
 	// }
 	// return SafeErr(err)
 	return SafeErr2("err", err)
@@ -2584,10 +2584,10 @@ func SafeErr2(msg string, err error) slog.Attr {
 }
 
 // func SafeUDPAddr(msg string, addr *net.UDPAddr) slog.Attr {
-// 	if addr == nil {
-// 		return slog.String(msg, "<nil>")
-// 	}
-// 	return slog.String(msg, (*addr).String())
+//     if addr == nil {
+//         return slog.String(msg, "<nil>")
+//     }
+//     return slog.String(msg, (*addr).String())
 // }
 
 // SafeAddr converts any net.Addr (UDP, TCP, IP, Unix, etc.) to a safe primitive string.
@@ -3434,7 +3434,7 @@ var memoizedVersion = func() string {
 	}
 	// //datetime at the end
 	// if vcsTime != "" {
-	// 	suffix += "-" + vcsTime
+	//     suffix += "-" + vcsTime
 	// }
 	if isModified {
 		suffix += "+dirty"
@@ -3979,9 +3979,9 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) 
 
 				// // Append with a separator if it's not the first reason
 				// if dropReasons != "" {
-				// 	dropReasons += ", " + reason
+				//     dropReasons += ", " + reason
 				// } else {
-				// 	dropReasons = reason
+				//     dropReasons = reason
 				// }
 
 				mainLogger.Warn("Dropped "+sectionName+" from upstream",
@@ -4003,8 +4003,8 @@ func filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) 
 		mainLogger.Warn("response_filtered_all", slog.String("query_type", qtype), slog.String("domain", q.Name),
 
 			// slog.String("drop_reasons",
-			// 	//dropReasons
-			// 	strings.Join(dropReasons, ", "),
+			//     //dropReasons
+			//     strings.Join(dropReasons, ", "),
 			// ),
 			SafeStringSlice("drop_reasons", dropReasons),
 		)
@@ -4210,15 +4210,15 @@ var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
 // All this is to avoid using slog.Any which can race when passed networking structs that are modified by other goroutines
 func SafeStringSlice(key string, slice []string) slog.Attr {
 	// if len(slice) == 0 {
-	// 	// Return an empty group under the specified key safely
-	// 	return slog.Group(key)
+	//     // Return an empty group under the specified key safely
+	//     return slog.Group(key)
 	// }
 
 	// attrs := make([]slog.Attr, len(slice))
 	// for i, val := range slice {
-	// 	// Explicitly map each item to an immutable slog.String attribute token.
-	// 	// The index is the key ("0", "1", etc.), ensuring no structural reflection.
-	// 	attrs[i] = slog.String(fmt.Sprintf("%d", i), val)
+	//     // Explicitly map each item to an immutable slog.String attribute token.
+	//     // The index is the key ("0", "1", etc.), ensuring no structural reflection.
+	//     attrs[i] = slog.String(fmt.Sprintf("%d", i), val)
 	// }
 
 	// // slog.Group returns a single slog.Attr token containing the inner attributes
