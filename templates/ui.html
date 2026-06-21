@@ -662,7 +662,13 @@
             <td title="{{.Pattern}}">{{.Pattern}}</td>
             <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
             <td class="actions">
-                <button class="btn-edit" onclick="editHost(this, '{{.Index}}', '{{.Pattern}}', '{{.IPsDisplay}}')">Edit</button>
+                <button class="btn-edit" 
+                        data-index="{{.Index}}" 
+                        data-pattern="{{.Pattern}}" 
+                        data-ips="{{.IPsDisplay}}" 
+                        onclick="editHost(this)">
+                    Edit
+                </button>
                 <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
                     <input type="hidden" name="delete" value="1">
                     <input type="hidden" name="pattern" value="{{.Pattern}}">
@@ -693,7 +699,12 @@
 	</template>
 
 	<script>
-	function editHost(btn, index, pat, ips) {
+	function editHost(btn) {
+        // 0. Extract variables from the button itself
+        const index = btn.dataset.index;
+        const pat = btn.dataset.pattern;
+        const ips = btn.dataset.ips;
+        
 		const row = document.getElementById('hostRow_' + index);
 		row.style.display = 'none';
 
