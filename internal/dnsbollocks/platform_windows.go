@@ -759,11 +759,12 @@ func initBootstrapLogging() {
 // XXX: bad Go v1.26.0 causes a crash(heisenbug), the cause is this https://github.com/golang/go/issues/77975#issuecomment-4021553575 and fix appears to be commit 6ab37c1ca59664375786fb2f3c122eb3db98e433 (addon) also seen in https://go-review.googlesource.com/c/go/+/753040 well the cause is this commit first: https://github.com/golang/go/commit/1a44be4cecdc742ac6cce9825f9ffc19857c99f3 )! See also: https://gist.github.com/bradfitz/46c4b69ee8d6db639f3f7bf52594675a
 
 type ColoredConsoleHandler struct {
-	Level slog.Level
-	Out   io.Writer
-	Mu    *sync.Mutex
-	Attrs []slog.Attr
-	Group string
+	Level   slog.Level
+	Out     io.Writer
+	Mu      *sync.Mutex
+	Counter *uint64 // ADDED: Shared counter to track alternating rows
+	Attrs   []slog.Attr
+	Group   string
 }
 
 func NewColoredConsoleHandler(level slog.Level) slog.Handler {
@@ -773,10 +774,12 @@ func NewColoredConsoleHandler(level slog.Level) slog.Handler {
 		mainLogger.Warn("EnableVirtualTerminalProcessing failed", SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
 	}
 
+	var c uint64 // Initialize the shared counter (escapes to heap, doh)
 	return &ColoredConsoleHandler{
-		Level: level,
-		Out:   os.Stdout,
-		Mu:    &sync.Mutex{},
+		Level:   level,
+		Out:     os.Stdout,
+		Mu:      &sync.Mutex{},
+		Counter: &c, // Share pointer across clones
 	}
 }
 
@@ -788,34 +791,64 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
 
+	// Increment line counter to determine zebra striping (even/odd)
+	*h.Counter++
+	isOdd := (*h.Counter % 2) != 0
+
 	isDebug := false
 	baseColor := "\x1b[37m" // Default to White
 	var equalsColor string
 	var bgColor string // Track the background color for the line
+
 	if r.Level <= slog.LevelDebug {
 		isDebug = true
-		baseColor = "\x1b[90m"     // Gray
-		equalsColor = "\x1b[37m"   // White
-		bgColor = "\x1b[48;5;234m" // Very dark gray for Debug
+		baseColor = "\x1b[90m"   // Gray
+		equalsColor = "\x1b[37m" // White
+		//bgColor = "\x1b[48;5;234m" // Very dark gray for Debug
+		if isOdd {
+			bgColor = "\x1b[48;5;234m" // Dark gray A
+		} else {
+			bgColor = "\x1b[48;5;235m" // Dark gray B
+		}
 	} else {
-		equalsColor = "\x1b[95m"   // Light Magenta / Purple
-		bgColor = "\x1b[48;5;235m" // Default dark gray fallback
+		equalsColor = "\x1b[95m" // Light Magenta / Purple
+		//bgColor = "\x1b[48;5;235m" // Default dark gray fallback
+		if isOdd {
+			bgColor = "\x1b[48;5;235m"
+		} else {
+			bgColor = "\x1b[48;5;236m"
+		}
 	}
 
 	levelColor := baseColor
 
 	switch r.Level {
 	case slog.LevelInfo:
-		levelColor = "\x1b[93m"    // Yellow, used for cache_hit tho
-		bgColor = "\x1b[48;5;236m" // Slightly lighter dark gray for Info
+		levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
+		//bgColor = "\x1b[48;5;236m" // Slightly lighter dark gray for Info
+		if isOdd {
+			bgColor = "\x1b[48;5;236m" // Lighter dark gray A
+		} else {
+			bgColor = "\x1b[48;5;237m" // Lighter dark gray B
+		}
 	case slog.LevelWarn:
 		//levelColor = "\x1b[93m" // Yellow, used for cache_hit tho
 		levelColor = "\x1b[95m" // Light Magenta / Purple
 		//levelColor = "\x1b[38;5;208m" // Vibrant Orange
-		bgColor = "\x1b[48;5;53m" // Deep dark purple for Warn
+		//bgColor = "\x1b[48;5;53m" // Deep dark purple for Warn
+		if isOdd {
+			bgColor = "\x1b[48;5;53m" // Deep purple A
+		} else {
+			bgColor = "\x1b[48;5;54m" // Deep purple B (slightly lighter)
+		}
 	case slog.LevelError:
-		levelColor = "\x1b[91m"   // Red
-		bgColor = "\x1b[48;5;52m" // Deep dark red for Error
+		levelColor = "\x1b[91m" // Red
+		// bgColor = "\x1b[48;5;52m" // Deep dark red for Error
+		if isOdd {
+			bgColor = "\x1b[48;5;52m" // Deep red A
+		} else {
+			bgColor = "\x1b[48;5;88m" // Deep red B (slightly lighter)
+		}
 	}
 
 	// --- NEW: Pre-scan for action color ---
@@ -939,8 +972,8 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 	// \x1b[K extends the background color to the right edge of the terminal.
 	// \x1b[0m then clears all formatting(aka full reset) before dropping to the next line.
-	//buf.WriteString("\x1b[K\x1b[0m\n")
-	buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
+	buf.WriteString("\x1b[K\x1b[0m\n")
+	//buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
 
 	_, err := h.Out.Write(buf.Bytes())
 	return err
@@ -948,11 +981,12 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &ColoredConsoleHandler{
-		Level: h.Level,
-		Out:   h.Out,
-		Mu:    h.Mu,
-		Attrs: append(h.Attrs[:len(h.Attrs):len(h.Attrs)], attrs...),
-		Group: h.Group,
+		Level:   h.Level,
+		Out:     h.Out,
+		Mu:      h.Mu,
+		Counter: h.Counter, // Carry over the counter pointer
+		Attrs:   append(h.Attrs[:len(h.Attrs):len(h.Attrs)], attrs...),
+		Group:   h.Group,
 	}
 }
 
@@ -962,11 +996,12 @@ func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
 		prefix += name + "."
 	}
 	return &ColoredConsoleHandler{
-		Level: h.Level,
-		Out:   h.Out,
-		Mu:    h.Mu,
-		Attrs: h.Attrs,
-		Group: prefix,
+		Level:   h.Level,
+		Out:     h.Out,
+		Mu:      h.Mu,
+		Counter: h.Counter, // Carry over the counter pointer
+		Attrs:   h.Attrs,
+		Group:   prefix,
 	}
 }
 
