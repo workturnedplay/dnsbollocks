@@ -1923,7 +1923,7 @@ var uiTemplates = template.Must(template.New("").Parse(
     function editHost(btn, index, pat, ips) {
         const row = document.getElementById('hostRow_' + index);
         row.style.display = 'none';
-        const formHtml = ` + "`" + `
+        const formHtml2 = ` + "`" + `
         <tr id="editHostRow_${index}">
             <td>
                 <input type="hidden" name="old_pattern" id="editHostOldPattern_${index}" form="editHostForm_${index}">
@@ -1939,7 +1939,7 @@ var uiTemplates = template.Must(template.New("").Parse(
             </td>
         </tr>
         ` + "`" + `;
-        row.insertAdjacentHTML('afterend', formHtml);
+        row.insertAdjacentHTML('afterend', formHtml2);
         
         // 2. Safely populate values as plain text via DOM properties
         const oldPatternInput = document.getElementById('editHostOldPattern_' + index);
