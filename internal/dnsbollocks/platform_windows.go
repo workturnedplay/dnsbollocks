@@ -1252,23 +1252,6 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	return
 }
 
-const noScriptWarningHTML = `
-<noscript>
-  <div style="
-    padding: 10px;
-    margin-bottom: 12px;
-    border: 1px solid #cc0000;
-    background: #ffeeee;
-    color: #660000;
-    font-weight: bold;
-  ">
-    JavaScript is disabled.
-    <br>
-    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
-  </div>
-</noscript>
-`
-
 var uiTemplates = template.Must(template.New("").Parse(
 	`<!DOCTYPE html><html><head><title>DNSbollocks UI</title><meta charset="utf-8"><base href="/">
 <style>
@@ -1382,8 +1365,21 @@ var uiTemplates = template.Must(template.New("").Parse(
     th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
     th.sortable:hover { background: #333; color: #fff; }
     .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
-</style></head><body>` +
-		noScriptWarningHTML + `
+</style></head><body>
+<noscript>
+  <div style="
+    padding: 10px;
+    margin-bottom: 12px;
+    border: 1px solid #cc0000;
+    background: #ffeeee;
+    color: #660000;
+    font-weight: bold;
+  ">
+    JavaScript is disabled.
+    <br>
+    which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
+  </div>
+</noscript>
     <div class="container">
     <h1>DNSbollocks</h1>
     <nav>
@@ -1444,11 +1440,12 @@ var uiTemplates = template.Must(template.New("").Parse(
         document.addEventListener('click', function(e) {
             // 1. Check if the element clicked (or its nested contents) matches our class
             const editBtn = e.target.closest('.btn-edit');
-            //if (!editBtn) return; // Ignore clicks on anything else
-			if (editBtn) {
+            if (editBtn) {
 				// 2. Safely grab the closest table row relative to the button
 				const row = editBtn.closest('tr');
-				if (!row) return; // Safety guard: stop if it's somehow not in a row
+
+				// FIX: Stop if it's not a row, OR if it's not a Rules table row
+				if (!row|| !row.hasAttribute('data-rule-id')) return;
 
 				e.preventDefault();
 
@@ -1462,50 +1459,42 @@ var uiTemplates = template.Must(template.New("").Parse(
 				row.id = 'rule-row-' + id;
 				row.style.display = 'none';
 
-				// 5. Generate and insert the inline edit form
-				const formHtml = ` + "`" + `
-				<tr>
-					<td>
-						<select name="type" id="editType_${id}" style="width: 100%;">
-                        ` + strings.Join(func() []string {
-		var opts []string
-		for _, t := range dnsTypes {
-			opts = append(opts, fmt.Sprintf("<option value=\"%s\">%s</option>", t, t))
-		}
-		return opts
-	}(), "") + `
-						</select>
-					</td>
-					<td title="${id}">${id}</td>
-					<td><input type="text" id="editPattern_${id}" style="width: 100%;"></td>
-					<td><label><input type="checkbox" id="editEnabled_${id}" ${enabled ? 'checked' : ''} style="vertical-align: middle;"></label></td>
-					<td class="actions">
-						<form method="post" action="/rules" id="editForm_${id}" style="display:inline; margin:0;">
-							<input type="hidden" name="id" value="${id}">
-							<button type="submit" class="btn-save">Save</button>
-							<button type="button" class="btn-cancel" onclick="cancelEdit('${id}')">Cancel</button>
-						</form>
-					</td>
-				</tr>
-				` + "`" + `;
-				row.insertAdjacentHTML('afterend', formHtml);
-				
-				// 6. Safely populate the dropdown type selection
-				const select = document.getElementById('editType_' + id);
-				if (select) { select.value = typ; }
+				// 1. Clone the template natively
+				const tmpl = document.getElementById('editRuleTemplate');
+				const clone = tmpl.content.cloneNode(true);
+                
+				// Add an ID to the <tr> to make cleanup easy
+				clone.querySelector('tr').id = 'editFormRow_' + id;
 
-				// 7. Safely populate the text input field as plain text
-				const patternInput = document.getElementById('editPattern_' + id);
-				if (patternInput) { patternInput.value = oldPattern; } else { alert('Pattern cannot be empty'); return; }
+				// 2. Grab references to the inputs in our clone
+				const typeSelect = clone.querySelector('.edit-type');
+				const idDisplay = clone.querySelector('.edit-id-display');
+				const patternInput = clone.querySelector('.edit-pattern');
+				const enabledCheck = clone.querySelector('.edit-enabled');
+				const idInput = clone.querySelector('.edit-id-input');
+				const form = clone.querySelector('.edit-form');
+				const cancelBtn = clone.querySelector('.btn-cancel');
 
-				// 8. Handle the form submission for saving the edited rule(which means it has a ruleid already)
-				const form = document.getElementById('editForm_' + id);
+				// 3. Populate values securely as object properties (no string escaping needed)
+				typeSelect.value = typ;
+				idDisplay.textContent = id;
+				idDisplay.title = id;
+				patternInput.value = oldPattern;
+				enabledCheck.checked = enabled;
+				idInput.value = id;
+
+				// 4. Setup Cancel action
+				cancelBtn.onclick = () => cancelEdit(id);
+
+				// 5. Handle form submission (using closures to grab current input state)
 				form.addEventListener('submit', function(eSubmit) {
-					// Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
+				 	// Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
 					eSubmit.preventDefault();
+					
 					const newPattern = patternInput.value.trim();
-					const enabledChecked = document.getElementById('editEnabled_' + id).checked;
-					const newType = document.getElementById('editType_' + id).value;
+					const enabledChecked = enabledCheck.checked;
+					const newType = typeSelect.value;
+					
 					if (newPattern === '') { alert('newPattern cannot be empty'); return; }
 					
 					const formData = new FormData();
@@ -1516,9 +1505,8 @@ var uiTemplates = template.Must(template.New("").Parse(
 					
 					// --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
 					// Construct the EXACT same text signature format the filter checks against
-					// Using array join to keep it completely safe from Go raw string literal backticks!
+                    // Using array join to keep it completely safe from Go raw string literal backticks!
 					const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
-
 					// Save the unique signature instead of just the pattern
 					sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
 					
@@ -1530,13 +1518,17 @@ var uiTemplates = template.Must(template.New("").Parse(
 					.then(() => location.reload())
 					.catch(err => console.error('Save failed:', err));
 				});
+
+				// 6. Insert cleanly next to the original row
+				row.after(clone);
 			} // end of 'if editBtn'
 			
             // --- DELETE BUTTON INTERCEPTOR ---
             const delBtn = e.target.closest('.btn-del');
             if (delBtn) {
                 const row = delBtn.closest('tr');
-                if (!row) return;
+                // FIX: Stop if it's not a row, OR if it's not a Rules table row
+                if (!row || !row.hasAttribute('data-rule-id')) return;
 
 				e.preventDefault(); // Stop native link/button submission
 
@@ -1568,11 +1560,9 @@ var uiTemplates = template.Must(template.New("").Parse(
             }
         }); // end of 'click' listener
         window.cancelEdit = function(id) {
-            // 1. Find and remove the temporary edit form row
-            const formElem = document.querySelector('#editForm_' + id);
-            if (!formElem) return;
-            const activeFormRow = formElem.closest('tr');
-            if (activeFormRow) activeFormRow.remove();
+            // 1. Find and remove the temporary edit row via the TR id
+            const editRow = document.getElementById('editFormRow_' + id);
+            if (editRow) editRow.remove();
             
             // 2. Find the original row using our clean layout ID hook
             const originalRow = document.getElementById('rule-row-' + id);
@@ -1835,6 +1825,27 @@ var uiTemplates = template.Must(template.New("").Parse(
     </tbody>
 </table>
 {{end}}
+<template id="editRuleTemplate">
+    <tr class="edit-row">
+        <td>
+            <select name="type" class="edit-type" style="width: 100%;">
+            {{range .DNSTypes}}
+                <option value="{{.}}">{{.}}</option>
+            {{end}}
+            </select>
+        </td>
+        <td class="edit-id-display"></td>
+        <td><input type="text" class="edit-pattern" style="width: 100%;"></td>
+        <td><label><input type="checkbox" class="edit-enabled" style="vertical-align: middle;"></label></td>
+        <td class="actions">
+            <form method="post" action="/rules" class="edit-form" style="display:inline; margin:0;">
+                <input type="hidden" name="id" class="edit-id-input">
+                <button type="submit" class="btn-save">Save</button>
+                <button type="button" class="btn-cancel">Cancel</button>
+            </form>
+        </td>
+    </tr>
+</template>
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
@@ -1919,45 +1930,68 @@ var uiTemplates = template.Must(template.New("").Parse(
         {{end}}
     </table>
 
-    <script>
-    function editHost(btn, index, pat, ips) {
-        const row = document.getElementById('hostRow_' + index);
-        row.style.display = 'none';
-        const formHtml2 = ` + "`" + `
-        <tr id="editHostRow_${index}">
-            <td>
-                <input type="hidden" name="old_pattern" id="editHostOldPattern_${index}" form="editHostForm_${index}">
-                <input type="text" name="pattern" id="editHostPattern_${index}" form="editHostForm_${index}" style="width:100%" required>
-            </td>
-            <td><input type="text" name="ips" id="editHostIps_${index}" form="editHostForm_${index}" style="width:100%" required></td>
-            <td class="actions">
-                <form method="post" action="/hosts" id="editHostForm_${index}" style="display:inline; margin:0;">
-                    <input type="hidden" name="edit" value="1">
-                    <button type="submit" class="btn-save">Save</button>
-                    <button type="button" class="btn-cancel" onclick="cancelHostEdit(${index})">Cancel</button>
-                </form>
-            </td>
-        </tr>
-        ` + "`" + `;
-        row.insertAdjacentHTML('afterend', formHtml2);
-        
-        // 2. Safely populate values as plain text via DOM properties
-        const oldPatternInput = document.getElementById('editHostOldPattern_' + index);
-        if (oldPatternInput) { oldPatternInput.value = pat; }
+    <template id="editHostTemplate">
+    <tr class="edit-host-row">
+        <td>
+            <input type="hidden" name="old_pattern" class="edit-host-old-pattern" form="">
+            <input type="text" name="pattern" class="edit-host-pattern" form="" style="width:100%" required>
+        </td>
+        <td><input type="text" name="ips" class="edit-host-ips" form="" style="width:100%" required></td>
+        <td class="actions">
+            <form method="post" action="/hosts" class="edit-host-form" style="display:inline; margin:0;">
+                <input type="hidden" name="edit" value="1">
+                <button type="submit" class="btn-save">Save</button>
+                <button type="button" class="btn-cancel">Cancel</button>
+            </form>
+        </td>
+    </tr>
+	</template>
 
-        const patternInput = document.getElementById('editHostPattern_' + index);
-        if (patternInput) { patternInput.value = pat; }
+	<script>
+	function editHost(btn, index, pat, ips) {
+		const row = document.getElementById('hostRow_' + index);
+		row.style.display = 'none';
 
-        const ipsInput = document.getElementById('editHostIps_' + index);
-        if (ipsInput) { ipsInput.value = ips; }
-    }
-    function cancelHostEdit(index) {
-        const editRow = document.getElementById('editHostRow_' + index);
-        if (editRow) editRow.remove();
-        const row = document.getElementById('hostRow_' + index);
-        if (row) row.style.display = '';
-    }
-    </script>
+		// 1. Clone the template
+		const tmpl = document.getElementById('editHostTemplate');
+		const clone = tmpl.content.cloneNode(true);
+		
+		// 2. Track the row and form uniquely
+		const editRow = clone.querySelector('tr');
+		editRow.id = 'editHostRow_' + index;
+		
+		const form = clone.querySelector('.edit-host-form');
+		const formId = 'editHostForm_' + index;
+		form.id = formId;
+
+		// 3. Populate inputs and link them to the form using the HTML5 'form' attribute
+		// (Required because the inputs are inside table cells, not inside the <form> tag)
+		const oldPatternInput = clone.querySelector('.edit-host-old-pattern');
+		oldPatternInput.value = pat;
+		oldPatternInput.setAttribute('form', formId);
+
+		const patternInput = clone.querySelector('.edit-host-pattern');
+		patternInput.value = pat;
+		patternInput.setAttribute('form', formId);
+
+		const ipsInput = clone.querySelector('.edit-host-ips');
+		ipsInput.value = ips;
+		ipsInput.setAttribute('form', formId);
+
+		// 4. Setup cancel button
+		clone.querySelector('.btn-cancel').onclick = () => cancelHostEdit(index);
+
+		// 5. Insert cleanly into the DOM
+		row.after(clone);
+	}
+
+	function cancelHostEdit(index) {
+		const editRow = document.getElementById('editHostRow_' + index);
+		if (editRow) editRow.remove();
+		const row = document.getElementById('hostRow_' + index);
+		if (row) row.style.display = '';
+	}
+	</script>
 {{end}}
 
 {{define "logs"}}
