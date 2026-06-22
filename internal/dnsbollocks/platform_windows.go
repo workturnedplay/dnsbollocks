@@ -167,7 +167,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 			if wasProbe {
 				defer fs.inFlightProbes.Delete(idx)
 			}
-			resp, err := doSingleDoHRequest(clients[idx], upstreamURLs[idx], upstreamSNIs[idx], reqBytes)
+			resp, err := doSingleDoHRequest(ctx, clients[idx], upstreamURLs[idx], upstreamSNIs[idx], reqBytes)
 
 			// 1. Do the promotion BEFORE sending to the channel
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
@@ -239,7 +239,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
 	// step down the list sequentially to find the next working backup.
 	for i := currentIdx + 1; i < len(clients); i++ {
-		resp, err := doSingleDoHRequest(clients[i], upstreamURLs[i], upstreamSNIs[i], reqBytes)
+		resp, err := doSingleDoHRequest(ctx, clients[i], upstreamURLs[i], upstreamSNIs[i], reqBytes)
 		if err == nil {
 			fs.mu.Lock()
 			wasBlackout := fs.allFailed
@@ -3072,7 +3072,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 	oldID := msg.Id
 	msg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
 	// 3. DO THE ACTUAL UPSTREAM QUERY
-	resp, upstreamState3 := forwardToDoH(msg)
+	resp, upstreamState3 := forwardToDoH(ctx, msg)
 	// 4. Restore the original ID so the client's DNS resolver accepts the answer
 	if resp != nil {
 		resp.Id = oldID
@@ -3455,7 +3455,7 @@ type UpstreamState struct { //doneTODO: rename Telemetry to something normal
 }
 
 // forwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
-func forwardToDoH(req *dns.Msg) (*dns.Msg, UpstreamState) {
+func forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, UpstreamState) {
 	var upstreamState1 UpstreamState
 	upstreamState1.Strategy = config.UpstreamSelectionMode
 
@@ -3498,7 +3498,7 @@ func forwardToDoH(req *dns.Msg) (*dns.Msg, UpstreamState) {
 			go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
 				defer wg.Done()
 				//results[idx].msg, results[idx].err = doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
-				msg, err := doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+				msg, err := doSingleDoHRequest(ctx, c, targetURL, targetSNI, reqBytes)
 				results[idx] = result{msg: msg, err: err, idx: idx}
 			}(i, client, upstreamURLs[i], upstreamSNIs[i])
 		}
@@ -3552,7 +3552,7 @@ func forwardToDoH(req *dns.Msg) (*dns.Msg, UpstreamState) {
 		// ==========================================
 		// FAILOVER MODE: Priority-based with active healing
 		// ==========================================
-		resp, used, failed, err := failoverSelect.Exchange(backgroundCtx, clients, reqBytes)
+		resp, used, failed, err := failoverSelect.Exchange(ctx, clients, reqBytes)
 		upstreamState1.UpstreamUsed = used
 		upstreamState1.FailedUpstreams = failed
 		if err != nil {
@@ -3579,7 +3579,7 @@ func forwardToDoH(req *dns.Msg) (*dns.Msg, UpstreamState) {
 				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! shouldn't happen! upstreamURL=%s SNI=%s", i, upstreamURLs[i], upstreamSNIs[i]))
 			}
 			go func(idx int, c *http.Client, targetURL *url.URL, targetSNI string) {
-				msg, err := doSingleDoHRequest(c, targetURL, targetSNI, reqBytes)
+				msg, err := doSingleDoHRequest(ctx, c, targetURL, targetSNI, reqBytes)
 				resChan <- result{msg: msg, err: err, idx: idx}
 			}(i, client, upstreamURLs[i], upstreamSNIs[i])
 		}
@@ -3627,7 +3627,7 @@ func SafeRequestAttr(key string, req *http.Request) slog.Attr {
 	)
 }
 
-func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, reqBytes []byte) (*dns.Msg, error) {
+func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url.URL, sni string, reqBytes []byte) (*dns.Msg, error) {
 	retries := config.UpstreamRetriesPerQuery
 	if retries < 1 {
 		retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
@@ -3635,24 +3635,55 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 	maxTries := 1 + retries
 
 	var resp *http.Response
-	var err error
+	var err4ClientDo error
+	var req *http.Request
 
+	//for attempt := range maxTries { // starts from 0 !
 	for attempt := 1; attempt <= maxTries; attempt++ {
-		//for attempt := range maxTries { // starts from 0 !
-		// create request with supplied context so caller controls deadline/cancel
-		req, errReq := http.NewRequestWithContext(backgroundCtx, "POST", targetURL.String(), bytes.NewReader(reqBytes))
-		if errReq != nil {
-			//mainLogger.Error("doh_newrequest_failed", slog.Any("err", errReq)) // not here!
+		// Use an anonymous function wrapper so 'defer' operates on a per-iteration scope
+		failedToCreateRequest, errReq := func() (bool, error) {
+			// 1. Create a transient request context derived from the client's ctx
+			reqCtx, cancelReq := context.WithCancel(ctx)
+			defer cancelReq() // ✅ Guarantees cleanup on success, error, OR panic!
+
+			// 2. Spin up a quick monitor to cancel the request if the application shuts down
+			go func() {
+				select {
+				case <-backgroundCtx.Done():
+					cancelReq() // Aborts the HTTP request immediately on Ctrl+C
+				case <-reqCtx.Done():
+					// Normal exit when the request finishes or client disconnects
+				}
+			}()
+
+			// 3. Pass the merged context to the HTTP request
+
+			// create request with supplied context so caller controls deadline/cancel
+			var e error
+			req, e = http.NewRequestWithContext(reqCtx, "POST", targetURL.String(), bytes.NewReader(reqBytes))
+			if e != nil {
+				//cancelReq()
+				//mainLogger.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
+				return true, e
+			}
+
+			req.Header.Set("Content-Type", "application/dns-message")
+			if sni != "" {
+				req.Host = sni
+			}
+
+			// Capture the HTTP client execution
+			resp, err4ClientDo = client.Do(req) // this is concurrency safe
+			return false, nil
+		}()
+
+		// If NewRequestWithContext failed, abort immediately just like the original logic
+		if failedToCreateRequest {
 			return nil, errReq
 		}
 
-		req.Header.Set("Content-Type", "application/dns-message")
-		if sni != "" {
-			req.Host = sni
-		}
-
-		resp, err = client.Do(req) // this is concurrency safe
-		if err == nil {
+		// If client.Do succeeded, we can stop retrying
+		if err4ClientDo == nil {
 			//success!
 			break
 		}
@@ -3660,13 +3691,13 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
 		var netErr net.Error
-		isRetryable := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-			errors.Is(err, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
-			errors.Is(err, syscall.ECONNREFUSED) ||
-			(errors.As(err, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+		isRetryable := errors.Is(err4ClientDo, io.EOF) || errors.Is(err4ClientDo, io.ErrUnexpectedEOF) ||
+			errors.Is(err4ClientDo, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
+			errors.Is(err4ClientDo, syscall.ECONNREFUSED) ||
+			(errors.As(err4ClientDo, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
 
 		if isRetryable {
-			mainLogger.Error("doh_post_transient_error for this query", SafeErr(err),
+			mainLogger.Error("doh_post_transient_error for this query", SafeErr(err4ClientDo),
 				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries),
 				//slog.Any("query", req),
 				SafeRequestAttr("query", req),
@@ -3674,6 +3705,9 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 			// small backoff: sleep a bit but respect context
 			select {
 			case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
+			case <-ctx.Done():
+				mainLogger.Debug("doh sensed client quit during retry backoff...")
+				return nil, ctx.Err()
 			case <-backgroundCtx.Done():
 				mainLogger.Debug("doh sensed quit during retry backoff...")
 				return nil, backgroundCtx.Err()
@@ -3682,19 +3716,19 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 		}
 		// non-retryable error
 		// --- NEW DIAGNOSTIC BLOCK ---
-		if strings.Contains(err.Error(), "tls:") || strings.Contains(err.Error(), "x509:") {
+		if strings.Contains(err4ClientDo.Error(), "tls:") || strings.Contains(err4ClientDo.Error(), "x509:") {
 			mainLogger.Error("TLS verification failed when tried to query upstream DNS server",
 				slog.String("url", targetURL.String()),
 				slog.String("sni_used", sni),
-				SafeErr(err))
+				SafeErr(err4ClientDo))
 
 			// Run a manual probe to see what the server is actually sending
 			logCertDetails(targetURL.Hostname(), targetURL.Port(), sni)
 		} else {
-			mainLogger.Error("Failed to query upstream DNS server", SafeErr(err))
+			mainLogger.Error("Failed to query upstream DNS server", SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
-		return nil, err
+		return nil, err4ClientDo
 	} //for retries
 
 	if resp == nil {
@@ -3704,10 +3738,10 @@ func doSingleDoHRequest(client *http.Client, targetURL *url.URL, sni string, req
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		mainLogger.Error("doh_readbody_failed", SafeErr(err))
-		return nil, err
+	body, err4ClientDo := io.ReadAll(resp.Body)
+	if err4ClientDo != nil {
+		mainLogger.Error("doh_readbody_failed", SafeErr(err4ClientDo))
+		return nil, err4ClientDo
 	}
 
 	// debug/log non-200 or unexpected content-type
