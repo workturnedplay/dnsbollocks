@@ -253,6 +253,16 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, clients []*http.Client
 					slog.String("sni", upstreamSNIs[i]),
 					slog.Int("index", i),
 				)
+			} else {
+				// ⚠️ New log line for the standard failover case
+				mainLogger.Warn("⚠️ Upstream failover; switching to a different(next in list) upstream DoH server",
+					slog.Int("old_index", currentIdx),
+					slog.String("old_url", upstreamURLs[currentIdx].String()),
+					slog.String("old_sni", upstreamSNIs[currentIdx]),
+					slog.Int("new_index", i),
+					slog.String("new_url", upstreamURLs[i].String()),
+					slog.String("sni", upstreamSNIs[i]),
+				)
 			}
 			return resp, upstreamURLs[i].String(), failedUpstreams, nil
 		}
