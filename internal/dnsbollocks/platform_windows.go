@@ -3666,6 +3666,7 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 	var resp *http.Response
 	var err4ClientDo error
 	var req *http.Request
+	var cancelCurrentReq func() // Track the active context cancel function across scopes
 
 	//for attempt := range maxTries { // starts from 0 !
 	for attempt := 1; attempt <= maxTries; attempt++ {
@@ -3673,7 +3674,13 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 		failedToCreateRequest, errReq := func() (bool, error) {
 			// 1. Create a transient request context derived from the client's ctx
 			reqCtx, cancelReq := context.WithCancel(ctx)
-			defer cancelReq() // ✅ Guarantees cleanup on success, error, OR panic!
+			// Use a flag to track if responsibility for calling cancelReq() has been handed off
+			var handedOver bool
+			defer func() {
+				if !handedOver {
+					cancelReq() // Clean up immediately on panic or retryable error
+				}
+			}()
 
 			// 2. Spin up a quick monitor to cancel the request if the application shuts down
 			go func() {
@@ -3691,7 +3698,6 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 			var e error
 			req, e = http.NewRequestWithContext(reqCtx, "POST", targetURL.String(), bytes.NewReader(reqBytes))
 			if e != nil {
-				//cancelReq()
 				//mainLogger.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
 				return true, e
 			}
@@ -3703,6 +3709,11 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 
 			// Capture the HTTP client execution
 			resp, err4ClientDo = client.Do(req) // this is concurrency safe
+			if err4ClientDo == nil {
+				//success
+				cancelCurrentReq = cancelReq // Hand off the cancellation function to the outer scope
+				handedOver = true            // Detach this iteration's deferred cleanup
+			}
 			return false, nil
 		}()
 
@@ -3760,6 +3771,11 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 		return nil, err4ClientDo
 	} //for retries
 
+	// ✅ Ensure the active context gets cancelled when the outer function returns
+	if cancelCurrentReq != nil {
+		defer cancelCurrentReq()
+	}
+
 	if resp == nil {
 		// last attempt produced no response (shouldn't happen), treat as failure
 		mainLogger.Error("doh_no_response")
@@ -3767,6 +3783,7 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 	}
 	defer resp.Body.Close()
 
+	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
 	body, err4ReadAll := io.ReadAll(resp.Body)
 	if err4ReadAll != nil {
 		mainLogger.Error("doh_readbody_failed", SafeErr(err4ReadAll))
