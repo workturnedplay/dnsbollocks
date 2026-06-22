@@ -21,6 +21,7 @@ package dnsbollocks
 import (
 	"bufio"
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -1098,9 +1099,11 @@ var (
 	whitelist      map[string][]RuleEntry // type -> rules
 	ruleMutex      sync.RWMutex
 	fileWriteMu    sync.Mutex
-	recentBlocks   = make([]BlockedQuery, 0, keepTrackOfThisManyRecentBlocks) // For UI
-	blockMutex     sync.Mutex
-	stats          = expvar.NewInt("blocks") // Simple stats
+	//recentBlocks   = make([]BlockedQuery, 0, keepTrackOfThisManyRecentBlocks) // For UI
+	recentBlocksList = list.New()
+	recentBlocksMap  = make(map[string]*list.Element)
+	blockMutex       sync.Mutex
+	stats            = expvar.NewInt("blocks") // Simple stats
 
 	backgroundCtx, cancel = context.WithCancel(context.Background())
 	shutdownWG            sync.WaitGroup
@@ -2971,21 +2974,47 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			blockMutex.Lock()
 			defer blockMutex.Unlock()
 
-			// 1. Remove duplicate if it already exists (same domain and type)
-			for i := 0; i < len(recentBlocks); i++ {
-				if recentBlocks[i].Domain == domain && recentBlocks[i].Type == qtype {
-					recentBlocks = append(recentBlocks[:i], recentBlocks[i+1:]...)
-					break
+			// // 1. Remove duplicate if it already exists (same domain and type)
+			// for i := 0; i < len(recentBlocks); i++ {
+			// 	if recentBlocks[i].Domain == domain && recentBlocks[i].Type == qtype {
+			// 		recentBlocks = append(recentBlocks[:i], recentBlocks[i+1:]...)
+			// 		break
+			// 	}
+			// }
+
+			// // 2. Prepend the new blocked query (so it appears at the top of the UI)
+			// newBlock := BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
+			// recentBlocks = append([]BlockedQuery{newBlock}, recentBlocks...)
+
+			// // 3. Keep the list size to a maximum of keepTrackOfThisManyRecentBlocks
+			// if len(recentBlocks) > keepTrackOfThisManyRecentBlocks {
+			// 	recentBlocks = recentBlocks[:keepTrackOfThisManyRecentBlocks]
+			// }
+
+			key := domain + ":" + qtype
+
+			if elem, ok := recentBlocksMap[key]; ok {
+				// We already have this block. Update the time and bump it to the front.
+				// (Zero allocations!)
+				bq := elem.Value.(*BlockedQuery)
+				bq.Time = time.Now()
+				recentBlocksList.MoveToFront(elem)
+			} else {
+				// Brand new block. Add to the front of our list and map.
+				newBlock := &BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
+				elem := recentBlocksList.PushFront(newBlock)
+				recentBlocksMap[key] = elem
+
+				// Evict the oldest item if we exceed the tracked limit
+				if recentBlocksList.Len() > keepTrackOfThisManyRecentBlocks {
+					backElem := recentBlocksList.Back()
+					if backElem != nil {
+						backBQ := backElem.Value.(*BlockedQuery)
+						backKey := backBQ.Domain + ":" + backBQ.Type
+						delete(recentBlocksMap, backKey)
+						recentBlocksList.Remove(backElem)
+					}
 				}
-			}
-
-			// 2. Prepend the new blocked query (so it appears at the top of the UI)
-			newBlock := BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
-			recentBlocks = append([]BlockedQuery{newBlock}, recentBlocks...)
-
-			// 3. Keep the list size to a maximum of keepTrackOfThisManyRecentBlocks
-			if len(recentBlocks) > keepTrackOfThisManyRecentBlocks {
-				recentBlocks = recentBlocks[:keepTrackOfThisManyRecentBlocks]
 			}
 		}() // Notice the parens here to call it immediately
 		blocked := blockResponse(msg)
@@ -3738,10 +3767,10 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 	}
 	defer resp.Body.Close()
 
-	body, err4ClientDo := io.ReadAll(resp.Body)
-	if err4ClientDo != nil {
-		mainLogger.Error("doh_readbody_failed", SafeErr(err4ClientDo))
-		return nil, err4ClientDo
+	body, err4ReadAll := io.ReadAll(resp.Body)
+	if err4ReadAll != nil {
+		mainLogger.Error("doh_readbody_failed", SafeErr(err4ReadAll))
+		return nil, err4ReadAll
 	}
 
 	// debug/log non-200 or unexpected content-type
@@ -3758,13 +3787,13 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 	}
 
 	upMsg := new(dns.Msg)
-	if err := upMsg.Unpack(body); err != nil {
+	if err4Unpack := upMsg.Unpack(body); err4Unpack != nil {
 		n := len(body)
-		mainLogger.Error("doh_unpack_failed", SafeErr(err),
+		mainLogger.Error("doh_unpack_failed", SafeErr(err4Unpack),
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
-		return nil, err
+		return nil, err4Unpack
 	}
 	return upMsg, nil
 }
@@ -5011,9 +5040,17 @@ func getRecentBlocksCopy() []BlockedQuery {
 		blockMutex.Lock()
 		defer blockMutex.Unlock()
 
-		// Make a copy so we don't hold the lock while template renders
-		blocksCopy := make([]BlockedQuery, len(recentBlocks))
-		copy(blocksCopy, recentBlocks)
+		// // Make a copy so we don't hold the lock while template renders
+		// blocksCopy := make([]BlockedQuery, len(recentBlocks))
+		// copy(blocksCopy, recentBlocks)
+
+		blocksCopy := make([]BlockedQuery, 0, recentBlocksList.Len())
+		// Walk the linked list from newest (front) to oldest (back)
+		for e := recentBlocksList.Front(); e != nil; e = e.Next() {
+			bq := e.Value.(*BlockedQuery)
+			blocksCopy = append(blocksCopy, *bq) // value copy
+		}
+
 		return blocksCopy
 	}() // defer triggers before this returned
 	// Check live whitelist to see if these domains are currently unblocked
