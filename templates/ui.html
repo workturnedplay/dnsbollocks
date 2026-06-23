@@ -367,6 +367,49 @@
                 .catch(err => console.error('Add failed:', err));
             });
         }
+        // --- ADD HOST INTERCEPTOR ---
+        const addHostForm = document.getElementById('addHostForm');
+        if (addHostForm) {
+            addHostForm.addEventListener('submit', function(e) {
+                e.preventDefault(); // Stop native submission flash
+                fetch(addHostForm.action, {
+                    method: 'POST',
+                    body: new FormData(addHostForm),
+                    redirect: 'manual' // Stop background redirects
+                })
+                .then(() => window.location.reload())
+                .catch(err => console.error('Add host failed:', err));
+            });
+        }
+
+        // --- GLOBAL SUBMIT INTERCEPTOR FOR DYNAMIC FORMS (EDIT/DELETE HOSTS) ---
+        document.addEventListener('submit', function(e) {
+            // Intercept dynamic Host Edit forms
+            if (e.target && e.target.classList.contains('edit-host-form')) {
+                e.preventDefault();
+                fetch(e.target.action, {
+                    method: 'POST',
+                    body: new FormData(e.target),
+                    redirect: 'manual'
+                })
+                .then(() => window.location.reload())
+                .catch(err => console.error('Edit host failed:', err));
+            }
+
+            // Intercept Host Delete forms
+            // (The inline onsubmit="return confirm(...)" in your HTML will fire before this. 
+            // If the user clicks cancel, this listener never fires. So it's perfectly safe!)
+            if (e.target && e.target.querySelector('.btn-del') && e.target.action.includes('/hosts')) {
+                e.preventDefault();
+                fetch(e.target.action, {
+                    method: 'POST',
+                    body: new FormData(e.target),
+                    redirect: 'manual'
+                })
+                .then(() => window.location.reload())
+                .catch(err => console.error('Delete host failed:', err));
+            }
+        });
     }); // end of domcontentloaded
     // --- Client-Side Table Ordered-Substring Filter Logic ---
     //properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
@@ -646,7 +689,7 @@
     </div>
 
     <h2>Add New Local Host</h2>
-    <form method="post" action="/hosts">
+    <form id="addHostForm" method="post" action="/hosts">
         <input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> 
         <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> 
         <button type="submit">Add Host</button>
