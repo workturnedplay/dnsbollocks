@@ -86,7 +86,10 @@ type Config struct {
 	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "parallel", "strict", or "failover"
 	BlockMode             string `json:"block_mode"`              // "nxdomain", "drop", "ip_block"
 	BlockIP               string `json:"block_ip"`                // "0.0.0.0"
-	RateQPS               int    `json:"rate_qps"`                // 100
+	GlobalRateQPS         int    `json:"qps_rate_globally"`       // 100
+	GlobalBurstQPS        int    `json:"qps_burst_globally"`      // 100
+	ClientRateQPS         int    `json:"qps_rate_per_client"`     // 10
+	ClientBurstQPS        int    `json:"qps_burst_per_client"`    // 50
 	CacheMinTTL           int    `json:"cache_min_ttl"`           // 300s
 	CacheMaxEntries       int    `json:"cache_max_entries"`       // 10000
 	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
@@ -111,6 +114,27 @@ type Config struct {
 
 	WebUIPasswordHash string `json:"webui_password_hash"`
 	WebUIUseTLS       bool   `json:"webui_use_tls"`
+
+	// Network & Connection Limits
+	ClientTCPTimeoutSec           int `json:"client_tcp_timeout_sec"`
+	MaxRecentBlocks               int `json:"max_recent_blocks"`
+	UpstreamServerReadTimeoutSec  int `json:"upstreamserver_read_timeout_sec"`
+	UpstreamServerWriteTimeoutSec int `json:"upstreamserver_write_timeout_sec"`
+
+	UpstreamDialTimeoutSec   int `json:"upstream_dial_timeout_sec"`
+	UpstreamClientTimeoutSec int `json:"upstream_client_timeout_sec"`
+	CertLogTimeoutSec        int `json:"cert_log_timeout_sec"`
+
+	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"`
+	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"`
+	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host"`
+
+	// Buffer & Sizing Limits
+	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes"`
+	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"`
+
+	// Cache & Diagnostic Limits
+	CacheNegativeTTLSec int `json:"cache_negative_ttl_sec"`
 }
 
 type FailoverSelector struct {
@@ -718,7 +742,10 @@ func defaultConfig() Config {
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
-		RateQPS:                 100,
+		GlobalRateQPS:           100,
+		GlobalBurstQPS:          100,
+		ClientRateQPS:           10,
+		ClientBurstQPS:          50,
 		CacheMinTTL:             300,
 		CacheMaxEntries:         10000,
 
@@ -734,6 +761,35 @@ func defaultConfig() Config {
 		BlockAAAAasEmptyNoError: true,
 		AllowHTTPSIfAAllowed:    true,
 		WebUIUseTLS:             true,
+
+		// Centralized Network Parameter Defaults
+
+		//this is per operation: o1) read 2 bytes, o2) read the body, o3) write the response; so each 3 operations get this timeout!
+		ClientTCPTimeoutSec: 5,
+
+		MaxRecentBlocks:               100,
+		UpstreamServerReadTimeoutSec:  30,
+		UpstreamServerWriteTimeoutSec: 30,
+
+		//High-latency satellite, VPN, or cellular links will drop upstream queries and trigger premature failovers under a strict 3 or 5-second limit. Conversely, high-availability setups might require an aggressive sub-second timeout to switch nodes rapidly.
+		UpstreamDialTimeoutSec:   3,
+		UpstreamClientTimeoutSec: 5, // overall per-request timeout
+		//When inspecting upstream certificates for error diagnostics, a hardcoded 5-second timeout on firewalled or highly congested links can block or drag out startup sequences and system health loops unnecessarily.
+		CertLogTimeoutSec: 5,
+
+		//Resource allocations vary heavily between environments. A low-powered embedded home router running this binary shouldn't maintain 100 idle network connections. On the other hand, heavy enterprise or multi-user environments will exhaust MaxIdleConnsPerHost: 10 instantly, resulting in severe socket thrashing and latency spikes.
+		UpstreamIdleConnTimeoutSec:  90,
+		UpstreamMaxIdleConns:        100,
+		UpstreamMaxIdleConnsPerHost: 10,
+
+		//64KB is generally sufficient for regular DNS queries. However, non-standard corporate extensions or huge specialized EDNS0 queries with heavy DNSSEC attributes can breach this threshold. Additionally, server administrators may want to reduce this payload size even further to defend against memory-exhaustion denial-of-service (DoS) attempts on public interfaces.
+		DoHMaxRequestBodyBytes: 65536, //maxDNSTCPPacketSize
+
+		//Allocating a fixed 4096-byte array on every read loop iteration is optimized for EDNS0, but leaves administrators unable to restrict buffer memory consumption on thin-client devices (where standard 512-byte allocations are preferred) or expand it if dealing with custom local setups.
+		DNSUDPBufferSize: 4096,
+
+		//If an upstream server returns a temporary error state or a SERVFAIL status, caching it for an inflexible 2 seconds means local applications will repeatedly bombard the proxy and upstream endpoints during an outage. Allowing administrators to extend the negative cache TTL mitigates traffic stampedes during network service degradations.
+		CacheNegativeTTLSec: 2,
 	}
 }
 
@@ -1120,8 +1176,6 @@ var (
 )
 var failoverSelect = NewFailoverSelector()
 
-const keepTrackOfThisManyRecentBlocks = 100 //TODO: maybe make this configurable in config.json
-
 var dnsTypes = []string{
 	//most used first
 	"A",
@@ -1375,7 +1429,8 @@ func OldMain() {
 
 	cacheStore = cache.New(time.Hour, time.Hour) // Janitor every hour
 	mainLogger.Debug("Cache initialized")
-	globalLimiter = rate.NewLimiter(rate.Limit(config.RateQPS), config.RateQPS)
+
+	globalLimiter = rate.NewLimiter(rate.Limit(config.GlobalRateQPS), config.GlobalBurstQPS)
 	mainLogger.Debug("Rate limiter initialized")
 
 	if err := validateUpstream(); err != nil {
@@ -1565,6 +1620,14 @@ func loadConfig() error {
 		//     config = theReadConfig
 		//     shouldSaveConfig = true
 		// }
+	}
+
+	if config.GlobalBurstQPS < config.GlobalRateQPS {
+		logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", config.GlobalBurstQPS, config.GlobalRateQPS, configFileName))
+	}
+
+	if config.ClientBurstQPS < config.ClientRateQPS {
+		logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", config.ClientBurstQPS, config.ClientRateQPS, configFileName))
 	}
 
 	config.BlockMode = strings.ToLower(config.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
@@ -2323,8 +2386,8 @@ func startDNSListener(addr string) {
 			mainLogger.Info("UDP DNS listening success", slog.String("addr", addr))
 
 			//buf := make([]byte, 512+512)
-			// FIX: Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
-			buf := make([]byte, 4096)
+			// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
+			buf := make([]byte, config.DNSUDPBufferSize)
 
 			//TheFor:
 			for {
@@ -2646,9 +2709,8 @@ func handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *ne
 func handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
-	const timeoutSeconds = 5 //XXX: that is per operation: read 2 bytes, read the body, write the response; so each 3 operations get this timeout!
-	const timeoutDuration time.Duration = timeoutSeconds * time.Second
-	const maxDNSTCPPacketSize = 65535
+	var timeoutDuration time.Duration = time.Duration(config.ClientTCPTimeoutSec) * time.Second
+	const maxDNSTCPPacketSize = 65535 //TODO: make this configurable in config.json
 
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
@@ -2662,7 +2724,7 @@ func handleTCP(ctx context.Context, conn net.Conn) {
 		return
 	}
 	length := int(binary.BigEndian.Uint16(buf))
-	if length > maxDNSTCPPacketSize || length == 0 { // Edge: Oversize packet
+	if length > config.DoHMaxRequestBodyBytes || length == 0 { // Edge: Oversize packet
 		mainLogger.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Int("max", maxDNSTCPPacketSize),
 			slog.Int("min", 1))
 		return
@@ -2735,8 +2797,8 @@ func startDoHListener(addr string) {
 	mainLogger.Info("DoH listening", slog.String("address", addr))
 
 	dohSrv := &http.Server{Handler: mux,
-		ReadTimeout:  30 * time.Second, // Workaround for CPU/timer bug
-		WriteTimeout: 30 * time.Second, // Optional, for responses
+		ReadTimeout:  time.Duration(config.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
+		WriteTimeout: time.Duration(config.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
 	}
 	/*
 	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
@@ -2841,8 +2903,8 @@ func dohHandler(w http.ResponseWriter, r *http.Request) {
 	var body []byte
 
 	if r.Method == "POST" {
-		// FIX: Limit incoming DoH payload to 64KB to prevent memory exhaustion attacks
-		r.Body = http.MaxBytesReader(w, r.Body, 65536)
+		// Limit incoming DoH payload to 64KB to prevent memory exhaustion attacks
+		r.Body = http.MaxBytesReader(w, r.Body, int64(config.DoHMaxRequestBodyBytes))
 		body, err = io.ReadAll(r.Body)
 	} else {
 		encoded := r.URL.Query().Get("dns")
@@ -2915,7 +2977,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 			clientIP = "localhost"
 		}
 		// 3. Use the clean IP as the sync.Map key
-		clIface, _ := clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(10, 100)) // Per-client 10qps/100 burst, FIXME: this isn't in config.json and it's per client(IP) limit
+		clIface, _ := clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(config.ClientRateQPS), config.ClientBurstQPS)) // Per-client qps/burst
 		//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
 		cl := clIface.(*rate.Limiter)
 		if !cl.Allow() {
@@ -3016,7 +3078,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 				recentBlocksMap[key] = elem
 
 				// Evict the oldest item if we exceed the tracked limit
-				if recentBlocksList.Len() > keepTrackOfThisManyRecentBlocks {
+				if recentBlocksList.Len() > config.MaxRecentBlocks {
 					backElem := recentBlocksList.Back()
 					if backElem != nil {
 						backBQ := backElem.Value.(*BlockedQuery)
@@ -3131,7 +3193,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		cacheStore.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
-		}, 2*time.Second) // time to cache negatives TODO: make this user setable in config.json
+		}, time.Duration(config.CacheNegativeTTLSec)*time.Second) // time to cache negatives
 		return negResp
 	}
 
@@ -3310,7 +3372,7 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 		t := &http.Transport{
 			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
+				d := &net.Dialer{Timeout: time.Duration(config.UpstreamDialTimeoutSec) * time.Second}
 				// Use the pre-computed dialAddr captured via closure!
 				mainLogger.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
 				return d.DialContext(ctx, network, dialAddr)
@@ -3319,18 +3381,18 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 				ServerName:         sniHost,
 				InsecureSkipVerify: false,
 			},
-			Proxy:               nil,              // avoid proxy interference
-			ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-			IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
+			Proxy:               nil,  // avoid proxy interference
+			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+			IdleConnTimeout:     time.Duration(config.UpstreamIdleConnTimeoutSec) * time.Second,
+			MaxIdleConns:        config.UpstreamMaxIdleConns,
+			MaxIdleConnsPerHost: config.UpstreamMaxIdleConnsPerHost,
 		}
 		dohTransportsPtrs = append(dohTransportsPtrs, t) //they're both pointers
 		if dohTransportsPtrs[i] != t {
 			panic("dev fail: dohTransportsPtrs[i] != t")
 		}
 		newClients = append(newClients, &http.Client{
-			Timeout:   5 * time.Second, // overall per-request timeout, TODO: make configurable
+			Timeout:   time.Duration(config.UpstreamClientTimeoutSec) * time.Second,
 			Transport: t,
 		})
 	}
@@ -3339,67 +3401,6 @@ func initDoHClients() []*http.Client { //upstreamIP, sni string) {
 	mainLogger.Info("DoH clients initialized", slog.Int("count", len(newClients)))
 	mainLogger.Debug("ending initDoHClients()")
 	return newClients
-
-	// port := upstreamURL.Port()
-	// if port == "" {
-	//     // Log this only once when the client initializes, not on every connection!
-	//     const ImpliedPort string = "443"
-	//     if strings.ToLower(upstreamURL.Scheme) == "https" {
-	//         //don't log in this case
-	//         port = ImpliedPort
-	//     } else if upstreamURL.Scheme != "" {
-	//         mainLogger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
-	//             slog.Any("upstreamURL", upstreamURL))
-	//     } else {
-	//         port = ImpliedPort
-	//         mainLogger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-	//             slog.String("implied_port", ImpliedPort),
-	//             slog.Any("upstreamURL", upstreamURL))
-	//     }
-	// }
-	// if port == "" {
-	//     panic("dev fail: port is empty")
-	// }
-
-	// // Create the final "IP:Port" string once
-	// // Pre-joining prevents doing string manipulation inside the DialContext closure
-	// dialAddr := net.JoinHostPort(upstreamIP, port)
-
-	// if config.SNIHostname == "" {
-	//     panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + upstreamURL.Hostname())
-	// }
-
-	// // --------------------------------------
-	// t := &http.Transport{
-	//     // Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
-	//     DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-	//         d := &net.Dialer{Timeout: 3 * time.Second} //TODO: make this configurable in config.json or const!
-	//         // Use the pre-computed dialAddr captured via closure!
-	//         mainLogger.Debug("(re)connected to upstream DoH", slog.Any("dialAddr", dialAddr))
-	//         return d.DialContext(ctx, network, dialAddr)
-	//         //return d.DialContext(ctx, network, net.JoinHostPort(upstreamIP, port)) //doneFIXME: port 443 is hardcoded instead of used from config.json !
-	//     },
-	//     TLSClientConfig: &tls.Config{
-	//         ServerName:         config.SNIHostname,
-	//         InsecureSkipVerify: false,
-	//     },
-	//     Proxy:               nil,              // avoid proxy interference
-	//     ForceAttemptHTTP2:   true,             // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-	//     IdleConnTimeout:     90 * time.Second, //TODO: make these configurable in config.json
-	//     MaxIdleConns:        100,
-	//     MaxIdleConnsPerHost: 10,
-	// }
-
-	// dohTransport = t
-	// newDoHClient := &http.Client{
-	//     Timeout:   5 * time.Second, // overall per-request timeout
-	//     Transport: dohTransport,
-	// }
-	// 6. ATOMIC STORE
-	// dohClientPtr.Store(newDoHClient)
-	// mainLogger.Info("DoH client initialized/reloaded")
-	// mainLogger.Debug("ending initDoHClient()")
-	// return newDoHClient
 }
 
 // Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
@@ -3753,8 +3754,9 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 				SafeRequestAttr("query", req),
 				slog.Bool("will_retry", attempt < maxTries))
 			// small backoff: sleep a bit but respect context
+			const DoHBackoffTimeMillisec = 100 // ms
 			select {
-			case <-time.After(100 * time.Millisecond): //TODO: make the backoff time configurable ? or at least const!
+			case <-time.After(DoHBackoffTimeMillisec * time.Millisecond): //TODO: make the backoff time configurable ?
 			case <-ctx.Done():
 				mainLogger.Debug("doh sensed client quit during retry backoff...")
 				return nil, ctx.Err()
@@ -3836,7 +3838,7 @@ func logCertDetails(ip, port, sni string) {
 	}
 	addr := net.JoinHostPort(ip, port)
 
-	dialer := &net.Dialer{Timeout: 5 * time.Second} //TODO: make it configurable or const, use same one from initDoHClients() !
+	dialer := &net.Dialer{Timeout: time.Duration(config.CertLogTimeoutSec) * time.Second}
 	// We use InsecureSkipVerify: true ONLY for this probe so we can read the cert
 	// that was otherwise rejected.
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
