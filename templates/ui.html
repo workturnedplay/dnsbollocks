@@ -154,7 +154,8 @@
         // Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
         document.addEventListener('keydown', function(e) {
             // Only trigger if we aren't typing inside an input field
-            if (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+            const activeTag = document.activeElement.tagName;
+            if (activeTag !== 'INPUT' && activeTag !== 'SELECT' && activeTag !== 'TEXTAREA') {
                 
                 // Check for F5 OR Ctrl+R
                 const isF5 = e.key === 'F5';
