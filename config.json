@@ -42,7 +42,12 @@
   "upstream_idle_conn_timeout_sec": 90,
   "upstream_max_idle_conns": 100,
   "upstream_max_idle_conns_per_host": 10,
+  "upstream_retry_backoff_ms": 100,
   "doh_max_request_body_bytes": 65536,
   "dns_udp_buffer_size": 4096,
-  "cache_negative_ttl_sec": 2
+  "cachejanitor_interval_minutes": 60,
+  "cache_negative_ttl_sec": 2,
+  "blocked_response_ttl_sec": 300,
+  "localhosts_override_ttl_sec": 300,
+  "ui_log_max_lines": 5000
 }

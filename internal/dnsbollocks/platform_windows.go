@@ -128,13 +128,22 @@ type Config struct {
 	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"`
 	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"`
 	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host"`
+	UpstreamRetryBackoffMs      int `json:"upstream_retry_backoff_ms"`
 
 	// Buffer & Sizing Limits
 	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes"`
 	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"`
 
-	// Cache & Diagnostic Limits
+	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes"`
+	// Cache & Diagnostic Limits, affects our own caching of it only
 	CacheNegativeTTLSec int `json:"cache_negative_ttl_sec"`
+
+	//this is the TTL set in the DNS packet, so tells OS how long to cache this
+	BlockedResponseTTLSec int `json:"blocked_response_ttl_sec"`
+
+	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec"`
+
+	UILogMaxLines int `json:"ui_log_max_lines"`
 }
 
 type FailoverSelector struct {
@@ -781,6 +790,8 @@ func defaultConfig() Config {
 		UpstreamIdleConnTimeoutSec:  90,
 		UpstreamMaxIdleConns:        100,
 		UpstreamMaxIdleConnsPerHost: 10,
+		//A 100ms backoff before retrying a transient network error is standard, but on highly congested networks, a longer backoff might be necessary to let the router breathe.
+		UpstreamRetryBackoffMs: 100,
 
 		//64KB is generally sufficient for regular DNS queries. However, non-standard corporate extensions or huge specialized EDNS0 queries with heavy DNSSEC attributes can breach this threshold. Additionally, server administrators may want to reduce this payload size even further to defend against memory-exhaustion denial-of-service (DoS) attempts on public interfaces.
 		DoHMaxRequestBodyBytes: 65536, //maxDNSTCPPacketSize
@@ -790,6 +801,18 @@ func defaultConfig() Config {
 
 		//If an upstream server returns a temporary error state or a SERVFAIL status, caching it for an inflexible 2 seconds means local applications will repeatedly bombard the proxy and upstream endpoints during an outage. Allowing administrators to extend the negative cache TTL mitigates traffic stampedes during network service degradations.
 		CacheNegativeTTLSec: 2,
+
+		//When you return an ip_block or nxdomain response, telling the client's OS to cache that block for exactly 5 minutes (300 seconds) might be too aggressive or too lenient depending on how quickly users update their whitelist rules via the WebUI.
+		BlockedResponseTTLSec: 300,
+
+		//If an administrator updates hosts2ip.json, they currently have to wait up to 5 minutes for the cached overrides to expire.
+		LocalHostsOverrideTTLSec: 300,
+
+		//You are telling the underlying go-cache library to run its background cleanup sweep exactly every 60 minutes. If CacheMaxEntries is set very high, a 1-hour sweep might allow memory usage to balloon before it gets cleaned up.
+		CacheJanitorIntervalMinutes: 60,
+
+		//You added a smart truncation limit to prevent browser crashes when reading massive logs. However, some admins might have beefy machines and want to see 20,000 lines, while others might be running the UI on an old phone and need it capped at 1,000.
+		UILogMaxLines: 5000,
 	}
 }
 
@@ -1427,7 +1450,7 @@ func OldMain() {
 	// Now we have the real config → switch to full logging
 	initFullLogging() // ← this replaces the logger with files + correct console level
 
-	cacheStore = cache.New(time.Hour, time.Hour) // Janitor every hour
+	cacheStore = cache.New(time.Duration(config.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(config.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
 	mainLogger.Debug("Cache initialized")
 
 	globalLimiter = rate.NewLimiter(rate.Limit(config.GlobalRateQPS), config.GlobalBurstQPS)
@@ -3138,18 +3161,17 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		resp.Authoritative = true
 		resp.RecursionAvailable = true
 
-		const timeUntilLocalHostsExpireInSeconds = 300
 		for _, ip := range matchedIPs {
 			isIPv4 := ip.To4() != nil
 
 			if qtype == "A" && isIPv4 {
 				rr := new(dns.A)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: timeUntilLocalHostsExpireInSeconds}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: config.LocalHostsOverrideTTLSec}
 				rr.A = ip
 				resp.Answer = append(resp.Answer, rr)
 			} else if qtype == "AAAA" && !isIPv4 {
 				rr := new(dns.AAAA)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: timeUntilLocalHostsExpireInSeconds}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: config.LocalHostsOverrideTTLSec}
 				rr.AAAA = ip
 				resp.Answer = append(resp.Answer, rr)
 			}
@@ -3161,7 +3183,7 @@ func handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.M
 		cacheStore.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState5,
-		}, timeUntilLocalHostsExpireInSeconds*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
+		}, time.Duration(config.LocalHostsOverrideTTLSec)*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
 
 		logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
@@ -3754,9 +3776,8 @@ func doSingleDoHRequest(ctx context.Context, client *http.Client, targetURL *url
 				SafeRequestAttr("query", req),
 				slog.Bool("will_retry", attempt < maxTries))
 			// small backoff: sleep a bit but respect context
-			const DoHBackoffTimeMillisec = 100 // ms
 			select {
-			case <-time.After(DoHBackoffTimeMillisec * time.Millisecond): //TODO: make the backoff time configurable ?
+			case <-time.After(time.Duration(config.UpstreamRetryBackoffMs) * time.Millisecond):
 			case <-ctx.Done():
 				mainLogger.Debug("doh sensed client quit during retry backoff...")
 				return nil, ctx.Err()
@@ -3952,10 +3973,10 @@ func blockResponse(msg *dns.Msg) *dns.Msg {
 	case "nxdomain":
 		msg.SetRcode(msg, dns.RcodeNameError)
 	case "ip_block", "block_ip":
-		ttl := uint32(300) //TODO: const or config this?
+		ttl := uint32(config.BlockedResponseTTLSec)
 		blockIP := net.ParseIP(config.BlockIP)
 		if blockIP == nil {
-			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this!
+			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this! unless we need a fresh instance each time?
 		}
 		if blockIP.To4() != nil { // A record
 			rr := new(dns.A)
@@ -5277,7 +5298,7 @@ func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filt
 	searchLower := strings.ToLower(filter)
 
 	// Cap the output to the last 5000 matches to save RAM and prevent browser crashes
-	const maxLines = 5000
+	var maxLines = config.UILogMaxLines
 	ring := make([]string, maxLines)
 	count := 0
 
