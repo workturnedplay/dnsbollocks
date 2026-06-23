@@ -5124,8 +5124,11 @@ func getRecentBlocksCopy() []BlockedQuery {
 func blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data := map[string]any{
-			"Page":   "blocks",
-			"Blocks": getRecentBlocksCopy(),
+			"Page":           "blocks",
+			"Blocks":         getRecentBlocksCopy(),
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
+			"EnteredValue":   r.URL.Query().Get("val"),
 		}
 
 		renderTemplate(w, "blocks", data)
@@ -5143,16 +5146,21 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 				slog.Bool("modified", modified),
 			)
 
-			// Re-render the form containing the error message and previous input
-			data := map[string]any{
-				"Page": "blocks",
-				// Re-fetch the blocks copy so we can re-render the page correctly with data
-				"Blocks":       getRecentBlocksCopy(),
-				"ErrorMessage": "Invalid domain format. Please enter a valid domain name.",
-				"EnteredValue": raw, // "Go's built-in html/template library provides context-aware contextual auto-escaping. When you write {{.EnteredValue}} inside your HTML source code, Go analyzes the context (knowing it sits inside raw text or an attribute) and automatically transforms dangerous characters like <, >, &, and " into their safe HTML entity representations."
-			}
+			// // Re-render the form containing the error message and previous input
+			// data := map[string]any{
+			// 	"Page": "blocks",
+			// 	// Re-fetch the blocks copy so we can re-render the page correctly with data
+			// 	"Blocks":       getRecentBlocksCopy(),
+			// 	"ErrorMessage": "Invalid domain format. Please enter a valid domain name.",
+			// 	"EnteredValue": raw, // "Go's built-in html/template library provides context-aware contextual auto-escaping. When you write {{.EnteredValue}} inside your HTML source code, Go analyzes the context (knowing it sits inside raw text or an attribute) and automatically transforms dangerous characters like <, >, &, and " into their safe HTML entity representations."
+			// }
 
-			renderTemplate(w, "blocks", data)
+			// renderTemplate(w, "blocks", data)
+
+			errMsg := "Invalid domain format. Please enter a valid domain name."
+			redirectURL := "/blocks?error=" + url.QueryEscape(errMsg) + "&val=" + url.QueryEscape(raw)
+			http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+
 			return
 		}
 		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
@@ -5222,25 +5230,30 @@ func blocksHandler(w http.ResponseWriter, r *http.Request) {
 			if err := /*uses lock*/ saveQueryWhitelist(); err != nil {
 				logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
-			// Render the page directly with our success context!
-			data := map[string]any{
-				"Page":           "blocks",
-				"Blocks":         getRecentBlocksCopy(),
-				"SuccessMessage": successMessage,
-			}
-			renderTemplate(w, "blocks", data)
+			// // Render the page directly with our success context!
+			// data := map[string]any{
+			// 	"Page":           "blocks",
+			// 	"Blocks":         getRecentBlocksCopy(),
+			// 	"SuccessMessage": successMessage,
+			// }
+			// renderTemplate(w, "blocks", data)
+
+			http.Redirect(w, r, "/blocks?success="+url.QueryEscape(successMessage), http.StatusSeeOther)
 			return
 		}
-		//http.Redirect(w, r, "/blocks", http.StatusSeeOther)
-		// Re-render the form with an explicit payload error message showing what was passed
+		////http.Redirect(w, r, "/blocks", http.StatusSeeOther)
+		//// Re-render the form with an explicit payload error message showing what was passed
 		payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
-		data := map[string]any{
-			"Page":         "blocks",
-			"Blocks":       getRecentBlocksCopy(),
-			"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
-		}
+		// data := map[string]any{
+		// 	"Page":         "blocks",
+		// 	"Blocks":       getRecentBlocksCopy(),
+		// 	"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
+		// }
 
-		renderTemplate(w, "blocks", data)
+		// renderTemplate(w, "blocks", data)
+		errMsg := "Failed to process unblock request. " + payloadDetails
+		http.Redirect(w, r, "/blocks?error="+url.QueryEscape(errMsg), http.StatusSeeOther)
+
 		return
 	}
 }

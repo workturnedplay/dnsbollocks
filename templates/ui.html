@@ -598,6 +598,14 @@
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
+<script>
+    //Because the messages are now in the URL (e.g., /blocks?success=Successfully...), if the user hits F5 a minute later, the URL will still contain that query string, and the success message will pop up again.
+    // Clean URL query parameters so F5 doesn't re-trigger visual messages
+    if (window.location.search.includes('success=') || window.location.search.includes('error=')) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
+</script>
+
 {{if .ErrorMessage}}
     <div class="alert-error">
         <strong>Error:</strong> {{.ErrorMessage}}
