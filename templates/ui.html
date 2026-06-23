@@ -174,7 +174,7 @@
 
             // Trigger on '/' key, but ignore if the user is typing inside any form field
             const activeTag = document.activeElement.tagName;
-            if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+            if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA' && activeTag !== 'SELECT') {
                 e.preventDefault();  // Stop the '/' from typing into the search box
                 filterInput.focus();
                 filterInput.select(); // Highlight existing text so they can immediately overwrite it
@@ -395,6 +395,9 @@
         }
 
         Array.from(tbody.rows).forEach(row => {
+            // Do not filter out or hide the inline edit row
+            if (row.classList.contains('edit-row')) return;
+
             //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
             // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
             const pattern = row.dataset.rulePattern || "";
