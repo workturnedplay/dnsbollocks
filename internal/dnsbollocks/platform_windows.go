@@ -459,6 +459,23 @@ func (s *Server) loadResponseBlacklist() error {
 			shouldSave = true
 		}
 	} else {
+		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+			return fmt.Errorf("failed to scan blacklist file %q for duplicate keys: %w", blacklistFileName, dupErr)
+		} else if len(dups) > 0 {
+			for _, dup := range dups {
+				s.logger.Error("Duplicate key found in blacklist file (JSON silently kept only the last value; fix the file manually)",
+					slog.String("duplicate_key", dup),
+					slog.String("file", blacklistFileName))
+			}
+			if s.config.ExtraSafety {
+				s.logger.Error("ExtraSafety: refusing to continue with duplicate blacklist keys",
+					slog.Int("duplicate_count", len(dups)))
+				s.shutdown(5)
+			}
+			s.logger.Warn("Continuing despite duplicate blacklist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
+				slog.Int("duplicate_count", len(dups)))
+		}
+
 		// read the existing ones
 		dec := json.NewDecoder(bytes.NewReader(data))
 		dec.DisallowUnknownFields()
@@ -548,6 +565,54 @@ func (s *Server) saveResponseBlacklist() error {
 	return nil
 }
 
+// detectDuplicateJSONObjectKeys walks the top-level keys of a JSON object
+// using the token API and returns any key that appears more than once.
+//
+// This is necessary because Go's json.Decoder silently overwrites duplicate
+// keys when decoding into a map, so by the time our dedup logic runs the
+// duplicate is already gone.  We therefore must inspect the raw bytes before
+// decoding.
+//
+// Only the top-level object is inspected; nested objects are skipped as
+// opaque blobs.  Returns an error only if the bytes are not a valid JSON
+// object at all.
+func detectDuplicateJSONObjectKeys(data []byte) (duplicates []string, err error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+
+	// Expect opening '{'.
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("JSON parse error: %w", err)
+	}
+	if tok != json.Delim('{') {
+		return nil, fmt.Errorf("expected JSON object (got %T %v)", tok, tok)
+	}
+
+	seen := make(map[string]struct{})
+	for dec.More() {
+		// Read the key token.
+		tok, err = dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("JSON key parse error: %w", err)
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string key, got %T %v", tok, tok)
+		}
+		if _, alreadySeen := seen[key]; alreadySeen {
+			duplicates = append(duplicates, key)
+		}
+		seen[key] = struct{}{}
+
+		// Skip the value (may be any JSON type) so the decoder advances past it.
+		var skip json.RawMessage
+		if err = dec.Decode(&skip); err != nil {
+			return nil, fmt.Errorf("JSON value parse error for key %q: %w", key, err)
+		}
+	}
+	return duplicates, nil
+}
+
 func (s *Server) loadLocalHosts() error {
 	path := s.config.HostsFile
 	if path == "" {
@@ -567,6 +632,30 @@ func (s *Server) loadLocalHosts() error {
 		return fmt.Errorf("cannot read hosts file %q: %w", path, err)
 	}
 
+	// Check for duplicate JSON keys BEFORE decoding into a map, because
+	// Go's json.Decoder silently drops all but the last duplicate — our
+	// post-decode seenPatterns check would never see them.
+	if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+		return fmt.Errorf("failed to scan hosts file %q for duplicate keys: %w", path, dupErr)
+	} else if len(dups) > 0 {
+		// A manually edited file with duplicate keys is almost certainly a
+		// typo, so treat it the same way ExtraSafety treats other anomalies.
+		for _, dup := range dups {
+			s.logger.Error("Duplicate key found in hosts file (JSON silently kept only the last value; fix the file manually)",
+				slog.String("duplicate_pattern", dup),
+				slog.String("path", path))
+		}
+		if s.config.ExtraSafety {
+			s.logger.Error("ExtraSafety: refusing to continue with duplicate host keys",
+				slog.Int("duplicate_count", len(dups)))
+			s.shutdown(5)
+		}
+		// Non-ExtraSafety: warn loudly but continue; the map will have kept
+		// whichever value the JSON decoder chose (last-write-wins).
+		s.logger.Warn("Continuing despite duplicate host keys — the JSON decoder kept an arbitrary value for each duplicate key; consider fixing the file",
+			slog.Int("duplicate_count", len(dups)))
+	}
+
 	var raw map[string][]string
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields() //XXX: DisallowUnknownFields only activates for struct targets. For a map[string][]string the decoder treats every key as a valid map entry regardless; kept nonetheless
@@ -575,27 +664,107 @@ func (s *Server) loadLocalHosts() error {
 	}
 
 	var parsed []LocalHostRule
+	var changed uint64
+	var removed uint64
+	seenPatterns := make(map[string]struct{}, len(raw))
+
 	for pat, ips := range raw {
-		pat = strings.ToLower(pat) // normalize for matchPattern
+		// pat = strings.ToLower(pat) // normalize for matchPattern
+		// var netIPs []net.IP
+		// for _, ipStr := range ips {
+		// 	if ip := net.ParseIP(ipStr); ip != nil {
+		// 		netIPs = append(netIPs, ip)
+		// 	} else {
+		// 		s.logger.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
+		// 	}
+		// }
+		// //TODO: check for dup patterns or hostnames, wtw we're using here.
+		// if len(netIPs) > 0 {
+		// 	parsed = append(parsed, LocalHostRule{Pattern: pat, IPs: netIPs})
+		// }
+
+		// Normalize pattern the same way the WebUI does: trim whitespace, strip
+		// trailing FQDN dot, lowercase.  Track whether anything actually changed
+		// so we can rewrite the file if needed.
+		normalizedPat := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(pat, ".")))
+		if normalizedPat != pat {
+			s.logger.Warn("Normalized host pattern",
+				slog.String("before", pat),
+				slog.String("after", normalizedPat))
+			changed++
+		}
+
+		if normalizedPat == "" {
+			s.logger.Warn("Purging host rule with empty pattern (after normalization)",
+				slog.String("original_pattern", pat))
+			removed++
+			continue
+		}
+
+		if _, modified := sanitizeDomainInput(normalizedPat); modified {
+			s.logger.Error("Purging invalid host pattern containing illegal characters",
+				slog.String("invalid_pattern", normalizedPat))
+			removed++
+			continue
+
+		}
+
+		if _, dup := seenPatterns[normalizedPat]; dup {
+			s.logger.Warn("Duplicate host pattern found, skipping/purging",
+				slog.String("pattern", normalizedPat))
+			removed++
+			continue
+		}
+		seenPatterns[normalizedPat] = struct{}{}
+
 		var netIPs []net.IP
 		for _, ipStr := range ips {
+			// Mirror the WebUI: trim whitespace around each IP before parsing.
+			ipStr = strings.TrimSpace(ipStr)
+			if ipStr == "" {
+				continue
+			}
 			if ip := net.ParseIP(ipStr); ip != nil {
 				netIPs = append(netIPs, ip)
 			} else {
-				s.logger.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
+				s.logger.Warn("Invalid IP in hosts file, skipping",
+					slog.String("ip", ipStr),
+					slog.String("pattern", normalizedPat))
 			}
 		}
-		//TODO: check for dup patterns or hostnames, wtw we're using here.
-		if len(netIPs) > 0 {
-			parsed = append(parsed, LocalHostRule{Pattern: pat, IPs: netIPs})
+
+		if len(netIPs) == 0 {
+			s.logger.Warn("Purging host rule with no valid IPs after filtering",
+				slog.String("pattern", normalizedPat))
+			removed++
+			continue
 		}
+
+		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs})
+	}
+
+	if s.config.ExtraSafety && removed > 0 {
+		s.logger.Error("ExtraSafety: refusing to remove host rules due to potential typos "+
+			"(fix them manually or set extra_safety to false)",
+			slog.Uint64("removed_count", removed))
+		s.shutdown(5)
 	}
 
 	s.localHostsMu.Lock()
 	s.localHosts = parsed
 	s.localHostsMu.Unlock()
 
-	s.logger.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
+	// s.logger.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
+	s.logger.Info("Loaded host rules",
+		slog.Int("count", len(s.localHosts)),
+		slog.Uint64("changed_count", changed),
+		slog.Uint64("removed_count", removed),
+		slog.String("path", path))
+
+	if changed > 0 || removed > 0 {
+		return s.saveLocalHosts()
+	}
+
 	return nil
 }
 
@@ -764,6 +933,22 @@ func (s *Server) loadQueryWhitelist() error {
 	if err != nil {
 		return fmt.Errorf("cannot read whitelist file %q: %w", path, err)
 	}
+	if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+		return fmt.Errorf("failed to scan whitelist file %q for duplicate keys: %w", path, dupErr)
+	} else if len(dups) > 0 {
+		for _, dup := range dups {
+			s.logger.Error("Duplicate key found in whitelist file (JSON silently kept only the last value; fix the file manually)",
+				slog.String("duplicate_key", dup),
+				slog.String("path", path))
+		}
+		if s.config.ExtraSafety {
+			s.logger.Error("ExtraSafety: refusing to continue with duplicate whitelist keys",
+				slog.Int("duplicate_count", len(dups)))
+			s.shutdown(5)
+		}
+		s.logger.Warn("Continuing despite duplicate whitelist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
+			slog.Int("duplicate_count", len(dups)))
+	}
 
 	var rulesByType map[string][]RuleEntry
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -799,7 +984,7 @@ func (s *Server) loadQueryWhitelist() error {
 				seenIDs[r.ID] = struct{}{}
 
 				//lowercase it and strip the dot at the end:
-				new2 := strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
+				new2 := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.Pattern, ".")))
 				if new2 != r.Pattern {
 					s.logger.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
 					r.Pattern = new2
@@ -1734,6 +1919,22 @@ func (s *Server) loadConfig() error {
 
 		shouldSaveConfig = true
 	} else {
+		// Duplicate config keys (e.g. "extra_safety" appearing twice) are silently
+		// last-write-wins in Go's json.Decoder.  Catch them before decoding.
+		// s.config.ExtraSafety is not yet populated from the file at this point, so
+		// we always treat duplicate config keys as a hard error regardless of that
+		// setting — a config with duplicate keys is unambiguously a hand-edit mistake.
+		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+			return fmt.Errorf("failed to scan config file %q for duplicate keys: %w", cfgFname, dupErr)
+		} else if len(dups) > 0 {
+			for _, dup := range dups {
+				s.logger.Error("Duplicate key found in config file (JSON silently kept only the last value; fix the file manually)",
+					slog.String("duplicate_key", dup),
+					slog.String("config_file", cfgFname))
+			}
+			return fmt.Errorf("config file %q contains %d duplicate key(s); fix the file and restart", cfgFname, len(dups))
+		}
+
 		// 2. First, check for unknown fields and decode into 'config'
 		dec := json.NewDecoder(bytes.NewReader(data))
 		dec.DisallowUnknownFields() // This is why we use NewDecoder
