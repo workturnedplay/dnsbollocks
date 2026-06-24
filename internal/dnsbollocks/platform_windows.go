@@ -529,7 +529,11 @@ func (s *Server) loadResponseBlacklist() error {
 	s.responseBlacklistMu.Lock()
 	s.responseBlacklist = parsed
 	s.responseBlacklistMu.Unlock()
-
+	// ==========================================
+	//   NEW: INJECT CACHE INVALIDATION HERE
+	// ==========================================
+	s.invalidateCacheForBlacklistedIPs()
+	// ==========================================
 	s.logger.Info("Loaded CIDR entries from blacklist file", slog.Int("count", len(s.responseBlacklist)), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
 	if shouldSave {
 		if err := s.saveResponseBlacklist(); err != nil {
@@ -912,6 +916,15 @@ func (s *Server) saveQueryWhitelist() error {
 	return nil
 }
 
+func (s *Server) flushCache() {
+	if s.cacheStore != nil {
+		s.cacheStore.Flush()
+		s.logger.Debug("Cache flushed/deleted.")
+	} else {
+		s.logger.Debug("Cache wasn't inited so can't be flushed here.")
+	}
+}
+
 // Loads whitelist rules from dedicated file
 func (s *Server) loadQueryWhitelist() error {
 	path := s.config.WhitelistFile
@@ -928,6 +941,7 @@ func (s *Server) loadQueryWhitelist() error {
 			defer s.ruleMutex.Unlock()
 			s.whitelist = make(map[string][]RuleEntry)
 		}() // lock released here
+		s.flushCache()
 		return s.saveQueryWhitelist() // create "empty" file; uses lock
 	}
 	if err != nil {
@@ -1033,6 +1047,7 @@ func (s *Server) loadQueryWhitelist() error {
 		}
 	}() // lock released here
 	if changed > 0 || removed > 0 {
+		s.flushCache()
 		return s.saveQueryWhitelist() //uses lock!
 	} else {
 		return nil // no error
@@ -1743,8 +1758,7 @@ func (s *Server) Run() error {
 	go s.watchKeys(
 		func() { // Ctrl+R aka reloadFn
 			s.logger.Debug("Reload triggered...")
-			s.cacheStore.Flush()
-			s.logger.Debug("Cache flushed/deleted.")
+			s.flushCache()
 
 			if err := s.loadQueryWhitelist(); err != nil {
 				s.logFatal("Whitelist reload failed:", err)
@@ -5353,6 +5367,54 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 	}
 }
 
+func (s *Server) invalidateCacheForDomainPattern(pattern string) {
+	for key := range s.cacheStore.Items() {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) > 0 {
+			domain := parts[0]
+			if matchPattern(pattern, domain) {
+				//TODO: log what's deleted from cache here.
+				s.cacheStore.Delete(key)
+			}
+		}
+	}
+}
+
+func (s *Server) invalidateCacheForBlacklistedIPs() {
+	for key, item := range s.cacheStore.Items() {
+		packed, ok := item.Object.([]byte)
+		if !ok {
+			continue
+		}
+
+		msg := new(dns.Msg)
+		if err := msg.Unpack(packed); err != nil {
+			continue
+		}
+
+		shouldEvict := false
+		for _, rr := range msg.Answer {
+			if aRecord, ok := rr.(*dns.A); ok {
+				if s.isBlacklistedIP(aRecord.A) { // Substitute with your actual IP-checking logic
+					shouldEvict = true
+					break
+				}
+			}
+			if aaaaRecord, ok := rr.(*dns.AAAA); ok {
+				if s.isBlacklistedIP(aaaaRecord.AAAA) {
+					shouldEvict = true
+					break
+				}
+			}
+		}
+
+		if shouldEvict {
+			s.cacheStore.Delete(key)
+			s.logger.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
+		}
+	}
+}
+
 func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		// 1. Snapshot the data under lock
@@ -5648,13 +5710,14 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 								s.logger.Info("Quick re-block: paused existing rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
+								s.invalidateCacheForDomainPattern(domainLowercased)
 							} else {
 								successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
 							}
 							break
 						}
 					}
-				} else {
+				} else { //FIXME: assuming 'block' ?!
 					found := false
 					for i, rule := range s.whitelist[typ] {
 						if rule.Pattern == domainLowercased {
@@ -5664,6 +5727,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 								s.logger.Info("Quick unblock: enabled existing paused rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
+								s.invalidateCacheForDomainPattern(domainLowercased)
 							} else {
 								successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
 								s.logger.Info("Quick unblock: ignored, rule is already active",
@@ -5690,6 +5754,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						s.logger.Info("Quick unblock: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
+						s.invalidateCacheForDomainPattern(domainLowercased)
 					}
 				}
 			}() // lock released here
@@ -5873,8 +5938,7 @@ func (s *Server) shutdown(exitCode int) {
 		s.logger.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
 		if s.cacheStore != nil {
-			s.cacheStore.Flush()
-			s.logger.Debug("Cache flushed")
+			s.flushCache()
 		}
 		//doneTODO: webUI shutdown (done via cancel() above)
 		//s.logger.Debug("webUI shutdown(fake)")

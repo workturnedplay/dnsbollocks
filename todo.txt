@@ -1,3 +1,5 @@
+* invalidate cache for edited/delete whitelist/blacklist/hosts rules
+* make webUI entry for response blacklist IPs, like /rules and /hosts exists, note that /blocks is for recently blocked hosts quick-unblock
 * improvements for v0.1.2 (did ):  https://gemini.google.com/app/23aee2c6ce4ba054
 * improvements for v0.0.6 (did 1,2,4,5,6) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
