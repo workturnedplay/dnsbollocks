@@ -111,6 +111,7 @@ type Config struct {
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
 	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
+	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
 
 	WebUIPasswordHash string `json:"webui_password_hash"`
 	WebUIUseTLS       bool   `json:"webui_use_tls"`
@@ -839,6 +840,7 @@ func defaultConfig() Config {
 		AllowRunAsAdmin:         false,
 		BlockAAAAasEmptyNoError: true,
 		AllowHTTPSIfAAllowed:    true,
+		RemoveHTTPSIPv4Hints:    true,
 		WebUIUseTLS:             true,
 
 		// Centralized Network Parameter Defaults
@@ -1422,9 +1424,6 @@ func getWebUIPasswordHashJSONTag() string {
 	return "webui_password_hash" // Fallback safety
 }
 
-// // 2. New error channel for service failures
-// // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
-// var errChan chan error = make(chan error, 10)
 func (s *Server) Run() error {
 	// Signals setup FIRST: Catch interrupts from init onward
 	sigChan := make(chan os.Signal, 1)
@@ -4271,22 +4270,25 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
-		//TODO: make this configurable in config.json so only if 'true' do this:
-		// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
-		// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
-		// Filter the SVCB/HTTPS parameters
-		newParams := []dns.SVCBKeyValue{}
-		for _, param := range r.Value {
-			k := param.Key()
-			// Key 4 = ipv4hint, Key 6 = ipv6hint
-			// We only keep keys that AREN'T hints
-			if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
-				newParams = append(newParams, param)
-			} else {
-				s.logger.Warn("Dropping IP hint from the HTTPS reply", slog.String("param", param.String() /*non nil*/))
+		//doneTODO: make this configurable in config.json so only if 'true' do this:
+		if s.config.RemoveHTTPSIPv4Hints {
+			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
+			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
+			// Filter the SVCB/HTTPS parameters
+			newParams := []dns.SVCBKeyValue{}
+			for _, param := range r.Value {
+				k := param.Key()
+				// Key 4 = ipv4hint, Key 6 = ipv6hint
+				// We only keep keys that AREN'T hints
+				if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
+					newParams = append(newParams, param)
+				} else {
+					s.logger.Warn("Dropping IP hint from the HTTPS reply", slog.String("param", param.String() /*non nil*/))
+				}
 			}
-		}
-		r.Value = newParams
+			r.Value = newParams
+			//return true, r, "" //XXX: (already doing this below)
+		} //else keep as is
 		return true, r, ""
 
 	case *dns.RRSIG:
@@ -4298,6 +4300,9 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 		// Keep other types (MX, TXT, CNAME, etc.)
 		return true, rr, ""
 	}
+
+	//nolint:unreachable  (can't get rid of warning, so i guess not keeping panic here)
+	//panic("some unhandled case fell thru from switch/ifelse?")
 }
 
 // func ipInNets(ip net.IP, nets []*net.IPNet) bool {
