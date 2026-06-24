@@ -804,6 +804,24 @@ func (s *Server) loadQueryWhitelist() error {
 					r.Pattern = new2
 					changed++
 				}
+				// Check for empty or entirely invalid structures
+				if r.Pattern == "" {
+					s.logger.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
+					removed++
+					continue
+				}
+
+				// Validate using the allowed rule character set
+				_, modified := sanitizeDomainInput(r.Pattern)
+				if modified {
+					s.logger.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
+						slog.String("id", r.ID),
+						slog.String("invalid_pattern", r.Pattern),
+					)
+					removed++
+					continue // Purges/omits it from being appended to cleaned slice
+				}
+
 				cleaned = append(cleaned, *r)
 			}
 
@@ -812,7 +830,7 @@ func (s *Server) loadQueryWhitelist() error {
 
 		if s.config.ExtraSafety {
 			if removed > 0 {
-				s.logger.Error("ExtraSafety: Refusing to remove duplicate ID rules", slog.Uint64("removed_count", removed))
+				s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
 				s.shutdown(5) //FIXME: find a better way to "quit" than exit program here
 			}
 		}
@@ -1396,7 +1414,7 @@ func isValidDNSName(s string) bool {
 // sanitizeDomainInput removes any characters not explicitly allowed.
 // Safe for logs and DNS-related handling.
 func sanitizeDomainInput(input string) (sanitized string, modified bool) {
-	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!"
+	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
 
 	var b strings.Builder
 	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
