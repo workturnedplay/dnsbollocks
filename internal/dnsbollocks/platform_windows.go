@@ -5335,6 +5335,24 @@ type HostView struct {
 	IPsDisplay string // Pre-joined "1.1.1.1, 2.2.2.2"
 }
 
+// invalidateCacheForPattern surgically removes any cached DNS responses
+// that match the given host pattern (handling wildcards correctly).
+func (s *Server) invalidateCacheForPattern(pattern string) {
+	for key := range s.cacheStore.Items() {
+		// key format is "domain:type" (e.g., "router.local:A")
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) > 0 {
+			domain := parts[0]
+			if matchPattern(pattern, domain) {
+				s.cacheStore.Delete(key)
+				s.logger.Debug("Evicted cached record due to local host rule change",
+					slog.String("key", key),
+					slog.String("matched_pattern", pattern))
+			}
+		}
+	}
+}
+
 func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		// 1. Snapshot the data under lock
@@ -5394,6 +5412,9 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			}()
 
 			if deleted {
+				// --- NEW: Invalidate the cache for the deleted pattern ---
+				s.invalidateCacheForPattern(pattern)
+
 				if err := s.saveLocalHosts(); err != nil {
 					s.logFatal("failed to save local hosts after deletion", err)
 				}
@@ -5486,6 +5507,16 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
+
+		// --- NEW: Cache Invalidation ---
+		// If this was an edit, purge the old pattern's cached entries
+		if isEdit && oldPattern != "" {
+			s.invalidateCacheForPattern(oldPattern)
+		}
+		// Always purge the new pattern so the local override takes immediate effect
+		// (e.g., clearing out previous NXDOMAINs or external IPs)
+		s.invalidateCacheForPattern(pattern)
+		// -------------------------------
 
 		if err := s.saveLocalHosts(); err != nil {
 			s.logFatal("failed to save local hosts after add/edit", err)
