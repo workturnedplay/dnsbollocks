@@ -1,4 +1,4 @@
-* improvements for v0.0.6 (did 2,4,5,6) : https://gemini.google.com/app/8fba2ee635340715
+* improvements for v0.0.6 (did 1,2,4,5,6) : https://gemini.google.com/app/8fba2ee635340715
 * handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
 * check added rules to not allow hosts that aren't valid like "=accounts.google.com"
 * make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
