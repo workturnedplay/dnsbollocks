@@ -186,7 +186,7 @@ type Server struct {
 	// Lifecycle & Concurrency
 	// Simple stats, FIXME.
 	stats      *expvar.Int
-	ctx        context.Context
+	ctx        context.Context //the old backgroundCtx
 	cancel     context.CancelFunc
 	errChan    chan error
 	shutdownWG sync.WaitGroup
@@ -3276,9 +3276,10 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// 3. DO THE ACTUAL UPSTREAM QUERY
 	resp, upstreamState3 := s.forwardToDoH(ctx, msg)
 	// 4. Restore the original ID so the client's DNS resolver accepts the answer
-	if resp != nil {
-		resp.Id = oldID
-	}
+	msg.Id = oldID // unconditionally restore so any msg-derived error response carries the right ID
+	// if resp != nil {
+	// 	resp.Id = oldID
+	// }
 	//Gemini 3 Thinking: "The ID Matching is a "defense in depth" move. By using a random ID for the journey to Quad9 and back, you decouple your internal network's IDs from the public internet,
 	// making it much harder for someone to inject fake DNS responses into your proxy."
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
