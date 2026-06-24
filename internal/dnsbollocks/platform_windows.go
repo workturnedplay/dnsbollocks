@@ -185,11 +185,12 @@ type Server struct {
 
 	// Lifecycle & Concurrency
 	// Simple stats, FIXME.
-	stats      *expvar.Int
-	ctx        context.Context //the old backgroundCtx
-	cancel     context.CancelFunc
-	errChan    chan error
-	shutdownWG sync.WaitGroup
+	stats        *expvar.Int
+	ctx          context.Context //the old backgroundCtx
+	cancel       context.CancelFunc
+	errChan      chan error
+	shutdownWG   sync.WaitGroup
+	shutdownOnce sync.Once
 }
 
 // NewServer initializes a new Server instance.
@@ -440,7 +441,7 @@ func (s *Server) loadResponseBlacklist() error {
 	if blacklistFileName == "" {
 		panic("dev. didn't set the default blacklist filename!")
 	}
-	blacklistFileName = filepath.Clean(s.config.BlacklistFile)
+	blacklistFileName = filepath.Clean(blacklistFileName)
 
 	var shouldSave bool = false
 	var raw []string
@@ -555,7 +556,7 @@ func (s *Server) loadLocalHosts() error {
 
 	var raw map[string][]string
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
+	dec.DisallowUnknownFields() //XXX: DisallowUnknownFields only activates for struct targets. For a map[string][]string the decoder treats every key as a valid map entry regardless; kept nonetheless
 	if err = dec.Decode(&raw); err != nil {
 		return fmt.Errorf("failed to parse hosts file %q: %w", path, err)
 	}
@@ -1624,8 +1625,6 @@ func OldMain() {
 	srv.shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 }
 
-var shutdownOnce sync.Once
-
 func (s *Server) loadConfig() error {
 	const cfgFname = configFileName
 	s.logger.Info("Loading config file", slog.String("config_file", cfgFname))
@@ -2681,7 +2680,7 @@ func (s *Server) startDNSListener(addr string) {
 		}()
 
 	}
-	if udpLn == nil && tcpLn == nil {
+	if udpLn == nil && tcpLn == nil { //XXX: this is deadcode because if ANY failed above shutdown/os.Exit is called
 		s.logger.Warn("No DNS listeners(neither TCP nor UDP!")
 	}
 }
@@ -5279,7 +5278,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 					for i, rule := range s.whitelist[typ] {
 						if rule.Pattern == domainLowercased {
 							if rule.Enabled {
-								s.whitelist[typ][i].Enabled = false
+								s.whitelist[typ][i].Enabled = false //XXX: mutates in place
 								successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
 								s.logger.Info("Quick re-block: paused existing rule",
 									slog.String("domainLowercased", domainLowercased),
@@ -5295,7 +5294,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 					for i, rule := range s.whitelist[typ] {
 						if rule.Pattern == domainLowercased {
 							if !rule.Enabled {
-								s.whitelist[typ][i].Enabled = true
+								s.whitelist[typ][i].Enabled = true //XXX: mutates in place
 								successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
 								s.logger.Info("Quick unblock: enabled existing paused rule",
 									slog.String("domainLowercased", domainLowercased),
@@ -5502,7 +5501,7 @@ func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) shutdown(exitCode int) {
-	shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
+	s.shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
 		s.logger.Info("Shutting down...")
 		// 1. Cancel the context immediately so all other listeners stop
 		s.cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
