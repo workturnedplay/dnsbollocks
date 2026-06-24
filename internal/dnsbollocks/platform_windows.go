@@ -585,6 +585,7 @@ func (s *Server) loadLocalHosts() error {
 				s.logger.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
 			}
 		}
+		//TODO: check for dup patterns or hostnames, wtw we're using here.
 		if len(netIPs) > 0 {
 			parsed = append(parsed, LocalHostRule{Pattern: pat, IPs: netIPs})
 		}
@@ -1377,6 +1378,16 @@ var dnsTypes = []string{
 	"ZONEMD",
 }
 
+// dnsTypeSet is a deduplicated set built from dnsTypes for O(1) lookups.
+// dnsTypes intentionally has duplicates for UI ordering; this set is for validation only.
+var dnsTypeSet = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(dnsTypes))
+	for _, t := range dnsTypes {
+		m[t] = struct{}{}
+	}
+	return m
+}()
+
 type BlockedQuery struct {
 	Domain      string    `json:"domain"`
 	Type        string    `json:"type"`
@@ -1429,6 +1440,28 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	modified = sanitized != input
 	// Uses named returns — do not return explicit values. like: return "something", modified
 	return
+}
+
+// validateRulePattern returns a non-nil error if the pattern contains characters
+// outside the allowed set (as defined by sanitizeDomainInput).
+// It does NOT enforce strict DNS name rules because patterns may contain
+// wildcards: *, **, {*}, {**}, ?, !, and braces.
+func validateRulePattern(pattern string) error {
+	if pattern == "" {
+		return errors.New("pattern cannot be empty")
+	}
+	if _, modified := sanitizeDomainInput(pattern); modified {
+		return errors.New("pattern contains illegal characters")
+	}
+	return nil
+}
+
+// validateDNSType returns a non-nil error if typ is not a known DNS type.
+func validateDNSType(typ string) error {
+	if _, ok := dnsTypeSet[typ]; !ok {
+		return fmt.Errorf("unknown DNS type %q", typ)
+	}
+	return nil
 }
 
 var uiTemplates = template.Must(template.ParseFS(templates.FS, "ui.html"))
@@ -4813,6 +4846,16 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
 			}
+			if err := validateDNSType(typ); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			// id is a UUID used only as a map key; sanitize it against injection just in case.
+			if _, modified := sanitizeDomainInput(id); modified {
+				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
+				return
+			}
+
 			var deleted bool = false
 
 			//TODO: make proper delete rule function, heh.
@@ -4859,6 +4902,22 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		if patternLowercased == "" || typ == "" {
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
+		}
+
+		if err := validateDNSType(typ); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateRulePattern(patternLowercased); err != nil {
+			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		// id, if present, is a UUID; guard it the same way as in the delete path.
+		if id != "" { //aka is this an EDIT attempt?
+			if _, modified := sanitizeDomainInput(id); modified {
+				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
+				return
+			}
 		}
 
 		// Run the update/add logic inside a thread-safe closure that bubbles up errors
@@ -5115,6 +5174,11 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if err := validateRulePattern(pattern); err != nil {
+				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
 			deleted := false
 			func() {
 				s.localHostsMu.Lock()
@@ -5145,8 +5209,21 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		isEdit := r.FormValue("edit") == "1"
 
 		if pattern == "" {
-			http.Error(w, "pattern required", http.StatusBadRequest)
+			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
 			return
+		}
+		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
+
+		if err := validateRulePattern(pattern); err != nil {
+			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		// old_pattern (edit path) needs the same check.
+		if isEdit && oldPattern != "" {
+			if err := validateRulePattern(oldPattern); err != nil {
+				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		ipsRaw := strings.Split(r.FormValue("ips"), ",")
