@@ -25,9 +25,11 @@ func main() {
 		fmt.Println("ERROR: Must run from a real console (cmd/powershell), not redirected.")
 		os.Exit(1)
 	}
-
+	var mainLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug, //TODO: allow env. var. to dictate the level? but nothing right now uses this yet because initBootstrapLogging gets hit early!
+	}))
 	// 2. Initialize the official handler (this also enables ANSI via wincoe)
-	handler := dnsbollocks.NewColoredConsoleHandler(slog.LevelDebug)
+	handler := dnsbollocks.NewColoredConsoleHandler(slog.LevelDebug, mainLogger)
 	logger := slog.New(handler)
 
 	const goroutines = 50
