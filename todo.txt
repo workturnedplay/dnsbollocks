@@ -13,9 +13,9 @@
 * link to Tinywall in readme and to Go lang to install Go.
 * add more tests, lots more
 
-* fix rules with duplicated IDs existing in config and loaded at startup without complaints or purging
 
 done:
+//* fix rules with duplicated IDs existing in config and loaded at startup without complaints or purging
 //* make the EDE reply optional, setable from config!
 //* make ipv4 hints in HTTPS removable only if a config key is true (default) ie. add that key
 //* add a config key that allows all HTTPS dns type queries but strips their IP hints. Currently it happens unconditionally!

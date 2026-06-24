@@ -146,6 +146,8 @@ type Config struct {
 	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec"`
 
 	UILogMaxLines int `json:"ui_log_max_lines"`
+
+	ExtraSafety bool `json:"extra_safety"`
 }
 
 // Server encapsulates all the state required to run the DNSbollocks application.
@@ -486,7 +488,11 @@ func (s *Server) loadResponseBlacklist() error {
 			seen[str] = struct{}{}
 			deduped = append(deduped, n)
 		} else {
-			s.logger.Warn("Duplicate blacklist entry found, removing it", slog.String("entry", str))
+			if s.config.ExtraSafety {
+				s.logger.Error("Duplicate blacklist entry found", slog.String("entry", str))
+			} else {
+				s.logger.Warn("Duplicate blacklist entry found, removing it", slog.String("entry", str))
+			}
 			if !shouldSave {
 				shouldSave = true
 			}
@@ -494,8 +500,13 @@ func (s *Server) loadResponseBlacklist() error {
 	}
 	dups := len(parsed) - len(deduped)
 	if dups > 0 {
-		s.logger.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
-		parsed = deduped
+		if s.config.ExtraSafety {
+			s.logger.Error("ExtraSafety: Found duplicate CIDRs from blacklist file, it/they could be due to typos so silently removing it/them and overwriting the file might be a mistake!", slog.Int("found_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
+			s.shutdown(5) //XXX: this will exit program here! //FIXME: find a better way to "quit" than exit program here
+		} else {
+			s.logger.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
+			parsed = deduped
+		}
 	}
 
 	s.responseBlacklistMu.Lock()
@@ -720,9 +731,14 @@ func (s *Server) saveQueryWhitelist() error {
 	s.fileWriteMu.Lock()
 	defer s.fileWriteMu.Unlock()
 
-	if err := os.WriteFile(s.config.WhitelistFile, data, 0600); err != nil {
-		return fmt.Errorf("cannot save/write whitelist file %q: %w", s.config.WhitelistFile, err)
+	whitelistFileName := s.config.WhitelistFile
+	if whitelistFileName == "" {
+		panic("bad coding: dev. didn't set the default whitelist filename!")
 	}
+	if err := os.WriteFile(whitelistFileName, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
+	}
+	s.logger.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
 	return nil
 }
 
@@ -755,6 +771,7 @@ func (s *Server) loadQueryWhitelist() error {
 		return fmt.Errorf("failed to parse whitelist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", path, err)
 	}
 	var changed uint64 = 0
+	var removed uint64 = 0
 
 	func() {
 		s.ruleMutex.Lock()
@@ -763,46 +780,55 @@ func (s *Server) loadQueryWhitelist() error {
 		s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
 		for typ, rules := range rulesByType {
 			var cleaned []RuleEntry
+			seenIDs := make(map[string]struct{}, len(rules))
 			for i := range rules {
 				r := &rules[i]
 				// XXX: it may not have an ID set at this point
 				if r.ID == "" {
 					nid := s.newUniqueID(rulesByType)
-					s.logger.Warn("Making new ID for rule that had none", slog.String("id", nid))
+					s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
 					r.ID = nid
 					changed++
 				}
+				if _, duplicate := seenIDs[r.ID]; duplicate {
+					s.logger.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
+					removed++
+					continue // Skip appending this rule
+				}
+				seenIDs[r.ID] = struct{}{}
+
+				//lowercase it and strip the dot at the end:
 				new2 := strings.ToLower(strings.TrimSuffix(r.Pattern, "."))
 				if new2 != r.Pattern {
+					s.logger.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
 					r.Pattern = new2
 					changed++
 				}
 				cleaned = append(cleaned, *r)
 			}
-			// // deduplicate by ID, unclear why'd I ever need this before?!
-			// seen := make(map[string]struct{})
-			// deduped := cleaned[:0]
-			// for _, r := range cleaned {
-			//     if _, ok := seen[r.ID]; !ok {
-			//         seen[r.ID] = struct{}{}
-			//         deduped = append(deduped, r)
-			//     }
-			// }
+
 			s.whitelist[typ] = cleaned
 		}
 
-		if countRules(rulesByType) != countRules(s.whitelist) {
-			panic("bad coding: lost some rules, shouldn't happen unless we dedupped- but we didn't")
+		if s.config.ExtraSafety {
+			if removed > 0 {
+				s.logger.Error("ExtraSafety: Refusing to remove duplicate ID rules", slog.Uint64("removed_count", removed))
+				s.shutdown(5) //FIXME: find a better way to "quit" than exit program here
+			}
 		}
 
-		s.logger.Info("Loaded whitelist and normalized(aka changed) rules",
+		s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
 			slog.Int("types", len(s.whitelist)),
-			slog.Int("rules", countRules(s.whitelist)),
+			slog.Uint64("rules", countRules(s.whitelist)),
 			slog.Uint64("changed_count", changed),
+			slog.Uint64("removed_count", removed),
 			slog.String("path", path),
 		)
+		if countRules(rulesByType)-removed != countRules(s.whitelist) {
+			panic("bad coding: lost some rules, shouldn't happen!")
+		}
 	}() // lock released here
-	if changed > 0 {
+	if changed > 0 || removed > 0 {
 		return s.saveQueryWhitelist() //uses lock!
 	} else {
 		return nil // no error
@@ -888,6 +914,8 @@ func defaultConfig() Config {
 		UILogMaxLines: 5000,
 
 		UseEDEInBlockedReply: true,
+
+		ExtraSafety: true,
 	}
 }
 
@@ -2078,10 +2106,10 @@ func (s *Server) validateUpstream() error {
 	// return nil
 }
 
-func countRules(wl map[string][]RuleEntry) int {
-	total := 0
+func countRules(wl map[string][]RuleEntry) uint64 {
+	var total uint64 = 0
 	for _, rs := range wl {
-		total += len(rs)
+		total += uint64(len(rs))
 	}
 	return total
 }
