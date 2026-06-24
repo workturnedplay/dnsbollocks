@@ -112,6 +112,7 @@ type Config struct {
 	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
 	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
+	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
 
 	WebUIPasswordHash string `json:"webui_password_hash"`
 	WebUIUseTLS       bool   `json:"webui_use_tls"`
@@ -885,6 +886,8 @@ func defaultConfig() Config {
 
 		//You added a smart truncation limit to prevent browser crashes when reading massive logs. However, some admins might have beefy machines and want to see 20,000 lines, while others might be running the UI on an old phone and need it capped at 1,000.
 		UILogMaxLines: 5000,
+
+		UseEDEInBlockedReply: true,
 	}
 }
 
@@ -4130,9 +4133,11 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// It prevents IP fragmentation on modern networks
 	//opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
 
-	opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
-	// You can reuse a global EDE struct here IF it is never modified
-	opt.Option = []dns.EDNS0{ede}
+	if s.config.UseEDEInBlockedReply {
+		opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
+		// You can reuse a global EDE struct here IF it is never modified
+		opt.Option = []dns.EDNS0{ede}
+	}
 
 	msg.Extra = append(msg.Extra, opt)
 

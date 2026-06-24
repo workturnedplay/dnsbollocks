@@ -31,6 +31,7 @@
   "block_aaaa_as_empty_noerror": true,
   "allow_https_if_a_allowed": true,
   "remove_https_ipv4_hints": true,
+  "use_ede_in_blocked_reply": true,
   "webui_password_hash": "$2a$10$Nll0qnxtOwMYPW30QDgl2.u3hD2CQywRPIcNwIrVKx.EhOaxliqku",
   "webui_use_tls": true,
   "client_tcp_timeout_sec": 5,
