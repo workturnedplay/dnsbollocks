@@ -5128,6 +5128,20 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
+// Add this helper to Server
+func (s *Server) tryAddBlacklistIP(n *net.IPNet) bool {
+	s.responseBlacklistMu.Lock()
+	defer s.responseBlacklistMu.Unlock()
+
+	for _, existing := range s.responseBlacklist {
+		if existing.String() == n.String() {
+			return false // Already exists
+		}
+	}
+	s.responseBlacklist = append(s.responseBlacklist, n)
+	return true // Added successfully
+}
+
 func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data := map[string]any{
@@ -5158,20 +5172,31 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 				}
 
 				if n != nil {
-					exists := false
-					s.responseBlacklistMu.Lock()
-					for _, existing := range s.responseBlacklist {
-						if existing.String() == n.String() {
-							exists = true
-							break
-						}
-					}
-					if !exists {
-						s.responseBlacklist = append(s.responseBlacklist, n)
-					}
-					s.responseBlacklistMu.Unlock()
+					// exists := false
+					// func() {
+					// 	s.responseBlacklistMu.Lock()
+					// 	defer s.responseBlacklistMu.Unlock()
+					// 	for _, existing := range s.responseBlacklist {
+					// 		if existing.String() == n.String() {
+					// 			exists = true
+					// 			break
+					// 		}
+					// 	}
+					// 	if !exists {
+					// 		s.responseBlacklist = append(s.responseBlacklist, n)
+					// 	}
+					// }()
 
-					if !exists {
+					// if !exists {
+					// 	if err := s.saveResponseBlacklist(); err != nil {
+					// 		s.logFatal("failed to save response blacklist after add from webUI", err)
+					// 	}
+					// 	// Instantly evict cached entries that contain the newly blacklisted IP
+					// 	s.invalidateCacheForBlacklistedIPs()
+					// }
+
+					// Using the clean add helper method with natural defer unlock
+					if s.tryAddBlacklistIP(n) { //added so it didn't exist
 						if err := s.saveResponseBlacklist(); err != nil {
 							s.logFatal("failed to save response blacklist after add from webUI", err)
 						}
@@ -5185,26 +5210,61 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 			}
 		} else if action == "delete" {
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
-			deleted := false
-
-			s.responseBlacklistMu.Lock()
-			for i, existing := range s.responseBlacklist {
-				if existing.String() == cidrStr {
-					s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
-					deleted = true
-					break
-				}
-			}
-			s.responseBlacklistMu.Unlock()
-
-			if deleted {
+			// Using the clean delete helper method with natural defer unlock
+			if s.tryDeleteBlacklistIP(cidrStr) { //it got deleted
 				if err := s.saveResponseBlacklist(); err != nil {
 					s.logFatal("failed to save response blacklist after delete from webUI", err)
 				}
 			}
+
+			// deleted := false
+			// s.responseBlacklistMu.Lock()
+			// for i, existing := range s.responseBlacklist {
+			// 	if existing.String() == cidrStr {
+			// 		s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
+			// 		deleted = true
+			// 		break
+			// 	}
+			// }
+			// s.responseBlacklistMu.Unlock()
+			// if deleted {
+			// 	if err := s.saveResponseBlacklist(); err != nil {
+			// 		s.logFatal("failed to save response blacklist after delete from webUI", err)
+			// 	}
+			// }
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	}
+}
+
+// tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
+// Returns true if the target was found and deleted, false otherwise.
+func (s *Server) tryDeleteBlacklistIP(cidrStr string) bool {
+	s.responseBlacklistMu.Lock()
+	defer s.responseBlacklistMu.Unlock()
+
+	for i, existing := range s.responseBlacklist {
+		if existing.String() == cidrStr {
+			s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Add this helper to Server
+func (s *Server) checkBlacklistMatches(n *net.IPNet) []string {
+	s.responseBlacklistMu.RLock()
+	defer s.responseBlacklistMu.RUnlock()
+
+	var matches []string
+	for _, existing := range s.responseBlacklist {
+		// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
+		if existing.String() == n.String() || existing.Contains(n.IP) {
+			matches = append(matches, existing.String())
+		}
+	}
+	return matches
 }
 
 func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -5231,16 +5291,17 @@ func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Re
 
 	var matches []string
 	if n != nil {
-		func() {
-			s.responseBlacklistMu.RLock()
-			defer s.responseBlacklistMu.RUnlock()
-			for _, existing := range s.responseBlacklist {
-				// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
-				if existing.String() == n.String() || existing.Contains(n.IP) {
-					matches = append(matches, existing.String())
-				}
-			}
-		}()
+		// func() {
+		// 	s.responseBlacklistMu.RLock()
+		// 	defer s.responseBlacklistMu.RUnlock()
+		// 	for _, existing := range s.responseBlacklist {
+		// 		// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
+		// 		if existing.String() == n.String() || existing.Contains(n.IP) {
+		// 			matches = append(matches, existing.String())
+		// 		}
+		// 	}
+		// }()
+		matches = s.checkBlacklistMatches(n)
 	}
 
 	// Return array of matching filters to frontend
