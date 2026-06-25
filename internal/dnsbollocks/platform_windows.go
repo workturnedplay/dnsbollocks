@@ -2963,14 +2963,28 @@ func (s *Server) startDNSListener(addr string) {
 			}()
 			s.logger.Info("UDP DNS listening success", slog.String("addr", addr))
 
-			//buf := make([]byte, 512+512)
-			// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
-			buf := make([]byte, s.config.DNSUDPBufferSize)
+			// 1. Initialize the pool outside the loop
+			udpPool := sync.Pool{
+				//Zero-Allocation Happy Path: Reading an incoming packet, processing it, and handling it in a goroutine now requires zero new heap allocations for the packet data.
+				//Thread Safety: Because each goroutine gets its own buffer straight from the pool, there are no race conditions with the ReadFromUDP loop overwriting data while the goroutine parses it.
+				//Memory Bound: Under high bursts, the pool will scale up automatically to handle concurrent connections, but once traffic settles, the Go runtime will garbage collect the unused buffered slices in the pool automatically.
+				New: func() any {
+					//buf := make([]byte, 512+512)
+					// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
+					b := make([]byte, s.config.DNSUDPBufferSize)
+					return &b // Return a pointer to avoid interface conversion allocation
+				},
+			}
 
 			//TheFor:
 			for {
+				// 2. Grab a buffer pointer from the pool
+				bufPtr := udpPool.Get().(*[]byte)
+				buf := *bufPtr
+
 				n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
 				if err2 != nil {
+					udpPool.Put(bufPtr) // Return buffer on error
 					select {
 					case <-s.ctx.Done():
 						// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
@@ -2997,14 +3011,15 @@ func (s *Server) startDNSListener(addr string) {
 				)
 
 				if n > len(buf) {
+					udpPool.Put(bufPtr) // Clean up before panicking
 					panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
 				}
 
 				//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
 
-				// Create a distinct copy for the background worker
-				wireCopy := make([]byte, n)
-				copy(wireCopy, buf[:n])
+				// // Create a distinct copy for the background worker
+				// wireCopy := make([]byte, n)
+				// copy(wireCopy, buf[:n])
 
 				pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
 				// wincoe.Smashy()
@@ -3016,10 +3031,11 @@ func (s *Server) startDNSListener(addr string) {
 				//go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
 				// TRACK INDIVIDUAL REQUESTS:
 				s.shutdownWG.Add(1)
-				go func(pCtx context.Context, data []byte, addr *net.UDPAddr, ln *net.UDPConn) {
+				go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn) {
 					defer s.shutdownWG.Done()
+					defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
 					s.handleUDP(pCtx, data, addr, ln)
-				}(udpPacketCtx, wireCopy, clientAddr, udpLn)
+				}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn)
 			} //infinite 'for'
 		}()
 	} // else
