@@ -5128,12 +5128,133 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
+func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		data := map[string]any{
+			"Page":              "response-blacklist",
+			"ResponseBlacklist": s.getResponseBlacklist(),
+		}
+		s.renderTemplate(w, r, "response-blacklist", data)
+		return
+	}
+
+	if r.Method == "POST" {
+		action := r.FormValue("action")
+
+		if action == "add" {
+			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
+			if cidrStr != "" {
+				_, n, err := net.ParseCIDR(cidrStr)
+				if err != nil {
+					// Fallback: if they just enter an IP, auto-convert it to CIDR
+					ip := net.ParseIP(cidrStr)
+					if ip != nil {
+						if ip.To4() != nil {
+							_, n, _ = net.ParseCIDR(cidrStr + "/32")
+						} else {
+							_, n, _ = net.ParseCIDR(cidrStr + "/128")
+						}
+					}
+				}
+
+				if n != nil {
+					exists := false
+					s.responseBlacklistMu.Lock()
+					for _, existing := range s.responseBlacklist {
+						if existing.String() == n.String() {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						s.responseBlacklist = append(s.responseBlacklist, n)
+					}
+					s.responseBlacklistMu.Unlock()
+
+					if !exists {
+						if err := s.saveResponseBlacklist(); err != nil {
+							s.logFatal("failed to save response blacklist after add from webUI", err)
+						}
+						// Instantly evict cached entries that contain the newly blacklisted IP
+						s.invalidateCacheForBlacklistedIPs()
+					}
+				} else {
+					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
+					return
+				}
+			}
+		} else if action == "delete" {
+			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
+			deleted := false
+
+			s.responseBlacklistMu.Lock()
+			for i, existing := range s.responseBlacklist {
+				if existing.String() == cidrStr {
+					s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
+					deleted = true
+					break
+				}
+			}
+			s.responseBlacklistMu.Unlock()
+
+			if deleted {
+				if err := s.saveResponseBlacklist(); err != nil {
+					s.logFatal("failed to save response blacklist after delete from webUI", err)
+				}
+			}
+		}
+		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
+	}
+}
+
+func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	cidrStr := strings.TrimSpace(r.URL.Query().Get("cidr"))
+	if cidrStr == "" {
+		w.Write([]byte(`{"matches":[]}`))
+		return
+	}
+
+	// Parse incoming string to a network block
+	_, n, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		ip := net.ParseIP(cidrStr)
+		if ip != nil {
+			if ip.To4() != nil {
+				_, n, _ = net.ParseCIDR(cidrStr + "/32")
+			} else {
+				_, n, _ = net.ParseCIDR(cidrStr + "/128")
+			}
+		}
+	}
+
+	var matches []string
+	if n != nil {
+		func() {
+			s.responseBlacklistMu.RLock()
+			defer s.responseBlacklistMu.RUnlock()
+			for _, existing := range s.responseBlacklist {
+				// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
+				if existing.String() == n.String() || existing.Contains(n.IP) {
+					matches = append(matches, existing.String())
+				}
+			}
+		}()
+	}
+
+	// Return array of matching filters to frontend
+	json.NewEncoder(w).Encode(map[string][]string{"matches": matches})
+}
+
 func (s *Server) startWebUI(addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.statsHandler)
 	mux.HandleFunc("/rules", s.rulesHandler)
 	mux.HandleFunc("/hosts", s.hostsHandler)
 	mux.HandleFunc("/blocks", s.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
+	mux.HandleFunc("/response-blacklist", s.responseBlacklistHandler)
+	mux.HandleFunc("/response-blacklist/check", s.responseBlacklistCheckHandler)
 	mux.HandleFunc("/logs", s.logsHandler)
 	mux.HandleFunc("/logs_queries", s.logsQueriesHandler)
 	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint

@@ -132,6 +132,7 @@
     <nav>
     <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Hosts</a> | 
     <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | 
+    <a href="/response-blacklist" {{if eq .Page "response-blacklist" }}class="active"{{end}}>Response Blacklist</a> | 
     <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
     </nav>
     <hr>
@@ -143,6 +144,8 @@
         {{template "hosts" .}}
     {{else if eq .Page "blocks"}}
         {{template "blocks" .}}
+    {{else if eq .Page "response-blacklist"}}
+        {{template "response-blacklist" .}}
     {{else if eq .Page "logs"}}
         {{template "logs" .}}
     {{else}}
@@ -817,4 +820,96 @@
     <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333;">
         <pre style="max-height: 600px; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all; font-family: 'Consolas', monospace; font-size: 0.9em; color: #dcdcdc;">{{if .Content}}{{.Content}}{{else}}No log entries found.{{end}}</pre>
     </div>
+{{end}}
+
+{{define "response-blacklist"}}
+    <h2>Response Blacklist IPs</h2>
+    
+    <div style="margin-bottom: 20px;">
+        <form id="add-blacklist-form" method="POST" action="/response-blacklist" style="display: flex; gap: 10px;">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="action" value="add">
+            <input type="text" name="cidr" placeholder="e.g. 192.168.1.5 or 10.0.0.0/8" required style="flex: 1; max-width: 300px;">
+            <button type="submit">Add IP / CIDR</button>
+        </form>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>IP / CIDR Block</th>
+                <th style="width: 100px; text-align: center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .ResponseBlacklist}}
+            <tr>
+                <td>{{.}}</td>
+                <td style="text-align: center;">
+                    <form method="POST" action="/response-blacklist" style="margin: 0;">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="cidr" value="{{.}}">
+                        <button type="submit" style="background-color: #a80000; color: white;" onclick="return confirm('Remove {{.}} from blacklist?');">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="2" style="text-align: center; color: #888;">No blacklisted response IPs configured.</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+
+    <script>
+    document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
+        e.preventDefault(); // Stop form from auto-posting immediately
+        
+        const form = this;
+        const cidrInput = form.querySelector('input[name="cidr"]');
+        const cidrValue = cidrInput.value.trim();
+        
+        if (!cidrValue) return;
+
+        try {
+            const response = await fetch(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
+            if (response.ok) {
+                const data = await response.json();
+                
+                if (data.matches && data.matches.length > 0) {
+                    // Double-ask user confirmation showing exact matching filters
+                    const message = `This target is already covered or matched by these existing filters:\n• ` + 
+                                    data.matches.join('\n• ') + 
+                                    `\n\nDo you still want to add it as a separate redundant entry?`;
+                    
+                    if (!confirm(message)) {
+                        return; // User clicked "Cancel" -> abort
+                    }
+                }
+            }
+        } catch (err) {
+            // const msg = `Validation check failed (you must allow "fetch"(under "Custom") in NoScript Firefox extension), err: ${err}`;
+            // console.error(msg);
+            // alert(msg);
+            // return;
+            const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
+                        `Error details: ${err}\n\n` +
+                        `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
+            
+            console.error(msg);
+            
+            // If user clicks "Cancel" (No), abort form submission.
+            // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
+            if (!confirm(msg)) {
+                console.log("chose to NOT add it without validation, cidrValue="+cidrValue)
+                return; 
+            } else {
+                console.log("chose to add it without validation, cidrValue="+cidrValue)
+            }
+        }
+        
+        form.submit(); // User clicked "OK" or check passed -> fire native submission
+    });
+    </script>
 {{end}}
