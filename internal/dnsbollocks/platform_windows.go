@@ -998,7 +998,7 @@ func (s *Server) loadQueryWhitelist() error {
 		s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
 		for typ, rules := range rulesByType {
 			var cleaned []RuleEntry
-			//seenIDs := make(map[string]struct{}, len(rules))
+			seenPatterns := make(map[string]struct{}, len(rules)) // only per DNS type ie. A, AAAA, HTTPS
 			for i := range rules {
 				r := &rules[i]
 				// XXX: it may not have an ID set at this point
@@ -1013,6 +1013,7 @@ func (s *Server) loadQueryWhitelist() error {
 					r.ID = nid
 					changed++
 				}
+				//checks against all DNS types not just in 'typ'
 				if _, duplicate := seenIDs[r.ID]; duplicate {
 					s.logger.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
 					removed++
@@ -1044,6 +1045,17 @@ func (s *Server) loadQueryWhitelist() error {
 					removed++
 					continue // Purges/omits it from being appended to cleaned slice
 				}
+
+				if _, dup := seenPatterns[r.Pattern]; dup {
+					s.logger.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
+						slog.String("id", r.ID),
+						slog.String("pattern", r.Pattern),
+						slog.String("type", typ),
+					)
+					removed++
+					continue
+				}
+				seenPatterns[r.Pattern] = struct{}{}
 
 				cleaned = append(cleaned, *r)
 			}
