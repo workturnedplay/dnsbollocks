@@ -1,9 +1,8 @@
-* must fix (done 1,2,3,5; todomeh: 4): https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d/c/6a3cd4f7-70fc-83eb-97a1-0df396962579
 * update the noscript to say the buttons for add/edit/delete won't work without js
 * make add/edit/delete work without javascript? in webUI
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 * make webUI entry for response blacklist IPs, like /rules and /hosts exists, note that /blocks is for recently blocked hosts quick-unblock
-* improvements for v0.0.6 (did 1,2,4,5,6) : https://gemini.google.com/app/8fba2ee635340715
+* improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
 * handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
 * check added rules to not allow hosts that aren't valid like "=accounts.google.com"
@@ -20,6 +19,7 @@
 
 
 done:
+//* must fix in 0.1.4 (done 1,2,3,5; todomeh: 4): https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d/c/6a3cd4f7-70fc-83eb-97a1-0df396962579
 //* improvements for v0.1.2 (did 1,2,3,4,5):  https://gemini.google.com/app/0de925e7cdafd374 aka https://gemini.google.com/app/eff5f612c6d47b9e
 //* state the value of newly added config.json key/defaults when logging it
 //* invalidate cache for edited/delete whitelist/blacklist/hosts rules
