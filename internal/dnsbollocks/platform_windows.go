@@ -5197,24 +5197,33 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 
 					// Using the clean add helper method with natural defer unlock
 					if s.tryAddBlacklistIP(n) { //added so it didn't exist
+						s.logger.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
 						if err := s.saveResponseBlacklist(); err != nil {
 							s.logFatal("failed to save response blacklist after add from webUI", err)
 						}
 						// Instantly evict cached entries that contain the newly blacklisted IP
 						s.invalidateCacheForBlacklistedIPs()
+					} else {
+						s.logger.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
 					}
 				} else {
+					s.logger.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
 					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
 					return
 				}
+			} else {
+				s.logger.Warn("Failed to add IP/CIDR to blacklist: empty input")
 			}
 		} else if action == "delete" {
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			// Using the clean delete helper method with natural defer unlock
 			if s.tryDeleteBlacklistIP(cidrStr) { //it got deleted
+				s.logger.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
 				if err := s.saveResponseBlacklist(); err != nil {
 					s.logFatal("failed to save response blacklist after delete from webUI", err)
 				}
+			} else {
+				s.logger.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
 			}
 
 			// deleted := false
@@ -5232,6 +5241,8 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 			// 		s.logFatal("failed to save response blacklist after delete from webUI", err)
 			// 	}
 			// }
+		} else {
+			s.logger.Warn("Response blacklist handler received unknown action", slog.String("action", action))
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	}
@@ -5545,15 +5556,18 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			typ := r.FormValue("type")
 
 			if id == "" || typ == "" {
+				s.logger.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
 			}
 			if err := validateDNSType(typ); err != nil {
+				s.logger.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			// id is a UUID used only as a map key; sanitize it against injection just in case.
 			if _, modified := sanitizeDomainInput(id); modified {
+				s.logger.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
@@ -5585,12 +5599,14 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}() // lock released here
 			if deleted {
+				s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
 				if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
 					s.logFatal("failed to save whitelist after rule deletion from webUI", err)
 				}
 				http.Redirect(w, r, "/rules", http.StatusSeeOther)
 				return
 			} else {
+				s.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, "rule not found", http.StatusNotFound)
 				return
 			}
@@ -5603,21 +5619,25 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 		if patternLowercased == "" || typ == "" {
+			s.logger.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
 		}
 
 		if err := validateDNSType(typ); err != nil {
+			s.logger.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := validateRulePattern(patternLowercased); err != nil {
+			s.logger.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// id, if present, is a UUID; guard it the same way as in the delete path.
 		if id != "" { //aka is this an EDIT attempt?
 			if _, modified := sanitizeDomainInput(id); modified {
+				s.logger.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
@@ -5755,12 +5775,13 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				// Replaces all the manual make() and copy() steps with your new helper function
 				s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
 				s.invalidateCacheForPattern(patternLowercased)
-				s.logger.Info("Rule added via WebUI", slog.String("pattern", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
+				s.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
 			}
 			return nil
 		}() // lock released here
 		// Handle any error returned by the thread-safe operations
 		if err != nil {
+			s.logger.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -5944,11 +5965,13 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("delete") == "1" {
 			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
 			if pattern == "" {
+				s.logger.Warn("Failed to delete local host: pattern required")
 				http.Error(w, "pattern required for delete", http.StatusBadRequest)
 				return
 			}
 
 			if err := validateRulePattern(pattern); err != nil {
+				s.logger.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -5967,6 +5990,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			}()
 
 			if deleted {
+				s.logger.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
 				// --- NEW: Invalidate the cache for the deleted pattern ---
 				s.invalidateCacheForPattern(pattern)
 
@@ -5976,6 +6000,8 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 				return
 			}
+
+			s.logger.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
 			http.Error(w, "host not found", http.StatusNotFound)
 			return
 		}
@@ -5986,18 +6012,21 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		isEdit := r.FormValue("edit") == "1"
 
 		if pattern == "" {
+			s.logger.Warn("Failed to add/edit local host: hostname required")
 			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
 			return
 		}
 		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 
 		if err := validateRulePattern(pattern); err != nil {
+			s.logger.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// old_pattern (edit path) needs the same check.
 		if isEdit && oldPattern != "" {
 			if err := validateRulePattern(oldPattern); err != nil {
+				s.logger.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
 				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6013,12 +6042,14 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			if ip := net.ParseIP(ipStr); ip != nil {
 				netIPs = append(netIPs, ip)
 			} else {
+				s.logger.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
 				http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
 				return
 			}
 		}
 
 		if len(netIPs) == 0 {
+			s.logger.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
 			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
 			return
 		}
@@ -6059,6 +6090,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		if conflictErr {
+			s.logger.Warn("Failed to add/edit local host: pattern already exists", slog.String("pattern", pattern))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
@@ -6072,6 +6104,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
 		s.invalidateCacheForPattern(pattern)
 		// -------------------------------
+		s.logger.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
 
 		if err := s.saveLocalHosts(); err != nil {
 			s.logFatal("failed to save local hosts after add/edit", err)
@@ -6205,7 +6238,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 							if rule.Enabled {
 								s.whitelist[typ][i].Enabled = false //XXX: mutates in place
 								successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-								s.logger.Info("Quick re-block: paused existing rule",
+								s.logger.Info("Quick re-block via WebUI: paused existing rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
 								s.invalidateCacheForPattern(domainLowercased)
@@ -6222,13 +6255,13 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 							if !rule.Enabled {
 								s.whitelist[typ][i].Enabled = true //XXX: mutates in place
 								successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-								s.logger.Info("Quick unblock: enabled existing paused rule",
+								s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
 								s.invalidateCacheForPattern(domainLowercased)
 							} else {
 								successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-								s.logger.Info("Quick unblock: ignored, rule is already active",
+								s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
 							}
@@ -6249,12 +6282,13 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
 
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-						s.logger.Info("Quick unblock: added new rule(ie. didn't already exist)",
+						s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
 						s.invalidateCacheForPattern(domainLowercased)
 					}
 				} else {
+					s.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 					// Reject any unauthorized or malformed action values
 					http.Error(w, "Invalid action specified", http.StatusBadRequest)
 					return
@@ -6282,6 +6316,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		// 	"Blocks":       getRecentBlocksCopy(),
 		// 	"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
 		// }
+		s.logger.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
 
 		// renderTemplate(w, "blocks", data)
 		errMsg := "Failed to process unblock request. " + payloadDetails

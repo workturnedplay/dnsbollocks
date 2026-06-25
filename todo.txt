@@ -1,5 +1,4 @@
 todo:
-* ensure add/edit/delete (success or fail too) of rules/hosts etc. are s.logger-ed (many aren't at all currently)
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 * make the webUI entry for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
@@ -21,8 +20,8 @@ no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 
 
-
 done:
+//* ensure add/edit/delete (success or fail too) of rules/hosts etc. are s.logger-ed (many aren't at all currently)
 //* check added rules to not allow hosts that aren't valid like "=accounts.google.com"
 //* things to fix in v0.1.7 (done: 1,2,3,4,5): https://gemini.google.com/app/5ed11f7e85922bd6
 //* make webUI entry for response blacklist IPs, like /rules and /hosts exists, note that /blocks is for recently blocked hosts quick-unblock
