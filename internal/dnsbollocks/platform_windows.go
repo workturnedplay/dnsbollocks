@@ -114,8 +114,11 @@ type Config struct {
 	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
 	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
 
-	WebUIPasswordHash string `json:"webui_password_hash"`
-	WebUIUseTLS       bool   `json:"webui_use_tls"`
+	WebUIPasswordHash        string `json:"webui_password_hash"`
+	WebUIUseTLS              bool   `json:"webui_use_tls"`
+	WebUIMaxLoginFailures    int    `json:"webui_max_login_failures"`
+	WebUILoginLockoutSec     int    `json:"webui_login_lockout_sec"`
+	MaxConcurrentDNSTCPConns int    `json:"max_concurrent_dns_tcp_conns"`
 
 	// Network & Connection Limits
 	ClientTCPTimeoutSec           int `json:"client_tcp_timeout_sec"`
@@ -180,6 +183,11 @@ type Server struct {
 	recentBlocksMap  map[string]*list.Element
 	blockMutex       sync.Mutex
 
+	loginMu      sync.Mutex
+	loginRecords map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
+
+	dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
+
 	// HTTP/DoH state
 	dohCert           tls.Certificate   // Loaded once for DoH listener
 	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
@@ -206,10 +214,12 @@ func NewServer(logger *slog.Logger) *Server {
 		whitelist:        make(map[string][]RuleEntry),
 		recentBlocksList: list.New(),
 		recentBlocksMap:  make(map[string]*list.Element),
-		errChan:          make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
-		stats:            expvar.NewInt("blocks"),
-		ctx:              ctx,
-		cancel:           cancel,
+		loginRecords:     make(map[string]*loginRecord),
+		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
+		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
+		stats:   expvar.NewInt("blocks"),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 }
 
@@ -1114,15 +1124,18 @@ func defaultConfig() Config {
 		BlacklistFile: "response_blacklist.json",
 		HostsFile:     "hosts2ip.json",
 
-		LogQueriesFile:          "queries.log",
-		LogErrorsFile:           "dnsbollocks.log",
-		ConsoleLogLevel:         "info",
-		LogMaxSizeMB:            4095, // Rotation threshold
-		AllowRunAsAdmin:         false,
-		BlockAAAAasEmptyNoError: true,
-		AllowHTTPSIfAAllowed:    true,
-		RemoveHTTPSIPv4Hints:    true,
-		WebUIUseTLS:             true,
+		LogQueriesFile:           "queries.log",
+		LogErrorsFile:            "dnsbollocks.log",
+		ConsoleLogLevel:          "info",
+		LogMaxSizeMB:             4095, // Rotation threshold
+		AllowRunAsAdmin:          false,
+		BlockAAAAasEmptyNoError:  true,
+		AllowHTTPSIfAAllowed:     true,
+		RemoveHTTPSIPv4Hints:     true,
+		WebUIUseTLS:              true,
+		WebUIMaxLoginFailures:    5,
+		WebUILoginLockoutSec:     5 * 60, // 5 minutes, in seconds
+		MaxConcurrentDNSTCPConns: 50,
 
 		// Centralized Network Parameter Defaults
 
@@ -1630,6 +1643,13 @@ type BlockedQuery struct {
 	IsUnblocked bool      `json:"-"` // dynamically set for the UI
 }
 
+// loginRecord tracks failed WebUI login attempts for a single client IP.
+// All fields are guarded by Server.loginMu.
+type loginRecord struct {
+	failures    int       // consecutive failures in the current window
+	lockedUntil time.Time // zero value means no active lockout
+}
+
 /*
 NOTES:
 DNS query uses only the ASCII form:
@@ -2085,11 +2105,25 @@ func (s *Server) loadConfig() error {
 		s.logger.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
 	}
 
+	if s.config.WebUIMaxLoginFailures <= 0 {
+		s.config.WebUIMaxLoginFailures = 5
+		s.logger.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
+	}
+	if s.config.WebUILoginLockoutSec <= 0 {
+		s.config.WebUILoginLockoutSec = 300
+		s.logger.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
+	}
+	if s.config.MaxConcurrentDNSTCPConns <= 0 {
+		s.config.MaxConcurrentDNSTCPConns = 50
+		s.logger.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
+	}
+
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
 	for i := len(s.config.SNIHostnames); i < len(s.config.UpstreamURLs); i++ {
 		host, err2 := hostFromURL(s.config.UpstreamURLs[i])
 		if err2 != nil {
-			return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
+			s.logger.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
+			return fmt.Errorf("invalid1 upstream URL at index %d: %w", i, err2)
 		}
 		s.config.SNIHostnames = append(s.config.SNIHostnames, host)
 		shouldSaveConfig = true
@@ -2098,6 +2132,7 @@ func (s *Server) loadConfig() error {
 		if s.config.SNIHostnames[i] == "" {
 			host, err2 := hostFromURL(s.config.UpstreamURLs[i])
 			if err2 != nil {
+				s.logger.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
 				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
 			}
 			s.config.SNIHostnames[i] = host
@@ -2986,6 +3021,7 @@ func (s *Server) startDNSListener(addr string) {
 		s.shutdown(1)
 		//os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
 	} else {
+
 		s.shutdownWG.Add(1) // +1 for the Main UDP Loop
 
 		go func() { //we won't be blocking here.
@@ -3106,6 +3142,20 @@ func (s *Server) startDNSListener(addr string) {
 		s.logger.Error("TCP bind/listen failed", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1)
 	} else {
+		// ── Semaphore init ───────────────────────────────────────────────────
+		// Must happen before the accept goroutine starts so every Accept() can
+		// immediately check capacity.  loadConfig has already validated the
+		// value, but defend against a zero here just in case.
+		tcpMaxConns := s.config.MaxConcurrentDNSTCPConns
+		if tcpMaxConns <= 0 {
+			const constTCPMaxConns = 50
+			tcpMaxConns = constTCPMaxConns
+			s.logger.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
+		}
+		s.dnsTCPSem = make(chan struct{}, tcpMaxConns)
+		s.logger.Debug("DNS TCP concurrent-connection limit initialised",
+			slog.Int("max_concurrent", tcpMaxConns))
+
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		s.shutdownWG.Add(1) // +1 for the Main TCP Loop
 		go func() {
@@ -3178,6 +3228,22 @@ func (s *Server) startDNSListener(addr string) {
 					} // select
 				} // if err
 
+				// ── Concurrent-connection gate ───────────────────────────────
+				// Non-blocking try: if all slots are occupied, close the new
+				// connection immediately rather than queuing another goroutine.
+				// This bounds memory and goroutine count under idle-scanner load.
+				select {
+				case s.dnsTCPSem <- struct{}{}:
+					// Slot acquired; fall through.
+				default:
+					s.logger.Warn("DNS TCP connection limit reached; rejecting new connection",
+						slog.Int("max_concurrent", cap(s.dnsTCPSem)),
+						SafeAddr("rejected_client", conn.RemoteAddr()),
+					)
+					conn.Close()
+					continue
+				}
+
 				tcpPacketCtx := s.ctx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
 				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
@@ -3187,11 +3253,12 @@ func (s *Server) startDNSListener(addr string) {
 					SafeAddr("clientAddr", clientAddr),
 				)
 				if !ok {
+					//FIXME: when can this happen?!
 					s.logger.Warn("could not cast remote addr to TCPAddr",
 						//slog.String("addr", conn.RemoteAddr().String()),
 						SafeAddr("addr", conn.RemoteAddr()),
 					)
-					//FIXME: when can this happen?!
+					// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
 				} else {
 					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 					// 2. Call your new TCP PID/Exe helper
@@ -3213,7 +3280,8 @@ func (s *Server) startDNSListener(addr string) {
 				// TRACK INDIVIDUAL CONNECTIONS:
 				s.shutdownWG.Add(1)
 				go func(c net.Conn, pCtx context.Context) {
-					defer s.shutdownWG.Done() // This fires when handleTCP returns
+					defer s.shutdownWG.Done()        // This fires when handleTCP returns
+					defer func() { <-s.dnsTCPSem }() // always release the slot
 					defer c.Close()
 					s.handleTCP(pCtx, c)
 				}(conn, tcpPacketCtx)
@@ -3361,10 +3429,23 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	const TWO = 2
 	buf := make([]byte, TWO)
 	if n, err := io.ReadFull(conn, buf); err != nil {
-		s.logger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n),
-			slog.Int("wanted_to_read_bytes", TWO), slog.String("timeout", timeoutDuration.String() /*not nil*/))
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			s.logger.Warn("DNS TCP: client connected but sent no data before deadline "+
+				"(idle connection, port scanner, or client that opened then abandoned)",
+				SafeAddr("client", conn.RemoteAddr()),
+				slog.Duration("read_timeout", timeoutDuration),
+			)
+		} else {
+			s.logger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored",
+				SafeErr(err),
+				slog.Int("read_bytes", n),
+				slog.Int("wanted_to_read_bytes", TWO),
+				slog.String("timeout", timeoutDuration.String() /*not nil*/),
+			)
+		}
 		return
 	}
+
 	length := int(binary.BigEndian.Uint16(buf))
 	if length > s.config.DoHMaxRequestBodyBytes || length == 0 { // Edge: Oversize packet
 		s.logger.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Int("max", maxDNSTCPPacketSize),
@@ -5155,7 +5236,7 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 	if r.Method == "POST" {
 		action := r.FormValue("action")
 
-		if action == "add" {
+		if action == "add" { //FIXME: could use tagged switch on action QF1003 default
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			if cidrStr != "" {
 				_, n, err := net.ParseCIDR(cidrStr)
@@ -6718,30 +6799,182 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	return string(hash), nil
 }
 
+// isLoginAllowed reports whether the given client IP is currently permitted
+// to attempt WebUI authentication.
+//
+// Returns:
+//   - allowed: false when the IP is within an active lockout window.
+//   - attemptsRemaining: failures still allowed before lockout (0 if locked).
+//   - lockedUntil: when the lockout expires (zero if not locked).
+//
+// Expired lockout windows are reset lazily on the first call after expiry.
+func (s *Server) isLoginAllowed(clientIP string) (allowed bool, attemptsRemaining int, lockedUntil time.Time) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+
+	rec, ok := s.loginRecords[clientIP]
+	if !ok {
+		return true, s.config.WebUIMaxLoginFailures, time.Time{}
+	}
+
+	now := time.Now()
+
+	// Still within an active lockout window?
+	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+		return false, 0, rec.lockedUntil
+	}
+
+	// Lockout has expired: lazily reset so subsequent checks start clean.
+	if !rec.lockedUntil.IsZero() {
+		rec.failures = 0
+		rec.lockedUntil = time.Time{}
+	}
+
+	remaining := s.config.WebUIMaxLoginFailures - rec.failures
+	if remaining < 0 {
+		remaining = 0
+	}
+	return true, remaining, time.Time{}
+}
+
+// recordLoginFailure increments the failure counter for the given IP and
+// issues a lockout if the configured threshold is reached.
+//
+// Returns:
+//   - lockedOut: true if this failure triggered (or the IP is already in) a lockout.
+//   - lockedUntil: expiry time of the lockout (zero if not locked).
+//   - totalFailures: cumulative failure count for this IP in the current window.
+func (s *Server) recordLoginFailure(clientIP string) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+
+	now := time.Now()
+
+	rec, ok := s.loginRecords[clientIP]
+	if !ok {
+		rec = &loginRecord{}
+		s.loginRecords[clientIP] = rec
+	}
+
+	// Expired lockout: start a fresh window.
+	if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
+		rec.failures = 0
+		rec.lockedUntil = time.Time{}
+	}
+
+	// Already in an active lockout: report state without incrementing further.
+	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+		return true, rec.lockedUntil, rec.failures
+	}
+
+	rec.failures++
+	totalFailures = rec.failures
+
+	if rec.failures >= s.config.WebUIMaxLoginFailures {
+		rec.lockedUntil = now.Add(time.Duration(s.config.WebUILoginLockoutSec) * time.Second)
+		return true, rec.lockedUntil, totalFailures
+	}
+
+	return false, time.Time{}, totalFailures
+}
+
+// recordLoginSuccess clears any accumulated failure record for the given IP.
+// Call after every successful authentication so a legitimate user is never
+// permanently locked out due to an earlier typo streak.
+func (s *Server) recordLoginSuccess(clientIP string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	delete(s.loginRecords, clientIP)
+}
+
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Safety fallback: if somehow the hash is still blank, DON'T allow access
 		if s.config.WebUIPasswordHash == "" {
 			panic("no webUI password was set, this shouldn't be possible, dev fail?")
-			//next.ServeHTTP(w, r)
-			//return
 		}
 
+		// Extract bare IP (without port) as the per-client rate-limit key.
+		clientIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+		if splitErr != nil {
+			// r.RemoteAddr should always be host:port for TCP, but be defensive.
+			clientIP = r.RemoteAddr
+			s.logger.Warn("WebUI auth: could not split RemoteAddr into host:port",
+				slog.String("remoteAddr", r.RemoteAddr),
+				SafeErr(splitErr))
+		}
+
+		// ── Rate-limit gate ──────────────────────────────────────────────────
+		if allowed, _, lockedUntil := s.isLoginAllowed(clientIP); !allowed {
+			retryAfterSecs := int(time.Until(lockedUntil).Seconds()) + 1
+			s.logger.Warn("WebUI login rejected: IP is rate-limited",
+				slog.String("clientIP", clientIP),
+				slog.Time("locked_until", lockedUntil),
+				slog.Int("retry_after_sec", retryAfterSecs),
+			)
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSecs))
+			http.Error(w, "429 Too Many Requests — Too many failed login attempts. Try again later.", http.StatusTooManyRequests)
+			return
+		}
+
+		// ── Credential check ─────────────────────────────────────────────────
 		// Extract the Basic Auth credentials provided by the browser
 		username, pass, ok := r.BasicAuth()
 		if username != "" {
-			s.logger.Warn("Username ignored.", slog.String("username", username))
+			s.logger.Warn("WebUI login: username field is not used and was ignored",
+				slog.String("username", username),
+				slog.String("clientIP", clientIP))
 		}
 
 		// Compare the provided password against our stored bcrypt hash.
 		// If headers are missing (!ok) or the password is wrong (err != nil), block them.
 		if !ok || bcrypt.CompareHashAndPassword([]byte(s.config.WebUIPasswordHash), []byte(pass)) != nil {
+			// Record the failure and get count/lockout state for logging.
+			lockedOut, newLockedUntil, totalFailures := s.recordLoginFailure(clientIP)
+
+			// Best-effort: identify the connecting process so operators can
+			// distinguish an automated brute-force tool from a human typo.
+			var pid uint32
+			var exe string
+			var pidExeLookupErr error
+			if remoteTCP, tcpErr := net.ResolveTCPAddr("tcp", r.RemoteAddr); tcpErr == nil {
+				pid, exe, pidExeLookupErr = wincoe.PidAndExeForTCP(remoteTCP)
+			}
+
+			remaining := s.config.WebUIMaxLoginFailures - totalFailures
+			if remaining < 0 {
+				remaining = 0
+			}
+
+			logAttrs := []any{
+				slog.String("clientIP", clientIP),
+				slog.Int("total_failures_this_window", totalFailures),
+				slog.Int("attempts_remaining_before_lockout", remaining),
+				slog.Uint64("pid", uint64(pid)),
+				slog.String("exe", exe),
+				SafeErr2("pid_exe_lookup_err", pidExeLookupErr),
+			}
+			if lockedOut {
+				logAttrs = append(logAttrs,
+					slog.Bool("now_locked_out", true),
+					slog.Time("locked_until", newLockedUntil),
+					slog.Int("lockout_duration_sec", s.config.WebUILoginLockoutSec),
+				)
+				s.logger.Warn("WebUI login failed — IP is now locked out", logAttrs...)
+			} else {
+				s.logger.Warn("WebUI login failed", logAttrs...)
+			}
+
 			// This header triggers the browser's native login modal
 			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
 			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 			return
 		}
 
+		// ── Success ──────────────────────────────────────────────────────────
+		// Clear any prior failure streak so a legitimate user is never stuck
+		// in a lockout after recovering from a typo run.
+		s.recordLoginSuccess(clientIP)
 		// Password is correct, let the request pass through to the target handler
 		next.ServeHTTP(w, r)
 	})

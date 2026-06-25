@@ -1,6 +1,5 @@
 todo:
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
-* let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 * make the webUI entry for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
@@ -21,6 +20,7 @@ no:
 
 
 done:
+//* let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 //* ensure add/edit/delete (success or fail too) of rules/hosts etc. are s.logger-ed (many aren't at all currently)
 //* check added rules to not allow hosts that aren't valid like "=accounts.google.com"
 //* things to fix in v0.1.7 (done: 1,2,3,4,5): https://gemini.google.com/app/5ed11f7e85922bd6
