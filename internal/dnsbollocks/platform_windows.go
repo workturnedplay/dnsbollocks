@@ -6958,6 +6958,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// FIX: Check if the browser hasn't attempted to send credentials yet
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
+			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
+			return
+		}
+
 		// ── Credential check ─────────────────────────────────────────────────
 		// Extract the Basic Auth credentials provided by the browser
 		username, pass, ok := r.BasicAuth()
@@ -6969,6 +6976,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Compare the provided password against our stored bcrypt hash.
 		// If headers are missing (!ok) or the password is wrong (err != nil), block them.
+		// Only log and record a failure if credentials were provided but are invalid
 		if !ok || bcrypt.CompareHashAndPassword([]byte(s.config.WebUIPasswordHash), []byte(pass)) != nil {
 			// Record the failure and get count/lockout state for logging.
 			lockedOut, newLockedUntil, totalFailures := s.recordLoginFailure(clientIP)
