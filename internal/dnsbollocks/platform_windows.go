@@ -6226,7 +6226,9 @@ func (s *Server) shutdown(exitCode int) {
 		// s.logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 		// os.Exit(exitCode)
 		finalShutdownSequence(s.logger, exitCode)
+		panic("BUG: shoulda been unreachable after finalShutdownSequence, which means it didn't os.Exit!")
 	})
+	panic("BUG: shoulda been unreachable after s.shutdownOnce.Do")
 }
 
 func finalShutdownSequence(logger *slog.Logger, exitCode int) {
