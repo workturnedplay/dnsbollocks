@@ -16,7 +16,7 @@
   "block_ip": "0.0.0.0",
   "qps_rate_globally": 100,
   "qps_burst_globally": 100,
-  "qps_rate_per_client": 10,
+  "qps_rate_per_client": 20,
   "qps_burst_per_client": 50,
   "cache_min_ttl": 300,
   "cache_max_entries": 10000,

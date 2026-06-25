@@ -88,7 +88,7 @@ type Config struct {
 	BlockIP               string `json:"block_ip"`                // "0.0.0.0"
 	GlobalRateQPS         int    `json:"qps_rate_globally"`       // 100
 	GlobalBurstQPS        int    `json:"qps_burst_globally"`      // 100
-	ClientRateQPS         int    `json:"qps_rate_per_client"`     // 10
+	ClientRateQPS         int    `json:"qps_rate_per_client"`     // 20
 	ClientBurstQPS        int    `json:"qps_burst_per_client"`    // 50
 	CacheMinTTL           int    `json:"cache_min_ttl"`           // 300s
 	CacheMaxEntries       int    `json:"cache_max_entries"`       // 10000
@@ -1070,7 +1070,7 @@ func defaultConfig() Config {
 		BlockIP:                 "0.0.0.0",
 		GlobalRateQPS:           100,
 		GlobalBurstQPS:          100,
-		ClientRateQPS:           10,
+		ClientRateQPS:           20,
 		ClientBurstQPS:          50,
 		CacheMinTTL:             300,
 		CacheMaxEntries:         10000,

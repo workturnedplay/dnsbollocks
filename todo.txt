@@ -1,3 +1,4 @@
+* state the value of newly added config.json key/defaults when logging it
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 * make webUI entry for response blacklist IPs, like /rules and /hosts exists, note that /blocks is for recently blocked hosts quick-unblock
 * improvements for v0.1.2 (did ):  https://gemini.google.com/app/23aee2c6ce4ba054
