@@ -277,7 +277,10 @@
                         redirect: 'manual' // Stops fetch from following the redirect in the background
                     })
                     .then(async (res) => {
-                        if (!res.ok) {
+                        // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
+                        const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
+                        
+                        if (!res.ok && !isSuccessRedirect) {
                             const errMsg = await res.text();
                             alert("Failed to save edits:\n" + errMsg);
                             return; // Halt here, do NOT reload
@@ -325,7 +328,10 @@
                         redirect: 'manual'
                     })
                     .then(async (res) => {
-                        if (!res.ok) {
+                        // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
+                        const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
+                        
+                        if (!res.ok && !isSuccessRedirect) {
                             const errMsg = await res.text();
                             alert("Failed to delete rule:\n" + errMsg);
                             return; // Halt here, do NOT reload
@@ -400,7 +406,10 @@
                     redirect: 'manual'
                 })
                 .then(async (res) => {
-                    if (!res.ok) {
+                    // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
+                    const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
+                    
+                    if (!res.ok && !isSuccessRedirect) {
                         // Extract the error string sent by Go's http.Error()
                         const errMsg = await res.text();
                         alert("Failed to add rule:\n" + errMsg);
@@ -866,7 +875,7 @@
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="cidr" value="{{.}}">
-                        <button type="submit" style="background-color: #a80000; color: white;" onclick="return confirm('Remove {{.}} from blacklist?');">Delete</button>
+                        <button type="submit" class="btn-del" onclick="return confirm('Remove {{.}} from blacklist?');">Delete</button>
                     </form>
                 </td>
             </tr>
