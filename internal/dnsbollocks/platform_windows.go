@@ -5416,7 +5416,7 @@ func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Re
 // cache" and back off quickly.
 func faviconHandler(w http.ResponseWriter, _ *http.Request) {
 	//[ ] 404 Not Found Browser retries every ~few minutes across sessions
-	//[x] 204 No Content aka http.StatusNoContent Browser backs off quickly; effectively treats it as "I hear you, there's nothing here"
+	//[x] 204 No Content aka http.StatusNoContent Browser backs off quickly; effectively treats it as "I hear you, there's nothing here", but still retries on each page (re)load
 	//[ ] 200 + actual .icoBrowser caches per Cache-Control; ideal but requires embedding an icon
 	w.WriteHeader(http.StatusNoContent)
 }

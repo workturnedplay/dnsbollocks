@@ -163,6 +163,20 @@
 
     </div>
     <script>
+    // 1. IMMEDIATE LIFTOFF: Catch extension CSP noise before DOM finishes loading
+    document.addEventListener('securitypolicyviolation', function(e) {
+        // Catch NoScript's phantom media-src warning and explain the fix
+        if (e.violatedDirective && e.violatedDirective.includes('media-src')) {
+            console.log(
+                "Notice: NoScript triggered a phantom CSP warning for 'media-src' because of the embedded dark-theme dropdown arrow SVG. " +
+                "This is harmless and can be ignored, or permanently cleared by ticking 'media' under NoScript's permissions for this page(under Custom)."+"\n"+
+                "original: "+e
+            );
+        } else {
+            console.warn(`CSP Violation: ${e.violatedDirective} blocked ${e.blockedURI}`);
+        }
+    });
+
     document.addEventListener('DOMContentLoaded', function() {
         // Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
         document.addEventListener('keydown', function(e) {
