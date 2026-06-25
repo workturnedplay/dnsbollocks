@@ -7010,8 +7010,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 					slog.Int("lockout_duration_sec", s.config.WebUILoginLockoutSec),
 				)
 				s.logger.Warn("WebUI login failed — IP is now locked out", logAttrs...)
+				//http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
+
+				//FIXME: technically I'd have to dup some code from above here to include the Retry-After
+				http.Error(w, "429 Too Many Requests — Too many failed login attempts. Try again later.", http.StatusTooManyRequests)
+				return
 			} else {
 				s.logger.Warn("WebUI login failed", logAttrs...)
+				//try again by doing the below dialog
 			}
 
 			// This header triggers the browser's native login modal
