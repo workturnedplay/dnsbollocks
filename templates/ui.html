@@ -566,7 +566,7 @@
         <td class="actions">
             <button class="btn-edit">Edit</button> 
             <form method="post" action="/rules" style="display:inline;margin-left:6px">
-                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="delete" value="1">
                 <input type="hidden" name="id" value="{{.ID}}">
                 <input type="hidden" name="type" value="{{.Type}}">
@@ -636,7 +636,7 @@
         
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="reblock">
@@ -644,7 +644,7 @@
         </form>
         {{else}}
         <form method="post" action="/blocks" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock">
@@ -690,7 +690,7 @@
                     Edit
                 </button>
                 <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <input type="hidden" name="delete" value="1">
                     <input type="hidden" name="pattern" value="{{.Pattern}}">
                     <button class="btn-del" type="submit">Delete</button>
