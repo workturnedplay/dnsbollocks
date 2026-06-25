@@ -5222,7 +5222,9 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 					s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
 				}
 				s.invalidateCacheForPattern(oldPattern)
-				s.invalidateCacheForPattern(patternLowercased)
+				if oldPattern != patternLowercased {
+					s.invalidateCacheForPattern(patternLowercased)
+				}
 				s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
 					slog.String("old_pattern", oldPattern))
 			} else { // this is an ADD new rule
@@ -5368,7 +5370,7 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 			domain := parts[0]
 			if matchPattern(pattern, domain) {
 				s.cacheStore.Delete(key)
-				s.logger.Debug("Evicted cached record due to local host rule change",
+				s.logger.Debug("Evicted cached record due to rule change",
 					slog.String("key", key),
 					slog.String("matched_pattern", pattern),
 					slog.String("domain", domain))
@@ -5376,20 +5378,6 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 		}
 	}
 }
-
-// func (s *Server) invalidateCacheForDomainPattern(pattern string) {
-// 	for key := range s.cacheStore.Items() {
-// 		parts := strings.SplitN(key, ":", 2)
-// 		if len(parts) > 0 {
-// 			domain := parts[0]
-// 			if matchPattern(pattern, domain) {
-// 				//okTODO: log what's deleted from cache here.
-// 				s.logger.Debug("Deleted key from cache", slog.String("key", key), slog.String("domain", domain), slog.String("matched_pattern", pattern))
-// 				s.cacheStore.Delete(key)
-// 			}
-// 		}
-// 	}
-// }
 
 func (s *Server) invalidateCacheForBlacklistedIPs() {
 	if s.cacheStore == nil {
