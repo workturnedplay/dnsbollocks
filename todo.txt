@@ -1,4 +1,4 @@
-* must fix (done 1,2; todo: 3,4,5): https://chatgpt.com/c/WEB:80b0e91f-c0a1-4846-b6d1-4637e83b3573
+* must fix (done 1,2,3; todo: 4,5): https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d/c/6a3cd4f7-70fc-83eb-97a1-0df396962579
 * update the noscript to say the buttons for add/edit/delete won't work without js
 * make add/edit/delete work without javascript? in webUI
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe

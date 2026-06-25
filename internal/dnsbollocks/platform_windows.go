@@ -988,15 +988,27 @@ func (s *Server) loadQueryWhitelist() error {
 		s.ruleMutex.Lock()
 		defer s.ruleMutex.Unlock()
 
+		// Count total rules for initial map capacity
+		totalRules := 0
+		for _, rules := range rulesByType {
+			totalRules += len(rules)
+		}
+		seenIDs := make(map[string]struct{}, totalRules) // global across all types
+
 		s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
 		for typ, rules := range rulesByType {
 			var cleaned []RuleEntry
-			seenIDs := make(map[string]struct{}, len(rules))
+			//seenIDs := make(map[string]struct{}, len(rules))
 			for i := range rules {
 				r := &rules[i]
 				// XXX: it may not have an ID set at this point
 				if r.ID == "" {
-					nid := s.newUniqueID(rulesByType)
+					nid := s.newUniqueID(rulesByType) // still guards against rulesByType collisions
+					// Also guard against IDs already assigned in this same load pass
+					for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
+						s.logger.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
+						nid = s.newUniqueID(rulesByType)
+					}
 					s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
 					r.ID = nid
 					changed++
