@@ -1,5 +1,6 @@
+todo:
+* ensure add/edit/delete or fail to of rules/hosts etc. are s.logger-ed (many aren't at all currently)
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
-* make edit work without javascript? in webUI; add/delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 * make the webUI entry for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added things are added at the top
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
@@ -16,6 +17,10 @@
   like in DoH Path only as: "{clientexe}"
 * link to Tinywall in readme and to Go lang to install Go.
 * add more tests, lots more
+
+no:
+* make edit work without javascript? in webUI; add/delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
+
 
 
 done:
