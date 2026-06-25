@@ -1853,6 +1853,11 @@ func (s *Server) Run() error {
 			s.failoverSelect.allFailed = false
 			s.failoverSelect.mu.Unlock()
 
+			// Clear any WebUI login lockouts so an operator who locked
+			// themselves out with a typo streak can recover via Ctrl+R
+			// without restarting the server.
+			s.clearLoginLockouts()
+
 			s.logger.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
 				slog.String("config_file", configFileName),
@@ -5400,17 +5405,53 @@ func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(map[string][]string{"matches": matches})
 }
 
+// faviconHandler serves an empty response for /favicon.ico.
+// Browsers fire this request automatically on every page load, before
+// credentials are established.  Returning 204 (rather than letting the
+// request fall through to authMiddleware) prevents phantom auth-failure
+// log entries and stops those requests from consuming failure-counter
+// slots in the login rate limiter.
+// 204 is preferred over 404 here: some browsers retry 404 favicon
+// aggressively, whereas they treat 204 as "acknowledged, nothing to
+// cache" and back off quickly.
+func faviconHandler(w http.ResponseWriter, _ *http.Request) {
+	//[ ] 404 Not Found Browser retries every ~few minutes across sessions
+	//[x] 204 No Content aka http.StatusNoContent Browser backs off quickly; effectively treats it as "I hear you, there's nothing here"
+	//[ ] 200 + actual .icoBrowser caches per Cache-Control; ideal but requires embedding an icon
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// robotsTxtHandler serves a permissive disallow-all robots.txt.
+// Like favicon.ico, browsers and crawlers may request this automatically.
+// Serving it outside auth prevents spurious failure-counter hits.
+func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+}
+
 func (s *Server) startWebUI(addr string) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.statsHandler)
-	mux.HandleFunc("/rules", s.rulesHandler)
-	mux.HandleFunc("/hosts", s.hostsHandler)
-	mux.HandleFunc("/blocks", s.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
-	mux.HandleFunc("/response-blacklist", s.responseBlacklistHandler)
-	mux.HandleFunc("/response-blacklist/check", s.responseBlacklistCheckHandler)
-	mux.HandleFunc("/logs", s.logsHandler)
-	mux.HandleFunc("/logs_queries", s.logsQueriesHandler)
-	mux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
+	// ── Inner mux: all routes that require authentication ────────────────
+	innerMux := http.NewServeMux()
+	innerMux.HandleFunc("/", s.statsHandler)
+	innerMux.HandleFunc("/rules", s.rulesHandler)
+	innerMux.HandleFunc("/hosts", s.hostsHandler)
+	innerMux.HandleFunc("/blocks", s.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
+	innerMux.HandleFunc("/response-blacklist", s.responseBlacklistHandler)
+	innerMux.HandleFunc("/response-blacklist/check", s.responseBlacklistCheckHandler)
+	innerMux.HandleFunc("/logs", s.logsHandler)
+	innerMux.HandleFunc("/logs_queries", s.logsQueriesHandler)
+	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
+
+	// ── Outer mux: browser-automatic routes that must bypass auth ────────
+	// These are requests browsers fire silently before the user has had a
+	// chance to enter credentials.  Letting them hit authMiddleware would
+	// silently burn failure-counter slots on every single page load.
+	outerMux := http.NewServeMux()
+	outerMux.HandleFunc("/favicon.ico", faviconHandler)
+	outerMux.HandleFunc("/robots.txt", robotsTxtHandler)
+	// Everything else goes through auth → CSRF → inner mux.
+	outerMux.Handle("/", s.authMiddleware(s.csrfMiddleware(innerMux)))
 
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
 	baseListener, err := net.Listen("tcp", addr) //fmt.Sprintf("%s:%d", hostOrIP, port))
@@ -5448,7 +5489,7 @@ func (s *Server) startWebUI(addr string) {
 	//uiSrv := &http.Server{Handler: mux}
 	// CHANGED: Wrap the mux in our new authMiddleware
 	//uiSrv := &http.Server{Handler: s.authMiddleware(mux)}
-	uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(mux))}
+	uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(outerMux))}
 	// BETTER APPROACH: Query the active listener for its real bound address.
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
@@ -6978,4 +7019,25 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// Password is correct, let the request pass through to the target handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// clearLoginLockouts resets ALL WebUI login failure records, including any
+// active lockouts.  Call this on operator-triggered reloads (Ctrl+R) so a
+// legitimate operator who locked themselves out with a typo streak doesn't
+// have to restart the server.
+//
+// The map is replaced rather than iterated so the operation is O(1)
+// regardless of how many IPs had recorded failures.
+func (s *Server) clearLoginLockouts() {
+	s.loginMu.Lock()
+	n := len(s.loginRecords)
+	s.loginRecords = make(map[string]*loginRecord)
+	s.loginMu.Unlock()
+
+	if n > 0 {
+		s.logger.Warn("WebUI login lockouts cleared by operator reload",
+			slog.Int("cleared_entry_count", n))
+	} else {
+		s.logger.Debug("WebUI login lockouts cleared by operator reload (none were active)")
+	}
 }
