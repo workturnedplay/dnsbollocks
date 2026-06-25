@@ -5088,6 +5088,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 							//     // Shrink the slice (wouldn't have zeroed last without the above explicit!)
 							//     whitelist[typ] = rules[:len(rules)-1]
 
+							s.invalidateCacheForPattern(rule.Pattern)
 							// Replaces the shifting copy hacks with an isolated fresh array allocation
 							s.whitelist[typ] = s.withRuleRemovedAt(rules, i)
 							deleted = true
@@ -5146,6 +5147,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				var foundOldRule bool
 				var oldType string
 				var oldIndex int
+				var oldPattern string
 
 				// 1. Find where the rule currently lives
 				for t, rules := range s.whitelist {
@@ -5154,6 +5156,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 							foundOldRule = true
 							oldType = t
 							oldIndex = i
+							oldPattern = r.Pattern
 							break
 						}
 					}
@@ -5218,7 +5221,10 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 					// 2. Prepend smoothly to the new category using your new function
 					s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
 				}
-				s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("pattern", patternLowercased), slog.Bool("enabled", enabledBool))
+				s.invalidateCacheForPattern(oldPattern)
+				s.invalidateCacheForPattern(patternLowercased)
+				s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
+					slog.String("old_pattern", oldPattern))
 			} else { // this is an ADD new rule
 				// --- ADD MODE ---
 				// Add new: Prevent duplicate (same type + pattern, case-insensitive)
@@ -5259,7 +5265,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 				// Replaces all the manual make() and copy() steps with your new helper function
 				s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
-
+				s.invalidateCacheForPattern(patternLowercased)
 				s.logger.Info("Rule added via WebUI", slog.String("pattern", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
 			}
 			return nil
@@ -5352,6 +5358,9 @@ type HostView struct {
 // invalidateCacheForPattern surgically removes any cached DNS responses
 // that match the given host pattern (handling wildcards correctly).
 func (s *Server) invalidateCacheForPattern(pattern string) {
+	if s.cacheStore == nil {
+		return
+	}
 	for key := range s.cacheStore.Items() {
 		// key format is "domain:type" (e.g., "router.local:A")
 		parts := strings.SplitN(key, ":", 2)
@@ -5361,36 +5370,45 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 				s.cacheStore.Delete(key)
 				s.logger.Debug("Evicted cached record due to local host rule change",
 					slog.String("key", key),
-					slog.String("matched_pattern", pattern))
+					slog.String("matched_pattern", pattern),
+					slog.String("domain", domain))
 			}
 		}
 	}
 }
 
-func (s *Server) invalidateCacheForDomainPattern(pattern string) {
-	for key := range s.cacheStore.Items() {
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) > 0 {
-			domain := parts[0]
-			if matchPattern(pattern, domain) {
-				//TODO: log what's deleted from cache here.
-				s.cacheStore.Delete(key)
-			}
-		}
-	}
-}
+// func (s *Server) invalidateCacheForDomainPattern(pattern string) {
+// 	for key := range s.cacheStore.Items() {
+// 		parts := strings.SplitN(key, ":", 2)
+// 		if len(parts) > 0 {
+// 			domain := parts[0]
+// 			if matchPattern(pattern, domain) {
+// 				//okTODO: log what's deleted from cache here.
+// 				s.logger.Debug("Deleted key from cache", slog.String("key", key), slog.String("domain", domain), slog.String("matched_pattern", pattern))
+// 				s.cacheStore.Delete(key)
+// 			}
+// 		}
+// 	}
+// }
 
 func (s *Server) invalidateCacheForBlacklistedIPs() {
+	if s.cacheStore == nil {
+		return
+	}
 	for key, item := range s.cacheStore.Items() {
-		packed, ok := item.Object.([]byte)
+		//packed, ok := item.Object.([]byte)
+		entry, ok := item.Object.(CacheEntry)
 		if !ok {
 			continue
 		}
-
-		msg := new(dns.Msg)
-		if err := msg.Unpack(packed); err != nil {
+		msg := entry.Msg
+		if msg == nil {
 			continue
 		}
+		//msg := new(dns.Msg)
+		// if err := msg.Unpack(packed); err != nil {
+		// 	continue
+		// }
 
 		shouldEvict := false
 		for _, rr := range msg.Answer {
@@ -5710,7 +5728,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 								s.logger.Info("Quick re-block: paused existing rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
-								s.invalidateCacheForDomainPattern(domainLowercased)
+								s.invalidateCacheForPattern(domainLowercased)
 							} else {
 								successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
 							}
@@ -5727,7 +5745,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 								s.logger.Info("Quick unblock: enabled existing paused rule",
 									slog.String("domainLowercased", domainLowercased),
 									slog.String("DNSType", typ))
-								s.invalidateCacheForDomainPattern(domainLowercased)
+								s.invalidateCacheForPattern(domainLowercased)
 							} else {
 								successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
 								s.logger.Info("Quick unblock: ignored, rule is already active",
@@ -5754,7 +5772,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						s.logger.Info("Quick unblock: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
-						s.invalidateCacheForDomainPattern(domainLowercased)
+						s.invalidateCacheForPattern(domainLowercased)
 					}
 				}
 			}() // lock released here
