@@ -19,7 +19,7 @@ todo:
 * add more tests, lots more
 
 no:
-* make edit work without javascript? in webUI; add/delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
+* make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 
 
 

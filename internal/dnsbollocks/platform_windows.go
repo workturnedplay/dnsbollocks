@@ -3195,12 +3195,12 @@ func (s *Server) startDNSListener(addr string) {
 				} else {
 					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 					// 2. Call your new TCP PID/Exe helper
-					pid, exe, err := wincoe.PidAndExeForTCP(clientAddr)
+					pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
 					// wincoe.Smashy()
 					// pid := uint32(2)
 					// exe := "foo2"
 					// err = nil
-					tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, err)
+					tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
 				}
 
 				// accepted a connection; handle in new goroutine
