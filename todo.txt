@@ -19,6 +19,7 @@
 
 
 done:
+//* fix: no log or message when trying to add a rule typ+pattern that already exists (regardless of Enabled value) even tho the code for it exists! must be the js code eating that 409 status from http.StatusConflict
 //* must fix in 0.1.4 (done 1,2,3,5; todomeh: 4): https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d/c/6a3cd4f7-70fc-83eb-97a1-0df396962579
 //* improvements for v0.1.2 (did 1,2,3,4,5):  https://gemini.google.com/app/0de925e7cdafd374 aka https://gemini.google.com/app/eff5f612c6d47b9e
 //* state the value of newly added config.json key/defaults when logging it

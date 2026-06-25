@@ -265,8 +265,18 @@
                         body: formData,
                         redirect: 'manual' // Stops fetch from following the redirect in the background
                     })
-                    .then(() => location.reload())
-                    .catch(err => console.error('Save failed:', err));
+                    .then(async (res) => {
+                        if (!res.ok) {
+                            const errMsg = await res.text();
+                            alert("Failed to save edits:\n" + errMsg);
+                            return; // Halt here, do NOT reload
+                        }
+                        location.reload();
+                    })
+                    .catch(err => {
+                        console.error('Save failed:', err);
+                        alert('A network error occurred while saving the rule.');
+                    });
                 });
 
                 // 6. Insert cleanly next to the original row
@@ -303,8 +313,18 @@
                         body: new FormData(delForm),
                         redirect: 'manual'
                     })
-                    .then(() => location.reload())
-                    .catch(err => console.error('Delete failed:', err));
+                    .then(async (res) => {
+                        if (!res.ok) {
+                            const errMsg = await res.text();
+                            alert("Failed to delete rule:\n" + errMsg);
+                            return; // Halt here, do NOT reload
+                        }
+                        location.reload();
+                    })
+                    .catch(err => {
+                        console.error('Delete failed:', err);
+                        alert('A network error occurred while deleting the rule.');
+                    });
                 }
                 return;
             }
@@ -368,8 +388,19 @@
                     body: new FormData(addForm),
                     redirect: 'manual'
                 })
-                .then(() => location.reload())
-                .catch(err => console.error('Add failed:', err));
+                .then(async (res) => {
+                    if (!res.ok) {
+                        // Extract the error string sent by Go's http.Error()
+                        const errMsg = await res.text();
+                        alert("Failed to add rule:\n" + errMsg);
+                        return; // Halt here, do NOT reload
+                    }
+                    location.reload();
+                })
+                .catch(err => {
+                    console.error('Add failed:', err);
+                    alert('A network error occurred while adding the rule.');
+                });
             });
         }
     }); // end of domcontentloaded
