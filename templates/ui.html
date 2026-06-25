@@ -110,6 +110,12 @@
     th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
     th.sortable:hover { background: #333; color: #fff; }
     .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
+
+    nav a.active {
+        color: #ffffff;
+        border-bottom: 2px solid #0078d4;
+        padding-bottom: 2px;
+    }
 </style></head><body>
 <noscript>
   <div style="
@@ -130,11 +136,14 @@
     <div class="container">
     <h1>DNSbollocks</h1>
     <nav>
-    <a href="/rules">Whitelist Rules</a> | <a href="/hosts">Hosts</a> | 
-    <a href="/blocks">Recent Blocks</a> | <a href="/logs">Logs</a> | 
-    <a href="/response-blacklist" {{if eq .Page "response-blacklist" }}class="active"{{end}}>Response Blacklist</a> | 
-    <a href="/">Stats</a> | <a href="/debug/vars">Debug Vars</a>
-    </nav>
+    <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
+    <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Hosts</a>
+    <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Blocks</a>
+    <a href="/response_blacklist" {{if eq .Page "response_blacklist" }} class="active" {{end}}>Response Blacklist</a>
+    <a href="/logs" {{if eq .Page "logs" }}class="active" {{end}}>System Logs</a>
+    <a href="/logs_queries" {{if eq .Page "logs_queries" }} class="active" {{end}}>Query Logs</a>
+    <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
+</nav>
     <hr>
     
     {{/* This acts as a router inside the template */}}
@@ -148,9 +157,8 @@
         {{template "response-blacklist" .}}
     {{else if eq .Page "logs"}}
         {{template "logs" .}}
-    {{else}}
-        {{/* Fallback for Stats / Legacy*/}}
-        {{.RawBody}} 
+    {{else if eq .Page "stats" }}
+        {{template "stats" .}}
     {{end}}
 
     </div>
@@ -912,4 +920,11 @@
         form.submit(); // User clicked "OK" or check passed -> fire native submission
     });
     </script>
+{{end}}
+
+{{define "stats"}}
+    <h2>Engine Statistics</h2>
+    <div class="stats-container">
+        {{.RawBody}}
+    </div>
 {{end}}

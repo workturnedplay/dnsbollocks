@@ -5465,7 +5465,8 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", s.stats.String(), s.cacheStore.ItemCount(), s.upstreamIPs)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
-		"Page":    "stats",
+		"Page": "stats", //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
+
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
 	//uiTemplates.Execute(w, data)
@@ -6214,7 +6215,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 					}
-				} else { //FIXME: assuming 'block' ?!
+				} else if action == "unblock" { //doneFIXME: assuming 'block' ?!
 					found := false
 					for i, rule := range s.whitelist[typ] {
 						if rule.Pattern == domainLowercased {
@@ -6253,6 +6254,10 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 							slog.String("DNSType", typ))
 						s.invalidateCacheForPattern(domainLowercased)
 					}
+				} else {
+					// Reject any unauthorized or malformed action values
+					http.Error(w, "Invalid action specified", http.StatusBadRequest)
+					return
 				}
 			}() // lock released here
 			if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
