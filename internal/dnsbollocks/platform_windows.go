@@ -1990,7 +1990,8 @@ func (s *Server) loadConfig() error {
 		// Use TypeFor[T] (Go 1.22+) and VisibleFields (Go 1.17+)
 		missing := []string{}
 		t := reflect.TypeFor[Config]()
-
+		// reflect.Indirect safely handles both values and pointers (like *Config)
+		v := reflect.Indirect(reflect.ValueOf(s.config))
 		for _, field := range reflect.VisibleFields(t) {
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
@@ -1998,13 +1999,14 @@ func (s *Server) loadConfig() error {
 			}
 
 			if _, ok := presentKeys[tag]; !ok {
-				missing = append(missing, tag)
+				val := v.FieldByIndex(field.Index).Interface()
+				//missing = append(missing, tag)
+				missing = append(missing, fmt.Sprintf("%s=%v", tag, val))
 			}
 		}
 
 		if len(missing) > 0 {
 			s.logger.Warn("Config file has missing keys - using default values for those keys", slog.String("config_file", cfgFname),
-				//slog.Any("missing", missing),
 				SafeStringSlice("missing", missing),
 			)
 			shouldSaveConfig = true
