@@ -720,30 +720,38 @@
             <col style="width: 45%;">
             <col style="width: 20%;">
         </colgroup>
-        <tr><th>Pattern</th><th>IPs</th><th>Actions</th></tr>
-        {{range .Hosts}}
-        <tr id="hostRow_{{.Index}}">
-            <td title="{{.Pattern}}">{{.Pattern}}</td>
-            <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
-            <td class="actions">
-                <button class="btn-edit" 
-                        data-index="{{.Index}}" 
-                        data-pattern="{{.Pattern}}" 
-                        data-ips="{{.IPsDisplay}}" 
-                        onclick="editHost(this)">
-                    Edit
-                </button>
-                <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
-                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <input type="hidden" name="delete" value="1">
-                    <input type="hidden" name="pattern" value="{{.Pattern}}">
-                    <button class="btn-del" type="submit">Delete</button>
-                </form>
-            </td>
-        </tr>
-        {{else}}
-        <tr><td colspan="3">No local hosts defined.</td></tr>
-        {{end}}
+        <thead>
+            <tr>
+                <th>Pattern</th>
+                <th>IPs</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Hosts}}
+            <tr id="hostRow_{{.Index}}">
+                <td title="{{.Pattern}}">{{.Pattern}}</td>
+                <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
+                <td class="actions">
+                    <button class="btn-edit" 
+                            data-index="{{.Index}}" 
+                            data-pattern="{{.Pattern}}" 
+                            data-ips="{{.IPsDisplay}}" 
+                            onclick="editHost(this)">
+                        Edit
+                    </button>
+                    <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="delete" value="1">
+                        <input type="hidden" name="pattern" value="{{.Pattern}}">
+                        <button class="btn-del" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="3">No local hosts defined.</td></tr>
+            {{end}}
+        </tbody>
     </table>
 
     <template id="editHostTemplate">

@@ -1,4 +1,3 @@
-* things to fix in v0.1.7 (done: 1,2,3,5 todo: 4): https://gemini.google.com/app/5ed11f7e85922bd6
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
 * make edit work without javascript? in webUI; add/delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 * let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
@@ -20,6 +19,7 @@
 
 
 done:
+//* things to fix in v0.1.7 (done: 1,2,3,4,5): https://gemini.google.com/app/5ed11f7e85922bd6
 //* make webUI entry for response blacklist IPs, like /rules and /hosts exists, note that /blocks is for recently blocked hosts quick-unblock
 //* update the noscript to say the button for edit won't work without js, add/del do tho
 //* fix: no log or message when trying to add a rule typ+pattern that already exists (regardless of Enabled value) even tho the code for it exists! must be the js code eating that 409 status from http.StatusConflict
