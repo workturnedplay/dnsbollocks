@@ -249,8 +249,19 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	fs.mu.RUnlock()
 
 	// Safety check if upstream list dynamically changed or shrank
+	// If the active index is impossible due to an upstream configuration shrink
 	if currentIdx >= len(upstreams) {
 		currentIdx = 0
+		// Update the global state so it doesn't stay corrupted
+		fs.mu.Lock()
+		// Double-check under the write lock to safely update the global struct state
+		if fs.activeIndex >= len(upstreams) {
+			fs.activeIndex = 0
+			//it means the underlying upstream layout has changed or shrunk out from under the selector. Any previous "global blackout" status (fs.allFailed = true) belonged to the old configuration of servers.
+			//If you don't reset fs.allFailed = false when clamping an out-of-bounds index, the selector will carry over a pessimistic ghost blackout state onto the brand-new list of upstreams.
+			fs.allFailed = false // 🟢 Give the new upstream slice a clean slate
+		}
+		fs.mu.Unlock()
 	}
 
 	type result struct {
@@ -1780,10 +1791,23 @@ func (s *Server) Run() error {
 			func() {
 				s.dohMu.Lock()
 				defer s.dohMu.Unlock()
-				//s.dohClientsPtr.Store(nil)
 				s.upstreamsPtr.Store(nil)
 			}()
 			_ = s.initDoHClients()
+			// if upstreamsSlicePtr := s.upstreamsPtr.Load(); upstreamsSlicePtr != nil {
+			// 	newLen := len(*upstreamsSlicePtr)
+			// 	s.failoverSelect.mu.Lock()
+			// 	if s.failoverSelect.activeIndex >= newLen {
+			// 		s.failoverSelect.activeIndex = 0
+			// 	}
+			// 	s.failoverSelect.mu.Unlock()
+			// }
+
+			// 🟢 RESET THE SELECTOR STATE UNCONDITIONALLY HERE:
+			s.failoverSelect.mu.Lock()
+			s.failoverSelect.activeIndex = 0
+			s.failoverSelect.allFailed = false
+			s.failoverSelect.mu.Unlock()
 
 			s.logger.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
