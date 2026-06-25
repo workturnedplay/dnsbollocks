@@ -244,6 +244,8 @@
                     if (newPattern === '') { alert('newPattern cannot be empty'); return; }
                     
                     const formData = new FormData();
+                    // Grab the token from the form's hidden input
+                    formData.append('csrf_token', form.querySelector('[name="csrf_token"]').value);
                     formData.append('id', id);
                     formData.append('pattern', newPattern);
                     formData.append('type', newType);
@@ -521,6 +523,7 @@
         <option value="{{.}}">{{.}}</option>
     {{end}}
     </select>
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="text" name="pattern" placeholder="pattern" required> 
     <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
     <button type="submit" class="btn-add">Add Rule</button>
@@ -563,6 +566,7 @@
         <td class="actions">
             <button class="btn-edit">Edit</button> 
             <form method="post" action="/rules" style="display:inline;margin-left:6px">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="delete" value="1">
                 <input type="hidden" name="id" value="{{.ID}}">
                 <input type="hidden" name="type" value="{{.Type}}">
@@ -588,6 +592,7 @@
         <td><label><input type="checkbox" class="edit-enabled" style="vertical-align: middle;"></label></td>
         <td class="actions">
             <form method="post" action="/rules" class="edit-form" style="display:inline; margin:0;">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="id" class="edit-id-input">
                 <button type="submit" class="btn-save">Save</button>
                 <button type="button" class="btn-cancel">Cancel</button>
@@ -631,6 +636,7 @@
         
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="reblock">
@@ -638,6 +644,7 @@
         </form>
         {{else}}
         <form method="post" action="/blocks" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock">
@@ -656,6 +663,7 @@
 
     <h2>Add New Local Host</h2>
     <form method="post" action="/hosts">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> 
         <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> 
         <button type="submit">Add Host</button>
@@ -682,6 +690,7 @@
                     Edit
                 </button>
                 <form method="post" action="/hosts" style="display:inline;margin-left:6px" onsubmit="return confirm('Delete local host override?')">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <input type="hidden" name="delete" value="1">
                     <input type="hidden" name="pattern" value="{{.Pattern}}">
                     <button class="btn-del" type="submit">Delete</button>
@@ -702,6 +711,7 @@
         <td><input type="text" name="ips" class="edit-host-ips" form="" style="width:100%" required></td>
         <td class="actions">
             <form method="post" action="/hosts" class="edit-host-form" style="display:inline; margin:0;">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
                 <button type="submit" class="btn-save">Save</button>
                 <button type="button" class="btn-cancel">Cancel</button>

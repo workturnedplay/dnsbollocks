@@ -5125,7 +5125,8 @@ func (s *Server) startWebUI(addr string) {
 
 	//uiSrv := &http.Server{Handler: mux}
 	// CHANGED: Wrap the mux in our new authMiddleware
-	uiSrv := &http.Server{Handler: s.authMiddleware(mux)}
+	//uiSrv := &http.Server{Handler: s.authMiddleware(mux)}
+	uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(mux))}
 	// BETTER APPROACH: Query the active listener for its real bound address.
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
@@ -5169,6 +5170,64 @@ func (s *Server) startWebUI(addr string) {
 	s.logger.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload (partial)config, Ctrl+C to break gracefully")
 }
 
+const csrfTokenKey contextKey = "csrfToken"
+
+func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Get or generate the CSRF cookie
+		cookie, err := r.Cookie("csrf_token")
+		var token string
+
+		if err != nil || cookie.Value == "" {
+			token = uuid.New().String()
+			http.SetCookie(w, &http.Cookie{
+				Name:     "csrf_token",
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true, // Prevent client-side JS from reading the cookie
+				SameSite: http.SameSiteLaxMode,
+			})
+		} else {
+			token = cookie.Value
+		}
+
+		// 2. Pass token down the context so the template renderer can grab it
+		ctx := context.WithValue(r.Context(), csrfTokenKey, token)
+		r = r.WithContext(ctx)
+
+		// 3. Validate the token on all state-changing POST requests
+		if r.Method == "POST" {
+			formToken := r.FormValue("csrf_token")
+			if formToken == "" || formToken != token {
+				//s.logger.Warn("CSRF token validation failed; dropping request", slog.String("client", r.RemoteAddr))
+
+				// Capture everything safely in local variables immediately (optional, but clean)
+				//because the request is completely isolated to this single thread of execution at this moment, you can read any field or header from r with zero risk of a data race.
+				clientIP := r.RemoteAddr
+				targetPath := r.URL.Path
+				targetHost := r.Host
+				originHeader := r.Header.Get("Origin")
+				refererHeader := r.Header.Get("Referer")
+				userAgent := r.Header.Get("User-Agent")
+
+				s.logger.Warn("CSRF token validation failed; dropping request",
+					slog.String("client", clientIP),
+					slog.String("method", r.Method),
+					slog.String("path", targetPath),
+					slog.String("host", targetHost),
+					slog.String("origin", originHeader),   // The site initiating the request
+					slog.String("referer", refererHeader), // The exact URL making the request
+					slog.String("user_agent", userAgent),
+				)
+				http.Error(w, "403 Forbidden - CSRF Verification Failed", http.StatusForbidden)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
@@ -5180,7 +5239,7 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
 	//uiTemplates.Execute(w, data)
-	s.renderTemplate(w, "stats", data)
+	s.renderTemplate(w, r, "stats", data)
 }
 
 func (s *Server) snapshotWhitelist() map[string][]RuleEntry {
@@ -5244,7 +5303,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			"Rules":    flatRules, // Passing the flattened slice now
 		}
 
-		s.renderTemplate(w, "rules", data)
+		s.renderTemplate(w, r, "rules", data)
 		return
 	}
 
@@ -5645,7 +5704,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// if err := uiTemplates.Execute(w, data); err != nil {
 		//     s.logger.Error("template_error", SafeErr(err))
 		// }
-		s.renderTemplate(w, "hosts", data)
+		s.renderTemplate(w, r, "hosts", data)
 		return
 	}
 
@@ -5794,7 +5853,12 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 // renderTemplate is a DRY helper to execute templates safely into a buffer
 // before writing to the network, preventing "established connection aborted" errors
 // from being logged as template execution failures.
-func (s *Server) renderTemplate(w http.ResponseWriter, pageName string, data any) {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
+	// Inject the CSRF token into the map
+	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
+		data["CSRFToken"] = token
+	}
+
 	var buf bytes.Buffer
 	if err := uiTemplates.Execute(&buf, data); err != nil {
 		s.logger.Error("template_render_failed",
@@ -5862,7 +5926,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			"EnteredValue":   r.URL.Query().Get("val"),
 		}
 
-		s.renderTemplate(w, "blocks", data)
+		s.renderTemplate(w, r, "blocks", data)
 		return
 	}
 	if r.Method == "POST" {
@@ -6035,7 +6099,7 @@ func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, fi
 	file, err := os.Open(filePath)
 	if err != nil {
 		// Fallback if file doesn't exist yet
-		s.renderTemplate(w, "logs", map[string]any{
+		s.renderTemplate(w, r, "logs", map[string]any{
 			"Page": "logs", "Path": r.URL.Path, "Title": title, "Filter": filter, "Content": "No log entries found.",
 		})
 		return
@@ -6115,7 +6179,7 @@ func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, fi
 		"Content": content,
 	}
 
-	s.renderTemplate(w, "logs", renderData)
+	s.renderTemplate(w, r, "logs", renderData)
 }
 
 func (s *Server) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
