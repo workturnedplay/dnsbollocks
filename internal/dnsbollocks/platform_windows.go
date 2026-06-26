@@ -5385,7 +5385,7 @@ func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	var matches []string
+	matches := []string{} // 👈 Initialize explicitly empty
 	if n != nil {
 		// func() {
 		// 	s.responseBlacklistMu.RLock()
@@ -5951,7 +5951,7 @@ func (bs *BlacklistStore) TryDelete(cidrStr string) bool {
 func (bs *BlacklistStore) CheckMatches(n *net.IPNet) []string {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
-	var matches []string
+	matches := []string{} // 👈 Initialize explicitly empty
 	for _, existing := range bs.nets {
 		if existing.String() == n.String() || existing.Contains(n.IP) {
 			matches = append(matches, existing.String())
