@@ -850,6 +850,9 @@
 
 {{define "response-blacklist"}}
     <h2>Response Blacklist IPs</h2>
+    <p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
+        The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
+    </p>
     
     <div style="margin-bottom: 20px;">
         <form id="add-blacklist-form" method="POST" action="/response-blacklist" style="display: flex; gap: 10px;">
