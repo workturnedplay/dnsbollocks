@@ -1013,11 +1013,11 @@ func (s *Server) loadQueryWhitelist() error {
 				r := &rules[i]
 				// XXX: it may not have an ID set at this point
 				if r.ID == "" {
-					nid := s.newUniqueID(rulesByType) // still guards against rulesByType collisions
+					nid := generateUniqueRuleID(rulesByType, s.logger) // still guards against rulesByType collisions
 					// Also guard against IDs already assigned in this same load pass
 					for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
 						s.logger.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
-						nid = s.newUniqueID(rulesByType)
+						nid = generateUniqueRuleID(rulesByType, s.logger)
 					}
 					s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
 					r.ID = nid
@@ -2647,25 +2647,6 @@ func countRules(wl map[string][]RuleEntry) uint64 {
 		total += uint64(len(rs))
 	}
 	return total
-}
-
-func (s *Server) newUniqueID(alreadyHave map[string][]RuleEntry) string {
-	existing := make(map[string]struct{})
-	for _, rs := range alreadyHave {
-		for _, r := range rs {
-			existing[r.ID] = struct{}{}
-		}
-	}
-
-	for try := 1; try <= 10; try++ {
-		id := uuid.New().String()
-		if _, ok := existing[id]; !ok {
-			return id
-		} else {
-			s.logger.Warn("attempted to make newUniqueID() which existed", slog.String("id", id), slog.Int("try", try))
-		}
-	}
-	panic("UUID collision limit reached—check RNG or storage")
 }
 
 func isLowerASCII(s string) bool {
@@ -5868,7 +5849,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				newID := s.newUniqueID(s.whitelist)
+				newID := generateUniqueRuleID(s.whitelist, s.logger)
 				newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
 				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
 				//     whitelist[typ] = []Rule{}
@@ -5943,6 +5924,28 @@ func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
 		slog.String("pattern", r.Pattern),
 		slog.Bool("enabled", r.Enabled),
 	)
+}
+
+// generateUniqueRuleID generates a UUID not already present in an arbitrary rule map.
+// Used by loadQueryWhitelist (which works on a local copy) and by RuleStore methods
+// (which call this while holding the write lock).
+func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
+	existing := make(map[string]struct{})
+	for _, rules := range existingRules {
+		for _, r := range rules {
+			existing[r.ID] = struct{}{}
+		}
+	}
+	const triesOnCollision = 10
+	for try := 1; try <= triesOnCollision; try++ {
+		id := uuid.New().String()
+		if _, collision := existing[id]; !collision {
+			return id
+		}
+		logger.Warn("UUID collision in generateUniqueRuleID, regenerating",
+			slog.String("id", id), slog.Int("try", try), slog.Int("max_tries", triesOnCollision))
+	}
+	panic(fmt.Sprintf("UUID collision limit reached(after %d retries) — check RNG or storage", triesOnCollision-1))
 }
 
 // withRulePrepended safely inserts a new RuleEntry at the beginning of a slice
@@ -6403,7 +6406,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 					if !found {
 						newRule := RuleEntry{
-							ID:      s.newUniqueID(s.whitelist),
+							ID:      generateUniqueRuleID(s.whitelist, s.logger),
 							Pattern: domainLowercased,
 							Enabled: true,
 						}
