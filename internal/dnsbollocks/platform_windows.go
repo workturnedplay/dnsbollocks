@@ -5713,7 +5713,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 							s.invalidateCacheForPattern(rule.Pattern)
 							// Replaces the shifting copy hacks with an isolated fresh array allocation
-							s.whitelist[typ] = s.withRuleRemovedAt(rules, i)
+							s.whitelist[typ] = withRuleRemovedAt(rules, i, s.logger)
 							deleted = true
 							break
 						}
@@ -5834,7 +5834,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 				if oldType == typ {
 					// Type didn't change -> Update fully IN-PLACE cleanly using our new function
-					s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule)
+					s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, s.logger)
 				} else {
 					// Type changed -> Safely remove from old slice, safely prepend to new slice
 
@@ -5845,10 +5845,10 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 					// copy(newOldEntries[oldIndex:], oldEntries[oldIndex+1:])
 					// whitelist[oldType] = newOldEntries
 
-					s.whitelist[oldType] = s.withRuleRemovedAt(s.whitelist[oldType], oldIndex)
+					s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, s.logger)
 
 					// 2. Prepend smoothly to the new category using your new function
-					s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
+					s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
 				}
 				s.invalidateCacheForPattern(oldPattern)
 				if oldPattern != patternLowercased {
@@ -5895,7 +5895,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				// whitelist[typ] = newTargetEntries
 
 				// Replaces all the manual make() and copy() steps with your new helper function
-				s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
+				s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
 				s.invalidateCacheForPattern(patternLowercased)
 				s.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
 			}
@@ -5917,7 +5917,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 // withRuleRemovedAt safely returns a new slice with the RuleEntry at the given index removed,
 // leaving the original underlying array completely untouched for concurrent readers.
-func (s *Server) withRuleRemovedAt(entries []RuleEntry, index int) []RuleEntry {
+func withRuleRemovedAt(entries []RuleEntry, index int, logger *slog.Logger) []RuleEntry {
 	// If the slice is empty or index is out of bounds, return it safely
 	if index < 0 || index >= len(entries) {
 		return entries
@@ -5930,8 +5930,9 @@ func (s *Server) withRuleRemovedAt(entries []RuleEntry, index int) []RuleEntry {
 
 	// Copy everything after the index
 	copy(newEntries[index:], entries[index+1:])
-
-	s.logger.Warn("Deleted rule", slog.Any("rule", entries[index])) // XXX: slog.Any is no longer forbidden for this struct
+	if logger != nil { //TODO: many other places need this guard, so maybe make helper ?
+		logger.Warn("Deleted rule", slog.Any("rule", entries[index])) // XXX: slog.Any is no longer forbidden for this struct
+	}
 	return newEntries
 }
 
@@ -5946,7 +5947,7 @@ func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
 
 // withRulePrepended safely inserts a new RuleEntry at the beginning of a slice
 // without mutating the underlying array of existing readers.
-func (s *Server) withRulePrepended(entries []RuleEntry, newRule RuleEntry) []RuleEntry {
+func withRulePrepended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logger) []RuleEntry {
 	newTargetEntries := make([]RuleEntry, len(entries)+1)
 
 	// Copy old entries starting at index 1
@@ -5954,30 +5955,38 @@ func (s *Server) withRulePrepended(entries []RuleEntry, newRule RuleEntry) []Rul
 
 	// Drop the new item at index 0
 	newTargetEntries[0] = newRule
-	s.logger.Debug("Prepended rule", slog.Any("rule", newRule)) // XXX: slog.Any is no longer forbidden for this struct
+	if logger != nil {
+		logger.Debug("Prepended rule", slog.Any("rule", newRule)) // XXX: slog.Any is no longer forbidden for this RuleEntry struct
+	}
 
 	return newTargetEntries
 }
 
 // withRuleAppended safely inserts a new RuleEntry at the end of a slice
 // without mutating the underlying array of existing readers.
-func withRuleAppended(entries []RuleEntry, newBlock RuleEntry) []RuleEntry {
+func withRuleAppended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logger) []RuleEntry {
 	newTargetEntries := make([]RuleEntry, len(entries)+1)
 
 	// Copy old entries starting at index 0
 	copy(newTargetEntries, entries)
 
 	// Drop the new item at the very last index position
-	newTargetEntries[len(entries)] = newBlock
-
+	newTargetEntries[len(entries)] = newRule
+	if logger != nil {
+		logger.Debug("Appended rule", slog.Any("rule", newRule)) // XXX: slog.Any is no longer forbidden for this RuleEntry struct
+	}
 	return newTargetEntries
 }
 
 // withRuleUpdatedAtIndex safely updates a rule at a specific index without mutating the original array.
-func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntry) []RuleEntry {
+func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntry, logger *slog.Logger) []RuleEntry {
 	newEntries := make([]RuleEntry, len(entries))
 	copy(newEntries, entries)
+	oldRule := newEntries[index]
 	newEntries[index] = updatedRule
+	if logger != nil {
+		logger.Debug("Updated rule", slog.Any("new_rule", updatedRule), slog.Any("old_rule", oldRule)) // XXX: slog.Any is no longer forbidden for this RuleEntry struct
+	}
 	return newEntries
 }
 
@@ -6401,7 +6410,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						// whitelist[typ] = append(whitelist[typ], newRule)
 
 						// Replace the standard append with your safe helper function
-						s.whitelist[typ] = s.withRulePrepended(s.whitelist[typ], newRule)
+						s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
 
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
 						s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
