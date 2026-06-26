@@ -5903,6 +5903,16 @@ func (bs *BlacklistStore) Contains(ip net.IP) bool {
 	return false
 }
 
+// Snapshot returns a shallow copy of the raw *net.IPNet pointers for lock-free logic.
+func (bs *BlacklistStore) Snapshot() []*net.IPNet {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	cp := make([]*net.IPNet, len(bs.nets))
+	copy(cp, bs.nets)
+	return cp
+}
+
+// List returns a string slice representation of the CIDRs for the Web UI.
 func (bs *BlacklistStore) List() []string {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
@@ -6486,7 +6496,11 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 	if s.cacheStore == nil {
 		return
 	}
-	for key, item := range s.cacheStore.Items() {
+	// 1. Grab a snapshot of pointers under a microsecond single lock
+	//Instead of a single s.blacklist.Contains(ip) call hitting a mutex over and over, you pull the whole list out once into blacklistedNets. Then, inside the loops, you do plain, local array iterations (for _, netEntry := range blacklistedNets).
+	blacklistedNets := s.blacklist.Snapshot()
+
+	for key, item := range s.cacheStore.Items() { //iterates on a snapshot of cache
 		//packed, ok := item.Object.([]byte)
 		entry, ok := item.Object.(CacheEntry)
 		if !ok {
@@ -6504,15 +6518,21 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 		shouldEvict := false
 		for _, rr := range msg.Answer {
 			if aRecord, ok := rr.(*dns.A); ok {
-				if s.blacklist.Contains(aRecord.A) { // Substitute with your actual IP-checking logic
-					shouldEvict = true
-					break
+				// 👇 Loop through your snapshot slice lock-free
+				for _, netEntry := range blacklistedNets {
+					if netEntry.Contains(aRecord.A) {
+						shouldEvict = true
+						break
+					}
 				}
 			}
 			if aaaaRecord, ok := rr.(*dns.AAAA); ok {
-				if s.blacklist.Contains(aaaaRecord.AAAA) {
-					shouldEvict = true
-					break
+				// 👇 Same thing for IPv6 records
+				for _, netEntry := range blacklistedNets {
+					if netEntry.Contains(aaaaRecord.AAAA) {
+						shouldEvict = true
+						break
+					}
 				}
 			}
 		}
