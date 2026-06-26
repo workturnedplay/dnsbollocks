@@ -163,37 +163,44 @@ type Server struct {
 	upstreamURLs   []*url.URL
 	upstreamSNIs   []string
 	failoverSelect *FailoverSelector
-	//upstreams      []Upstream // Combines clients, URLs, and SNIs safely
 
 	// Caching & Rate limiting
 	cacheStore     *cache.Cache
 	globalLimiter  *rate.Limiter
 	clientLimiters sync.Map // map[string]*rate.Limiter
 
-	// Rules & Blocking
-	whitelist           map[string][]RuleEntry // type -> rules
-	ruleMutex           sync.RWMutex
-	localHosts          []LocalHostRule
-	localHostsMu        sync.RWMutex
-	responseBlacklist   []*net.IPNet // parsed and ready-to-use form
-	responseBlacklistMu sync.RWMutex
-	fileWriteMu         sync.Mutex
+	// // Rules & Blocking
+	// whitelist           map[string][]RuleEntry // type -> rules
+	// ruleMutex           sync.RWMutex
+	// localHosts          []LocalHostRule
+	// localHostsMu        sync.RWMutex
+	// responseBlacklist   []*net.IPNet // parsed and ready-to-use form
+	// responseBlacklistMu sync.RWMutex
 
-	recentBlocksList *list.List
-	recentBlocksMap  map[string]*list.Element
-	blockMutex       sync.Mutex
+	// Data stores (each owns its own mutex).
+	ruleStore    *RuleStore
+	hostStore    *HostStore
+	blacklist    *BlacklistStore
+	recentBlocks *RecentBlocksTracker
+	loginTracker *LoginTracker
 
-	loginMu      sync.Mutex
-	loginRecords map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
+	// fileWriteMu serialises all file-write calls across all stores.
+	fileWriteMu sync.Mutex
+
+	// recentBlocksList *list.List
+	// recentBlocksMap  map[string]*list.Element
+	// blockMutex       sync.Mutex
+
+	// loginMu      sync.Mutex
+	// loginRecords map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
 
 	dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
 
-	// HTTP/DoH state
-	dohCert           tls.Certificate   // Loaded once for DoH listener
-	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
-	//dohClientsPtr     atomic.Pointer[[]*http.Client]
-	upstreamsPtr atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
-	dohMu        sync.Mutex                 // Only used for initialization/reloads
+	// HTTP/DoH state aka upstreams
+	dohCert           tls.Certificate            // Loaded once for DoH listener
+	dohTransportsPtrs []*http.Transport          //protected by dohMu, used only to clean up during reinit via initDoHClient
+	upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
+	dohMu             sync.Mutex                 // Only used for initialization/reloads
 
 	// Lifecycle & Concurrency
 	// Simple stats, FIXME.
@@ -209,12 +216,17 @@ type Server struct {
 func NewServer(logger *slog.Logger) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		logger:           logger,
-		failoverSelect:   NewFailoverSelector(logger),
-		whitelist:        make(map[string][]RuleEntry),
-		recentBlocksList: list.New(),
-		recentBlocksMap:  make(map[string]*list.Element),
-		loginRecords:     make(map[string]*loginRecord),
+		logger:         logger,
+		failoverSelect: NewFailoverSelector(logger),
+		// whitelist:        make(map[string][]RuleEntry),
+		// recentBlocksList: list.New(),
+		// recentBlocksMap:  make(map[string]*list.Element),
+		// loginRecords:     make(map[string]*loginRecord),
+		ruleStore:    newRuleStore(),
+		hostStore:    newHostStore(),
+		blacklist:    newBlacklistStore(),
+		recentBlocks: newRecentBlocksTracker(),
+		loginTracker: newLoginTracker(),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
@@ -547,15 +559,16 @@ func (s *Server) loadResponseBlacklist() error {
 		}
 	}
 
-	s.responseBlacklistMu.Lock()
-	s.responseBlacklist = parsed
-	s.responseBlacklistMu.Unlock()
+	// s.responseBlacklistMu.Lock()
+	// s.responseBlacklist = parsed
+	// s.responseBlacklistMu.Unlock()
+	s.blacklist.ReplaceAll(parsed)
 	// ==========================================
 	//   NEW: INJECT CACHE INVALIDATION HERE
 	// ==========================================
 	s.invalidateCacheForBlacklistedIPs()
 	// ==========================================
-	s.logger.Info("Loaded CIDR entries from blacklist file", slog.Int("count", len(s.responseBlacklist)), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
+	s.logger.Info("Loaded CIDR entries from blacklist file", slog.Int("count", s.blacklist.Len()), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
 	if shouldSave {
 		if err := s.saveResponseBlacklist(); err != nil {
 			return fmt.Errorf("failed to save blacklist file %q, err: %w", blacklistFileName, err)
@@ -648,9 +661,11 @@ func (s *Server) loadLocalHosts() error {
 	data, err := os.ReadFile(hostsFileName)
 	if os.IsNotExist(err) {
 		s.logger.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
-		s.localHostsMu.Lock()
-		s.localHosts = nil
-		s.localHostsMu.Unlock()
+		// s.localHostsMu.Lock()
+		// s.localHosts = nil
+		// s.localHostsMu.Unlock()
+		// Pass nil or an empty slice to atomically reset the store
+		s.hostStore.ReplaceAll(nil)
 		return s.saveLocalHosts() // creates empty default file
 	}
 	if err != nil {
@@ -775,13 +790,14 @@ func (s *Server) loadLocalHosts() error {
 		s.shutdown(5)
 	}
 
-	s.localHostsMu.Lock()
-	s.localHosts = parsed
-	s.localHostsMu.Unlock()
+	// s.localHostsMu.Lock()
+	// s.localHosts = parsed
+	// s.localHostsMu.Unlock()
+	s.hostStore.ReplaceAll(parsed)
 
 	// s.logger.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
 	s.logger.Info("Loaded host rules",
-		slog.Int("count", len(s.localHosts)),
+		slog.Int("count", s.hostStore.Len()),
 		slog.Uint64("changed_count", changed),
 		slog.Uint64("removed_count", removed),
 		slog.String("path", hostsFileName))
@@ -797,21 +813,25 @@ func (s *Server) saveLocalHosts() error {
 	var data []byte
 	var err error
 
-	// 1. Snapshot the data
-	func() {
-		s.localHostsMu.RLock()
-		defer s.localHostsMu.RUnlock()
-		raw := make(map[string][]string)
-		for _, rule := range s.localHosts {
-			var ips []string
-			for _, ip := range rule.IPs {
-				ips = append(ips, ip.String())
-			}
-			raw[rule.Pattern] = ips
-		}
-		data, err = json.MarshalIndent(raw, "", "  ")
-	}()
+	// // 1. Snapshot the data
+	// func() {
+	// 	s.localHostsMu.RLock()
+	// 	defer s.localHostsMu.RUnlock()
+	// 	raw := make(map[string][]string)
+	// 	for _, rule := range s.localHosts {
+	// 		var ips []string
+	// 		for _, ip := range rule.IPs {
+	// 			ips = append(ips, ip.String())
+	// 		}
+	// 		raw[rule.Pattern] = ips
+	// 	}
+	// 	data, err = json.MarshalIndent(raw, "", "  ")
+	// }()
 
+	// 1. Snapshot the data in the raw map format under lock safely
+	raw := s.hostStore.ToRawMap()
+	// 2. Marshal to JSON (happens completely lock-free)
+	data, err = json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return fmt.Errorf("hosts file marshal failed: %w", err)
 	}
@@ -828,27 +848,15 @@ func (s *Server) saveLocalHosts() error {
 
 // getResponseBlacklist Helper – returns current list (snapshot copy)
 func (s *Server) getResponseBlacklist() []string {
-	s.responseBlacklistMu.RLock()
-	defer s.responseBlacklistMu.RUnlock()
+	// s.responseBlacklistMu.RLock()
+	// defer s.responseBlacklistMu.RUnlock()
 
-	out := make([]string, 0, len(s.responseBlacklist))
-	for _, n := range s.responseBlacklist {
-		out = append(out, n.String())
-	}
-	return out
-}
-
-// isBlacklistedIP Helper – used in filterResponse / processRR
-func (s *Server) isBlacklistedIP(ip net.IP) bool {
-	s.responseBlacklistMu.RLock()
-	defer s.responseBlacklistMu.RUnlock()
-
-	for _, n := range s.responseBlacklist {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	// out := make([]string, 0, len(s.responseBlacklist))
+	// for _, n := range s.responseBlacklist {
+	// 	out = append(out, n.String())
+	// }
+	// return out
+	return s.blacklist.List()
 }
 
 func defaultResponseBlacklist() []string {
@@ -912,12 +920,7 @@ func (s *Server) saveQueryWhitelist() error {
 	var err error
 
 	// 1. Snapshot the data quickly under RLock to prevent blocking DNS queries during slow I/O
-	func() {
-		s.ruleMutex.RLock()
-		defer s.ruleMutex.RUnlock()
-		data, err = json.MarshalIndent(s.whitelist, "", "  ")
-	}()
-
+	data, err = json.MarshalIndent(s.ruleStore.Snapshot(), "", "  ")
 	if err != nil {
 		return fmt.Errorf("whitelist marshal failed: %w", err)
 	}
@@ -928,7 +931,7 @@ func (s *Server) saveQueryWhitelist() error {
 
 	whitelistFileName := s.config.WhitelistFile
 	if whitelistFileName == "" {
-		panic("bad coding: dev. didn't set the default whitelist filename!")
+		panic("BUG: bad coding: dev. didn't set the default whitelist filename!")
 	}
 	if err := s.safeWriteFile(whitelistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
@@ -957,11 +960,14 @@ func (s *Server) loadQueryWhitelist() error {
 	data, err := os.ReadFile(whitelistFileName)
 	if os.IsNotExist(err) {
 		s.logger.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
-		func() {
-			s.ruleMutex.Lock()
-			defer s.ruleMutex.Unlock()
-			s.whitelist = make(map[string][]RuleEntry)
-		}() // lock released here
+		// func() {
+		// 	s.ruleMutex.Lock()
+		// 	defer s.ruleMutex.Unlock()
+		// 	s.whitelist = make(map[string][]RuleEntry)
+		// }() // lock released here
+
+		// Atomically set the internal map to an empty one
+		s.ruleStore.ReplaceAll(make(map[string][]RuleEntry))
 		s.flushCache()
 		return s.saveQueryWhitelist() // create "empty" file; uses lock
 	}
@@ -991,106 +997,139 @@ func (s *Server) loadQueryWhitelist() error {
 	if err = dec.Decode(&rulesByType); err != nil {
 		return fmt.Errorf("failed to parse whitelist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", whitelistFileName, err)
 	}
+
+	// ── Normalization (no lock needed; working on local variables) ──────────────
+	// Count total rules for initial map capacity
+	totalRules := 0
+	for _, rules := range rulesByType {
+		totalRules += len(rules)
+	}
+	seenIDs := make(map[string]struct{}, totalRules) // global across all types
+	newRules := make(map[string][]RuleEntry, len(rulesByType))
+
 	var changed uint64 = 0
 	var removed uint64 = 0
 
-	func() {
-		s.ruleMutex.Lock()
-		defer s.ruleMutex.Unlock()
+	// func() {
+	// 	s.ruleMutex.Lock()
+	// 	defer s.ruleMutex.Unlock()
 
-		// Count total rules for initial map capacity
-		totalRules := 0
-		for _, rules := range rulesByType {
-			totalRules += len(rules)
-		}
-		seenIDs := make(map[string]struct{}, totalRules) // global across all types
+	// 	totalRules := 0
+	// 	for _, rules := range rulesByType {
+	// 		totalRules += len(rules)
+	// 	}
+	// 	seenIDs := make(map[string]struct{}, totalRules)
 
-		s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
-		for typ, rules := range rulesByType {
-			var cleaned []RuleEntry
-			seenPatterns := make(map[string]struct{}, len(rules)) // only per DNS type ie. A, AAAA, HTTPS
-			for i := range rules {
-				r := &rules[i]
-				// XXX: it may not have an ID set at this point
-				if r.ID == "" {
-					nid := generateUniqueRuleID(rulesByType, s.logger) // still guards against rulesByType collisions
-					// Also guard against IDs already assigned in this same load pass
-					for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
-						s.logger.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
-						nid = generateUniqueRuleID(rulesByType, s.logger)
-					}
-					s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
-					r.ID = nid
-					changed++
+	// 	s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
+	for typ, rules := range rulesByType {
+		seenPatterns := make(map[string]struct{}, len(rules)) // only per DNS type ie. A, AAAA, HTTPS
+		var cleaned []RuleEntry
+		for i := range rules {
+			r := &rules[i]
+			// XXX: it may not have an ID set at this point
+			if r.ID == "" {
+				nid := generateUniqueRuleID2(rulesByType, s.logger) // still guards against rulesByType collisions
+				// Also guard against IDs already assigned in this same load pass
+				for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
+					s.logger.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
+					nid = generateUniqueRuleID2(rulesByType, s.logger)
 				}
-				//checks against all DNS types not just in 'typ'
-				if _, duplicate := seenIDs[r.ID]; duplicate {
-					s.logger.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
-					removed++
-					continue // Skip appending this rule
-				}
-				seenIDs[r.ID] = struct{}{}
+				s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
+				r.ID = nid
+				changed++
+			}
+			//checks against all DNS types not just in 'typ'
+			if _, duplicate := seenIDs[r.ID]; duplicate {
+				s.logger.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
+				removed++
+				continue // Skip appending this rule
+			}
+			seenIDs[r.ID] = struct{}{}
 
-				//lowercase it and strip the dot at the end:
-				new2 := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.Pattern, ".")))
-				if new2 != r.Pattern {
-					s.logger.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
-					r.Pattern = new2
-					changed++
-				}
-				// Check for empty or entirely invalid structures
-				if r.Pattern == "" {
-					s.logger.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
-					removed++
-					continue
-				}
-
-				// Validate using the allowed rule character set
-				_, modified := sanitizeDomainInput(r.Pattern)
-				if modified {
-					s.logger.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
-						slog.String("id", r.ID),
-						slog.String("invalid_pattern", r.Pattern),
-					)
-					removed++
-					continue // Purges/omits it from being appended to cleaned slice
-				}
-
-				if _, dup := seenPatterns[r.Pattern]; dup {
-					s.logger.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
-						slog.String("id", r.ID),
-						slog.String("pattern", r.Pattern),
-						slog.String("type", typ),
-					)
-					removed++
-					continue
-				}
-				seenPatterns[r.Pattern] = struct{}{}
-
-				cleaned = append(cleaned, *r)
+			//lowercase it and strip the dot at the end:
+			new2 := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.Pattern, ".")))
+			if new2 != r.Pattern {
+				s.logger.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
+				r.Pattern = new2
+				changed++
+			}
+			// Check for empty or entirely invalid structures
+			if r.Pattern == "" {
+				s.logger.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
+				removed++
+				continue
 			}
 
-			s.whitelist[typ] = cleaned
-		}
-
-		if s.config.ExtraSafety {
-			if removed > 0 {
-				s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
-				s.shutdown(5) //FIXME: find a better way to "quit" than exit program here
+			// Validate using the allowed rule character set
+			_, modified := sanitizeDomainInput(r.Pattern)
+			if modified {
+				s.logger.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
+					slog.String("id", r.ID),
+					slog.String("invalid_pattern", r.Pattern),
+				)
+				removed++
+				continue // Purges/omits it from being appended to cleaned slice
 			}
+
+			if _, dup := seenPatterns[r.Pattern]; dup {
+				s.logger.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
+					slog.String("id", r.ID),
+					slog.String("pattern", r.Pattern),
+					slog.String("type", typ),
+				)
+				removed++
+				continue
+			}
+			seenPatterns[r.Pattern] = struct{}{}
+
+			cleaned = append(cleaned, *r)
 		}
 
-		s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
-			slog.Int("types", len(s.whitelist)),
-			slog.Uint64("rules", countRules(s.whitelist)),
-			slog.Uint64("changed_count", changed),
-			slog.Uint64("removed_count", removed),
-			slog.String("path", whitelistFileName),
-		)
-		if countRules(rulesByType)-removed != countRules(s.whitelist) {
-			panic("bad coding: lost some rules, shouldn't happen!")
+		//s.whitelist[typ] = cleaned
+		newRules[typ] = cleaned
+	} //for
+
+	// if s.config.ExtraSafety {
+	// 	if removed > 0 {
+	// 		s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
+	// 		s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
+	// 	}
+	// }
+
+	// s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
+	// 	slog.Int("types", len(s.whitelist)),
+	// 	slog.Uint64("rules", countRules(s.whitelist)),
+	// 	slog.Uint64("changed_count", changed),
+	// 	slog.Uint64("removed_count", removed),
+	// 	slog.String("path", whitelistFileName),
+	// )
+	// if countRules(rulesByType)-removed != countRules(s.whitelist) {
+	// 	panic("bad coding: lost some rules, shouldn't happen!")
+	// }
+	// }() // lock released here
+
+	if s.config.ExtraSafety {
+		if removed > 0 {
+			s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
+			s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
 		}
-	}() // lock released here
+	}
+
+	// ── Atomic swap ──────────────────────────────────────────────────────────────
+	s.ruleStore.ReplaceAll(newRules)
+
+	hmn := s.ruleStore.CountAll()
+	s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
+		slog.Int("types", len(newRules)),
+		slog.Uint64("rules", hmn),
+		slog.Uint64("changed_count", changed),
+		slog.Uint64("removed_count", removed),
+		slog.String("path", whitelistFileName),
+	)
+	if countRules(rulesByType)-removed != hmn {
+		panic("bad coding: lost some rules, shouldn't happen!")
+	}
+
 	if changed > 0 || removed > 0 {
 		s.flushCache()
 		return s.saveQueryWhitelist() //uses lock!
@@ -3701,42 +3740,48 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	}
 
 	// Whitelist
-	matchedID := "" // must be empty, used in 2 logical places, one's here.
-	matched := false
-	func() { //for 'defer'
-		s.ruleMutex.RLock()
-		defer s.ruleMutex.RUnlock()
+	// matchedID := "" // must be empty, used in 2 logical places, one's here.
+	// matched := false
+	// func() { //for 'defer'
+	// 	s.ruleMutex.RLock()
+	// 	defer s.ruleMutex.RUnlock()
 
-		rules := s.whitelist[qtype]
-		for _, rule := range rules {
-			if !rule.Enabled {
-				continue
-			}
-			if matchPattern(rule.Pattern, domain) {
-				matchedID = rule.ID
-				matched = true
-				break
-			}
-		}
+	// 	rules := s.whitelist[qtype]
+	// 	for _, rule := range rules {
+	// 		if !rule.Enabled {
+	// 			continue
+	// 		}
+	// 		if matchPattern(rule.Pattern, domain) {
+	// 			matchedID = rule.ID
+	// 			matched = true
+	// 			break
+	// 		}
+	// 	}
 
-		// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
-		// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
-		if s.config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
-			for _, rule := range s.whitelist["A"] {
-				if !rule.Enabled {
-					continue
-				}
-				if matchPattern(rule.Pattern, domain) {
-					matchedID = rule.ID
-					matched = true
-					break
-				}
-			}
-		}
-		// --- END OF NEW CODE ---
+	// 	// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
+	// 	// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
+	// 	if s.config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
+	// 		for _, rule := range s.whitelist["A"] {
+	// 			if !rule.Enabled {
+	// 				continue
+	// 			}
+	// 			if matchPattern(rule.Pattern, domain) {
+	// 				matchedID = rule.ID
+	// 				matched = true
+	// 				break
+	// 			}
+	// 		}
+	// 	}
+	// 	// --- END OF NEW CODE ---
 
-		// ruleMutex.RUnlock()
-	}()
+	// 	// ruleMutex.RUnlock()
+	// }()
+	// Whitelist check (was: s.ruleMutex.RLock / range s.whitelist)
+	matchedID, matched := s.ruleStore.MatchForType(qtype, domain)
+	if !matched && s.config.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+		matchedID, matched = s.ruleStore.MatchForType("A", domain)
+	}
+
 	// if !matched {
 	//     stats.Add(1)
 	//     func() {
@@ -3751,53 +3796,37 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	//     blocked := blockResponse(msg)
 	if !matched {
 		s.stats.Add(1)
-		func() {
-			s.blockMutex.Lock()
-			defer s.blockMutex.Unlock()
+		// func() {
+		// 	s.blockMutex.Lock()
+		// 	defer s.blockMutex.Unlock()
 
-			// // 1. Remove duplicate if it already exists (same domain and type)
-			// for i := 0; i < len(recentBlocks); i++ {
-			// 	if recentBlocks[i].Domain == domain && recentBlocks[i].Type == qtype {
-			// 		recentBlocks = append(recentBlocks[:i], recentBlocks[i+1:]...)
-			// 		break
-			// 	}
-			// }
+		// 	key := domain + ":" + qtype
 
-			// // 2. Prepend the new blocked query (so it appears at the top of the UI)
-			// newBlock := BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
-			// recentBlocks = append([]BlockedQuery{newBlock}, recentBlocks...)
+		// 	if elem, ok := s.recentBlocksMap[key]; ok {
+		// 		// We already have this block. Update the time and bump it to the front.
+		// 		// (Zero allocations!)
+		// 		bq := elem.Value.(*BlockedQuery)
+		// 		bq.Time = time.Now()
+		// 		s.recentBlocksList.MoveToFront(elem)
+		// 	} else {
+		// 		// Brand new block. Add to the front of our list and map.
+		// 		newBlock := &BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
+		// 		elem := s.recentBlocksList.PushFront(newBlock)
+		// 		s.recentBlocksMap[key] = elem
 
-			// // 3. Keep the list size to a maximum of keepTrackOfThisManyRecentBlocks
-			// if len(recentBlocks) > keepTrackOfThisManyRecentBlocks {
-			// 	recentBlocks = recentBlocks[:keepTrackOfThisManyRecentBlocks]
-			// }
-
-			key := domain + ":" + qtype
-
-			if elem, ok := s.recentBlocksMap[key]; ok {
-				// We already have this block. Update the time and bump it to the front.
-				// (Zero allocations!)
-				bq := elem.Value.(*BlockedQuery)
-				bq.Time = time.Now()
-				s.recentBlocksList.MoveToFront(elem)
-			} else {
-				// Brand new block. Add to the front of our list and map.
-				newBlock := &BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
-				elem := s.recentBlocksList.PushFront(newBlock)
-				s.recentBlocksMap[key] = elem
-
-				// Evict the oldest item if we exceed the tracked limit
-				if s.recentBlocksList.Len() > s.config.MaxRecentBlocks {
-					backElem := s.recentBlocksList.Back()
-					if backElem != nil {
-						backBQ := backElem.Value.(*BlockedQuery)
-						backKey := backBQ.Domain + ":" + backBQ.Type
-						delete(s.recentBlocksMap, backKey)
-						s.recentBlocksList.Remove(backElem)
-					}
-				}
-			}
-		}() // Notice the parens here to call it immediately
+		// 		// Evict the oldest item if we exceed the tracked limit
+		// 		if s.recentBlocksList.Len() > s.config.MaxRecentBlocks {
+		// 			backElem := s.recentBlocksList.Back()
+		// 			if backElem != nil {
+		// 				backBQ := backElem.Value.(*BlockedQuery)
+		// 				backKey := backBQ.Domain + ":" + backBQ.Type
+		// 				delete(s.recentBlocksMap, backKey)
+		// 				s.recentBlocksList.Remove(backElem)
+		// 			}
+		// 		}
+		// 	}
+		// }() // Notice the parens here to call it immediately
+		s.recentBlocks.Record(domain, qtype, s.config.MaxRecentBlocks)
 		blocked := s.blockResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
 		return blocked
@@ -3827,21 +3856,22 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	}
 
 	// --- START Local Hosts Override ---
-	var hasLocalHost bool
-	var matchedIPs []net.IP
-	func() {
-		s.localHostsMu.RLock()
-		defer s.localHostsMu.RUnlock() // maybe it panics so unlock it even then!
-		for _, rule := range s.localHosts {
-			if matchPattern(rule.Pattern, domain) {
-				matchedIPs = rule.IPs
-				hasLocalHost = true
-				break
-			}
-		}
-	}() // for defer
+	// var hasLocalHost bool
+	// var matchedIPs []net.IP
+	// func() {
+	// 	s.localHostsMu.RLock()
+	// 	defer s.localHostsMu.RUnlock() // maybe it panics so unlock it even then!
+	// 	for _, rule := range s.localHosts {
+	// 		if matchPattern(rule.Pattern, domain) {
+	// 			matchedIPs = rule.IPs
+	// 			hasLocalHost = true
+	// 			break
+	// 		}
+	// 	}
+	// }() // for defer
 
-	if hasLocalHost {
+	// Local hosts check (was: s.localHostsMu.RLock / range s.localHosts)
+	if matchedIPs, ok := s.hostStore.Match(domain); ok {
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
 		resp.Authoritative = true
@@ -4865,7 +4895,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 		if r.A.IsUnspecified() { // Matches 0.0.0.0
 			return false, nil, BlockedZeroIP
 		}
-		if s.isBlacklistedIP(r.A) {
+		if s.blacklist.Contains(r.A) {
 			return false, nil, BlockedBlacklistedIP
 		}
 		return true, r, ""
@@ -4874,7 +4904,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 		if r.AAAA.IsUnspecified() { // Matches ::
 			return false, nil, BlockedZeroIP
 		}
-		if s.isBlacklistedIP(r.AAAA) {
+		if s.blacklist.Contains(r.AAAA) {
 			return false, nil, BlockedBlacklistedIP
 		}
 		return true, r, ""
@@ -5195,20 +5225,6 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// Add this helper to Server
-func (s *Server) tryAddBlacklistIP(n *net.IPNet) bool {
-	s.responseBlacklistMu.Lock()
-	defer s.responseBlacklistMu.Unlock()
-
-	for _, existing := range s.responseBlacklist {
-		if existing.String() == n.String() {
-			return false // Already exists
-		}
-	}
-	s.responseBlacklist = append(s.responseBlacklist, n)
-	return true // Added successfully
-}
-
 func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data := map[string]any{
@@ -5263,7 +5279,7 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 					// }
 
 					// Using the clean add helper method with natural defer unlock
-					if s.tryAddBlacklistIP(n) { //added so it didn't exist
+					if s.blacklist.TryAdd(n) { //added so it didn't exist
 						s.logger.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
 						if err := s.saveResponseBlacklist(); err != nil {
 							s.logFatal("failed to save response blacklist after add from webUI", err)
@@ -5318,31 +5334,33 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
 // Returns true if the target was found and deleted, false otherwise.
 func (s *Server) tryDeleteBlacklistIP(cidrStr string) bool {
-	s.responseBlacklistMu.Lock()
-	defer s.responseBlacklistMu.Unlock()
+	// s.responseBlacklistMu.Lock()
+	// defer s.responseBlacklistMu.Unlock()
 
-	for i, existing := range s.responseBlacklist {
-		if existing.String() == cidrStr {
-			s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
-			return true
-		}
-	}
-	return false
+	// for i, existing := range s.responseBlacklist {
+	// 	if existing.String() == cidrStr {
+	// 		s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
+	// 		return true
+	// 	}
+	// }
+	// return false
+	return s.blacklist.TryDelete(cidrStr)
 }
 
 // Add this helper to Server
 func (s *Server) checkBlacklistMatches(n *net.IPNet) []string {
-	s.responseBlacklistMu.RLock()
-	defer s.responseBlacklistMu.RUnlock()
+	// s.responseBlacklistMu.RLock()
+	// defer s.responseBlacklistMu.RUnlock()
 
-	var matches []string
-	for _, existing := range s.responseBlacklist {
-		// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
-		if existing.String() == n.String() || existing.Contains(n.IP) {
-			matches = append(matches, existing.String())
-		}
-	}
-	return matches
+	// var matches []string
+	// for _, existing := range s.responseBlacklist {
+	// 	// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
+	// 	if existing.String() == n.String() || existing.Contains(n.IP) {
+	// 		matches = append(matches, existing.String())
+	// 	}
+	// }
+	// return matches
+	return s.blacklist.CheckMatches(n)
 }
 
 func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -5587,18 +5605,502 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, r, "stats", data)
 }
 
-func (s *Server) snapshotWhitelist() map[string][]RuleEntry {
-	s.ruleMutex.RLock()
-	defer s.ruleMutex.RUnlock()
+// RuleStore manages the in-memory DNS query whitelist.
+// Persistence (loadQueryWhitelist / saveQueryWhitelist) stays on Server.
+type RuleStore struct {
+	mu    sync.RWMutex
+	rules map[string][]RuleEntry
+}
 
-	copyMap := make(map[string][]RuleEntry)
-	for key, entries := range s.whitelist {
+// only use once, before server start, never on reloads(Ctrl+R) tho
+func newRuleStore() *RuleStore {
+	return &RuleStore{rules: make(map[string][]RuleEntry)}
+}
+
+// ReplaceAll atomically swaps in a freshly-loaded/normalized ruleset.
+func (rs *RuleStore) ReplaceAll(newRules map[string][]RuleEntry) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.rules = newRules
+}
+
+// Snapshot returns a full deep copy (for the web UI and for saving).
+func (rs *RuleStore) Snapshot() map[string][]RuleEntry {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	out := make(map[string][]RuleEntry, len(rs.rules))
+	for key, entries := range rs.rules {
 		// Copy the slice to prevent modification of the underlying array
 		newSlice := make([]RuleEntry, len(entries))
 		copy(newSlice, entries)
-		copyMap[key] = newSlice
+		out[key] = newSlice
 	}
-	return copyMap
+	return out
+}
+
+// MatchForType returns (id, true) if an enabled rule in qtype matches domain.
+func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	for _, rule := range rs.rules[qtype] {
+		if rule.Enabled && matchPattern(rule.Pattern, domain) {
+			return rule.ID, true
+		}
+	}
+	return "", false
+}
+
+// CountAll returns the total rule count across all types.
+func (rs *RuleStore) CountAll() uint64 {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	return countRules(rs.rules)
+}
+
+// AddRule adds a new rule and returns its generated ID.
+// Returns an error if a rule with the same pattern already exists for that type.
+func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Logger) (id string, err error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	for _, rule := range rs.rules[typ] {
+		if rule.Pattern == pattern {
+			return "", fmt.Errorf("rule with pattern %q already exists for type %s", pattern, typ)
+		}
+	}
+	id = generateUniqueRuleID2(rs.rules, logger)
+	newRule := RuleEntry{ID: id, Pattern: pattern, Enabled: enabled}
+	rs.rules[typ] = withRulePrepended(rs.rules[typ], newRule, logger)
+	logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
+		slog.String("id", id), slog.Bool("enabled", enabled))
+	return id, nil
+}
+
+// DeleteRule removes the rule with the given ID from the given type.
+// Returns the deleted pattern (for cache invalidation) or an error if not found.
+func (rs *RuleStore) DeleteRule(typ, id string, logger *slog.Logger) (pattern string, err error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rules, ok := rs.rules[typ] //so this is a contents copy then?
+	if !ok {
+		return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
+	}
+	for i, rule := range rules { //or this 'rule' is a contents copy ?
+		if rule.ID == id {
+			// Replaces the shifting copy hacks with an isolated fresh array allocation
+			rs.rules[typ] = withRuleRemovedAt(rules, i, logger)
+			return rule.Pattern, nil
+		}
+	}
+	return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
+}
+
+// UpdateRule finds the rule by ID anywhere in the store, updates it (possibly
+// changing its type), and returns the old type and old pattern for cache invalidation.
+func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, logger *slog.Logger) (oldType, oldPattern string, err error) {
+	if id == "" {
+		panic(fmt.Errorf("BUG: attempted to update a rule with empty id passed-in, rule with newType %q and newPattern %q", newType, newPattern))
+	}
+	//hmm I see we're not attempting to sanitizeDomainInput(id) here, we're assuming it's good, makes some sense.
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	var foundType string
+	var foundIndex int
+	found := false
+	for t, rules := range rs.rules {
+		for i, r := range rules {
+			if r.ID == id {
+				foundType, foundIndex, oldPattern, found = t, i, r.Pattern, true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return "", "", fmt.Errorf("rule not found: id=%s", id)
+	}
+
+	// Check for duplicate pattern in the target type, excluding the rule being edited.
+	for _, rule := range rs.rules[newType] {
+		if rule.ID != id && rule.Pattern == newPattern {
+			return "", "", fmt.Errorf("rule with pattern %q already exists for type %s", newPattern, newType)
+		}
+	}
+
+	oldType = foundType
+	newRule := RuleEntry{ID: id, Pattern: newPattern, Enabled: enabled}
+	if foundType == newType {
+		// Type didn't change -> Update fully IN-PLACE cleanly using our new function
+		rs.rules[newType] = withRuleUpdatedAtIndex(rs.rules[newType], foundIndex, newRule, logger)
+	} else {
+		// Type changed -> Safely remove from old slice, safely prepend to new slice
+		rs.rules[foundType] = withRuleRemovedAt(rs.rules[foundType], foundIndex, logger)
+		// 2. Prepend smoothly to the new category using your new function
+		rs.rules[newType] = withRulePrepended(rs.rules[newType], newRule, logger)
+	}
+	logger.Info("Rule updated", slog.String("id", id),
+		slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
+		slog.String("old_pattern", oldPattern))
+	return oldType, oldPattern, nil
+}
+
+// SetEnabled enables or disables the first rule matching domain+type.
+// Returns (found, changed): changed=false when already in the desired state.
+func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, changed bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	for i, rule := range rs.rules[typ] {
+		if rule.Pattern == domain {
+			if rule.Enabled == enabled {
+				return true, false
+			}
+			rs.rules[typ][i].Enabled = enabled //XXX: mutates in place
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// HostStore manages local hostname overrides.
+type HostStore struct {
+	mu    sync.RWMutex
+	hosts []LocalHostRule
+}
+
+func newHostStore() *HostStore { return &HostStore{} }
+
+func (hs *HostStore) ReplaceAll(hosts []LocalHostRule) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.hosts = hosts
+}
+
+// Match returns the IPs for the first rule whose pattern matches domain, or nil.
+func (hs *HostStore) Match(domain string) ([]net.IP, bool) {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
+	for _, rule := range hs.hosts {
+		if matchPattern(rule.Pattern, domain) {
+			return rule.IPs, true
+		}
+	}
+	return nil, false
+}
+
+// Snapshot returns HostView slices for the web UI.
+func (hs *HostStore) Snapshot() []HostView {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
+	out := make([]HostView, len(hs.hosts))
+	for i, h := range hs.hosts {
+		ips := make([]string, len(h.IPs))
+		for j, ip := range h.IPs {
+			ips[j] = ip.String()
+		}
+		out[i] = HostView{Index: i, Pattern: h.Pattern, IPsDisplay: strings.Join(ips, ", ")}
+	}
+	return out
+}
+
+// // GetAll returns a shallow copy for saving.
+// func (hs *HostStore) GetAll() []LocalHostRule {
+// 	hs.mu.RLock()
+// 	defer hs.mu.RUnlock()
+// 	cp := make([]LocalHostRule, len(hs.hosts))
+// 	copy(cp, hs.hosts)
+// 	return cp
+// }
+
+// ToRawMap converts the host rules back to a flat map format for serialization.
+func (hs *HostStore) ToRawMap() map[string][]string {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
+
+	raw := make(map[string][]string, len(hs.hosts))
+	for _, rule := range hs.hosts {
+		var ips []string
+		// rule.IPs is a slice of net.IP, convert each to string
+		for _, ip := range rule.IPs {
+			ips = append(ips, ip.String())
+		}
+		raw[rule.Pattern] = ips
+	}
+	return raw
+}
+
+// AddHost appends a new rule. Returns an error if the pattern already exists.
+func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	for _, rule := range hs.hosts {
+		if rule.Pattern == pattern {
+			return fmt.Errorf("local host with pattern %q already exists", pattern)
+		}
+	}
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips})
+	return nil
+}
+
+// EditHost replaces (old→new). It removes the old pattern (if it differs from new),
+// removes any existing rule for the new pattern, then appends the updated rule.
+func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.hosts = deleteHostEntry(hs.hosts, oldPattern)
+	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // evict any collision
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips})
+}
+
+// DeleteHost removes the rule with the given pattern. Returns true if found.
+func (hs *HostStore) DeleteHost(pattern string) bool {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	before := len(hs.hosts)
+	hs.hosts = deleteHostEntry(hs.hosts, pattern)
+	return len(hs.hosts) < before
+}
+
+func (hs *HostStore) Len() int {
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
+	return len(hs.hosts)
+}
+
+// deleteHostEntry is an unexported in-place-safe helper (no lock, caller holds it).
+func deleteHostEntry(hosts []LocalHostRule, pattern string) []LocalHostRule {
+	for i, rule := range hosts {
+		if rule.Pattern == pattern {
+			return append(hosts[:i], hosts[i+1:]...)
+		}
+	}
+	return hosts
+}
+
+// BlacklistStore manages the response-IP blacklist.
+type BlacklistStore struct {
+	mu   sync.RWMutex
+	nets []*net.IPNet
+}
+
+func newBlacklistStore() *BlacklistStore { return &BlacklistStore{} }
+
+func (bs *BlacklistStore) ReplaceAll(nets []*net.IPNet) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.nets = nets
+}
+
+func (bs *BlacklistStore) Contains(ip net.IP) bool {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	for _, n := range bs.nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (bs *BlacklistStore) List() []string {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	out := make([]string, len(bs.nets))
+	for i, n := range bs.nets {
+		out[i] = n.String()
+	}
+	return out
+}
+
+// TryAdd adds the CIDR if not already present. Returns true if added.
+func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	for _, existing := range bs.nets {
+		if existing.String() == n.String() {
+			return false // Already exists
+		}
+	}
+	bs.nets = append(bs.nets, n)
+	return true // Added successfully
+}
+
+// TryDelete removes the matching CIDR string. Returns true if removed.
+func (bs *BlacklistStore) TryDelete(cidrStr string) bool {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	for i, existing := range bs.nets {
+		if existing.String() == cidrStr {
+			// 1. Slide elements left to overwrite index i
+			bs.nets = append(bs.nets[:i], bs.nets[i+1:]...)
+
+			// 2. Clear the old trailing slot to let the Garbage Collector free the memory!
+			bs.nets = bs.nets[:len(bs.nets):cap(bs.nets)] // Optional: strictly bounds checking
+			if len(bs.nets) < cap(bs.nets) {
+				// Since bs.nets shrank by 1, the old last element is at the new len(bs.nets)
+				bs.nets[:len(bs.nets)+1][len(bs.nets)] = nil
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// CheckMatches returns all existing CIDRs that are equal to or contain n's IP.
+func (bs *BlacklistStore) CheckMatches(n *net.IPNet) []string {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	var matches []string
+	for _, existing := range bs.nets {
+		if existing.String() == n.String() || existing.Contains(n.IP) {
+			matches = append(matches, existing.String())
+		}
+	}
+	return matches
+}
+
+func (bs *BlacklistStore) Len() int {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	return len(bs.nets)
+}
+
+// RecentBlocksTracker keeps a bounded LRU of recently blocked queries.
+type RecentBlocksTracker struct {
+	mu  sync.Mutex
+	lst *list.List
+	m   map[string]*list.Element
+}
+
+func newRecentBlocksTracker() *RecentBlocksTracker {
+	return &RecentBlocksTracker{
+		lst: list.New(),
+		m:   make(map[string]*list.Element),
+	}
+}
+
+// Record adds or bumps a recent block entry, evicting the oldest if over maxBlocks.
+func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := domain + ":" + qtype
+	if elem, ok := t.m[key]; ok {
+		// We already have this block. Update the time and bump it to the front.
+		// (Zero allocations!)
+		elem.Value.(*BlockedQuery).Time = time.Now()
+		t.lst.MoveToFront(elem)
+		return
+	}
+	// Brand new block. Add to the front of our list and map.
+	elem := t.lst.PushFront(&BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
+	t.m[key] = elem
+	// Evict the oldest item if we exceed the tracked limit
+	for t.lst.Len() > maxBlocks {
+		back := t.lst.Back()
+		if back == nil {
+			break
+		}
+		bq := back.Value.(*BlockedQuery)
+		delete(t.m, bq.Domain+":"+bq.Type)
+		t.lst.Remove(back)
+	}
+}
+
+// Snapshot returns a copy of recent blocks, with IsUnblocked populated via the provided checker.
+func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bool) []BlockedQuery {
+	t.mu.Lock()
+	result := make([]BlockedQuery, 0, t.lst.Len())
+	for e := t.lst.Front(); e != nil; e = e.Next() {
+		result = append(result, *e.Value.(*BlockedQuery))
+	}
+	t.mu.Unlock()
+
+	for i := range result {
+		b := &result[i]
+		b.IsUnblocked = isUnblocked(b.Domain, b.Type)
+	}
+	return result
+}
+
+// LoginTracker records login failures and enforces per-IP lockout.
+type LoginTracker struct {
+	mu      sync.Mutex
+	records map[string]*loginRecord
+}
+
+func newLoginTracker() *LoginTracker {
+	return &LoginTracker{records: make(map[string]*loginRecord)}
+}
+
+func (lt *LoginTracker) IsAllowed(clientIP string, maxFailures int) (allowed bool, remaining int, lockedUntil time.Time) {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	rec, ok := lt.records[clientIP]
+	if !ok {
+		return true, maxFailures, time.Time{}
+	}
+	now := time.Now()
+	// Still within an active lockout window?
+	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+		return false, 0, rec.lockedUntil
+	}
+	// Lockout has expired: lazily reset so subsequent checks start clean.
+	if !rec.lockedUntil.IsZero() {
+		rec.failures = 0
+		rec.lockedUntil = time.Time{}
+	}
+	rem := maxFailures - rec.failures
+	if rem < 0 {
+		rem = 0
+	}
+	return true, rem, time.Time{}
+}
+
+func (lt *LoginTracker) RecordFailure(clientIP string, maxFailures, lockoutSec int) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	now := time.Now()
+	rec, ok := lt.records[clientIP]
+	if !ok {
+		rec = &loginRecord{}
+		lt.records[clientIP] = rec
+	}
+
+	// Expired lockout: start a fresh window.
+	if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
+		rec.failures = 0
+		rec.lockedUntil = time.Time{}
+	}
+
+	// Already in an active lockout: report state without incrementing further.
+	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+		return true, rec.lockedUntil, rec.failures
+	}
+
+	rec.failures++
+	totalFailures = rec.failures
+
+	if rec.failures >= maxFailures {
+		rec.lockedUntil = now.Add(time.Duration(lockoutSec) * time.Second)
+		return true, rec.lockedUntil, totalFailures
+	}
+	return false, time.Time{}, totalFailures
+}
+
+func (lt *LoginTracker) RecordSuccess(clientIP string) {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	delete(lt.records, clientIP)
+}
+
+// ClearAll wipes all records and returns how many were removed.
+func (lt *LoginTracker) ClearAll() int {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	n := len(lt.records)
+	lt.records = make(map[string]*loginRecord)
+	return n
 }
 
 type RuleView struct {
@@ -5617,7 +6119,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		// }
 
 		// Flatten the map into a single slice for unified table rendering
-		rulesSnapshot := s.snapshotWhitelist() // Safe, independent copy
+		rulesSnapshot := s.ruleStore.Snapshot() // Safe, independent copy
 		// var flatRules []RuleView
 		// for typ, rules := range rulesSnapshot {
 		//     for _, rule := range rules {
@@ -5675,45 +6177,51 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			var deleted bool = false
+			// var deleted bool = false
 
-			//TODO: make proper delete rule function, heh.
-			func() {
-				s.ruleMutex.Lock()
-				defer s.ruleMutex.Unlock()
+			// //doneTODO: make proper delete rule function, heh.
+			// func() {
+			// 	s.ruleMutex.Lock()
+			// 	defer s.ruleMutex.Unlock()
 
-				if rules, ok := s.whitelist[typ]; ok {
-					for i, rule := range rules {
-						if rule.ID == id {
-							//     // Copy the tail over the deleted element
-							//     copy(rules[i:], rules[i+1:])
-							//     // Explicitly zero the last element to prevent string memory leaks
-							//     rules[len(rules)-1] = RuleEntry{}
-							//     // Shrink the slice (wouldn't have zeroed last without the above explicit!)
-							//     whitelist[typ] = rules[:len(rules)-1]
-
-							s.invalidateCacheForPattern(rule.Pattern)
-							// Replaces the shifting copy hacks with an isolated fresh array allocation
-							s.whitelist[typ] = withRuleRemovedAt(rules, i, s.logger)
-							deleted = true
-							break
-						}
-					}
-				}
-			}() // lock released here
-			if deleted {
-				s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
-				if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
-					s.logFatal("failed to save whitelist after rule deletion from webUI", err)
-				}
-				http.Redirect(w, r, "/rules", http.StatusSeeOther)
-				return
-			} else {
+			// 	if rules, ok := s.whitelist[typ]; ok {
+			// 		for i, rule := range rules {
+			// 			if rule.ID == id {
+			// 				s.invalidateCacheForPattern(rule.Pattern)
+			// 				// Replaces the shifting copy hacks with an isolated fresh array allocation
+			// 				s.whitelist[typ] = withRuleRemovedAt(rules, i, s.logger)
+			// 				deleted = true
+			// 				break
+			// 			}
+			// 		}
+			// 	}
+			// }() // lock released here
+			// if deleted {
+			// 	s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
+			// 	if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
+			// 		s.logFatal("failed to save whitelist after rule deletion from webUI", err)
+			// 	}
+			// 	http.Redirect(w, r, "/rules", http.StatusSeeOther)
+			// 	return
+			// } else {
+			// 	s.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
+			// 	http.Error(w, "rule not found", http.StatusNotFound)
+			// 	return
+			// }
+			pattern, err := s.ruleStore.DeleteRule(typ, id, s.logger)
+			if err != nil {
 				s.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
-				http.Error(w, "rule not found", http.StatusNotFound)
+				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-		}
+			s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
+			s.invalidateCacheForPattern(pattern)
+			if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
+				s.logFatal("failed to save whitelist after rule deletion from webUI", err)
+			}
+			http.Redirect(w, r, "/rules", http.StatusSeeOther)
+			return
+		} //end delete
 
 		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern"))) //XXX: must be lowercased for matchPattern later on.
 		typ := r.FormValue("type")
@@ -5737,157 +6245,110 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// Run the update/add logic inside a thread-safe closure that bubbles up errors
+		// err := func() error {
+		// 	s.ruleMutex.Lock()
+		// 	defer s.ruleMutex.Unlock()
+
 		// id, if present, is a UUID; guard it the same way as in the delete path.
-		if id != "" { //aka is this an EDIT attempt?
+		if id != "" { //this is an EDIT attempt
+			//     // Edit: Find and update (search all types)
+			// --- EDIT MODE ---
 			if _, modified := sanitizeDomainInput(id); modified {
 				s.logger.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
-		}
-
-		// Run the update/add logic inside a thread-safe closure that bubbles up errors
-		err := func() error {
-			s.ruleMutex.Lock()
-			defer s.ruleMutex.Unlock()
-
-			if id != "" { //this is an EDIT attempt
-				//     // Edit: Find and update (search all types)
-				// --- EDIT MODE ---
-				var foundOldRule bool
-				var oldType string
-				var oldIndex int
-				var oldPattern string
-
-				// 1. Find where the rule currently lives
-				for t, rules := range s.whitelist {
-					for i, r := range rules {
-						if r.ID == id {
-							foundOldRule = true
-							oldType = t
-							oldIndex = i
-							oldPattern = r.Pattern
-							break
-						}
-					}
-					if foundOldRule {
-						break
-					}
-				}
-
-				if !foundOldRule {
-					return fmt.Errorf("rule not found")
-				}
-
-				// 2. Check for pattern conflicts in the TARGET type group
-				for _, rule := range s.whitelist[typ] {
-					if rule.ID != id && rule.Pattern == patternLowercased {
-						return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
-					}
-				}
-
-				// if oldType == typ {
-				//     // Type didn't change -> Update fully IN-PLACE without mutating underlying array
-				//     oldEntries := whitelist[typ]
-				//     newEntries := make([]RuleEntry, len(oldEntries))
-				//     copy(newEntries, oldEntries)
-
-				//     newEntries[oldIndex].Pattern = patternLowercased
-				//     newEntries[oldIndex].Enabled = enabledBool
-
-				//     whitelist[typ] = newEntries
-				// } else {
-				//     // Type changed -> Safely remove from old slice, safely prepend to new slice
-				//     oldEntries := whitelist[oldType]
-				//     newOldEntries := make([]RuleEntry, 0, len(oldEntries)-1)
-				//     newOldEntries = append(newOldEntries, oldEntries[:oldIndex]...)
-				//     newOldEntries = append(newOldEntries, oldEntries[oldIndex+1:]...)
-				//     whitelist[oldType] = newOldEntries
-
-				//     targetEntries := whitelist[typ]
-				//     newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-
-				//     newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
-				//     newTargetEntries = append(newTargetEntries, newRule)
-				//     newTargetEntries = append(newTargetEntries, targetEntries...)
-				//     whitelist[typ] = newTargetEntries
-				// }
-				newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-				if oldType == typ {
-					// Type didn't change -> Update fully IN-PLACE cleanly using our new function
-					s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, s.logger)
-				} else {
-					// Type changed -> Safely remove from old slice, safely prepend to new slice
-
-					// 1. Remove from old slice using copy (avoids the ... unpack allocation loop)
-					// oldEntries := whitelist[oldType]
-					// newOldEntries := make([]RuleEntry, len(oldEntries)-1)
-					// copy(newOldEntries[:oldIndex], oldEntries[:oldIndex])
-					// copy(newOldEntries[oldIndex:], oldEntries[oldIndex+1:])
-					// whitelist[oldType] = newOldEntries
-
-					s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, s.logger)
-
-					// 2. Prepend smoothly to the new category using your new function
-					s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
-				}
-				s.invalidateCacheForPattern(oldPattern)
-				if oldPattern != patternLowercased {
-					s.invalidateCacheForPattern(patternLowercased)
-				}
-				s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
-					slog.String("old_pattern", oldPattern))
-			} else { // this is an ADD new rule
-				// --- ADD MODE ---
-				// Add new: Prevent duplicate (same type + pattern, case-insensitive)
-				//lowerPattern := strings.ToLower(pattern)
-				for _, rule := range s.whitelist[typ] {
-					//if strings.ToLower(rule.Pattern) == lowerPattern {
-					if rule.Pattern /*already lowercase!*/ == patternLowercased {
-						//http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
-						return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
-					}
-				}
-
-				newID := generateUniqueRuleID(s.whitelist, s.logger)
-				newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
-				// if _, ok := whitelist[typ]; !ok { //does the key for 'typ' not exist? make it
-				//     whitelist[typ] = []Rule{}
-				// }
-				// // if whitelist[typ] == nil { // does the key for 'typ' not exist? OR it exists but has nil value
-				// //     whitelist[typ] = []Rule{}
-				// // }
-				//config.Whitelist[typ] = append(config.Whitelist[typ], newRule)
-
-				//whitelist[typ] = append(whitelist[typ] /*ok if nil*/, newRule)
-
-				// whitelist[typ] = append([]RuleEntry{newRule}, whitelist[typ]...)
-
-				// // Prepend cleanly by allocating a fresh slice wrapper with known capacity
-				// targetEntries := whitelist[typ]
-				// // newTargetEntries := make([]RuleEntry, 0, len(targetEntries)+1)
-				// // newTargetEntries = append(newTargetEntries, newRule)
-				// // newTargetEntries = append(newTargetEntries, targetEntries...)
-				// newTargetEntries := make([]RuleEntry, len(targetEntries)+1)
-				// // 1. Copy old entries into the new slice, starting at index 1
-				// copy(newTargetEntries[1:], targetEntries)
-				// // 2. Insert the new rule at index 0
-				// newTargetEntries[0] = newRule
-				// whitelist[typ] = newTargetEntries
-
-				// Replaces all the manual make() and copy() steps with your new helper function
-				s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
-				s.invalidateCacheForPattern(patternLowercased)
-				s.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("id", newID), slog.Bool("enabled", enabledBool))
+			_, oldPattern, err := s.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, s.logger)
+			if err != nil {
+				s.logger.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
 			}
-			return nil
-		}() // lock released here
-		// Handle any error returned by the thread-safe operations
-		if err != nil {
-			s.logger.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
+			// var foundOldRule bool
+			// var oldType string
+			// var oldIndex int
+			// var oldPattern string
+
+			// // 1. Find where the rule currently lives
+			// for t, rules := range s.whitelist {
+			// 	for i, r := range rules {
+			// 		if r.ID == id {
+			// 			foundOldRule = true
+			// 			oldType = t
+			// 			oldIndex = i
+			// 			oldPattern = r.Pattern
+			// 			break
+			// 		}
+			// 	}
+			// 	if foundOldRule {
+			// 		break
+			// 	}
+			// }
+
+			// if !foundOldRule {
+			// 	return fmt.Errorf("rule not found")
+			// }
+
+			// // 2. Check for pattern conflicts in the TARGET type group
+			// for _, rule := range s.whitelist[typ] {
+			// 	if rule.ID != id && rule.Pattern == patternLowercased {
+			// 		return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
+			// 	}
+			// }
+
+			// newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
+			// if oldType == typ {
+			// 	// Type didn't change -> Update fully IN-PLACE cleanly using our new function
+			// 	s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, s.logger)
+			// } else {
+			// 	// Type changed -> Safely remove from old slice, safely prepend to new slice
+
+			// 	s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, s.logger)
+
+			// 	// 2. Prepend smoothly to the new category using your new function
+			// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+			// }
+			s.invalidateCacheForPattern(oldPattern)
+			if oldPattern != patternLowercased {
+				s.invalidateCacheForPattern(patternLowercased)
+			}
+			s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
+				slog.String("old_pattern", oldPattern))
+		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
+			// --- ADD MODE ---
+			// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
+			// for _, rule := range s.whitelist[typ] {
+			// 	//if strings.ToLower(rule.Pattern) == lowerPattern {
+			// 	if rule.Pattern /*already lowercase!*/ == patternLowercased {
+			// 		//http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
+			// 		return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
+			// 	}
+			// }
+
+			// newID := generateUniqueRuleID(s.whitelist, s.logger)
+			// newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
+			// // Replaces all the manual make() and copy() steps with your new helper function
+			// s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+
+			newID, err := s.ruleStore.AddRule(typ, patternLowercased, enabledBool, s.logger)
+			if err != nil {
+				s.logger.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			s.invalidateCacheForPattern(patternLowercased)
+			s.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
 		}
+		// return nil
+		// }() // lock released here
+		// Handle any error returned by the thread-safe operations
+		// if err != nil {
+		// 	s.logger.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
+		// 	http.Error(w, err.Error(), http.StatusConflict)
+		// 	return
+		// }
 
 		if err := /*uses lock!*/ s.saveQueryWhitelist(); err != nil {
 			s.logFatal("failed to save whitelist after rule add/edit from webUI", err)
@@ -5929,7 +6390,7 @@ func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
 // generateUniqueRuleID generates a UUID not already present in an arbitrary rule map.
 // Used by loadQueryWhitelist (which works on a local copy) and by RuleStore methods
 // (which call this while holding the write lock).
-func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
+func generateUniqueRuleID2(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
 	existing := make(map[string]struct{})
 	for _, rules := range existingRules {
 		for _, r := range rules {
@@ -6043,13 +6504,13 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 		shouldEvict := false
 		for _, rr := range msg.Answer {
 			if aRecord, ok := rr.(*dns.A); ok {
-				if s.isBlacklistedIP(aRecord.A) { // Substitute with your actual IP-checking logic
+				if s.blacklist.Contains(aRecord.A) { // Substitute with your actual IP-checking logic
 					shouldEvict = true
 					break
 				}
 			}
 			if aaaaRecord, ok := rr.(*dns.AAAA); ok {
-				if s.isBlacklistedIP(aaaaRecord.AAAA) {
+				if s.blacklist.Contains(aaaaRecord.AAAA) {
 					shouldEvict = true
 					break
 				}
@@ -6065,31 +6526,28 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 
 func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		// 1. Snapshot the data under lock
-		s.localHostsMu.RLock()
-		viewData := make([]HostView, len(s.localHosts))
-		for i, h := range s.localHosts {
-			var ipsStr []string
-			for _, ip := range h.IPs {
-				ipsStr = append(ipsStr, ip.String())
-			}
-			viewData[i] = HostView{
-				Index:      i,
-				Pattern:    h.Pattern,
-				IPsDisplay: strings.Join(ipsStr, ", "),
-			}
-		}
-		s.localHostsMu.RUnlock() // Lock released!
+		// // 1. Snapshot the data under lock
+		// s.localHostsMu.RLock()
+		// viewData := make([]HostView, len(s.localHosts))
+		// for i, h := range s.localHosts {
+		// 	var ipsStr []string
+		// 	for _, ip := range h.IPs {
+		// 		ipsStr = append(ipsStr, ip.String())
+		// 	}
+		// 	viewData[i] = HostView{
+		// 		Index:      i,
+		// 		Pattern:    h.Pattern,
+		// 		IPsDisplay: strings.Join(ipsStr, ", "),
+		// 	}
+		// }
+		// s.localHostsMu.RUnlock() // Lock released!
 
-		// 2. Render the page
+		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			"Page":  "hosts",
-			"Hosts": viewData,
+			"Hosts": s.hostStore.Snapshot(),
 		}
 
-		// if err := uiTemplates.Execute(w, data); err != nil {
-		//     s.logger.Error("template_error", SafeErr(err))
-		// }
 		s.renderTemplate(w, r, "hosts", data)
 		return
 	}
@@ -6110,20 +6568,20 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			deleted := false
-			func() {
-				s.localHostsMu.Lock()
-				defer s.localHostsMu.Unlock()
-				for i, rule := range s.localHosts {
-					if rule.Pattern == pattern {
-						s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-						deleted = true
-						break
-					}
-				}
-			}()
+			//var deleted bool =
+			// func() {
+			// 	s.localHostsMu.Lock()
+			// 	defer s.localHostsMu.Unlock()
+			// 	for i, rule := range s.localHosts {
+			// 		if rule.Pattern == pattern {
+			// 			s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
+			// 			deleted = true
+			// 			break
+			// 		}
+			// 	}
+			// }()
 
-			if deleted {
+			if s.hostStore.DeleteHost(pattern) {
 				s.logger.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
 				// --- NEW: Invalidate the cache for the deleted pattern ---
 				s.invalidateCacheForPattern(pattern)
@@ -6188,43 +6646,51 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var conflictErr bool
-		func() {
-			s.localHostsMu.Lock()
-			defer s.localHostsMu.Unlock()
+		// var conflictErr bool
+		// func() {
+		// 	s.localHostsMu.Lock()
+		// 	defer s.localHostsMu.Unlock()
 
-			if isEdit {
-				// Remove the old rule if editing
-				for i, rule := range s.localHosts {
-					if rule.Pattern == oldPattern {
-						s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-						break
-					}
-				}
-				// Remove the target pattern if we renamed to an existing one (overwrite logic)
-				for i, rule := range s.localHosts {
-					if rule.Pattern == pattern {
-						s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-						break
-					}
-				}
-			} else {
-				// Prevent duplicates on explicit 'Add'
-				for _, rule := range s.localHosts {
-					if rule.Pattern == pattern {
-						conflictErr = true
-						return
-					}
-				}
-			}
+		// 	if isEdit {
+		// 		// Remove the old rule if editing
+		// 		for i, rule := range s.localHosts {
+		// 			if rule.Pattern == oldPattern {
+		// 				s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
+		// 				break
+		// 			}
+		// 		}
+		// 		// Remove the target pattern if we renamed to an existing one (overwrite logic)
+		// 		for i, rule := range s.localHosts {
+		// 			if rule.Pattern == pattern {
+		// 				s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
+		// 				break
+		// 			}
+		// 		}
+		// 	} else {
+		// 		// Prevent duplicates on explicit 'Add'
+		// 		for _, rule := range s.localHosts {
+		// 			if rule.Pattern == pattern {
+		// 				conflictErr = true
+		// 				return
+		// 			}
+		// 		}
+		// 	}
 
-			if !conflictErr {
-				s.localHosts = append(s.localHosts, LocalHostRule{Pattern: pattern, IPs: netIPs})
-			}
-		}()
+		// 	if !conflictErr {
+		// 		s.localHosts = append(s.localHosts, LocalHostRule{Pattern: pattern, IPs: netIPs})
+		// 	}
+		// }()
 
-		if conflictErr {
-			s.logger.Warn("Failed to add/edit local host: pattern already exists", slog.String("pattern", pattern))
+		var err error = nil
+		if isEdit {
+			s.hostStore.EditHost(oldPattern, pattern, netIPs)
+		} else {
+			//it's Add (Delete was handled above)
+			err = s.hostStore.AddHost(pattern, netIPs)
+		}
+
+		if err != nil {
+			s.logger.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
@@ -6236,7 +6702,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// Always purge the new pattern so the local override takes immediate effect
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
-		s.invalidateCacheForPattern(pattern)
+		s.invalidateCacheForPattern(pattern) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
 		// -------------------------------
 		s.logger.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
 
@@ -6279,39 +6745,50 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, pageName
 }
 
 func (s *Server) getRecentBlocksCopy() []BlockedQuery {
-	blocksCopy := func() []BlockedQuery {
-		s.blockMutex.Lock()
-		defer s.blockMutex.Unlock()
-
-		// // Make a copy so we don't hold the lock while template renders
-		// blocksCopy := make([]BlockedQuery, len(recentBlocks))
-		// copy(blocksCopy, recentBlocks)
-
-		blocksCopy := make([]BlockedQuery, 0, s.recentBlocksList.Len())
-		// Walk the linked list from newest (front) to oldest (back)
-		for e := s.recentBlocksList.Front(); e != nil; e = e.Next() {
-			bq := e.Value.(*BlockedQuery)
-			blocksCopy = append(blocksCopy, *bq) // value copy
-		}
-
-		return blocksCopy
-	}() // defer triggers before this returned
-	// Check live whitelist to see if these domains are currently unblocked
-	s.ruleMutex.RLock()
-	defer s.ruleMutex.RUnlock()
-	for i := range blocksCopy {
-		b := &blocksCopy[i]
-		b.IsUnblocked = false
-		if rules, ok := s.whitelist[b.Type]; ok {
-			for _, r := range rules { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
-				if r.Pattern == b.Domain && r.Enabled {
-					b.IsUnblocked = true
-					break
-				}
+	snapshot := s.ruleStore.Snapshot()
+	return s.recentBlocks.Snapshot(func(domain, qtype string) bool {
+		// Check whitelist to see if these domains are currently unblocked
+		for _, rule := range snapshot[qtype] { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
+			if rule.Pattern == domain && rule.Enabled {
+				return true
 			}
 		}
-	}
-	return blocksCopy
+		return false
+	})
+
+	// blocksCopy := func() []BlockedQuery {
+	// 	s.blockMutex.Lock()
+	// 	defer s.blockMutex.Unlock()
+
+	// 	// // Make a copy so we don't hold the lock while template renders
+	// 	// blocksCopy := make([]BlockedQuery, len(recentBlocks))
+	// 	// copy(blocksCopy, recentBlocks)
+
+	// 	blocksCopy := make([]BlockedQuery, 0, s.recentBlocksList.Len())
+	// 	// Walk the linked list from newest (front) to oldest (back)
+	// 	for e := s.recentBlocksList.Front(); e != nil; e = e.Next() {
+	// 		bq := e.Value.(*BlockedQuery)
+	// 		blocksCopy = append(blocksCopy, *bq) // value copy
+	// 	}
+
+	// 	return blocksCopy
+	// }() // defer triggers before this returned
+	// // Check live whitelist to see if these domains are currently unblocked
+	// s.ruleMutex.RLock()
+	// defer s.ruleMutex.RUnlock()
+	// for i := range blocksCopy {
+	// 	b := &blocksCopy[i]
+	// 	b.IsUnblocked = false
+	// 	if rules, ok := s.whitelist[b.Type]; ok {
+	// 		for _, r := range rules { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
+	// 			if r.Pattern == b.Domain && r.Enabled {
+	// 				b.IsUnblocked = true
+	// 				break
+	// 			}
+	// 		}
+	// 	}
+	// }
+	// return blocksCopy
 }
 
 func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
@@ -6363,71 +6840,107 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		action := r.FormValue("action")
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
-			func() { // anonymous function just for scoping defer
-				s.ruleMutex.Lock()
-				defer s.ruleMutex.Unlock()
-				if action == "reblock" {
-					for i, rule := range s.whitelist[typ] {
-						if rule.Pattern == domainLowercased {
-							if rule.Enabled {
-								s.whitelist[typ][i].Enabled = false //XXX: mutates in place
-								successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-								s.logger.Info("Quick re-block via WebUI: paused existing rule",
-									slog.String("domainLowercased", domainLowercased),
-									slog.String("DNSType", typ))
-								s.invalidateCacheForPattern(domainLowercased)
-							} else {
-								successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
-							}
-							break
-						}
-					}
-				} else if action == "unblock" { //doneFIXME: assuming 'block' ?!
-					found := false
-					for i, rule := range s.whitelist[typ] {
-						if rule.Pattern == domainLowercased {
-							if !rule.Enabled {
-								s.whitelist[typ][i].Enabled = true //XXX: mutates in place
-								successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-								s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
-									slog.String("domainLowercased", domainLowercased),
-									slog.String("DNSType", typ))
-								s.invalidateCacheForPattern(domainLowercased)
-							} else {
-								successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-								s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
-									slog.String("domainLowercased", domainLowercased),
-									slog.String("DNSType", typ))
-							}
-							found = true
-							break
-						}
-					}
-
-					if !found {
-						newRule := RuleEntry{
-							ID:      generateUniqueRuleID(s.whitelist, s.logger),
-							Pattern: domainLowercased,
-							Enabled: true,
-						}
-						// whitelist[typ] = append(whitelist[typ], newRule)
-
-						// Replace the standard append with your safe helper function
-						s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
-
+			// func() { // anonymous function just for scoping defer
+			// s.ruleMutex.Lock()
+			// defer s.ruleMutex.Unlock()
+			if action == "reblock" {
+				// for i, rule := range s.whitelist[typ] {
+				// 	if rule.Pattern == domainLowercased {
+				// 		if rule.Enabled {
+				// 			s.whitelist[typ][i].Enabled = false //XXX: mutates in place
+				// 			successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
+				// 			s.logger.Info("Quick re-block via WebUI: paused existing rule",
+				// 				slog.String("domainLowercased", domainLowercased),
+				// 				slog.String("DNSType", typ))
+				// 			s.invalidateCacheForPattern(domainLowercased)
+				// 		} else {
+				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
+				// 		}
+				// 		break
+				// 	}
+				// }
+				found, changed := s.ruleStore.SetEnabled(typ, domainLowercased, false)
+				if found && changed {
+					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
+					s.logger.Info("Quick re-block via WebUI: paused existing rule",
+						slog.String("domainLowercased", domainLowercased),
+						slog.String("DNSType", typ))
+					s.invalidateCacheForPattern(domainLowercased)
+				} else if found {
+					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
+				}
+			} else if action == "unblock" { //doneFIXME: assuming 'block' ?!
+				found, changed := s.ruleStore.SetEnabled(typ, domainLowercased, true)
+				if found && changed {
+					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
+					s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
+						slog.String("domainLowercased", domainLowercased),
+						slog.String("DNSType", typ))
+					s.invalidateCacheForPattern(domainLowercased)
+				} else if found {
+					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
+					s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
+						slog.String("domainLowercased", domainLowercased),
+						slog.String("DNSType", typ))
+				} else {
+					newID, addErr := s.ruleStore.AddRule(typ, domainLowercased, true, s.logger)
+					if addErr == nil {
+						_ = newID
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
 						s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
 						s.invalidateCacheForPattern(domainLowercased)
+					} else {
+						panic(fmt.Errorf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s", typ, domainLowercased))
 					}
-				} else {
-					s.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
-					// Reject any unauthorized or malformed action values
-					http.Error(w, "Invalid action specified", http.StatusBadRequest)
-					return
 				}
-			}() // lock released here
+
+				// found := false
+				// for i, rule := range s.whitelist[typ] {
+				// 	if rule.Pattern == domainLowercased {
+				// 		if !rule.Enabled {
+				// 			s.whitelist[typ][i].Enabled = true //XXX: mutates in place
+				// 			successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
+				// 			s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
+				// 				slog.String("domainLowercased", domainLowercased),
+				// 				slog.String("DNSType", typ))
+				// 			s.invalidateCacheForPattern(domainLowercased)
+				// 		} else {
+				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
+				// 			s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
+				// 				slog.String("domainLowercased", domainLowercased),
+				// 				slog.String("DNSType", typ))
+				// 		}
+				// 		found = true
+				// 		break
+				// 	}
+				// }
+
+				// if !found {
+				// 	newRule := RuleEntry{
+				// 		ID:      generateUniqueRuleID(s.whitelist, s.logger),
+				// 		Pattern: domainLowercased,
+				// 		Enabled: true,
+				// 	}
+				// 	// whitelist[typ] = append(whitelist[typ], newRule)
+
+				// 	// Replace the standard append with your safe helper function
+				// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+
+				// 	successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
+				// 	s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
+				// 		slog.String("domainLowercased", domainLowercased),
+				// 		slog.String("DNSType", typ))
+				// 	s.invalidateCacheForPattern(domainLowercased)
+				// }
+			} else {
+				s.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
+				// Reject any unauthorized or malformed action values
+				http.Error(w, "Invalid action specified", http.StatusBadRequest)
+				return //oh this was bugged before, it was exitting only the inner anon-func!
+			}
+			// }() // lock released here
 			if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
 				s.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
@@ -6862,32 +7375,34 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 //
 // Expired lockout windows are reset lazily on the first call after expiry.
 func (s *Server) isLoginAllowed(clientIP string) (allowed bool, attemptsRemaining int, lockedUntil time.Time) {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
+	// s.loginMu.Lock()
+	// defer s.loginMu.Unlock()
 
-	rec, ok := s.loginRecords[clientIP]
-	if !ok {
-		return true, s.config.WebUIMaxLoginFailures, time.Time{}
-	}
+	// rec, ok := s.loginRecords[clientIP]
+	// if !ok {
+	// 	return true, s.config.WebUIMaxLoginFailures, time.Time{}
+	// }
 
-	now := time.Now()
+	// now := time.Now()
 
-	// Still within an active lockout window?
-	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
-		return false, 0, rec.lockedUntil
-	}
+	// // Still within an active lockout window?
+	// if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+	// 	return false, 0, rec.lockedUntil
+	// }
 
-	// Lockout has expired: lazily reset so subsequent checks start clean.
-	if !rec.lockedUntil.IsZero() {
-		rec.failures = 0
-		rec.lockedUntil = time.Time{}
-	}
+	// // Lockout has expired: lazily reset so subsequent checks start clean.
+	// if !rec.lockedUntil.IsZero() {
+	// 	rec.failures = 0
+	// 	rec.lockedUntil = time.Time{}
+	// }
 
-	remaining := s.config.WebUIMaxLoginFailures - rec.failures
-	if remaining < 0 {
-		remaining = 0
-	}
-	return true, remaining, time.Time{}
+	// remaining := s.config.WebUIMaxLoginFailures - rec.failures
+	// if remaining < 0 {
+	// 	remaining = 0
+	// }
+	// return true, remaining, time.Time{}
+
+	return s.loginTracker.IsAllowed(clientIP, s.config.WebUIMaxLoginFailures)
 }
 
 // recordLoginFailure increments the failure counter for the given IP and
@@ -6898,46 +7413,49 @@ func (s *Server) isLoginAllowed(clientIP string) (allowed bool, attemptsRemainin
 //   - lockedUntil: expiry time of the lockout (zero if not locked).
 //   - totalFailures: cumulative failure count for this IP in the current window.
 func (s *Server) recordLoginFailure(clientIP string) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
+	// s.loginMu.Lock()
+	// defer s.loginMu.Unlock()
 
-	now := time.Now()
+	// now := time.Now()
 
-	rec, ok := s.loginRecords[clientIP]
-	if !ok {
-		rec = &loginRecord{}
-		s.loginRecords[clientIP] = rec
-	}
+	// rec, ok := s.loginRecords[clientIP]
+	// if !ok {
+	// 	rec = &loginRecord{}
+	// 	s.loginRecords[clientIP] = rec
+	// }
 
-	// Expired lockout: start a fresh window.
-	if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
-		rec.failures = 0
-		rec.lockedUntil = time.Time{}
-	}
+	// // Expired lockout: start a fresh window.
+	// if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
+	// 	rec.failures = 0
+	// 	rec.lockedUntil = time.Time{}
+	// }
 
-	// Already in an active lockout: report state without incrementing further.
-	if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
-		return true, rec.lockedUntil, rec.failures
-	}
+	// // Already in an active lockout: report state without incrementing further.
+	// if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
+	// 	return true, rec.lockedUntil, rec.failures
+	// }
 
-	rec.failures++
-	totalFailures = rec.failures
+	// rec.failures++
+	// totalFailures = rec.failures
 
-	if rec.failures >= s.config.WebUIMaxLoginFailures {
-		rec.lockedUntil = now.Add(time.Duration(s.config.WebUILoginLockoutSec) * time.Second)
-		return true, rec.lockedUntil, totalFailures
-	}
+	// if rec.failures >= s.config.WebUIMaxLoginFailures {
+	// 	rec.lockedUntil = now.Add(time.Duration(s.config.WebUILoginLockoutSec) * time.Second)
+	// 	return true, rec.lockedUntil, totalFailures
+	// }
 
-	return false, time.Time{}, totalFailures
+	// return false, time.Time{}, totalFailures
+	return s.loginTracker.RecordFailure(clientIP, s.config.WebUIMaxLoginFailures, s.config.WebUILoginLockoutSec)
 }
 
 // recordLoginSuccess clears any accumulated failure record for the given IP.
 // Call after every successful authentication so a legitimate user is never
 // permanently locked out due to an earlier typo streak.
 func (s *Server) recordLoginSuccess(clientIP string) {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	delete(s.loginRecords, clientIP)
+	// s.loginMu.Lock()
+	// defer s.loginMu.Unlock()
+	// delete(s.loginRecords, clientIP)
+	s.loginTracker.RecordSuccess(clientIP)
+	s.logger.Info("Login success", slog.String("client", clientIP))
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -7055,11 +7573,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // The map is replaced rather than iterated so the operation is O(1)
 // regardless of how many IPs had recorded failures.
 func (s *Server) clearLoginLockouts() {
-	s.loginMu.Lock()
-	n := len(s.loginRecords)
-	s.loginRecords = make(map[string]*loginRecord)
-	s.loginMu.Unlock()
-
+	// s.loginMu.Lock()
+	// n := len(s.loginRecords)
+	// s.loginRecords = make(map[string]*loginRecord)
+	// s.loginMu.Unlock()
+	n := s.loginTracker.ClearAll()
 	if n > 0 {
 		s.logger.Warn("WebUI login lockouts cleared by operator reload",
 			slog.Int("cleared_entry_count", n))
@@ -7067,3 +7585,7 @@ func (s *Server) clearLoginLockouts() {
 		s.logger.Debug("WebUI login lockouts cleared by operator reload (none were active)")
 	}
 }
+
+// isLoginAllowed → s.loginTracker.IsAllowed
+// recordLoginFailure → s.loginTracker.RecordFailure
+// recordLoginSuccess → s.loginTracker.RecordSuccess
