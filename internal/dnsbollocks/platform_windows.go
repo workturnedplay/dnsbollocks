@@ -1801,6 +1801,8 @@ func getWebUIPasswordHashJSONTag() string {
 }
 
 // OnReload registers an anonymous action to execute when a reload event is triggered
+// OnReload registers a hook that is called after a config reload.
+// Must only be called during startup before reload processing begins.
 func (s *Server) OnReload(hook func()) {
 	s.onReloadHooks = append(s.onReloadHooks, hook)
 }
