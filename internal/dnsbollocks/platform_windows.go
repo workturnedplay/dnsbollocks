@@ -1778,7 +1778,7 @@ What this enforces:
 	ASCII-only DNS reality
 */
 var dnsNameRE = regexp.MustCompile(
-	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`,
+	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[_a-z0-9])?$`,
 )
 
 func isValidDNSName(s string) bool {
