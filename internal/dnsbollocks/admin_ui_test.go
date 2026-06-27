@@ -33,7 +33,7 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	lt := newLoginTracker()
 	rb := newRecentBlocksTracker()
 	stats := new(expvar.Int)
-	upstreamIPs := []string{"1.1.1.1"}
+	//upstreamIPs := []string{"1.1.1.1"}
 
 	// Provide a dummy template context so rendering handlers don't panic
 	// Customize template names here to match what your handlers look for (e.g., "rules.html")
@@ -53,7 +53,7 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
 
-	ui := NewAdminUI(&liveConfig, &liveLogger, rs, hs, bl, lt, rb, stats, upstreamIPs, tpls)
+	ui := NewAdminUI(&liveConfig, &liveLogger, rs, hs, bl, lt, rb, stats, tpls)
 	rec := httptest.NewRecorder()
 
 	return ui, rec

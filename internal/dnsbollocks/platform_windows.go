@@ -5507,7 +5507,7 @@ func (s *Server) startWebUI(addr string) {
 		newLoginTracker(),
 		s.recentBlocks,
 		s.stats,
-		s.upstreamIPs,
+		//s.upstreamIPs,
 		uiTemplates,
 	)
 	// Wire up the side-effects
@@ -5669,11 +5669,13 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
-	fmt.Fprintf(&body, "<p>Blocks: %q</p>"+
+	fmt.Fprintf(&body, "<p>Blocks: %q</p>",
 		//"<p>Cache size: %d</p>"+//FIXME: add this back
-		"<p>Upstream IPs: %v</p>", ui.stats.String(),
-		//ui.dnsCache.ItemCount(), //FIXME: add this back
-		ui.upstreamIPs)
+		//	"<p>Upstream IPs: %v</p>",
+		ui.stats.String(),
+	//ui.dnsCache.ItemCount(), //FIXME: add this back
+	//	ui.upstreamIPs
+	)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
 		"Page": "stats", //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
@@ -7989,7 +7991,7 @@ type AdminUI struct {
 	stats        *expvar.Int
 
 	uiTemplates *template.Template
-	upstreamIPs []string // For the stats page
+	//upstreamIPs []string // For the stats page
 
 	// Callbacks for side-effects
 	OnSaveWhitelist       func() error
@@ -8031,7 +8033,7 @@ func NewAdminUI(
 	lt *LoginTracker,
 	rb *RecentBlocksTracker,
 	stats *expvar.Int,
-	upstreamIPs []string,
+	//upstreamIPs []string,
 	tpls *template.Template,
 ) *AdminUI {
 	return &AdminUI{
@@ -8045,8 +8047,8 @@ func NewAdminUI(
 		loginTracker: lt,
 		recentBlocks: rb,
 		stats:        stats,
-		upstreamIPs:  upstreamIPs,
-		uiTemplates:  tpls,
+		//upstreamIPs:  upstreamIPs,
+		uiTemplates: tpls,
 	}
 }
 
