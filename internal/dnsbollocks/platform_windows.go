@@ -1941,24 +1941,25 @@ func (s *Server) Run() error {
 
 	go s.watchKeys(
 		func() { // Ctrl+R aka reloadFn
-			log.Debug("Reload triggered...")
+			log2 := s.getLogger()
+			log2.Debug("Reload triggered...")
 			s.flushCache()
 
 			if err := s.loadQueryWhitelist(); err != nil {
 				s.logFatal("Whitelist reload failed:", err)
 			} else {
-				log.Debug("Whitelist reloaded")
+				log2.Debug("Whitelist reloaded")
 			}
 			if err := s.loadResponseBlacklist(); err != nil {
 				s.logFatal("Blacklist reload failed:", err)
 			} else {
-				log.Debug("Blacklist reloaded")
+				log2.Debug("Blacklist reloaded")
 			}
 			// Inside watchKeys, in the Ctrl+R lambda block:
 			if err := s.loadLocalHosts(); err != nil {
 				s.logFatal("Hosts reload failed:", err)
 			} else {
-				log.Debug("Local hosts reloaded")
+				log2.Debug("Local hosts reloaded")
 			}
 
 			//TODO: do I need this here? we're not currently updating these from config.json ! but I am using them in the below call to initDoHClients
@@ -1989,19 +1990,20 @@ func (s *Server) Run() error {
 
 			//clearLoginLockouts()//wired in startWebUI
 
-			log.Debug("Running on-reload hooks")
+			log2.Debug("Running on-reload hooks")
 			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
 			for _, hook := range s.onReloadHooks {
 				hook()
 			}
 
-			log.Warn(
+			log2.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
 				slog.String("config_file", configFileName),
 			)
 		},
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
-			log.Debug("Shutdown signal received, clean exit.")
+			log3 := s.getLogger()
+			log3.Debug("Shutdown signal received, clean exit.")
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			s.shutdown(0) // clean exit
@@ -2012,22 +2014,25 @@ func (s *Server) Run() error {
 	// 4. The Seamless Wait
 	select {
 	case sig := <-sigChan:
+		log4 := s.getLogger()
 		// Case A: User pressed Ctrl+C
-		log.Info("shutdown initiated by signal", slog.String("signal", sig.String()))
+		log4.Info("shutdown initiated by signal", slog.String("signal", sig.String()))
 		// Proceed to graceful cleanup
 		//cancel()      // Cancel context for graceful close
 		s.shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
 
 	case err := <-s.errChan:
+		log5 := s.getLogger()
 		// Case B: A background goroutine (TCP/DoH) died
-		log.Error("CRITICAL: background service failure", SafeErr(err))
+		log5.Error("CRITICAL: background service failure", SafeErr(err))
 		// You can choose to exit(1) here because a vital organ failed
 		//cancel()    // Cancel context for graceful close
 		s.shutdown(3) // some error happened
 
 	case <-s.ctx.Done():
+		log6 := s.getLogger()
 		// Case C: Context was cancelled elsewhere
-		log.Info("context cancelled, shutting down")
+		log6.Info("context cancelled, shutting down")
 		//cancel()    // Cancel context for graceful close, this was already done since we hit this.
 		s.shutdown(4) // some error happened
 	}
@@ -3149,6 +3154,8 @@ func (s *Server) startDNSListener(addr string) {
 		s.shutdownWG.Add(1) // +1 for the Main UDP Loop
 
 		go func() { //we won't be blocking here.
+			// Fetch fresh logger at the start of each accept cycle
+			log2 := s.getLogger()
 			defer s.shutdownWG.Done()
 			//defer udpLn.Close()
 			// 1. DEFENSIVE DEFER: This ensures the port is freed even if the
@@ -3169,7 +3176,7 @@ func (s *Server) startDNSListener(addr string) {
 				// If this runs, the 'defer' above will just return an error later.
 				closer()
 			}()
-			log.Info("UDP DNS listening success", slog.String("addr", addr))
+			log2.Info("UDP DNS listening success", slog.String("addr", addr))
 
 			// 1. Initialize the pool outside the loop
 			udpPool := sync.Pool{
@@ -3177,15 +3184,17 @@ func (s *Server) startDNSListener(addr string) {
 				//Thread Safety: Because each goroutine gets its own buffer straight from the pool, there are no race conditions with the ReadFromUDP loop overwriting data while the goroutine parses it.
 				//Memory Bound: Under high bursts, the pool will scale up automatically to handle concurrent connections, but once traffic settles, the Go runtime will garbage collect the unused buffered slices in the pool automatically.
 				New: func() any {
+					cfg2 := s.getConfig()
 					//buf := make([]byte, 512+512)
 					// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
-					b := make([]byte, cfg.DNSUDPBufferSize)
+					b := make([]byte, cfg2.DNSUDPBufferSize)
 					return &b // Return a pointer to avoid interface conversion allocation
 				},
 			}
 
 			//TheFor:
 			for {
+				log3 := s.getLogger()
 				// 2. Grab a buffer pointer from the pool
 				bufPtr := udpPool.Get().(*[]byte)
 				buf := *bufPtr
@@ -3196,19 +3205,19 @@ func (s *Server) startDNSListener(addr string) {
 					select {
 					case <-s.ctx.Done():
 						// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
-						log.Debug("UDP DNS listener is quitting due to shutdown...")
+						log3.Debug("UDP DNS listener is quitting due to shutdown...")
 
 						return // Quit on shutdown
 					default:
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-						log.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
+						log3.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
 						continue // Real network error, keep trying
 					} //select
 				} //if err2
 
-				log.Debug("client connected(early logging)",
+				log3.Debug("client connected(early logging)",
 					slog.String("proto", "UDP"),
 					//slog.String("clientAddr", clientAddr.String()),
 					SafeAddr("clientAddr", clientAddr),
@@ -3283,6 +3292,7 @@ func (s *Server) startDNSListener(addr string) {
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
 		s.shutdownWG.Add(1) // +1 for the Main TCP Loop
 		go func() {
+			log2 := s.getLogger()
 			defer s.shutdownWG.Done()
 
 			closer := func() {
@@ -3297,7 +3307,7 @@ func (s *Server) startDNSListener(addr string) {
 				<-s.ctx.Done()
 				closer() // This wakes up Accept() with an error safely
 			}()
-			log.Info("TCP DNS listening", slog.String("address", addr))
+			log2.Info("TCP DNS listening", slog.String("address", addr))
 
 			// // Then simplify your loop
 			// for {
@@ -3312,6 +3322,7 @@ func (s *Server) startDNSListener(addr string) {
 			// var backoff time.Duration
 
 			for {
+				log3 := s.getLogger()
 				// // allow Accept to be interruptible by context by using a deadline
 				// err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
 				// //err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
@@ -3325,7 +3336,7 @@ func (s *Server) startDNSListener(addr string) {
 					// if context canceled, exit cleanly
 					select {
 					case <-s.ctx.Done():
-						log.Debug("TCP DNS listener is quitting due to shutdown...")
+						log3.Debug("TCP DNS listener is quitting due to shutdown...")
 						return
 					default:
 						// // handle timeout-like errors (due to SetDeadline)
@@ -3339,7 +3350,7 @@ func (s *Server) startDNSListener(addr string) {
 						// }
 
 						// non-temporary error: log, backoff a bit to avoid hot loop, continue
-						log.Warn("tcp_accept_error", SafeErr(err))
+						log3.Warn("tcp_accept_error", SafeErr(err))
 
 						// if backoff == 0 {
 						//     backoff = 50 * time.Millisecond
@@ -3360,7 +3371,7 @@ func (s *Server) startDNSListener(addr string) {
 				case s.dnsTCPSem <- struct{}{}:
 					// Slot acquired; fall through.
 				default:
-					log.Warn("DNS TCP connection limit reached; rejecting new connection",
+					log3.Warn("DNS TCP connection limit reached; rejecting new connection",
 						slog.Int("max_concurrent", cap(s.dnsTCPSem)),
 						SafeAddr("rejected_client", conn.RemoteAddr()),
 					)
@@ -3371,14 +3382,14 @@ func (s *Server) startDNSListener(addr string) {
 				tcpPacketCtx := s.ctx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
 				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
-				log.Debug("client connected(early logging)",
+				log3.Debug("client connected(early logging)",
 					slog.String("proto", "TCP"),
 					//slog.String("clientAddr", clientAddr.String()),
 					SafeAddr("clientAddr", clientAddr),
 				)
 				if !ok {
 					//FIXME: when can this happen?!
-					log.Warn("could not cast remote addr to TCPAddr",
+					log3.Warn("could not cast remote addr to TCPAddr",
 						//slog.String("addr", conn.RemoteAddr().String()),
 						SafeAddr("addr", conn.RemoteAddr()),
 					)
@@ -3653,6 +3664,7 @@ func (s *Server) startDoHListener(addr string) {
 	}
 	log.Info("DoH listening", slog.String("address", addr))
 
+	//XXX: in the future if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart).
 	dohSrv := &http.Server{Handler: mux,
 		ReadTimeout:  time.Duration(cfg.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
 		WriteTimeout: time.Duration(cfg.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
@@ -7273,7 +7285,7 @@ func UnstickStdinRead(logger *slog.Logger) {
 }
 
 func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
-	log := s.getLogger()
+	//log := s.getLogger()
 
 	fd := int(os.Stdin.Fd())
 
@@ -7288,6 +7300,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 	buf := make([]byte, 3)
 
 	for {
+		log2 := s.getLogger()
 		// 1. Check if an external fatal error triggered a shutdown
 		select {
 		case <-signalTheUnstick:
@@ -7320,7 +7333,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+X (0x18)
 		if buf[0] == 0x18 {
 			fmt.Print("\n")
-			log.Info("Ctrl+X detected → clean exit")
+			log2.Info("Ctrl+X detected → clean exit")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
@@ -7328,7 +7341,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+R (0x12)
 		if buf[0] == 0x12 {
 			fmt.Print("\n")
-			log.Info("Ctrl+R detected → reloading config")
+			log2.Info("Ctrl+R detected → reloading config")
 			//_ = term.Restore(fd, oldState)
 			// NO restore needed here because we want to stay in Raw mode
 			// to catch the next keypress after the reload.
@@ -7338,7 +7351,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+C (0x03) or else can't break the program except with Ctrl+Break !
 		if buf[0] == 0x03 {
 			fmt.Print("\n")
-			log.Info("Ctrl+C detected → breaking gracefully")
+			log2.Info("Ctrl+C detected → breaking gracefully")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
@@ -7348,12 +7361,12 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 			switch buf[1] {
 			case 'x', 'X':
 				fmt.Print("\n")
-				log.Info("Alt+X detected → clean exit")
+				log2.Info("Alt+X detected → clean exit")
 				_ = term.Restore(fd, oldState)
 				cleanExitFn()
 			case 'r', 'R':
 				fmt.Print("\n")
-				log.Info("Alt+R detected → reloading config")
+				log2.Info("Alt+R detected → reloading config")
 				//_ = term.Restore(fd, oldState)
 				reloadFn()
 			}
@@ -7363,7 +7376,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		_, err = term.MakeRaw(fd)
 		if err != nil {
 			fmt.Print("\n")
-			log.Error("Failed to make the terminal raw", SafeErr(err))
+			log2.Error("Failed to make the terminal raw", SafeErr(err))
 			return
 		}
 	}
