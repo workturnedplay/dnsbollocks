@@ -173,7 +173,7 @@ type Server struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
-	loginTracker *LoginTracker
+	//loginTracker *LoginTracker
 
 	// fileWriteMu serialises all file-write calls across all stores.
 	fileWriter FileWriter
@@ -195,6 +195,8 @@ type Server struct {
 	errChan      chan error
 	shutdownWG   sync.WaitGroup
 	shutdownOnce sync.Once
+
+	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
 }
 
 // NewServer initializes a new Server instance.
@@ -211,7 +213,7 @@ func NewServer(logger *slog.Logger) *Server {
 		hostStore:    newHostStore(),
 		blacklist:    newBlacklistStore(),
 		recentBlocks: newRecentBlocksTracker(),
-		loginTracker: newLoginTracker(),
+		//loginTracker: newLoginTracker(),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
@@ -1771,6 +1773,19 @@ func (s *Server) logFatal2(msg string) {
 	s.shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
+func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
+	// // 1. Log the severe error message
+	args = append(args, SafeErr(err)) //works for nil err too
+	ui.logger.Error("FATAL WEB UI ERROR: "+msg, args...)
+
+	// 2. Trigger the application shutdown if the callback is wired
+	if ui.OnShutdown != nil {
+		ui.OnShutdown(1) // Exit code 1 for crashes/errors
+	} else {
+		ui.logger.Warn("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+	}
+}
+
 func getWebUIPasswordHashJSONTag() string {
 	var cfg Config
 	t := reflect.TypeOf(cfg)
@@ -1783,6 +1798,11 @@ func getWebUIPasswordHashJSONTag() string {
 		return tag
 	}
 	return "webui_password_hash" // Fallback safety
+}
+
+// OnReload registers an anonymous action to execute when a reload event is triggered
+func (s *Server) OnReload(hook func()) {
+	s.onReloadHooks = append(s.onReloadHooks, hook)
 }
 
 func (s *Server) Run() error {
@@ -1879,10 +1899,13 @@ func (s *Server) Run() error {
 			s.failoverSelect.allFailed = false
 			s.failoverSelect.mu.Unlock()
 
-			// Clear any WebUI login lockouts so an operator who locked
-			// themselves out with a typo streak can recover via Ctrl+R
-			// without restarting the server.
-			s.clearLoginLockouts()
+			//clearLoginLockouts()//wired in startWebUI
+
+			s.logger.Debug("Running on-reload hooks")
+			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
+			for _, hook := range s.onReloadHooks {
+				hook()
+			}
 
 			s.logger.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
@@ -5120,13 +5143,13 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data := map[string]any{
 			"Page":              "response-blacklist",
-			"ResponseBlacklist": s.getResponseBlacklist(),
+			"ResponseBlacklist": ui.getResponseBlacklist(),
 		}
-		s.renderTemplate(w, r, "response-blacklist", data)
+		ui.renderTemplate(w, r, "response-blacklist", data)
 		return
 	}
 
@@ -5174,34 +5197,34 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 					// }
 
 					// Using the clean add helper method with natural defer unlock
-					if s.blacklist.TryAdd(n) { //added so it didn't exist
-						s.logger.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
-						if err := s.saveResponseBlacklist(); err != nil {
-							s.logFatal("failed to save response blacklist after add from webUI", err)
+					if ui.blacklist.TryAdd(n) { //added so it didn't exist
+						ui.logger.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
+						if err := ui.OnSaveBlacklist(); err != nil {
+							ui.logFatal("failed to save response blacklist after add from webUI", err)
 						}
 						// Instantly evict cached entries that contain the newly blacklisted IP
-						s.invalidateCacheForBlacklistedIPs()
+						ui.OnInvalidateBlacklist()
 					} else {
-						s.logger.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
+						ui.logger.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
 					}
 				} else {
-					s.logger.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
+					ui.logger.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
 					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
 					return
 				}
 			} else {
-				s.logger.Warn("Failed to add IP/CIDR to blacklist: empty input")
+				ui.logger.Warn("Failed to add IP/CIDR to blacklist: empty input")
 			}
 		} else if action == "delete" {
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			// Using the clean delete helper method with natural defer unlock
-			if s.tryDeleteBlacklistIP(cidrStr) { //it got deleted
-				s.logger.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
-				if err := s.saveResponseBlacklist(); err != nil {
-					s.logFatal("failed to save response blacklist after delete from webUI", err)
+			if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
+				ui.logger.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
+				if err := ui.OnSaveBlacklist(); err != nil {
+					ui.logFatal("failed to save response blacklist after delete from webUI", err)
 				}
 			} else {
-				s.logger.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
+				ui.logger.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
 			}
 
 			// deleted := false
@@ -5220,7 +5243,7 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 			// 	}
 			// }
 		} else {
-			s.logger.Warn("Response blacklist handler received unknown action", slog.String("action", action))
+			ui.logger.Warn("Response blacklist handler received unknown action", slog.String("action", action))
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	}
@@ -5228,7 +5251,7 @@ func (s *Server) responseBlacklistHandler(w http.ResponseWriter, r *http.Request
 
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
 // Returns true if the target was found and deleted, false otherwise.
-func (s *Server) tryDeleteBlacklistIP(cidrStr string) bool {
+func (ui *AdminUI) tryDeleteBlacklistIP(cidrStr string) bool {
 	// s.responseBlacklistMu.Lock()
 	// defer s.responseBlacklistMu.Unlock()
 
@@ -5239,11 +5262,11 @@ func (s *Server) tryDeleteBlacklistIP(cidrStr string) bool {
 	// 	}
 	// }
 	// return false
-	return s.blacklist.TryDelete(cidrStr)
+	return ui.blacklist.TryDelete(cidrStr)
 }
 
 // Add this helper to Server
-func (s *Server) checkBlacklistMatches(n *net.IPNet) []string {
+func (ui *AdminUI) checkBlacklistMatches(n *net.IPNet) []string {
 	// s.responseBlacklistMu.RLock()
 	// defer s.responseBlacklistMu.RUnlock()
 
@@ -5255,10 +5278,10 @@ func (s *Server) checkBlacklistMatches(n *net.IPNet) []string {
 	// 	}
 	// }
 	// return matches
-	return s.blacklist.CheckMatches(n)
+	return ui.blacklist.CheckMatches(n)
 }
 
-func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	cidrStr := strings.TrimSpace(r.URL.Query().Get("cidr"))
@@ -5292,7 +5315,7 @@ func (s *Server) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Re
 		// 		}
 		// 	}
 		// }()
-		matches = s.checkBlacklistMatches(n)
+		matches = ui.checkBlacklistMatches(n)
 	}
 
 	// Return array of matching filters to frontend
@@ -5324,17 +5347,17 @@ func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 }
 
-func (s *Server) startWebUI(addr string) {
+func (ui *AdminUI) SetupRoutes() http.Handler {
 	// ── Inner mux: all routes that require authentication ────────────────
 	innerMux := http.NewServeMux()
-	innerMux.HandleFunc("/", s.statsHandler)
-	innerMux.HandleFunc("/rules", s.rulesHandler)
-	innerMux.HandleFunc("/hosts", s.hostsHandler)
-	innerMux.HandleFunc("/blocks", s.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
-	innerMux.HandleFunc("/response-blacklist", s.responseBlacklistHandler)
-	innerMux.HandleFunc("/response-blacklist/check", s.responseBlacklistCheckHandler)
-	innerMux.HandleFunc("/logs", s.logsHandler)
-	innerMux.HandleFunc("/logs_queries", s.logsQueriesHandler)
+	innerMux.HandleFunc("/", ui.statsHandler)
+	innerMux.HandleFunc("/rules", ui.rulesHandler)
+	innerMux.HandleFunc("/hosts", ui.hostsHandler)
+	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
+	innerMux.HandleFunc("/response-blacklist", ui.responseBlacklistHandler)
+	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
+	innerMux.HandleFunc("/logs", ui.logsHandler)
+	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	// ── Outer mux: browser-automatic routes that must bypass auth ────────
@@ -5345,7 +5368,37 @@ func (s *Server) startWebUI(addr string) {
 	outerMux.HandleFunc("/favicon.ico", faviconHandler)
 	outerMux.HandleFunc("/robots.txt", robotsTxtHandler)
 	// Everything else goes through auth → CSRF → inner mux.
-	outerMux.Handle("/", s.authMiddleware(s.csrfMiddleware(innerMux)))
+	outerMux.Handle("/", ui.authMiddleware(ui.csrfMiddleware(innerMux)))
+	return outerMux
+}
+
+func (s *Server) startWebUI(addr string) {
+	ui := NewAdminUI(
+		s.logger,
+		s.config,
+		s.ruleStore,
+		s.hostStore,
+		s.blacklist,
+		newLoginTracker(),
+		s.recentBlocks,
+		s.stats,
+		s.upstreamIPs,
+		uiTemplates,
+	)
+	// Wire up the side-effects
+	ui.OnSaveWhitelist = s.saveQueryWhitelist
+	ui.OnSaveBlacklist = s.saveResponseBlacklist
+	ui.OnSaveHosts = s.saveLocalHosts
+	ui.OnInvalidatePattern = s.invalidateCacheForPattern
+	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
+	//Pass the server's shutdown method directly
+	ui.OnShutdown = s.shutdown
+	// Clear any WebUI login lockouts so an operator who locked
+	// themselves out with a typo streak can recover via Ctrl+R
+	// without restarting the server.
+	// WIRE THIS UP: Register Server -> UI event notification!
+	s.OnReload(ui.clearLoginLockouts)
+	handler := ui.SetupRoutes()
 
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
 	baseListener, err := net.Listen("tcp", addr) //fmt.Sprintf("%s:%d", hostOrIP, port))
@@ -5383,7 +5436,8 @@ func (s *Server) startWebUI(addr string) {
 	//uiSrv := &http.Server{Handler: mux}
 	// CHANGED: Wrap the mux in our new authMiddleware
 	//uiSrv := &http.Server{Handler: s.authMiddleware(mux)}
-	uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(outerMux))}
+	//uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(outerMux))}
+	uiSrv := &http.Server{Handler: handler}
 	// BETTER APPROACH: Query the active listener for its real bound address.
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
@@ -5429,7 +5483,7 @@ func (s *Server) startWebUI(addr string) {
 
 const csrfTokenKey contextKey = "csrfToken"
 
-func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
+func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. Get or generate the CSRF cookie
 		cookie, err := r.Cookie("csrf_token")
@@ -5467,7 +5521,7 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 				refererHeader := r.Header.Get("Referer")
 				userAgent := r.Header.Get("User-Agent")
 
-				s.logger.Warn("CSRF token validation failed; dropping request",
+				ui.logger.Warn("CSRF token validation failed; dropping request",
 					slog.String("client", clientIP),
 					slog.String("method", r.Method),
 					slog.String("path", targetPath),
@@ -5485,11 +5539,15 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
-	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", s.stats.String(), s.dnsCache.ItemCount(), s.upstreamIPs)
+	fmt.Fprintf(&body, "<p>Blocks: %q</p>"+
+		//"<p>Cache size: %d</p>"+//FIXME: add this back
+		"<p>Upstream IPs: %v</p>", ui.stats.String(),
+		//ui.dnsCache.ItemCount(), //FIXME: add this back
+		ui.upstreamIPs)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
 		"Page": "stats", //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
@@ -5497,7 +5555,7 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
 	//uiTemplates.Execute(w, data)
-	s.renderTemplate(w, r, "stats", data)
+	ui.renderTemplate(w, r, "stats", data)
 }
 
 // RuleStore manages the in-memory DNS query whitelist.
@@ -6015,7 +6073,7 @@ type RuleView struct {
 	Enabled bool
 }
 
-func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		// data := map[string]any{
 		//     "Page":     "rules",
@@ -6024,7 +6082,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		// }
 
 		// Flatten the map into a single slice for unified table rendering
-		rulesSnapshot := s.ruleStore.Snapshot() // Safe, independent copy
+		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
 		// var flatRules []RuleView
 		// for typ, rules := range rulesSnapshot {
 		//     for _, rule := range rules {
@@ -6055,7 +6113,7 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			"Rules":    flatRules, // Passing the flattened slice now
 		}
 
-		s.renderTemplate(w, r, "rules", data)
+		ui.renderTemplate(w, r, "rules", data)
 		return
 	}
 
@@ -6066,18 +6124,18 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			typ := r.FormValue("type")
 
 			if id == "" || typ == "" {
-				s.logger.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
+				ui.logger.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
 			}
 			if err := validateDNSType(typ); err != nil {
-				s.logger.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+				ui.logger.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			// id is a UUID used only as a map key; sanitize it against injection just in case.
 			if _, modified := sanitizeDomainInput(id); modified {
-				s.logger.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
+				ui.logger.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
@@ -6113,16 +6171,16 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// 	http.Error(w, "rule not found", http.StatusNotFound)
 			// 	return
 			// }
-			pattern, err := s.ruleStore.DeleteRule(typ, id, s.logger)
+			pattern, err := ui.ruleStore.DeleteRule(typ, id, ui.logger)
 			if err != nil {
-				s.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
+				ui.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
-			s.invalidateCacheForPattern(pattern)
-			if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
-				s.logFatal("failed to save whitelist after rule deletion from webUI", err)
+			ui.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
+			ui.OnInvalidatePattern(pattern)
+			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
+				ui.logFatal("failed to save whitelist after rule deletion from webUI", err)
 			}
 			http.Redirect(w, r, "/rules", http.StatusSeeOther)
 			return
@@ -6135,18 +6193,18 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 		if patternLowercased == "" || typ == "" {
-			s.logger.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
+			ui.logger.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
 		}
 
 		if err := validateDNSType(typ); err != nil {
-			s.logger.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+			ui.logger.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := validateRulePattern(patternLowercased); err != nil {
-			s.logger.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
+			ui.logger.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -6161,13 +6219,13 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			//     // Edit: Find and update (search all types)
 			// --- EDIT MODE ---
 			if _, modified := sanitizeDomainInput(id); modified {
-				s.logger.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
+				ui.logger.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
-			_, oldPattern, err := s.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, s.logger)
+			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, ui.logger)
 			if err != nil {
-				s.logger.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
+				ui.logger.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
@@ -6215,11 +6273,11 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// 	// 2. Prepend smoothly to the new category using your new function
 			// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
 			// }
-			s.invalidateCacheForPattern(oldPattern)
+			ui.OnInvalidatePattern(oldPattern)
 			if oldPattern != patternLowercased {
-				s.invalidateCacheForPattern(patternLowercased)
+				ui.OnInvalidatePattern(patternLowercased)
 			}
-			s.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
+			ui.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
 				slog.String("old_pattern", oldPattern))
 		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
 			// --- ADD MODE ---
@@ -6237,14 +6295,14 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// // Replaces all the manual make() and copy() steps with your new helper function
 			// s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
 
-			newID, err := s.ruleStore.AddRule(typ, patternLowercased, enabledBool, s.logger)
+			newID, err := ui.ruleStore.AddRule(typ, patternLowercased, enabledBool, ui.logger)
 			if err != nil {
-				s.logger.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
+				ui.logger.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-			s.invalidateCacheForPattern(patternLowercased)
-			s.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
+			ui.OnInvalidatePattern(patternLowercased)
+			ui.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
 		}
 		// return nil
 		// }() // lock released here
@@ -6255,8 +6313,8 @@ func (s *Server) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		// 	return
 		// }
 
-		if err := /*uses lock!*/ s.saveQueryWhitelist(); err != nil {
-			s.logFatal("failed to save whitelist after rule add/edit from webUI", err)
+		if err := /*uses lock!*/ ui.OnSaveWhitelist(); err != nil {
+			ui.logFatal("failed to save whitelist after rule add/edit from webUI", err)
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	}
@@ -6439,7 +6497,7 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 	}
 }
 
-func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		// // 1. Snapshot the data under lock
 		// s.localHostsMu.RLock()
@@ -6460,10 +6518,10 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			"Page":  "hosts",
-			"Hosts": s.hostStore.Snapshot(),
+			"Hosts": ui.hostStore.Snapshot(),
 		}
 
-		s.renderTemplate(w, r, "hosts", data)
+		ui.renderTemplate(w, r, "hosts", data)
 		return
 	}
 
@@ -6472,13 +6530,13 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("delete") == "1" {
 			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
 			if pattern == "" {
-				s.logger.Warn("Failed to delete local host: pattern required")
+				ui.logger.Warn("Failed to delete local host: pattern required")
 				http.Error(w, "pattern required for delete", http.StatusBadRequest)
 				return
 			}
 
 			if err := validateRulePattern(pattern); err != nil {
-				s.logger.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+				ui.logger.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6496,19 +6554,19 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			// 	}
 			// }()
 
-			if s.hostStore.DeleteHost(pattern) {
-				s.logger.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
+			if ui.hostStore.DeleteHost(pattern) {
+				ui.logger.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
 				// --- NEW: Invalidate the cache for the deleted pattern ---
-				s.invalidateCacheForPattern(pattern)
+				ui.OnInvalidatePattern(pattern)
 
-				if err := s.saveLocalHosts(); err != nil {
-					s.logFatal("failed to save local hosts after deletion", err)
+				if err := ui.OnSaveHosts(); err != nil {
+					ui.logFatal("failed to save local hosts after deletion", err)
 				}
 				http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 				return
 			}
 
-			s.logger.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
+			ui.logger.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
 			http.Error(w, "host not found", http.StatusNotFound)
 			return
 		}
@@ -6519,21 +6577,21 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		isEdit := r.FormValue("edit") == "1"
 
 		if pattern == "" {
-			s.logger.Warn("Failed to add/edit local host: hostname required")
+			ui.logger.Warn("Failed to add/edit local host: hostname required")
 			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
 			return
 		}
 		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 
 		if err := validateRulePattern(pattern); err != nil {
-			s.logger.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+			ui.logger.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// old_pattern (edit path) needs the same check.
 		if isEdit && oldPattern != "" {
 			if err := validateRulePattern(oldPattern); err != nil {
-				s.logger.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
+				ui.logger.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
 				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6549,14 +6607,14 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			if ip := net.ParseIP(ipStr); ip != nil {
 				netIPs = append(netIPs, ip)
 			} else {
-				s.logger.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
+				ui.logger.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
 				http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
 				return
 			}
 		}
 
 		if len(netIPs) == 0 {
-			s.logger.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
+			ui.logger.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
 			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
 			return
 		}
@@ -6598,14 +6656,14 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 		var err error = nil
 		if isEdit {
-			s.hostStore.EditHost(oldPattern, pattern, netIPs)
+			ui.hostStore.EditHost(oldPattern, pattern, netIPs)
 		} else {
 			//it's Add (Delete was handled above)
-			err = s.hostStore.AddHost(pattern, netIPs)
+			err = ui.hostStore.AddHost(pattern, netIPs)
 		}
 
 		if err != nil {
-			s.logger.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
+			ui.logger.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
@@ -6613,16 +6671,16 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// --- NEW: Cache Invalidation ---
 		// If this was an edit, purge the old pattern's cached entries
 		if isEdit && oldPattern != "" {
-			s.invalidateCacheForPattern(oldPattern)
+			ui.OnInvalidatePattern(oldPattern)
 		}
 		// Always purge the new pattern so the local override takes immediate effect
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
-		s.invalidateCacheForPattern(pattern) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
+		ui.OnInvalidatePattern(pattern) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
 		// -------------------------------
-		s.logger.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
+		ui.logger.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
 
-		if err := s.saveLocalHosts(); err != nil {
-			s.logFatal("failed to save local hosts after add/edit", err)
+		if err := ui.OnSaveHosts(); err != nil {
+			ui.logFatal("failed to save local hosts after add/edit", err)
 		}
 
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
@@ -6632,7 +6690,7 @@ func (s *Server) hostsHandler(w http.ResponseWriter, r *http.Request) {
 // renderTemplate is a DRY helper to execute templates safely into a buffer
 // before writing to the network, preventing "established connection aborted" errors
 // from being logged as template execution failures.
-func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
+func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
 		data["CSRFToken"] = token
@@ -6640,7 +6698,7 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, pageName
 
 	var buf bytes.Buffer
 	if err := uiTemplates.Execute(&buf, data); err != nil {
-		s.logger.Error("template_render_failed",
+		ui.logger.Error("template_render_failed",
 			slog.String("page", pageName),
 			SafeErr(err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -6653,15 +6711,15 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, pageName
 	if _, err := buf.WriteTo(w); err != nil {
 		// Log as Debug/Info because this is usually just a client (browser)
 		// closing the connection or refreshing the page mid-download.
-		s.logger.Debug("client_disconnected_during_ui_write",
+		ui.logger.Debug("client_disconnected_during_ui_write",
 			slog.String("page", pageName),
 			SafeErr(err))
 	}
 }
 
-func (s *Server) getRecentBlocksCopy() []BlockedQuery {
-	snapshot := s.ruleStore.Snapshot()
-	return s.recentBlocks.Snapshot(func(domain, qtype string) bool {
+func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
+	snapshot := ui.ruleStore.Snapshot()
+	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
 		// Check whitelist to see if these domains are currently unblocked
 		for _, rule := range snapshot[qtype] { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
 			if rule.Pattern == domain && rule.Enabled {
@@ -6706,17 +6764,17 @@ func (s *Server) getRecentBlocksCopy() []BlockedQuery {
 	// return blocksCopy
 }
 
-func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data := map[string]any{
 			"Page":           "blocks",
-			"Blocks":         s.getRecentBlocksCopy(),
+			"Blocks":         ui.getRecentBlocksCopy(),
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
 			"EnteredValue":   r.URL.Query().Get("val"),
 		}
 
-		s.renderTemplate(w, r, "blocks", data)
+		ui.renderTemplate(w, r, "blocks", data)
 		return
 	}
 	if r.Method == "POST" {
@@ -6725,7 +6783,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		sanitized, modified := sanitizeDomainInput(raw)
 
 		if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern via Quick Unblock here, but an actual valid DNS query domain (and without ending in a dot)
-			s.logger.Warn("Invalid domain input submitted via Quick Unblock",
+			ui.logger.Warn("Invalid domain input submitted via Quick Unblock",
 				slog.String("raw", raw),
 				slog.String("sanitized", sanitized),
 				slog.Bool("modified", modified),
@@ -6774,38 +6832,38 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				// 		break
 				// 	}
 				// }
-				found, changed := s.ruleStore.SetEnabled(typ, domainLowercased, false)
+				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-					s.logger.Info("Quick re-block via WebUI: paused existing rule",
+					ui.logger.Info("Quick re-block via WebUI: paused existing rule",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
-					s.invalidateCacheForPattern(domainLowercased)
+					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
 				}
 			} else if action == "unblock" { //doneFIXME: assuming 'block' ?!
-				found, changed := s.ruleStore.SetEnabled(typ, domainLowercased, true)
+				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-					s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
+					ui.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
-					s.invalidateCacheForPattern(domainLowercased)
+					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-					s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
+					ui.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
 				} else {
-					newID, addErr := s.ruleStore.AddRule(typ, domainLowercased, true, s.logger)
+					newID, addErr := ui.ruleStore.AddRule(typ, domainLowercased, true, ui.logger)
 					if addErr == nil {
 						_ = newID
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-						s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
+						ui.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
-						s.invalidateCacheForPattern(domainLowercased)
+						ui.OnInvalidatePattern(domainLowercased)
 					} else {
 						panic(fmt.Errorf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s", typ, domainLowercased))
 					}
@@ -6850,14 +6908,14 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				// 	s.invalidateCacheForPattern(domainLowercased)
 				// }
 			} else {
-				s.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
+				ui.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				// Reject any unauthorized or malformed action values
 				http.Error(w, "Invalid action specified", http.StatusBadRequest)
 				return //oh this was bugged before, it was exitting only the inner anon-func!
 			}
 			// }() // lock released here
-			if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
-				s.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
+			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
+				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
 			// // Render the page directly with our success context!
 			// data := map[string]any{
@@ -6878,7 +6936,7 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		// 	"Blocks":       getRecentBlocksCopy(),
 		// 	"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
 		// }
-		s.logger.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
+		ui.logger.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
 
 		// renderTemplate(w, "blocks", data)
 		errMsg := "Failed to process unblock request. " + payloadDetails
@@ -6888,50 +6946,11 @@ func (s *Server) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// // Helper to keep things clean
-// func renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
-//     data, err := os.ReadFile(filePath)
-//     if err != nil {
-//         // If file doesn't exist yet, don't crash, just show empty
-//         data = []byte("")
-//     }
-
-//     lines := strings.Split(string(data), "\n")
-//     var filtered []string
-
-//     searchLower := strings.ToLower(filter)
-//     for _, line := range lines {
-//         if line == "" {
-//             continue
-//         }
-//         if filter == "" || strings.Contains(strings.ToLower(line), searchLower) {
-//             filtered = append(filtered, line)
-//         }
-//     }
-
-//     // We reverse them so the newest logs are at the top
-//     for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
-//         filtered[i], filtered[j] = filtered[j], filtered[i]
-//     }
-
-//     renderData := map[string]any{
-//         "Page":    "logs",
-//         "Path":    r.URL.Path, // Pass current path (e.g., "/logs" or "/queries")
-//         "Title":   title,
-//         "Filter":  filter,
-//         "Content": strings.Join(filtered, "\n"),
-//     }
-
-//     //w.Header().Set("Content-Type", "text/html; charset=utf-8")
-//     //uiTemplates.Execute(w, renderData)
-//     renderTemplate(w, "logs", renderData)
-// }
-
-func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		// Fallback if file doesn't exist yet
-		s.renderTemplate(w, r, "logs", map[string]any{
+		ui.renderTemplate(w, r, "logs", map[string]any{
 			"Page": "logs", "Path": r.URL.Path, "Title": title, "Filter": filter, "Content": "No log entries found.",
 		})
 		return
@@ -6941,7 +6960,7 @@ func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, fi
 	searchLower := strings.ToLower(filter)
 
 	// Cap the output to the last 5000 matches to save RAM and prevent browser crashes
-	var maxLines = s.config.UILogMaxLines
+	var maxLines = ui.config.UILogMaxLines
 	ring := make([]string, maxLines)
 	count := 0
 
@@ -6970,7 +6989,7 @@ func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, fi
 	// If a line was too long ( > 1MB), the scanner stops here.
 	if err := scanner.Err(); err != nil {
 		if err == bufio.ErrTooLong {
-			s.logger.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
+			ui.logger.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
 		}
 	}
 
@@ -7011,22 +7030,22 @@ func (s *Server) renderLogPage(w http.ResponseWriter, r *http.Request, title, fi
 		"Content": content,
 	}
 
-	s.renderTemplate(w, r, "logs", renderData)
+	ui.renderTemplate(w, r, "logs", renderData)
 }
 
-func (s *Server) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("q")
 	//no:// If they used the old 'domain' param, support it as a fallback
 	// if filter == "" {
 	//     filter = r.URL.Query().Get("domain")
 	// }
 
-	s.renderLogPage(w, r, "Query Logs", s.config.LogQueriesFile, filter)
+	ui.renderLogPage(w, r, "Query Logs", ui.config.LogQueriesFile, filter)
 }
 
-func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
+func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("q")
-	s.renderLogPage(w, r, "System & Error Logs", s.config.LogErrorsFile, filter)
+	ui.renderLogPage(w, r, "System & Error Logs", ui.config.LogErrorsFile, filter)
 }
 
 func (s *Server) shutdown(exitCode int) {
@@ -7287,35 +7306,8 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 //   - lockedUntil: when the lockout expires (zero if not locked).
 //
 // Expired lockout windows are reset lazily on the first call after expiry.
-func (s *Server) isLoginAllowed(clientIP string) (allowed bool, attemptsRemaining int, lockedUntil time.Time) {
-	// s.loginMu.Lock()
-	// defer s.loginMu.Unlock()
-
-	// rec, ok := s.loginRecords[clientIP]
-	// if !ok {
-	// 	return true, s.config.WebUIMaxLoginFailures, time.Time{}
-	// }
-
-	// now := time.Now()
-
-	// // Still within an active lockout window?
-	// if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
-	// 	return false, 0, rec.lockedUntil
-	// }
-
-	// // Lockout has expired: lazily reset so subsequent checks start clean.
-	// if !rec.lockedUntil.IsZero() {
-	// 	rec.failures = 0
-	// 	rec.lockedUntil = time.Time{}
-	// }
-
-	// remaining := s.config.WebUIMaxLoginFailures - rec.failures
-	// if remaining < 0 {
-	// 	remaining = 0
-	// }
-	// return true, remaining, time.Time{}
-
-	return s.loginTracker.IsAllowed(clientIP, s.config.WebUIMaxLoginFailures)
+func (ui *AdminUI) isLoginAllowed(clientIP string) (allowed bool, attemptsRemaining int, lockedUntil time.Time) {
+	return ui.loginTracker.IsAllowed(clientIP, ui.config.WebUIMaxLoginFailures)
 }
 
 // recordLoginFailure increments the failure counter for the given IP and
@@ -7325,56 +7317,22 @@ func (s *Server) isLoginAllowed(clientIP string) (allowed bool, attemptsRemainin
 //   - lockedOut: true if this failure triggered (or the IP is already in) a lockout.
 //   - lockedUntil: expiry time of the lockout (zero if not locked).
 //   - totalFailures: cumulative failure count for this IP in the current window.
-func (s *Server) recordLoginFailure(clientIP string) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
-	// s.loginMu.Lock()
-	// defer s.loginMu.Unlock()
-
-	// now := time.Now()
-
-	// rec, ok := s.loginRecords[clientIP]
-	// if !ok {
-	// 	rec = &loginRecord{}
-	// 	s.loginRecords[clientIP] = rec
-	// }
-
-	// // Expired lockout: start a fresh window.
-	// if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
-	// 	rec.failures = 0
-	// 	rec.lockedUntil = time.Time{}
-	// }
-
-	// // Already in an active lockout: report state without incrementing further.
-	// if !rec.lockedUntil.IsZero() && now.Before(rec.lockedUntil) {
-	// 	return true, rec.lockedUntil, rec.failures
-	// }
-
-	// rec.failures++
-	// totalFailures = rec.failures
-
-	// if rec.failures >= s.config.WebUIMaxLoginFailures {
-	// 	rec.lockedUntil = now.Add(time.Duration(s.config.WebUILoginLockoutSec) * time.Second)
-	// 	return true, rec.lockedUntil, totalFailures
-	// }
-
-	// return false, time.Time{}, totalFailures
-	return s.loginTracker.RecordFailure(clientIP, s.config.WebUIMaxLoginFailures, s.config.WebUILoginLockoutSec)
+func (ui *AdminUI) recordLoginFailure(clientIP string) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
+	return ui.loginTracker.RecordFailure(clientIP, ui.config.WebUIMaxLoginFailures, ui.config.WebUILoginLockoutSec)
 }
 
 // recordLoginSuccess clears any accumulated failure record for the given IP.
 // Call after every successful authentication so a legitimate user is never
 // permanently locked out due to an earlier typo streak.
-func (s *Server) recordLoginSuccess(clientIP string) {
-	// s.loginMu.Lock()
-	// defer s.loginMu.Unlock()
-	// delete(s.loginRecords, clientIP)
-	s.loginTracker.RecordSuccess(clientIP)
-	s.logger.Info("Login success", slog.String("client", clientIP))
+func (ui *AdminUI) recordLoginSuccess(clientIP string) {
+	ui.loginTracker.RecordSuccess(clientIP)
+	ui.logger.Info("Login success", slog.String("client", clientIP))
 }
 
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
+func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Safety fallback: if somehow the hash is still blank, DON'T allow access
-		if s.config.WebUIPasswordHash == "" {
+		if ui.config.WebUIPasswordHash == "" {
 			panic("no webUI password was set, this shouldn't be possible, dev fail?")
 		}
 
@@ -7383,15 +7341,15 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if splitErr != nil {
 			// r.RemoteAddr should always be host:port for TCP, but be defensive.
 			clientIP = r.RemoteAddr
-			s.logger.Warn("WebUI auth: could not split RemoteAddr into host:port",
+			ui.logger.Warn("WebUI auth: could not split RemoteAddr into host:port",
 				slog.String("remoteAddr", r.RemoteAddr),
 				SafeErr(splitErr))
 		}
 
 		// ── Rate-limit gate ──────────────────────────────────────────────────
-		if allowed, _, lockedUntil := s.isLoginAllowed(clientIP); !allowed {
+		if allowed, _, lockedUntil := ui.isLoginAllowed(clientIP); !allowed {
 			retryAfterSecs := int(time.Until(lockedUntil).Seconds()) + 1
-			s.logger.Warn("WebUI login rejected: IP is rate-limited",
+			ui.logger.Warn("WebUI login rejected: IP is rate-limited",
 				slog.String("clientIP", clientIP),
 				slog.Time("locked_until", lockedUntil),
 				slog.Int("retry_after_sec", retryAfterSecs),
@@ -7412,7 +7370,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// Extract the Basic Auth credentials provided by the browser
 		username, pass, ok := r.BasicAuth()
 		if username != "" {
-			s.logger.Warn("WebUI login: username field is not used and was ignored",
+			ui.logger.Warn("WebUI login: username field is not used and was ignored",
 				slog.String("username", username),
 				slog.String("clientIP", clientIP))
 		}
@@ -7420,9 +7378,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// Compare the provided password against our stored bcrypt hash.
 		// If headers are missing (!ok) or the password is wrong (err != nil), block them.
 		// Only log and record a failure if credentials were provided but are invalid
-		if !ok || bcrypt.CompareHashAndPassword([]byte(s.config.WebUIPasswordHash), []byte(pass)) != nil {
+		if !ok || bcrypt.CompareHashAndPassword([]byte(ui.config.WebUIPasswordHash), []byte(pass)) != nil {
 			// Record the failure and get count/lockout state for logging.
-			lockedOut, newLockedUntil, totalFailures := s.recordLoginFailure(clientIP)
+			lockedOut, newLockedUntil, totalFailures := ui.recordLoginFailure(clientIP)
 
 			// Best-effort: identify the connecting process so operators can
 			// distinguish an automated brute-force tool from a human typo.
@@ -7433,7 +7391,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				pid, exe, pidExeLookupErr = wincoe.PidAndExeForTCP(remoteTCP)
 			}
 
-			remaining := s.config.WebUIMaxLoginFailures - totalFailures
+			remaining := ui.config.WebUIMaxLoginFailures - totalFailures
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -7450,16 +7408,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				logAttrs = append(logAttrs,
 					slog.Bool("now_locked_out", true),
 					slog.Time("locked_until", newLockedUntil),
-					slog.Int("lockout_duration_sec", s.config.WebUILoginLockoutSec),
+					slog.Int("lockout_duration_sec", ui.config.WebUILoginLockoutSec),
 				)
-				s.logger.Warn("WebUI login failed — IP is now locked out", logAttrs...)
+				ui.logger.Warn("WebUI login failed — IP is now locked out", logAttrs...)
 				//http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 
 				//FIXME: technically I'd have to dup some code from above here to include the Retry-After
 				http.Error(w, "429 Too Many Requests — Too many failed login attempts. Try again later.", http.StatusTooManyRequests)
 				return
 			} else {
-				s.logger.Warn("WebUI login failed", logAttrs...)
+				ui.logger.Warn("WebUI login failed", logAttrs...)
 				//try again by doing the below dialog
 			}
 
@@ -7472,7 +7430,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// ── Success ──────────────────────────────────────────────────────────
 		// Clear any prior failure streak so a legitimate user is never stuck
 		// in a lockout after recovering from a typo run.
-		s.recordLoginSuccess(clientIP)
+		ui.recordLoginSuccess(clientIP)
 		// Password is correct, let the request pass through to the target handler
 		next.ServeHTTP(w, r)
 	})
@@ -7485,17 +7443,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 //
 // The map is replaced rather than iterated so the operation is O(1)
 // regardless of how many IPs had recorded failures.
-func (s *Server) clearLoginLockouts() {
+func (ui *AdminUI) clearLoginLockouts() {
 	// s.loginMu.Lock()
 	// n := len(s.loginRecords)
 	// s.loginRecords = make(map[string]*loginRecord)
 	// s.loginMu.Unlock()
-	n := s.loginTracker.ClearAll()
+	n := ui.loginTracker.ClearAll()
 	if n > 0 {
-		s.logger.Warn("WebUI login lockouts cleared by operator reload",
+		ui.logger.Warn("WebUI login lockouts cleared by operator reload",
 			slog.Int("cleared_entry_count", n))
 	} else {
-		s.logger.Debug("WebUI login lockouts cleared by operator reload (none were active)")
+		ui.logger.Debug("WebUI login lockouts cleared by operator reload (none were active)")
 	}
 }
 
@@ -7840,4 +7798,60 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 		return syncErr
 	}
 	return closeErr
+}
+
+// AdminUI handles all the web control panel routes.
+type AdminUI struct {
+	logger       *slog.Logger
+	config       Config // Pass by value so UI can read it safely
+	ruleStore    *RuleStore
+	hostStore    *HostStore
+	blacklist    *BlacklistStore
+	loginTracker *LoginTracker
+	recentBlocks *RecentBlocksTracker
+	stats        *expvar.Int
+
+	uiTemplates *template.Template
+	upstreamIPs []string // For the stats page
+
+	// Callbacks for side-effects
+	OnSaveWhitelist       func() error
+	OnSaveBlacklist       func() error
+	OnSaveHosts           func() error
+	OnInvalidatePattern   func(pattern string)
+	OnInvalidateBlacklist func()
+
+	//UI calls this when a fatal exception or manual admin shutdown occurs
+	OnShutdown func(exitCode int)
+}
+
+func NewAdminUI(
+	logger *slog.Logger,
+	cfg Config,
+	rs *RuleStore,
+	hs *HostStore,
+	bl *BlacklistStore,
+	lt *LoginTracker,
+	rb *RecentBlocksTracker,
+	stats *expvar.Int,
+	upstreamIPs []string,
+	tpls *template.Template,
+) *AdminUI {
+	return &AdminUI{
+		logger:       logger,
+		config:       cfg,
+		ruleStore:    rs,
+		hostStore:    hs,
+		blacklist:    bl,
+		loginTracker: lt,
+		recentBlocks: rb,
+		stats:        stats,
+		upstreamIPs:  upstreamIPs,
+		uiTemplates:  tpls,
+	}
+}
+
+// Add this directly to admin_ui.go
+func (ui *AdminUI) getResponseBlacklist() []string {
+	return ui.blacklist.List()
 }
