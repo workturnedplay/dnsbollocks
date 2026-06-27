@@ -1878,6 +1878,11 @@ func (s *Server) Run() error {
 				s.logger.Debug("Local hosts reloaded")
 			}
 
+			//TODO: do I need this here? we're not currently updating these from config.json ! but I am using them in the below call to initDoHClients
+			if err := s.validateUpstream(); err != nil {
+				s.logFatal("Upstream validation failed:", err)
+			}
+
 			func() {
 				s.dohMu.Lock()
 				defer s.dohMu.Unlock()
