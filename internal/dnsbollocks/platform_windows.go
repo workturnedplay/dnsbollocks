@@ -165,9 +165,11 @@ type Server struct {
 	failoverSelect *FailoverSelector
 
 	// Caching & Rate limiting
-	cacheStore     *cache.Cache
-	globalLimiter  *rate.Limiter
-	clientLimiters sync.Map // map[string]*rate.Limiter
+	// cacheStore *cache.Cache
+	dnsCache DNSCache
+	//globalLimiter  *rate.Limiter
+	//clientLimiters sync.Map // map[string]*rate.Limiter
+	rateLimiter *ClientRateLimiter
 
 	// // Rules & Blocking
 	// whitelist           map[string][]RuleEntry // type -> rules
@@ -941,8 +943,8 @@ func (s *Server) saveQueryWhitelist() error {
 }
 
 func (s *Server) flushCache() {
-	if s.cacheStore != nil {
-		s.cacheStore.Flush()
+	if s.dnsCache != nil { // this guard is real and necessary
+		s.dnsCache.Flush()
 		s.logger.Debug("Cache flushed/deleted.")
 	} else {
 		s.logger.Debug("Cache wasn't inited so can't be flushed here.")
@@ -1823,10 +1825,12 @@ func (s *Server) Run() error {
 	// Now we have the real config → switch to full logging
 	s.initFullLogging() // ← this replaces the logger with files + correct console level
 
-	s.cacheStore = cache.New(time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
+	//s.cacheStore = cache.New(time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
+	s.dnsCache = newGoCacheStore(time.Duration(s.config.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
 	s.logger.Debug("Cache initialized")
 
-	s.globalLimiter = rate.NewLimiter(rate.Limit(s.config.GlobalRateQPS), s.config.GlobalBurstQPS)
+	//s.globalLimiter = rate.NewLimiter(rate.Limit(s.config.GlobalRateQPS), s.config.GlobalBurstQPS)
+	s.rateLimiter = newClientRateLimiter(rateLimitConfigFrom(s.config), s.logger)
 	s.logger.Debug("Rate limiter initialized")
 
 	if err := s.validateUpstream(); err != nil {
@@ -3707,125 +3711,51 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// Rate limit
-	var rateLimited string
-	gl := s.globalLimiter.Allow()
-	if !gl {
-		rateLimited = globalRateLimitExceeded
-	} else {
-
-		// 1. Extract only the IP address to strip away the ephemeral port
-		clientIP, _, err := net.SplitHostPort(clientAddr)
-		if err != nil {
-			// Fallback safety: if string parsing fails, default back to the raw string
-			s.logger.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
-			clientIP = clientAddr
-		}
-		// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
-		if parsedIP := net.ParseIP(clientIP); parsedIP != nil && parsedIP.IsLoopback() {
-			clientIP = "localhost"
-		}
-		// 3. Use the clean IP as the sync.Map key
-		clIface, _ := s.clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(s.config.ClientRateQPS), s.config.ClientBurstQPS)) // Per-client qps/burst
-		//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-		cl := clIface.(*rate.Limiter)
-		if !cl.Allow() {
-			rateLimited = clientRateLimitExceeded
-		}
-	}
-	if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
-		s.logger.Warn(rateLimited, slog.String("client", clientAddr))
+	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
+		s.logger.Warn(reason, slog.String("client", clientAddr))
 		sfr := servfailResponse(msg)
-		s.logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
+		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
 	}
+	// var rateLimited string
+	// gl := s.globalLimiter.Allow()
+	// if !gl {
+	// 	rateLimited = globalRateLimitExceeded
+	// } else {
 
-	// Whitelist
-	// matchedID := "" // must be empty, used in 2 logical places, one's here.
-	// matched := false
-	// func() { //for 'defer'
-	// 	s.ruleMutex.RLock()
-	// 	defer s.ruleMutex.RUnlock()
-
-	// 	rules := s.whitelist[qtype]
-	// 	for _, rule := range rules {
-	// 		if !rule.Enabled {
-	// 			continue
-	// 		}
-	// 		if matchPattern(rule.Pattern, domain) {
-	// 			matchedID = rule.ID
-	// 			matched = true
-	// 			break
-	// 		}
+	// 	// 1. Extract only the IP address to strip away the ephemeral port
+	// 	clientIP, _, err := net.SplitHostPort(clientAddr)
+	// 	if err != nil {
+	// 		// Fallback safety: if string parsing fails, default back to the raw string
+	// 		s.logger.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
+	// 		clientIP = clientAddr
 	// 	}
-
-	// 	// --- START OF NEW CODE --- by gemini 3.1 pro (free tier)
-	// 	// Fallback: Auto-allow HTTPS if an 'A' record rule permits it, doneTODO: make it a bool config.json option
-	// 	if s.config.AllowHTTPSIfAAllowed && !matched && qtype == "HTTPS" {
-	// 		for _, rule := range s.whitelist["A"] {
-	// 			if !rule.Enabled {
-	// 				continue
-	// 			}
-	// 			if matchPattern(rule.Pattern, domain) {
-	// 				matchedID = rule.ID
-	// 				matched = true
-	// 				break
-	// 			}
-	// 		}
+	// 	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+	// 	if parsedIP := net.ParseIP(clientIP); parsedIP != nil && parsedIP.IsLoopback() {
+	// 		clientIP = "localhost"
 	// 	}
-	// 	// --- END OF NEW CODE ---
+	// 	// 3. Use the clean IP as the sync.Map key
+	// 	clIface, _ := s.clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(s.config.ClientRateQPS), s.config.ClientBurstQPS)) // Per-client qps/burst
+	// 	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
+	// 	cl := clIface.(*rate.Limiter)
+	// 	if !cl.Allow() {
+	// 		rateLimited = clientRateLimitExceeded
+	// 	}
+	// }
+	// if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
+	// 	s.logger.Warn(rateLimited, slog.String("client", clientAddr))
+	// 	sfr := servfailResponse(msg)
+	// 	s.logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
+	// 	return sfr
+	// }
 
-	// 	// ruleMutex.RUnlock()
-	// }()
-	// Whitelist check (was: s.ruleMutex.RLock / range s.whitelist)
 	matchedID, matched := s.ruleStore.MatchForType(qtype, domain)
 	if !matched && s.config.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 		matchedID, matched = s.ruleStore.MatchForType("A", domain)
 	}
 
-	// if !matched {
-	//     stats.Add(1)
-	//     func() {
-	//         blockMutex.Lock()
-	//         defer blockMutex.Unlock() // Executes even if the code below panics
-	//         recentBlocks = append(recentBlocks, BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
-	//         if len(recentBlocks) > 50 {
-	//             recentBlocks = recentBlocks[1:]
-	//         }
-	//         //blockMutex.Unlock()
-	//     }() // Notice the parens here to call it immediately
-	//     blocked := blockResponse(msg)
 	if !matched {
 		s.stats.Add(1)
-		// func() {
-		// 	s.blockMutex.Lock()
-		// 	defer s.blockMutex.Unlock()
-
-		// 	key := domain + ":" + qtype
-
-		// 	if elem, ok := s.recentBlocksMap[key]; ok {
-		// 		// We already have this block. Update the time and bump it to the front.
-		// 		// (Zero allocations!)
-		// 		bq := elem.Value.(*BlockedQuery)
-		// 		bq.Time = time.Now()
-		// 		s.recentBlocksList.MoveToFront(elem)
-		// 	} else {
-		// 		// Brand new block. Add to the front of our list and map.
-		// 		newBlock := &BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()}
-		// 		elem := s.recentBlocksList.PushFront(newBlock)
-		// 		s.recentBlocksMap[key] = elem
-
-		// 		// Evict the oldest item if we exceed the tracked limit
-		// 		if s.recentBlocksList.Len() > s.config.MaxRecentBlocks {
-		// 			backElem := s.recentBlocksList.Back()
-		// 			if backElem != nil {
-		// 				backBQ := backElem.Value.(*BlockedQuery)
-		// 				backKey := backBQ.Domain + ":" + backBQ.Type
-		// 				delete(s.recentBlocksMap, backKey)
-		// 				s.recentBlocksList.Remove(backElem)
-		// 			}
-		// 		}
-		// 	}
-		// }() // Notice the parens here to call it immediately
 		s.recentBlocks.Record(domain, qtype, s.config.MaxRecentBlocks)
 		blocked := s.blockResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
@@ -3836,8 +3766,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	key := domain + ":" + qtype
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
-	if cachedIf, ok := s.cacheStore.Get(key); ok {
-		entry := cachedIf.(CacheEntry)
+	//if cachedIf, ok := s.cacheStore.Get(key); ok {
+	if entry, ok := s.dnsCache.Get(key); ok {
+		//entry := cachedIf.(CacheEntry)
 		cached := entry.Msg
 
 		// Return a copy of cached response with the current query ID to avoid
@@ -3856,20 +3787,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	}
 
 	// --- START Local Hosts Override ---
-	// var hasLocalHost bool
-	// var matchedIPs []net.IP
-	// func() {
-	// 	s.localHostsMu.RLock()
-	// 	defer s.localHostsMu.RUnlock() // maybe it panics so unlock it even then!
-	// 	for _, rule := range s.localHosts {
-	// 		if matchPattern(rule.Pattern, domain) {
-	// 			matchedIPs = rule.IPs
-	// 			hasLocalHost = true
-	// 			break
-	// 		}
-	// 	}
-	// }() // for defer
-
 	// Local hosts check (was: s.localHostsMu.RLock / range s.localHosts)
 	if matchedIPs, ok := s.hostStore.Match(domain); ok {
 		resp := new(dns.Msg)
@@ -3894,12 +3811,11 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		}
 
 		// Cache this override so subsequent queries bypass the pattern loop
-		//cacheStore.Set(key, resp.Copy(), timeUntilLocalHostsExpireInSeconds*time.Second)
 		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
-		s.cacheStore.Set(key, CacheEntry{
+		s.dnsCache.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState5,
-		}, time.Duration(s.config.LocalHostsOverrideTTLSec)*time.Second) //TODO: configurable cache time and dns record aka ttl time? (see above)
+		}, time.Duration(s.config.LocalHostsOverrideTTLSec)*time.Second) //doneTODO: configurable cache time and dns record aka ttl time? (see above)
 
 		s.logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
@@ -3929,7 +3845,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		// Cache negatives short
 		// Store a copy of the negative response as well
 		//cacheStore.Set(key, negResp.Copy(), 2*time.Second)
-		s.cacheStore.Set(key, CacheEntry{
+		s.dnsCache.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
 		}, time.Duration(s.config.CacheNegativeTTLSec)*time.Second) // time to cache negatives
@@ -3966,7 +3882,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 	// Store a copy in the cache, not the pointer you are about to return
 	//cacheStore.Set(key, filtered.Copy(), expiry)
-	s.cacheStore.Set(key, CacheEntry{
+	s.dnsCache.Set(key, CacheEntry{
 		Msg:   filtered.Copy(),
 		State: upstreamState3,
 	}, expiry)
@@ -5594,7 +5510,7 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
 	body.WriteString("<h2>Statistics</h2>")
-	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", s.stats.String(), s.cacheStore.ItemCount(), s.upstreamIPs)
+	fmt.Fprintf(&body, "<p>Blocks: %q</p><p>Cache size: %d</p><p>Upstream IPs: %v</p>", s.stats.String(), s.dnsCache.ItemCount(), s.upstreamIPs)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
 		"Page": "stats", //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
@@ -6473,16 +6389,16 @@ type HostView struct {
 // invalidateCacheForPattern surgically removes any cached DNS responses
 // that match the given host pattern (handling wildcards correctly).
 func (s *Server) invalidateCacheForPattern(pattern string) {
-	if s.cacheStore == nil {
+	if s.dnsCache == nil {
 		return
 	}
-	for key := range s.cacheStore.Items() {
+	for key := range s.dnsCache.Items() {
 		// key format is "domain:type" (e.g., "router.local:A")
 		parts := strings.SplitN(key, ":", 2)
 		if len(parts) > 0 {
 			domain := parts[0]
 			if matchPattern(pattern, domain) {
-				s.cacheStore.Delete(key)
+				s.dnsCache.Delete(key)
 				s.logger.Debug("Evicted cached record due to rule change",
 					slog.String("key", key),
 					slog.String("matched_pattern", pattern),
@@ -6493,14 +6409,14 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 }
 
 func (s *Server) invalidateCacheForBlacklistedIPs() {
-	if s.cacheStore == nil {
+	if s.dnsCache == nil {
 		return
 	}
 	// 1. Grab a snapshot of pointers under a microsecond single lock
 	//Instead of a single s.blacklist.Contains(ip) call hitting a mutex over and over, you pull the whole list out once into blacklistedNets. Then, inside the loops, you do plain, local array iterations (for _, netEntry := range blacklistedNets).
 	blacklistedNets := s.blacklist.Snapshot()
 
-	for key, item := range s.cacheStore.Items() { //iterates on a snapshot of cache
+	for key, item := range s.dnsCache.Items() { //iterates on a snapshot of cache
 		//packed, ok := item.Object.([]byte)
 		entry, ok := item.Object.(CacheEntry)
 		if !ok {
@@ -6538,7 +6454,7 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 		}
 
 		if shouldEvict {
-			s.cacheStore.Delete(key)
+			s.dnsCache.Delete(key)
 			s.logger.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
 		}
 	}
@@ -7141,9 +7057,7 @@ func (s *Server) shutdown(exitCode int) {
 		s.cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
 		s.logger.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
-		if s.cacheStore != nil {
-			s.flushCache()
-		}
+		s.flushCache()
 		//doneTODO: webUI shutdown (done via cancel() above)
 		//s.logger.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
@@ -7606,6 +7520,116 @@ func (s *Server) clearLoginLockouts() {
 	}
 }
 
-// isLoginAllowed → s.loginTracker.IsAllowed
-// recordLoginFailure → s.loginTracker.RecordFailure
-// recordLoginSuccess → s.loginTracker.RecordSuccess
+// RateLimitConfig is the subset of Config relevant to rate limiting.
+// Extracted so ClientRateLimiter can be constructed and tested without a full Config.
+type RateLimitConfig struct {
+	GlobalQPS   int
+	GlobalBurst int
+	ClientQPS   int
+	ClientBurst int
+}
+
+func rateLimitConfigFrom(cfg Config) RateLimitConfig {
+	return RateLimitConfig{
+		GlobalQPS:   cfg.GlobalRateQPS,
+		GlobalBurst: cfg.GlobalBurstQPS,
+		ClientQPS:   cfg.ClientRateQPS,
+		ClientBurst: cfg.ClientBurstQPS,
+	}
+}
+
+// ClientRateLimiter enforces a global QPS cap and a per-client QPS cap.
+// A request must pass both gates. Extracted from Server so it can be
+// unit-tested and mocked without constructing a full Server.
+type ClientRateLimiter struct {
+	global  *rate.Limiter
+	clients sync.Map
+	cfg     RateLimitConfig
+	logger  *slog.Logger
+}
+
+func newClientRateLimiter(cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
+	return &ClientRateLimiter{
+		global: rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
+		cfg:    cfg,
+		logger: logger,
+	}
+}
+
+// Allow checks both the global and per-client rate limits for the given
+// clientAddr (host:port or bare IP).
+// Returns (true, "") on success, or (false, reason) where reason is one of
+// the existing rate-limit sentinel strings used for logging and query tracking.
+func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason string) {
+	if !rl.global.Allow() {
+		return false, globalRateLimitExceeded
+	}
+	// 1. Extract only the IP address to strip away the ephemeral port
+	clientIP, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		// Fallback safety: if string parsing fails, default back to the raw string
+		rl.logger.Warn("couldn't split clientAddr into host:port for per-client rate limiter key, using as-is",
+			slog.String("clientAddr", clientAddr))
+		clientIP = clientAddr
+	}
+	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.IsLoopback() {
+		clientIP = "localhost"
+	}
+	// 3. Use the clean IP as the sync.Map key
+	clIface, _ := rl.clients.LoadOrStore(
+		clientIP,
+		rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+	)
+	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
+	if !clIface.(*rate.Limiter).Allow() {
+		return false, clientRateLimitExceeded
+	}
+	return true, ""
+}
+
+// DNSCache is the caching contract used by the query handler.
+// The interface makes it trivial to inject a fake in tests
+// (no-op, always-miss, always-hit, recording, etc.)
+// without touching go-cache at all.
+type DNSCache interface {
+	Get(key string) (CacheEntry, bool)
+	Set(key string, entry CacheEntry, d time.Duration)
+	Delete(key string)
+	Flush()
+	// Items is used by cache-invalidation walks.
+	// Returns the underlying go-cache item map so existing
+	// item.Object type assertions keep working.
+	Items() map[string]cache.Item
+	ItemCount() int
+}
+
+// goCacheStore adapts patrickmn/go-cache to DNSCache.
+// All type assertions against interface{} are confined here;
+// callers work with concrete CacheEntry values.
+type goCacheStore struct {
+	c *cache.Cache
+}
+
+func newGoCacheStore(janitorInterval time.Duration) DNSCache {
+	return &goCacheStore{
+		c: cache.New(janitorInterval, janitorInterval),
+	}
+}
+
+func (s *goCacheStore) Get(key string) (CacheEntry, bool) {
+	v, ok := s.c.Get(key)
+	if !ok {
+		return CacheEntry{}, false
+	}
+	return v.(CacheEntry), true
+}
+
+func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
+	s.c.Set(key, e, d)
+}
+
+func (s *goCacheStore) Delete(key string)            { s.c.Delete(key) }
+func (s *goCacheStore) Flush()                       { s.c.Flush() }
+func (s *goCacheStore) Items() map[string]cache.Item { return s.c.Items() }
+func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
