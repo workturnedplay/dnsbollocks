@@ -2243,6 +2243,13 @@ func (s *Server) loadConfig() error {
 
 	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
+	// 2. Prevent Missing Validation: Check Janitor Intervals
+	if cfg.CacheJanitorIntervalMinutes <= 0 {
+		const whenBad = 5 //minutes
+		log.Warn("bad janitor interval in config", slog.Int("given", cfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
+		cfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
+	}
+
 	if cfg.GlobalBurstQPS < cfg.GlobalRateQPS {
 		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", cfg.GlobalBurstQPS, cfg.GlobalRateQPS, configFileName))
 	}
@@ -3280,11 +3287,11 @@ func (s *Server) startDNSListener(addr string) {
 		// immediately check capacity.  loadConfig has already validated the
 		// value, but defend against a zero here just in case.
 		tcpMaxConns := cfg.MaxConcurrentDNSTCPConns
-		if tcpMaxConns <= 0 {
-			const constTCPMaxConns = 50
-			tcpMaxConns = constTCPMaxConns
-			log.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
-		}
+		// if tcpMaxConns <= 0 { //already doing this at load time
+		// 	const constTCPMaxConns = 50
+		// 	tcpMaxConns = constTCPMaxConns
+		// 	log.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
+		// }
 		s.dnsTCPSem = make(chan struct{}, tcpMaxConns)
 		log.Debug("DNS TCP concurrent-connection limit initialised",
 			slog.Int("max_concurrent", tcpMaxConns))
