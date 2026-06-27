@@ -1887,7 +1887,6 @@ func (s *Server) OnReload(hook func()) {
 
 func (s *Server) Run() error {
 	log := s.getLogger()
-	cfg := s.getConfig()
 
 	// Signals setup FIRST: Catch interrupts from init onward
 	sigChan := make(chan os.Signal, 1)
@@ -1899,6 +1898,7 @@ func (s *Server) Run() error {
 		// log.Error("Config load failed", SafeErr(err))
 		// os.Exit(1) // replaced log.Fatal
 	}
+	cfg := s.getConfig() //XXX: after s.loadConfig() !!
 	log.Info("Config loaded", slog.String("file", configFileName))
 
 	if !cfg.AllowRunAsAdmin && isAdmin {
@@ -1908,7 +1908,8 @@ func (s *Server) Run() error {
 	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
-	s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) TODO: Ctrl+R would have to run this too!
+	log = s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) TODO: Ctrl+R would have to run this too!
+	// log = s.getLogger()
 
 	//s.cacheStore = cache.New(time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
 	s.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
@@ -2116,7 +2117,7 @@ func OldMain() {
 
 func (s *Server) loadConfig() error {
 	log := s.getLogger()
-	cfg := s.getConfig()
+	//cfg := s.getConfig()
 	const cfgFname = configFileName
 	log.Info("Loading config file", slog.String("config_file", cfgFname))
 	var shouldSaveConfig = false
@@ -2125,9 +2126,11 @@ func (s *Server) loadConfig() error {
 	// 1. ALWAYS start by filling the global config with defaults.
 	// This is critical because Decode only overwrites what is in the file.
 	defaultConfig := defaultConfig()
-	//config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
-	//cfg = defaultConfig.Clone() // deep copy
+	// //config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
+	// //cfg = defaultConfig.Clone() // deep copy
+	//XXX: config is already set to defaultConfig() is already set from the NewServer() call! the only issue is do we want defaults if loadConfig is called again during Server's lifetime ie. Ctrl+R aka reload (but it's not yet implemented there)
 	s.applyConfig(defaultConfig.Clone()) //deep copy
+	cfg := s.getConfig()                 //XXX: must be done after applyConfig
 
 	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //using default cfg.ExtraSafety
 
@@ -2173,7 +2176,7 @@ func (s *Server) loadConfig() error {
 
 		// dec.Decode will now overwrite ONLY the fields present in the JSON.
 		// Missing fields will retain the values from DefaultConfig().
-		if err = dec.Decode(&cfg); err != nil {
+		if err = dec.Decode(cfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
@@ -2639,7 +2642,7 @@ func isAdminNow() bool {
 
 // initLogging creates the single log with three destinations.
 // Called once after config is loaded (files and console level are known).
-func (s *Server) initFullLogging() { //qpath, epath string) {
+func (s *Server) initFullLogging() *slog.Logger { //qpath, epath string) {
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -2690,6 +2693,7 @@ func (s *Server) initFullLogging() { //qpath, epath string) {
 	// realLogger := slog.New(multiHandler{handlers: []slog.Handler{fullHandler, consoleH, queryH}})
 	//s.liveLogger.Store(improvedLogger)          // all consumers automatically see the new logger
 	s.applyLogger(improvedLogger) // all consumers automatically see the new logger
+	log = s.getLogger()           //to use the new logger on the below log line!
 	//s.failoverSelect.liveLogger = &s.liveLogger // FailoverSelector also uses the pointer, no need for this!
 
 	// //Give the failover selector the new, fully-powered logger
@@ -2703,6 +2707,7 @@ func (s *Server) initFullLogging() { //qpath, epath string) {
 		slog.String("queries_log", cfg.LogQueriesFile),
 		slog.String("console_level", cfg.ConsoleLogLevel),
 	)
+	return log
 }
 
 func (s *Server) rotateIfNeeded(path string, maxMB int) {
@@ -3010,7 +3015,7 @@ func (s *Server) generateCertIfNeeded() {
 
 	// 3. Regen if necessary
 	if needsRegen {
-		log.Warn("Due to above, regenerating self-signed cert(files: %s and %s) for DoH at %s...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
+		log.Warn("Due to above, regenerating self-signed cert files for DoH ...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
 			slog.String("sni_hostname", host))
 		if err = generateCert(certFile, keyFile, host); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
