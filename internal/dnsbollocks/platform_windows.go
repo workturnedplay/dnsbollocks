@@ -165,19 +165,8 @@ type Server struct {
 	failoverSelect *FailoverSelector
 
 	// Caching & Rate limiting
-	// cacheStore *cache.Cache
-	dnsCache DNSCache
-	//globalLimiter  *rate.Limiter
-	//clientLimiters sync.Map // map[string]*rate.Limiter
+	dnsCache    DNSCache
 	rateLimiter *ClientRateLimiter
-
-	// // Rules & Blocking
-	// whitelist           map[string][]RuleEntry // type -> rules
-	// ruleMutex           sync.RWMutex
-	// localHosts          []LocalHostRule
-	// localHostsMu        sync.RWMutex
-	// responseBlacklist   []*net.IPNet // parsed and ready-to-use form
-	// responseBlacklistMu sync.RWMutex
 
 	// Data stores (each owns its own mutex).
 	ruleStore    *RuleStore
@@ -187,14 +176,8 @@ type Server struct {
 	loginTracker *LoginTracker
 
 	// fileWriteMu serialises all file-write calls across all stores.
-	fileWriteMu sync.Mutex
-
-	// recentBlocksList *list.List
-	// recentBlocksMap  map[string]*list.Element
-	// blockMutex       sync.Mutex
-
-	// loginMu      sync.Mutex
-	// loginRecords map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
+	fileWriter FileWriter
+	//fileWriteMu sync.Mutex
 
 	dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
 
@@ -481,7 +464,7 @@ func (s *Server) loadResponseBlacklist() error {
 		panic("dev. didn't set the default blacklist filename!")
 	}
 	blacklistFileName = filepath.Clean(blacklistFileName)
-	s.checkPowerLossFile(blacklistFileName)
+	s.fileWriter.CheckPowerLossFile(blacklistFileName)
 	var shouldSave bool = false
 	var raw []string
 	data, err := os.ReadFile(blacklistFileName)
@@ -595,9 +578,9 @@ func (s *Server) saveResponseBlacklist() error {
 	if blacklistFileName == "" {
 		panic("bad coding: dev. didn't set the default blacklist filename!")
 	}
-	s.fileWriteMu.Lock()
-	defer s.fileWriteMu.Unlock()
-	if err := s.safeWriteFile(blacklistFileName, data, 0600); err != nil {
+	// s.fileWriteMu.Lock()
+	// defer s.fileWriteMu.Unlock()
+	if err := s.fileWriter.SafeWriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
 		s.logger.Info("Saved blacklist file", slog.String("file", blacklistFileName))
@@ -659,7 +642,7 @@ func (s *Server) loadLocalHosts() error {
 		panic("dev: didn't set the default hosts filename!")
 	}
 	hostsFileName = filepath.Clean(hostsFileName)
-	s.checkPowerLossFile(hostsFileName)
+	s.fileWriter.CheckPowerLossFile(hostsFileName)
 	data, err := os.ReadFile(hostsFileName)
 	if os.IsNotExist(err) {
 		s.logger.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
@@ -839,10 +822,10 @@ func (s *Server) saveLocalHosts() error {
 	}
 
 	// 2. Serialize the disk write
-	s.fileWriteMu.Lock()
-	defer s.fileWriteMu.Unlock()
+	// s.fileWriteMu.Lock()
+	// defer s.fileWriteMu.Unlock()
 
-	if err := s.safeWriteFile(s.config.HostsFile, data, 0600); err != nil {
+	if err := s.fileWriter.SafeWriteFile(s.config.HostsFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write hosts file %q: %w", s.config.HostsFile, err)
 	}
 	return nil
@@ -928,14 +911,14 @@ func (s *Server) saveQueryWhitelist() error {
 	}
 
 	// 2. Serialize the disk write so concurrent WebUI saves don't corrupt the file
-	s.fileWriteMu.Lock()
-	defer s.fileWriteMu.Unlock()
+	// s.fileWriteMu.Lock()
+	// defer s.fileWriteMu.Unlock()
 
 	whitelistFileName := s.config.WhitelistFile
 	if whitelistFileName == "" {
 		panic("BUG: bad coding: dev. didn't set the default whitelist filename!")
 	}
-	if err := s.safeWriteFile(whitelistFileName, data, 0600); err != nil {
+	if err := s.fileWriter.SafeWriteFile(whitelistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
 	}
 	s.logger.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
@@ -958,7 +941,7 @@ func (s *Server) loadQueryWhitelist() error {
 		panic("dev. didn't set the default whitelist filename!")
 	}
 	whitelistFileName = filepath.Clean(s.config.WhitelistFile)
-	s.checkPowerLossFile(whitelistFileName)
+	s.fileWriter.CheckPowerLossFile(whitelistFileName)
 	data, err := os.ReadFile(whitelistFileName)
 	if os.IsNotExist(err) {
 		s.logger.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
@@ -1808,7 +1791,6 @@ func (s *Server) Run() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	s.logger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
-
 	if err := s.loadConfig(); err != nil {
 		s.logFatal("Config load failed:", err)
 		// s.logger.Error("Config load failed", SafeErr(err))
@@ -1823,7 +1805,7 @@ func (s *Server) Run() error {
 	//s.logger.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
-	s.initFullLogging() // ← this replaces the logger with files + correct console level
+	s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) TODO: Ctrl+R would have to run this too!
 
 	//s.cacheStore = cache.New(time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
 	s.dnsCache = newGoCacheStore(time.Duration(s.config.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
@@ -2033,7 +2015,9 @@ func (s *Server) loadConfig() error {
 	//config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
 	s.config = defaultConfig.Clone() // deep copy
 
-	s.checkPowerLossFile(cfgFname)
+	s.fileWriter = newSafeFileWriter(&s.config, s.logger) //using defaults, ie. s.config.ExtraSafety
+
+	s.fileWriter.CheckPowerLossFile(cfgFname)
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
 		if isAdmin {
@@ -2134,6 +2118,8 @@ func (s *Server) loadConfig() error {
 		//     shouldSaveConfig = true
 		// }
 	}
+
+	s.fileWriter = newSafeFileWriter(&s.config, s.logger) //uses newly loaded config settings ie. s.config.ExtraSafety
 
 	if s.config.GlobalBurstQPS < s.config.GlobalRateQPS {
 		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", s.config.GlobalBurstQPS, s.config.GlobalRateQPS, configFileName))
@@ -2261,183 +2247,172 @@ func (s *Server) loadConfig() error {
 	return nil
 }
 
-// powerlossFileExtension any saved file with this extension means power-loss (or panic in code?) occurred in a very tiny window and thus this is your potentially safe config and should be manually investigated for restoration purposes esp. if the main file is 0 bytes.
-const powerlossFileExtension string = ".powergotlost"
+// func (s *Server) safeWriteFile(filename string, data []byte, perm os.FileMode) error {
+// 	if s.config.ExtraSafety {
+// 		tmpName := filename + powerlossFileExtension
 
-// safeWriteFile attempts a crash-safe file update without using os.Rename,
-// preserving Windows ACLs and falling back gracefully if directory permissions
-// block the creation of temporary files.
-//
-// By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
-func (s *Server) safeWriteFile(filename string, data []byte, perm os.FileMode) error {
-	if s.config.ExtraSafety {
-		tmpName := filename + powerlossFileExtension
+// 		// 1. Try to write to a temp file first to ensure disk space and data integrity.
+// 		tmpFile, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+// 		if err == nil {
+// 			_, writeErr := tmpFile.Write(data)
+// 			syncErr := tmpFile.Sync()
+// 			tmpFile.Close()
 
-		// 1. Try to write to a temp file first to ensure disk space and data integrity.
-		tmpFile, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-		if err == nil {
-			_, writeErr := tmpFile.Write(data)
-			syncErr := tmpFile.Sync()
-			tmpFile.Close()
+// 			if writeErr == nil && syncErr == nil {
+// 				// Temp file is safely on disk. Overwrite the target file directly
+// 				// so we don't alter its existing Windows permissions/ACLs.
+// 				//XXX: which means we fallthru here
 
-			if writeErr == nil && syncErr == nil {
-				// Temp file is safely on disk. Overwrite the target file directly
-				// so we don't alter its existing Windows permissions/ACLs.
-				//XXX: which means we fallthru here
+// 				// targetFile, targetErr := os.OpenFile(filename, os.O_WRONLY|os.O_TRUNC, perm)
+// 				// if targetErr == nil {
+// 				// 	_, _ = targetFile.Write(data)
+// 				// 	_ = targetFile.Sync()
+// 				// 	targetFile.Close()
+// 				// }
+// 				s.logger.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
+// 				// and after the below fallthru (from step 2) then Clean up the temp file
 
-				// targetFile, targetErr := os.OpenFile(filename, os.O_WRONLY|os.O_TRUNC, perm)
-				// if targetErr == nil {
-				// 	_, _ = targetFile.Write(data)
-				// 	_ = targetFile.Sync()
-				// 	targetFile.Close()
-				// }
-				s.logger.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
-				// and after the below fallthru (from step 2) then Clean up the temp file
+// 				// Queue cleanup. If we crash/lose power after this point,
+// 				// this defer never runs, leaving the safe copy intact.
+// 				defer func() {
+// 					ondeleteErr := os.Remove(tmpName)
+// 					if ondeleteErr == nil {
+// 						s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+// 						// Successful deletion, nothing more to do
+// 						return
+// 					}
+// 					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
+// 					s.logger.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
+// 					// Fallback: If we can't delete it, truncate it to 0 bytes.
+// 					// Since we already have write handle permissions to this file, this is highly likely to succeed.
+// 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+// 					if truncErr == nil {
+// 						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
+// 						truncFile.Close()
+// 						s.logger.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
+// 							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
+// 					} else {
+// 						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
+// 						// s.logger.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
+// 						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
 
-				// Queue cleanup. If we crash/lose power after this point,
-				// this defer never runs, leaving the safe copy intact.
-				defer func() {
-					ondeleteErr := os.Remove(tmpName)
-					if ondeleteErr == nil {
-						s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-						// Successful deletion, nothing more to do
-						return
-					}
-					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-					s.logger.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
-					// Fallback: If we can't delete it, truncate it to 0 bytes.
-					// Since we already have write handle permissions to this file, this is highly likely to succeed.
-					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
-					if truncErr == nil {
-						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
-						truncFile.Close()
-						s.logger.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
-							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
-					} else {
-						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-						// s.logger.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
-						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
+// 						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
+// 						// The file is stuck on disk with data, making a future boot panic inevitable.
+// 						// Crash immediately while the administrator is interacting with the system.
+// 						logmsg := fmt.Sprintf(
+// 							"\n========================================================================\n"+
+// 								"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
+// 								"The temporary staging file %q cannot be deleted or truncated.\n\n"+
+// 								"Delete error: %v\n"+
+// 								"Truncation error: %v\n\n"+
+// 								"Because the file contains non-zero bytes, the next server boot will panic.\n"+
+// 								"Halting execution immediately to prevent corrupted filesystem operation.\n"+
+// 								"========================================================================\n",
+// 							tmpName, ondeleteErr, truncErr,
+// 						)
+// 						s.logger.Error(logmsg)
+// 						panic(logmsg)
+// 					}
+// 				}()
+// 				//return targetErr
+// 			} else {
+// 				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
+// 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
+// 				// to neutralize any partial garbage data that would trip up the next boot.
+// 				ondeleteErr := os.Remove(tmpName)
+// 				s.logger.Warn("ExtraSafety: Failed to fully write or/and sync staging file", slog.String("tempfilename", tmpName), SafeErr2("writeErr", writeErr), SafeErr2("syncErr", syncErr), SafeErr2("ondelete_err", ondeleteErr))
+// 				if ondeleteErr != nil {
+// 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+// 					if truncErr == nil {
+// 						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
+// 						truncFile.Close()
+// 						s.logger.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
+// 							slog.String("tempfilename", tmpName), SafeErr2("ondeleteErr", ondeleteErr), SafeErr2("syncErr", syncErr3))
+// 					} else {
+// 						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
+// 						// Non-zero junk data is permanently locked on disk. Panic immediately.
+// 						logmsg := fmt.Sprintf(
+// 							"\n========================================================================\n"+
+// 								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
+// 								"The temporary staging file %q failed to write, and both deletion and\n"+
+// 								"truncation attempts failed.\n\n"+
+// 								"Delete error: %v\n"+
+// 								"Truncation error: %v\n\n"+
+// 								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
+// 								"execution is halted immediately.\n"+
+// 								"========================================================================\n",
+// 							tmpName, ondeleteErr, truncErr,
+// 						)
+// 						s.logger.Error(logmsg)
+// 						panic(logmsg)
+// 					}
+// 				} else {
+// 					s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+// 				}
+// 			}
+// 		} else {
+// 			s.logger.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost", slog.String("filename", filename), slog.String("wanted_tempfilename", tmpName))
+// 		}
+// 	} //end 'if' extraSafety
 
-						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
-						// The file is stuck on disk with data, making a future boot panic inevitable.
-						// Crash immediately while the administrator is interacting with the system.
-						logmsg := fmt.Sprintf(
-							"\n========================================================================\n"+
-								"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
-								"The temporary staging file %q cannot be deleted or truncated.\n\n"+
-								"Delete error: %v\n"+
-								"Truncation error: %v\n\n"+
-								"Because the file contains non-zero bytes, the next server boot will panic.\n"+
-								"Halting execution immediately to prevent corrupted filesystem operation.\n"+
-								"========================================================================\n",
-							tmpName, ondeleteErr, truncErr,
-						)
-						s.logger.Error(logmsg)
-						panic(logmsg)
-					}
-				}()
-				//return targetErr
-			} else {
-				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
-				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
-				// to neutralize any partial garbage data that would trip up the next boot.
-				ondeleteErr := os.Remove(tmpName)
-				s.logger.Warn("ExtraSafety: Failed to fully write or/and sync staging file", slog.String("tempfilename", tmpName), SafeErr2("writeErr", writeErr), SafeErr2("syncErr", syncErr), SafeErr2("ondelete_err", ondeleteErr))
-				if ondeleteErr != nil {
-					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
-					if truncErr == nil {
-						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
-						truncFile.Close()
-						s.logger.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
-							slog.String("tempfilename", tmpName), SafeErr2("ondeleteErr", ondeleteErr), SafeErr2("syncErr", syncErr3))
-					} else {
-						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
-						// Non-zero junk data is permanently locked on disk. Panic immediately.
-						logmsg := fmt.Sprintf(
-							"\n========================================================================\n"+
-								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
-								"The temporary staging file %q failed to write, and both deletion and\n"+
-								"truncation attempts failed.\n\n"+
-								"Delete error: %v\n"+
-								"Truncation error: %v\n\n"+
-								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
-								"execution is halted immediately.\n"+
-								"========================================================================\n",
-							tmpName, ondeleteErr, truncErr,
-						)
-						s.logger.Error(logmsg)
-						panic(logmsg)
-					}
-				} else {
-					s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-				}
-			}
-		} else {
-			s.logger.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost", slog.String("filename", filename), slog.String("wanted_tempfilename", tmpName))
-		}
-	} //end 'if' extraSafety
+// 	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
+// 	// do a direct write but enforce a hardware sync to minimize the corruption window.
+// 	// 2. Overwrite the target file directly (Retains Windows ACLs)
+// 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
-	// do a direct write but enforce a hardware sync to minimize the corruption window.
-	// 2. Overwrite the target file directly (Retains Windows ACLs)
-	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
+// 	_, writeErr := targetFile.Write(data)
+// 	if writeErr != nil {
+// 		targetFile.Close()
+// 		return writeErr
+// 	}
 
-	_, writeErr := targetFile.Write(data)
-	if writeErr != nil {
-		targetFile.Close()
-		return writeErr
-	}
+// 	syncErr := targetFile.Sync()
+// 	closeErr := targetFile.Close()
 
-	syncErr := targetFile.Sync()
-	closeErr := targetFile.Close()
+// 	if syncErr != nil {
+// 		return syncErr
+// 	}
+// 	return closeErr
+// }
 
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
-}
+// func (s *Server) checkPowerLossFile(filename string) {
+// 	if filename == "" {
+// 		return
+// 	}
+// 	tmpName := filename + powerlossFileExtension
+// 	fi, err := os.Stat(tmpName)
+// 	if err != nil {
+// 		// File doesn't exist (or is completely inaccessible), safe to proceed
+// 		return
+// 	}
 
-// checkPowerLossFile inspects the file system for a lingering commit file.
-// If found, it halts execution to prevent the application from overwriting
-// or loading potentially corrupted state.
-func (s *Server) checkPowerLossFile(filename string) {
-	if filename == "" {
-		return
-	}
-	tmpName := filename + powerlossFileExtension
-	fi, err := os.Stat(tmpName)
-	if err != nil {
-		// File doesn't exist (or is completely inaccessible), safe to proceed
-		return
-	}
+// 	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
+// 	if fi.Size() == 0 {
+// 		s.logger.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
+// 			"but the temporary file could not be deleted (likely due to directory permissions).",
+// 			slog.String("tempfilename", tmpName))
+// 		return
+// 	}
 
-	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
-	if fi.Size() == 0 {
-		s.logger.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
-			"but the temporary file could not be deleted (likely due to directory permissions).",
-			slog.String("tempfilename", tmpName))
-		return
-	}
-
-	logmsg := fmt.Sprintf(
-		"\n========================================================================\n"+
-			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
-			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
-			"This indicates the server aborted mid-write while updating %q.\n"+
-			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
-			"ACTION REQUIRED:\n"+
-			"1. Manually inspect both files.\n"+
-			"2. The .powergotlost file contains your last valid saved data.\n"+
-			"3. Restore the data to the main file, then DELETE the .powergotlost file.\n"+
-			"========================================================================\n",
-		tmpName, fi.Size(), filename,
-	)
-	s.logger.Error(logmsg)
-	panic(logmsg)
-}
+// 	logmsg := fmt.Sprintf(
+// 		"\n========================================================================\n"+
+// 			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
+// 			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
+// 			"This indicates the server aborted mid-write while updating %q.\n"+
+// 			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
+// 			"ACTION REQUIRED:\n"+
+// 			"1. Manually inspect both files.\n"+
+// 			"2. The .powergotlost file contains your last valid saved data.\n"+
+// 			"3. Restore the data to the main file, then DELETE the .powergotlost file.\n"+
+// 			"========================================================================\n",
+// 		tmpName, fi.Size(), filename,
+// 	)
+// 	s.logger.Error(logmsg)
+// 	panic(logmsg)
+// }
 
 // // don't pass empty or it will panic
 // func cleanFileName(what *string, description string, fallback string) (didClean bool) {
@@ -2522,7 +2497,7 @@ func (s *Server) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
 	}
-	if err := s.safeWriteFile(configFileName, data, 0600); err != nil {
+	if err := s.fileWriter.SafeWriteFile(configFileName, data, 0600); err != nil {
 		return fmt.Errorf("config write failed: %w", err)
 	}
 	s.logger.Info("Saved config file", slog.String("config_file", configFileName))
@@ -2616,6 +2591,9 @@ func (s *Server) initFullLogging() { //qpath, epath string) {
 
 	//Give the failover selector the new, fully-powered logger
 	s.failoverSelect.logger = s.logger
+	//picks up the production logger:
+	s.fileWriter = newSafeFileWriter(&s.config, s.logger)
+	//s.fileWriter.SetLogger(&s.logger)
 
 	s.logger.Info("Logging initialized",
 		slog.String("full_log", s.config.LogErrorsFile),
@@ -5525,7 +5503,7 @@ func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 // Persistence (loadQueryWhitelist / saveQueryWhitelist) stays on Server.
 type RuleStore struct {
 	mu    sync.RWMutex
-	rules map[string][]RuleEntry
+	rules map[string][]RuleEntry // type -> rules
 }
 
 // only use once, before server start, never on reloads(Ctrl+R) tho
@@ -5797,7 +5775,7 @@ func deleteHostEntry(hosts []LocalHostRule, pattern string) []LocalHostRule {
 // BlacklistStore manages the response-IP blacklist.
 type BlacklistStore struct {
 	mu   sync.RWMutex
-	nets []*net.IPNet
+	nets []*net.IPNet // parsed and ready-to-use form
 }
 
 func newBlacklistStore() *BlacklistStore { return &BlacklistStore{} }
@@ -5952,7 +5930,7 @@ func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bo
 // LoginTracker records login failures and enforces per-IP lockout.
 type LoginTracker struct {
 	mu      sync.Mutex
-	records map[string]*loginRecord
+	records map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
 }
 
 func newLoginTracker() *LoginTracker {
@@ -7633,3 +7611,215 @@ func (s *goCacheStore) Delete(key string)            { s.c.Delete(key) }
 func (s *goCacheStore) Flush()                       { s.c.Flush() }
 func (s *goCacheStore) Items() map[string]cache.Item { return s.c.Items() }
 func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
+
+// FileWriter is the persistence contract.
+// Extracted from Server so saves can be intercepted in tests without
+// touching the filesystem, and so fileWriteMu is an implementation detail
+// rather than a Server concern.
+type FileWriter interface {
+	SafeWriteFile(filename string, data []byte, perm os.FileMode) error
+	CheckPowerLossFile(filename string)
+}
+
+// safeFileWriter is the production FileWriter.
+// It serialises all writes through its own mutex (replacing Server.fileWriteMu)
+// and conditionally uses a staging file when cfg.ExtraSafety is true.
+// cfg is a pointer to Server.config so ExtraSafety is always read at call time.
+type safeFileWriter struct {
+	mu     sync.Mutex
+	cfg    *Config
+	logger *slog.Logger
+}
+
+func newSafeFileWriter(cfg *Config, logger *slog.Logger) FileWriter {
+	return &safeFileWriter{cfg: cfg, logger: logger}
+}
+
+// CheckPowerLossFile implements FileWriter.
+// Panics if a non-empty staging file exists for filename, signalling a
+// mid-write crash on a previous run.
+// old:
+// checkPowerLossFile inspects the file system for a lingering commit file.
+// If found, it halts execution to prevent the application from overwriting
+// or loading potentially corrupted state.
+func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
+	if filename == "" {
+		return
+	}
+	tmpName := filename + powerlossFileExtension
+	fi, err := os.Stat(tmpName)
+	if err != nil {
+		// File doesn't exist (or is completely inaccessible), safe to proceed
+		return
+	}
+	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
+
+	if fi.Size() == 0 {
+		fw.logger.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
+			"but the temporary file could not be deleted (likely due to directory permissions).",
+			slog.String("tempfilename", tmpName))
+		return
+	}
+	logmsg := fmt.Sprintf(
+		"\n========================================================================\n"+
+			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
+			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
+			"This indicates the server aborted mid-write while updating %q.\n"+
+			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
+			"ACTION REQUIRED:\n"+
+			"1. Manually inspect both files.\n"+
+			"2. The %s file contains your last valid saved data.\n"+
+			"3. Restore the data to the main file, then DELETE the %s file.\n"+
+			"========================================================================\n",
+		tmpName, fi.Size(), filename,
+		powerlossFileExtension, powerlossFileExtension,
+	)
+	fw.logger.Error(logmsg)
+	panic(logmsg)
+}
+
+// powerlossFileExtension any saved file with this extension means power-loss (or panic in code?) occurred in a very tiny window and thus this is your potentially safe config and should be manually investigated for restoration purposes esp. if the main file is 0 bytes.
+const powerlossFileExtension string = ".powergotlost"
+
+// WriteFile implements FileWriter.
+// All writes are serialised through fw.mu (replacing the old Server.fileWriteMu).
+// When cfg.ExtraSafety is true, data is first written to a staging file
+// (filename + ".powergotlost") so a power-loss mid-write is detectable on
+// the next boot via CheckPowerLossFile.
+// old:
+// safeWriteFile attempts a crash-safe file update without using os.Rename,
+// preserving Windows ACLs and falling back gracefully if directory permissions
+// block the creation of temporary files.
+//
+// By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
+func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	if fw.cfg.ExtraSafety {
+		tmpName := filename + powerlossFileExtension
+
+		// 1. Try to write to a temp file first to ensure disk space and data integrity.
+		tmpFile, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+		if err == nil {
+			_, writeErr := tmpFile.Write(data)
+			syncErr := tmpFile.Sync()
+			tmpFile.Close()
+
+			if writeErr == nil && syncErr == nil {
+				// Temp file is safely on disk. Overwrite the target file directly
+				// so we don't alter its existing Windows permissions/ACLs.
+				//XXX: which means we fallthru here
+
+				fw.logger.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
+				// and after the below fallthru (from step 2) then Clean up the temp file
+
+				// Queue cleanup. If we crash/lose power after this point,
+				// this defer never runs, leaving the safe copy intact.
+				defer func() {
+					ondeleteErr := os.Remove(tmpName)
+					if ondeleteErr == nil {
+						fw.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+						// Successful deletion, nothing more to do
+						return
+					}
+					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
+					fw.logger.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
+					// Fallback: If we can't delete it, truncate it to 0 bytes.
+					// Since we already have write handle permissions to this file, this is highly likely to succeed.
+					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+					if truncErr == nil {
+						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
+						truncFile.Close()
+						fw.logger.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
+							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
+					} else {
+						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
+						// s.logger.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
+						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
+
+						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
+						// The file is stuck on disk with data, making a future boot panic inevitable.
+						// Crash immediately while the administrator is interacting with the system.
+						logmsg := fmt.Sprintf(
+							"\n========================================================================\n"+
+								"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
+								"The temporary staging file %q cannot be deleted or truncated.\n\n"+
+								"Delete error: %v\n"+
+								"Truncation error: %v\n\n"+
+								"Because the file contains non-zero bytes, the next server boot will panic.\n"+
+								"Halting execution immediately to prevent corrupted filesystem operation.\n"+
+								"========================================================================\n",
+							tmpName, ondeleteErr, truncErr,
+						)
+						fw.logger.Error(logmsg)
+						panic(logmsg)
+					}
+				}()
+			} else {
+				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
+				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
+				// to neutralize any partial garbage data that would trip up the next boot.
+				ondeleteErr := os.Remove(tmpName)
+				fw.logger.Warn("ExtraSafety: Failed to fully write or/and sync staging file",
+					slog.String("tempfilename", tmpName),
+					SafeErr2("writeErr", writeErr),
+					SafeErr2("syncErr", syncErr),
+					SafeErr2("ondelete_err", ondeleteErr))
+				if ondeleteErr != nil {
+					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+					if truncErr == nil {
+						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
+						truncFile.Close()
+						fw.logger.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
+							slog.String("tempfilename", tmpName),
+							SafeErr2("ondeleteErr", ondeleteErr),
+							SafeErr2("syncErr", syncErr3))
+					} else {
+						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
+						// Non-zero junk data is permanently locked on disk. Panic immediately.
+						logmsg := fmt.Sprintf(
+							"\n========================================================================\n"+
+								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
+								"The temporary staging file %q failed to write, and both deletion and\n"+
+								"truncation attempts failed.\n\n"+
+								"Delete error: %v\n"+
+								"Truncation error: %v\n\n"+
+								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
+								"execution is halted immediately.\n"+
+								"========================================================================\n",
+							tmpName, ondeleteErr, truncErr,
+						)
+						fw.logger.Error(logmsg)
+						panic(logmsg)
+					}
+				} else {
+					fw.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+				}
+			}
+		} else {
+			fw.logger.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
+				slog.String("filename", filename),
+				slog.String("wanted_tempfilename", tmpName))
+		}
+	} //end 'if' extraSafety
+
+	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
+	// do a direct write but enforce a hardware sync to minimize the corruption window.
+	// 2. Overwrite the target file directly (Retains Windows ACLs)
+	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, writeErr := targetFile.Write(data)
+	if writeErr != nil {
+		targetFile.Close()
+		return writeErr
+	}
+	syncErr := targetFile.Sync()
+	closeErr := targetFile.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
