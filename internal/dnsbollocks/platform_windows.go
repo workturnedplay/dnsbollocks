@@ -1791,6 +1791,7 @@ func (s *Server) Run() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	s.logger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
+	s.fileWriter = newSafeFileWriter(true, s.logger)
 	if err := s.loadConfig(); err != nil {
 		s.logFatal("Config load failed:", err)
 		// s.logger.Error("Config load failed", SafeErr(err))
@@ -2015,7 +2016,7 @@ func (s *Server) loadConfig() error {
 	//config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
 	s.config = defaultConfig.Clone() // deep copy
 
-	s.fileWriter = newSafeFileWriter(&s.config, s.logger) //using defaults, ie. s.config.ExtraSafety
+	s.fileWriter.SetExtraSafety(s.config.ExtraSafety) //using default s.config.ExtraSafety
 
 	s.fileWriter.CheckPowerLossFile(cfgFname)
 	data, err := os.ReadFile(cfgFname)
@@ -2119,7 +2120,7 @@ func (s *Server) loadConfig() error {
 		// }
 	}
 
-	s.fileWriter = newSafeFileWriter(&s.config, s.logger) //uses newly loaded config settings ie. s.config.ExtraSafety
+	s.fileWriter.SetExtraSafety(s.config.ExtraSafety) //uses newly loaded config settings ie. s.config.ExtraSafety
 
 	if s.config.GlobalBurstQPS < s.config.GlobalRateQPS {
 		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", s.config.GlobalBurstQPS, s.config.GlobalRateQPS, configFileName))
@@ -2592,7 +2593,7 @@ func (s *Server) initFullLogging() { //qpath, epath string) {
 	//Give the failover selector the new, fully-powered logger
 	s.failoverSelect.logger = s.logger
 	//picks up the production logger:
-	s.fileWriter = newSafeFileWriter(&s.config, s.logger)
+	s.fileWriter.SetLogger(s.logger)
 	//s.fileWriter.SetLogger(&s.logger)
 
 	s.logger.Info("Logging initialized",
@@ -7619,6 +7620,8 @@ func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
 type FileWriter interface {
 	SafeWriteFile(filename string, data []byte, perm os.FileMode) error
 	CheckPowerLossFile(filename string)
+	SetLogger(logger *slog.Logger)
+	SetExtraSafety(enabled bool)
 }
 
 // safeFileWriter is the production FileWriter.
@@ -7626,13 +7629,28 @@ type FileWriter interface {
 // and conditionally uses a staging file when cfg.ExtraSafety is true.
 // cfg is a pointer to Server.config so ExtraSafety is always read at call time.
 type safeFileWriter struct {
-	mu     sync.Mutex
-	cfg    *Config
-	logger *slog.Logger
+	mu          sync.Mutex
+	extraSafety bool
+	logger      *slog.Logger
 }
 
-func newSafeFileWriter(cfg *Config, logger *slog.Logger) FileWriter {
-	return &safeFileWriter{cfg: cfg, logger: logger}
+func newSafeFileWriter(extraSafety bool, logger *slog.Logger) FileWriter {
+	return &safeFileWriter{
+		extraSafety: extraSafety,
+		logger:      logger,
+	}
+}
+
+func (fw *safeFileWriter) SetLogger(logger *slog.Logger) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.logger = logger
+}
+
+func (fw *safeFileWriter) SetExtraSafety(enabled bool) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.extraSafety = enabled
 }
 
 // CheckPowerLossFile implements FileWriter.
@@ -7696,7 +7714,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
-	if fw.cfg.ExtraSafety {
+	if fw.extraSafety {
 		tmpName := filename + powerlossFileExtension
 
 		// 1. Try to write to a temp file first to ensure disk space and data integrity.
