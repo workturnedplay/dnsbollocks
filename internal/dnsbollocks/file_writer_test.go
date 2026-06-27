@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -16,8 +17,11 @@ func TestSafeFileWriter(t *testing.T) {
 	// Discard logs during tests to keep console clean, or use Stderr to debug
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	// Initialize with extraSafety ON
-	fw := newSafeFileWriter(true, logger)
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(logger)
+
+	// Initialize with extraSafety ON, passing the pointer to the atomic.Pointer
+	fw := newSafeFileWriter(true, &liveLogger)
 
 	// --- Test 1: Normal Write ---
 	data := []byte(`{"status": "ok"}`)

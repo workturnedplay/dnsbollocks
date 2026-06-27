@@ -153,10 +153,51 @@ type Config struct {
 	ExtraSafety bool `json:"extra_safety"`
 }
 
+// func (s *Server) getConfig() Config {
+// 	return *s.liveConfig.Load()
+// }
+
+// func (s *Server) getLogger() *slog.Logger {
+// 	return s.liveLogger.Load()
+// }
+
+// pointer to live logger or default logger if uninited(bug)
+func (s *Server) getLogger() *slog.Logger {
+	if l := s.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: Server.liveLogger wasn't inited, using default.")
+	return log
+}
+
+// pointer to live Server.Config
+func (s *Server) getConfig() *Config {
+	c := s.liveConfig.Load()
+	if c == nil {
+		panic("BUG: Server.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
+	}
+	return c
+}
+
+// On init and every reload, swap atomically:
+func (s *Server) applyConfig(cfg Config) {
+	s.liveConfig.Store(&cfg)
+	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
+}
+
+// On init and every reload, swap atomically:
+func (s *Server) applyLogger(l *slog.Logger) {
+	s.liveLogger.Store(l)
+	// same — fileWriter reads liveLogger.Load() instead of holding its own copy
+}
+
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
-	config Config
-	logger *slog.Logger
+	// config Config
+	// logger *slog.Logger
+	liveConfig atomic.Pointer[Config]      // shared with AdminUI, fileWriter, etc.
+	liveLogger atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
 
 	// Upstream state
 	upstreamIPs    []string
@@ -201,29 +242,27 @@ type Server struct {
 
 // NewServer initializes a new Server instance.
 func NewServer(logger *slog.Logger) *Server {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
-		logger:         logger,
-		failoverSelect: NewFailoverSelector(logger),
-		// whitelist:        make(map[string][]RuleEntry),
-		// recentBlocksList: list.New(),
-		// recentBlocksMap:  make(map[string]*list.Element),
-		// loginRecords:     make(map[string]*loginRecord),
+	s := &Server{
 		ruleStore:    newRuleStore(),
 		hostStore:    newHostStore(),
 		blacklist:    newBlacklistStore(),
 		recentBlocks: newRecentBlocksTracker(),
-		//loginTracker: newLoginTracker(),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
-		ctx:     ctx,
-		cancel:  cancel,
 	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+
+	s.applyLogger(logger) // seed the atomic with the bootstrap logger
+	s.failoverSelect = NewFailoverSelector(&s.liveLogger)
+	s.applyConfig(defaultConfig())
+	s.fileWriter = newSafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
+	return s // yes it escapes to heap
 }
 
 type FailoverSelector struct {
-	logger         *slog.Logger // Passed during initialization
+	// logger         *slog.Logger // Passed during initialization
+	liveLogger     *atomic.Pointer[slog.Logger]
 	mu             sync.RWMutex
 	activeIndex    int
 	inFlightProbes sync.Map
@@ -231,24 +270,50 @@ type FailoverSelector struct {
 }
 
 // NewFailoverSelector initializes the tracker starting at the first upstream (index 0)
-func NewFailoverSelector(logger *slog.Logger) *FailoverSelector {
-	return &FailoverSelector{logger: logger, activeIndex: 0, allFailed: false}
+func NewFailoverSelector(liveLogger *atomic.Pointer[slog.Logger]) *FailoverSelector {
+	if liveLogger == nil {
+		panic("BUG: passed nil atomic pointer to logger but code assumes this is never nil, logger can be nil tho")
+	}
+	return &FailoverSelector{liveLogger: liveLogger, activeIndex: 0, allFailed: false}
 }
 
 // Upstream represents a single configured DoH target and handles its own network lifecycle.
 type Upstream struct {
 	// Client talks to the upstream
-	Client            *http.Client
-	URL               *url.URL
-	SNI               string
-	logger            *slog.Logger
+	Client *http.Client
+	URL    *url.URL
+	SNI    string
+	//logger            *slog.Logger
+	liveLogger        *atomic.Pointer[slog.Logger]
 	Retries           int //RetriesPerQuery
 	RetryBackoff      time.Duration
 	BackgroundCtx     context.Context
 	CertLogTimeoutSec int
 }
 
+// pointer to live logger or default logger if uninited(bug)
+func (u *Upstream) getLogger() *slog.Logger {
+	if l := u.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: Upstream.liveLogger wasn't inited, using default.")
+	return log
+}
+
+// pointer to live logger or default logger if uninited(bug)
+func (fs *FailoverSelector) getLogger() *slog.Logger {
+	if l := fs.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: FailoverSelector.liveLogger wasn't inited, using default.")
+	return log
+}
+
 func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, reqBytes []byte) (*dns.Msg, string, []string, error) {
+	log := fs.getLogger()
+
 	if len(upstreams) == 0 {
 		return nil, "", nil, errors.New("no upstreams available")
 	}
@@ -298,6 +363,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 		}
 		go func(idx int, wasProbe bool) {
+
 			// Clean up the probe lock when this request finishes
 			if wasProbe {
 				defer fs.inFlightProbes.Delete(idx)
@@ -335,13 +401,13 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 
 				// Log safely outside of the lock
 				if recoveredFromBlackout {
-					fs.logger.Warn("💚 Global blackout resolved; upstreams are responding again",
+					log.Warn("💚 Global blackout resolved; upstreams are responding again",
 						slog.String("url", target.URL.String()),
 						slog.String("sni", target.SNI),
 						slog.Int("index", idx),
 					)
 				} else if healed {
-					fs.logger.Warn("⚙️ Primary upstream recovered; promoting back to active status",
+					log.Warn("⚙️ Primary upstream recovered; promoting back to active status",
 						slog.String("url", target.URL.String()),
 						slog.String("sni", target.SNI),
 						slog.Int("index", idx),
@@ -385,7 +451,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			fs.activeIndex = i
 			fs.mu.Unlock()
 			if wasBlackout { //TODO: DRY(see the above copy)
-				fs.logger.Warn("💚 Global blackout resolved; fallback upstream responding",
+				log.Warn("💚 Global blackout resolved; fallback upstream responding",
 					slog.String("url", target.URL.String()),
 					slog.String("sni", target.SNI),
 					slog.Int("index", i),
@@ -393,7 +459,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			} else {
 				oldTarget := upstreams[currentIdx]
 				// ⚠️ New log line for the standard failover case
-				fs.logger.Warn("⚠️ Upstream failover; switching to a different(next in list) upstream DoH server",
+				log.Warn("⚠️ Upstream failover; switching to a different(next in list) upstream DoH server",
 					slog.Int("old_index", currentIdx),
 					slog.String("old_url", oldTarget.URL.String()),
 					slog.String("old_sni", oldTarget.SNI),
@@ -461,7 +527,10 @@ type BlacklistFileFormat struct {
 
 // Call once during startup (inside loadConfig or after it)
 func (s *Server) loadResponseBlacklist() error {
-	blacklistFileName := s.config.BlacklistFile
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	blacklistFileName := cfg.BlacklistFile
 	if blacklistFileName == "" {
 		panic("dev. didn't set the default blacklist filename!")
 	}
@@ -474,7 +543,7 @@ func (s *Server) loadResponseBlacklist() error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read blacklist %q: %w", blacklistFileName, err)
 		} else {
-			s.logger.Warn("Blacklist file not found → using built-in defaults", slog.String("file", blacklistFileName))
+			log.Warn("Blacklist file not found → using built-in defaults", slog.String("file", blacklistFileName))
 			raw = defaultResponseBlacklist() // see below
 			shouldSave = true
 		}
@@ -483,16 +552,16 @@ func (s *Server) loadResponseBlacklist() error {
 			return fmt.Errorf("failed to scan blacklist file %q for duplicate keys: %w", blacklistFileName, dupErr)
 		} else if len(dups) > 0 {
 			for _, dup := range dups {
-				s.logger.Error("Duplicate key found in blacklist file (JSON silently kept only the last value; fix the file manually)",
+				log.Error("Duplicate key found in blacklist file (JSON silently kept only the last value; fix the file manually)",
 					slog.String("duplicate_key", dup),
 					slog.String("file", blacklistFileName))
 			}
-			if s.config.ExtraSafety {
-				s.logger.Error("ExtraSafety: refusing to continue with duplicate blacklist keys",
+			if cfg.ExtraSafety {
+				log.Error("ExtraSafety: refusing to continue with duplicate blacklist keys",
 					slog.Int("duplicate_count", len(dups)))
 				s.shutdown(5)
 			}
-			s.logger.Warn("Continuing despite duplicate blacklist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
+			log.Warn("Continuing despite duplicate blacklist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
 				slog.Int("duplicate_count", len(dups)))
 		}
 
@@ -525,10 +594,10 @@ func (s *Server) loadResponseBlacklist() error {
 			seen[str] = struct{}{}
 			deduped = append(deduped, n)
 		} else {
-			if s.config.ExtraSafety {
-				s.logger.Error("Duplicate blacklist entry found", slog.String("entry", str))
+			if cfg.ExtraSafety {
+				log.Error("Duplicate blacklist entry found", slog.String("entry", str))
 			} else {
-				s.logger.Warn("Duplicate blacklist entry found, removing it", slog.String("entry", str))
+				log.Warn("Duplicate blacklist entry found, removing it", slog.String("entry", str))
 			}
 			if !shouldSave {
 				shouldSave = true
@@ -537,11 +606,11 @@ func (s *Server) loadResponseBlacklist() error {
 	}
 	dups := len(parsed) - len(deduped)
 	if dups > 0 {
-		if s.config.ExtraSafety {
-			s.logger.Error("ExtraSafety: Found duplicate CIDRs from blacklist file, it/they could be due to typos so silently removing it/them and overwriting the file might be a mistake!", slog.Int("found_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
+		if cfg.ExtraSafety {
+			log.Error("ExtraSafety: Found duplicate CIDRs from blacklist file, it/they could be due to typos so silently removing it/them and overwriting the file might be a mistake!", slog.Int("found_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
 			s.shutdown(5) //XXX: this will exit program here! //FIXME: find a better way to "quit" than exit program here
 		} else {
-			s.logger.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
+			log.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
 			parsed = deduped
 		}
 	}
@@ -555,18 +624,21 @@ func (s *Server) loadResponseBlacklist() error {
 	// ==========================================
 	s.invalidateCacheForBlacklistedIPs()
 	// ==========================================
-	s.logger.Info("Loaded CIDR entries from blacklist file", slog.Int("count", s.blacklist.Len()), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
+	log.Info("Loaded CIDR entries from blacklist file", slog.Int("count", s.blacklist.Len()), slog.Int("duplicates", dups), slog.String("file", blacklistFileName))
 	if shouldSave {
 		if err := s.saveResponseBlacklist(); err != nil {
 			return fmt.Errorf("failed to save blacklist file %q, err: %w", blacklistFileName, err)
 		} else {
-			s.logger.Info("Saved blacklist file", slog.String("file", blacklistFileName))
+			log.Info("Saved blacklist file", slog.String("file", blacklistFileName))
 		}
 	}
 	return nil
 }
 
 func (s *Server) saveResponseBlacklist() error {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	cidrs := s.getResponseBlacklist()
 	jsonFileContents := BlacklistFileFormat{
 		ResponseBlacklist: cidrs,
@@ -576,7 +648,7 @@ func (s *Server) saveResponseBlacklist() error {
 		return fmt.Errorf("blacklist marshal failed: %w", err)
 	}
 
-	blacklistFileName := s.config.BlacklistFile
+	blacklistFileName := cfg.BlacklistFile
 	if blacklistFileName == "" {
 		panic("bad coding: dev. didn't set the default blacklist filename!")
 	}
@@ -585,7 +657,7 @@ func (s *Server) saveResponseBlacklist() error {
 	if err := s.fileWriter.SafeWriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
-		s.logger.Info("Saved blacklist file", slog.String("file", blacklistFileName))
+		log.Info("Saved blacklist file", slog.String("file", blacklistFileName))
 	}
 	return nil
 }
@@ -639,7 +711,10 @@ func detectDuplicateJSONObjectKeys(data []byte) (duplicates []string, err error)
 }
 
 func (s *Server) loadLocalHosts() error {
-	hostsFileName := s.config.HostsFile
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	hostsFileName := cfg.HostsFile
 	if hostsFileName == "" {
 		panic("dev: didn't set the default hosts filename!")
 	}
@@ -647,7 +722,7 @@ func (s *Server) loadLocalHosts() error {
 	s.fileWriter.CheckPowerLossFile(hostsFileName)
 	data, err := os.ReadFile(hostsFileName)
 	if os.IsNotExist(err) {
-		s.logger.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
+		log.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
 		// s.localHostsMu.Lock()
 		// s.localHosts = nil
 		// s.localHostsMu.Unlock()
@@ -668,18 +743,18 @@ func (s *Server) loadLocalHosts() error {
 		// A manually edited file with duplicate keys is almost certainly a
 		// typo, so treat it the same way ExtraSafety treats other anomalies.
 		for _, dup := range dups {
-			s.logger.Error("Duplicate key found in hosts file (JSON silently kept only the last value; fix the file manually)",
+			log.Error("Duplicate key found in hosts file (JSON silently kept only the last value; fix the file manually)",
 				slog.String("duplicate_pattern", dup),
 				slog.String("path", hostsFileName))
 		}
-		if s.config.ExtraSafety {
-			s.logger.Error("ExtraSafety: refusing to continue with duplicate host keys",
+		if cfg.ExtraSafety {
+			log.Error("ExtraSafety: refusing to continue with duplicate host keys",
 				slog.Int("duplicate_count", len(dups)))
 			s.shutdown(5)
 		}
 		// Non-ExtraSafety: warn loudly but continue; the map will have kept
 		// whichever value the JSON decoder chose (last-write-wins).
-		s.logger.Warn("Continuing despite duplicate host keys — the JSON decoder kept an arbitrary value for each duplicate key; consider fixing the file",
+		log.Warn("Continuing despite duplicate host keys — the JSON decoder kept an arbitrary value for each duplicate key; consider fixing the file",
 			slog.Int("duplicate_count", len(dups)))
 	}
 
@@ -702,7 +777,7 @@ func (s *Server) loadLocalHosts() error {
 		// 	if ip := net.ParseIP(ipStr); ip != nil {
 		// 		netIPs = append(netIPs, ip)
 		// 	} else {
-		// 		s.logger.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
+		// 		log.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
 		// 	}
 		// }
 		// //TODO: check for dup patterns or hostnames, wtw we're using here.
@@ -715,21 +790,21 @@ func (s *Server) loadLocalHosts() error {
 		// so we can rewrite the file if needed.
 		normalizedPat := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(pat, ".")))
 		if normalizedPat != pat {
-			s.logger.Warn("Normalized host pattern",
+			log.Warn("Normalized host pattern",
 				slog.String("before", pat),
 				slog.String("after", normalizedPat))
 			changed++
 		}
 
 		if normalizedPat == "" {
-			s.logger.Warn("Purging host rule with empty pattern (after normalization)",
+			log.Warn("Purging host rule with empty pattern (after normalization)",
 				slog.String("original_pattern", pat))
 			removed++
 			continue
 		}
 
 		if _, modified := sanitizeDomainInput(normalizedPat); modified {
-			s.logger.Error("Purging invalid host pattern containing illegal characters",
+			log.Error("Purging invalid host pattern containing illegal characters",
 				slog.String("invalid_pattern", normalizedPat))
 			removed++
 			continue
@@ -737,7 +812,7 @@ func (s *Server) loadLocalHosts() error {
 		}
 
 		if _, dup := seenPatterns[normalizedPat]; dup {
-			s.logger.Warn("Duplicate host pattern found, skipping/purging",
+			log.Warn("Duplicate host pattern found, skipping/purging",
 				slog.String("pattern", normalizedPat))
 			removed++
 			continue
@@ -754,14 +829,14 @@ func (s *Server) loadLocalHosts() error {
 			if ip := net.ParseIP(ipStr); ip != nil {
 				netIPs = append(netIPs, ip)
 			} else {
-				s.logger.Warn("Invalid IP in hosts file, skipping",
+				log.Warn("Invalid IP in hosts file, skipping",
 					slog.String("ip", ipStr),
 					slog.String("pattern", normalizedPat))
 			}
 		}
 
 		if len(netIPs) == 0 {
-			s.logger.Warn("Purging host rule with no valid IPs after filtering",
+			log.Warn("Purging host rule with no valid IPs after filtering",
 				slog.String("pattern", normalizedPat))
 			removed++
 			continue
@@ -770,8 +845,8 @@ func (s *Server) loadLocalHosts() error {
 		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs})
 	}
 
-	if s.config.ExtraSafety && removed > 0 {
-		s.logger.Error("ExtraSafety: refusing to remove host rules due to potential typos "+
+	if cfg.ExtraSafety && removed > 0 {
+		log.Error("ExtraSafety: refusing to remove host rules due to potential typos "+
 			"(fix them manually or set extra_safety to false)",
 			slog.Uint64("removed_count", removed))
 		s.shutdown(5)
@@ -782,8 +857,8 @@ func (s *Server) loadLocalHosts() error {
 	// s.localHostsMu.Unlock()
 	s.hostStore.ReplaceAll(parsed)
 
-	// s.logger.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
-	s.logger.Info("Loaded host rules",
+	// log.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
+	log.Info("Loaded host rules",
 		slog.Int("count", s.hostStore.Len()),
 		slog.Uint64("changed_count", changed),
 		slog.Uint64("removed_count", removed),
@@ -797,6 +872,8 @@ func (s *Server) loadLocalHosts() error {
 }
 
 func (s *Server) saveLocalHosts() error {
+	cfg := s.getConfig()
+
 	var data []byte
 	var err error
 
@@ -827,8 +904,8 @@ func (s *Server) saveLocalHosts() error {
 	// s.fileWriteMu.Lock()
 	// defer s.fileWriteMu.Unlock()
 
-	if err := s.fileWriter.SafeWriteFile(s.config.HostsFile, data, 0600); err != nil {
-		return fmt.Errorf("cannot save/write hosts file %q: %w", s.config.HostsFile, err)
+	if err := s.fileWriter.SafeWriteFile(cfg.HostsFile, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write hosts file %q: %w", cfg.HostsFile, err)
 	}
 	return nil
 }
@@ -903,6 +980,9 @@ func defaultResponseBlacklist() []string {
 }
 
 func (s *Server) saveQueryWhitelist() error {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	var data []byte
 	var err error
 
@@ -916,37 +996,42 @@ func (s *Server) saveQueryWhitelist() error {
 	// s.fileWriteMu.Lock()
 	// defer s.fileWriteMu.Unlock()
 
-	whitelistFileName := s.config.WhitelistFile
+	whitelistFileName := cfg.WhitelistFile
 	if whitelistFileName == "" {
 		panic("BUG: bad coding: dev. didn't set the default whitelist filename!")
 	}
 	if err := s.fileWriter.SafeWriteFile(whitelistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
 	}
-	s.logger.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
+	log.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
 	return nil
 }
 
 func (s *Server) flushCache() {
+	log := s.getLogger()
+
 	if s.dnsCache != nil { // this guard is real and necessary
 		s.dnsCache.Flush()
-		s.logger.Debug("Cache flushed/deleted.")
+		log.Debug("Cache flushed/deleted.")
 	} else {
-		s.logger.Debug("Cache wasn't inited so can't be flushed here.")
+		log.Debug("Cache wasn't inited so can't be flushed here.")
 	}
 }
 
 // Loads whitelist rules from dedicated file
 func (s *Server) loadQueryWhitelist() error {
-	whitelistFileName := s.config.WhitelistFile
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	whitelistFileName := cfg.WhitelistFile
 	if whitelistFileName == "" {
 		panic("dev. didn't set the default whitelist filename!")
 	}
-	whitelistFileName = filepath.Clean(s.config.WhitelistFile)
+	whitelistFileName = filepath.Clean(cfg.WhitelistFile)
 	s.fileWriter.CheckPowerLossFile(whitelistFileName)
 	data, err := os.ReadFile(whitelistFileName)
 	if os.IsNotExist(err) {
-		s.logger.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
+		log.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
 		// func() {
 		// 	s.ruleMutex.Lock()
 		// 	defer s.ruleMutex.Unlock()
@@ -965,16 +1050,16 @@ func (s *Server) loadQueryWhitelist() error {
 		return fmt.Errorf("failed to scan whitelist file %q for duplicate keys: %w", whitelistFileName, dupErr)
 	} else if len(dups) > 0 {
 		for _, dup := range dups {
-			s.logger.Error("Duplicate key found in whitelist file (JSON silently kept only the last value; fix the file manually)",
+			log.Error("Duplicate key found in whitelist file (JSON silently kept only the last value; fix the file manually)",
 				slog.String("duplicate_key", dup),
 				slog.String("path", whitelistFileName))
 		}
-		if s.config.ExtraSafety {
-			s.logger.Error("ExtraSafety: refusing to continue with duplicate whitelist keys",
+		if cfg.ExtraSafety {
+			log.Error("ExtraSafety: refusing to continue with duplicate whitelist keys",
 				slog.Int("duplicate_count", len(dups)))
 			s.shutdown(5)
 		}
-		s.logger.Warn("Continuing despite duplicate whitelist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
+		log.Warn("Continuing despite duplicate whitelist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
 			slog.Int("duplicate_count", len(dups)))
 	}
 
@@ -1015,19 +1100,19 @@ func (s *Server) loadQueryWhitelist() error {
 			r := &rules[i]
 			// XXX: it may not have an ID set at this point
 			if r.ID == "" {
-				nid := generateUniqueRuleID2(rulesByType, s.logger) // still guards against rulesByType collisions
+				nid := generateUniqueRuleID2(rulesByType, log) // still guards against rulesByType collisions
 				// Also guard against IDs already assigned in this same load pass
 				for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
-					s.logger.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
-					nid = generateUniqueRuleID2(rulesByType, s.logger)
+					log.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
+					nid = generateUniqueRuleID2(rulesByType, log)
 				}
-				s.logger.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
+				log.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
 				r.ID = nid
 				changed++
 			}
 			//checks against all DNS types not just in 'typ'
 			if _, duplicate := seenIDs[r.ID]; duplicate {
-				s.logger.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
+				log.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
 				removed++
 				continue // Skip appending this rule
 			}
@@ -1036,13 +1121,13 @@ func (s *Server) loadQueryWhitelist() error {
 			//lowercase it and strip the dot at the end:
 			new2 := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.Pattern, ".")))
 			if new2 != r.Pattern {
-				s.logger.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
+				log.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
 				r.Pattern = new2
 				changed++
 			}
 			// Check for empty or entirely invalid structures
 			if r.Pattern == "" {
-				s.logger.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
+				log.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
 				removed++
 				continue
 			}
@@ -1050,7 +1135,7 @@ func (s *Server) loadQueryWhitelist() error {
 			// Validate using the allowed rule character set
 			_, modified := sanitizeDomainInput(r.Pattern)
 			if modified {
-				s.logger.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
+				log.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
 					slog.String("id", r.ID),
 					slog.String("invalid_pattern", r.Pattern),
 				)
@@ -1059,7 +1144,7 @@ func (s *Server) loadQueryWhitelist() error {
 			}
 
 			if _, dup := seenPatterns[r.Pattern]; dup {
-				s.logger.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
+				log.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
 					slog.String("id", r.ID),
 					slog.String("pattern", r.Pattern),
 					slog.String("type", typ),
@@ -1076,14 +1161,14 @@ func (s *Server) loadQueryWhitelist() error {
 		newRules[typ] = cleaned
 	} //for
 
-	// if s.config.ExtraSafety {
+	// if cfg.ExtraSafety {
 	// 	if removed > 0 {
-	// 		s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
+	// 		log.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
 	// 		s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
 	// 	}
 	// }
 
-	// s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
+	// log.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
 	// 	slog.Int("types", len(s.whitelist)),
 	// 	slog.Uint64("rules", countRules(s.whitelist)),
 	// 	slog.Uint64("changed_count", changed),
@@ -1095,9 +1180,9 @@ func (s *Server) loadQueryWhitelist() error {
 	// }
 	// }() // lock released here
 
-	if s.config.ExtraSafety {
+	if cfg.ExtraSafety {
 		if removed > 0 {
-			s.logger.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
+			log.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
 			s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
 		}
 	}
@@ -1106,7 +1191,7 @@ func (s *Server) loadQueryWhitelist() error {
 	s.ruleStore.ReplaceAll(newRules)
 
 	hmn := s.ruleStore.CountAll()
-	s.logger.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
+	log.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
 		slog.Int("types", len(newRules)),
 		slog.Uint64("rules", hmn),
 		slog.Uint64("changed_count", changed),
@@ -1753,36 +1838,29 @@ var uiTemplates = template.Must(template.ParseFS(templates.FS, "ui.html"))
 
 const configFileName = "config.json"
 
-// func logFatal(logger *slog.Logger, msg string, err error) {
-// 	logger.Error(msg, SafeErr(err))
-// 	shutdown(1) //os.Exit(1) // replaced log.Fatal
-// }
-
-// func logFatal2(logger *slog.Logger, msg string) {
-// 	logger.Error(msg)
-// 	shutdown(1) //os.Exit(1) // replaced log.Fatal
-// }
-
 func (s *Server) logFatal(msg string, err error) {
-	s.logger.Error(msg, SafeErr(err))
+	log := s.getLogger()
+	log.Error(msg, SafeErr(err))
 	s.shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
 func (s *Server) logFatal2(msg string) {
-	s.logger.Error(msg)
+	log := s.getLogger()
+	log.Error(msg)
 	s.shutdown(1) //os.Exit(1) // replaced log.Fatal
 }
 
 func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
+	log := ui.getLogger()
 	// // 1. Log the severe error message
 	args = append(args, SafeErr(err)) //works for nil err too
-	ui.logger.Error("FATAL WEB UI ERROR: "+msg, args...)
+	log.Error("FATAL WEB UI ERROR: "+msg, args...)
 
 	// 2. Trigger the application shutdown if the callback is wired
 	if ui.OnShutdown != nil {
 		ui.OnShutdown(1) // Exit code 1 for crashes/errors
 	} else {
-		ui.logger.Warn("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+		log.Warn("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
 	}
 }
 
@@ -1808,76 +1886,78 @@ func (s *Server) OnReload(hook func()) {
 }
 
 func (s *Server) Run() error {
+	log := s.getLogger()
+	cfg := s.getConfig()
+
 	// Signals setup FIRST: Catch interrupts from init onward
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
-	s.logger.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
-	s.fileWriter = newSafeFileWriter(true, s.logger)
+	log.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
 	if err := s.loadConfig(); err != nil {
 		s.logFatal("Config load failed:", err)
-		// s.logger.Error("Config load failed", SafeErr(err))
+		// log.Error("Config load failed", SafeErr(err))
 		// os.Exit(1) // replaced log.Fatal
 	}
-	s.logger.Info("Config loaded", slog.String("file", configFileName))
+	log.Info("Config loaded", slog.String("file", configFileName))
 
-	if !s.config.AllowRunAsAdmin && isAdmin {
+	if !cfg.AllowRunAsAdmin && isAdmin {
 		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
 		//os.Exit(1)
 	}
-	//s.logger.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
+	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
 	s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) TODO: Ctrl+R would have to run this too!
 
-	//s.cacheStore = cache.New(time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(s.config.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
-	s.dnsCache = newGoCacheStore(time.Duration(s.config.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
-	s.logger.Debug("Cache initialized")
+	//s.cacheStore = cache.New(time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
+	s.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
+	log.Debug("Cache initialized")
 
-	//s.globalLimiter = rate.NewLimiter(rate.Limit(s.config.GlobalRateQPS), s.config.GlobalBurstQPS)
-	s.rateLimiter = newClientRateLimiter(rateLimitConfigFrom(s.config), s.logger)
-	s.logger.Debug("Rate limiter initialized")
+	//s.globalLimiter = rate.NewLimiter(rate.Limit(cfg.GlobalRateQPS), cfg.GlobalBurstQPS)
+	s.rateLimiter = newClientRateLimiter(rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
+	log.Debug("Rate limiter initialized")
 
 	if err := s.validateUpstream(); err != nil {
 		s.logFatal("Upstream validation failed:", err)
 	}
-	s.logger.Debug("Upstreams validated",
-		SafeStringSlice("upstreamURLs", s.config.UpstreamURLs),
+	log.Debug("Upstreams validated",
+		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
 		//slog.Any("upstreamURLs", config.UpstreamURLs),
 		//slog.Any("upstreamIPs", upstreamIPs),
 		SafeStringSlice("upstreamIPs", s.upstreamIPs),
 	)
 
 	s.generateCertIfNeeded() // For DoH and webUI!
-	//s.logger.Debug("Cert checked/generated if needed")
+	//log.Debug("Cert checked/generated if needed")
 
 	s.initDoHClients()
 	// Sequential launches for ordered logging
-	s.logger.Debug("Launching listeners sequentially...")
-	s.startDNSListener(s.config.ListenDNS) // Blocks until complete/fail
-	s.startDoHListener(s.config.ListenDoH) // Blocks until complete/fail
-	go s.startWebUI(s.config.ListenUI)     // Concurrent server (blocks forever, but post-serial)
+	log.Debug("Launching listeners sequentially...")
+	s.startDNSListener(cfg.ListenDNS) // Blocks until complete/fail
+	s.startDoHListener(cfg.ListenDoH) // Blocks until complete/fail
+	go s.startWebUI(cfg.ListenUI)     // Concurrent server (blocks forever, but post-serial)
 
 	go s.watchKeys(
 		func() { // Ctrl+R aka reloadFn
-			s.logger.Debug("Reload triggered...")
+			log.Debug("Reload triggered...")
 			s.flushCache()
 
 			if err := s.loadQueryWhitelist(); err != nil {
 				s.logFatal("Whitelist reload failed:", err)
 			} else {
-				s.logger.Debug("Whitelist reloaded")
+				log.Debug("Whitelist reloaded")
 			}
 			if err := s.loadResponseBlacklist(); err != nil {
 				s.logFatal("Blacklist reload failed:", err)
 			} else {
-				s.logger.Debug("Blacklist reloaded")
+				log.Debug("Blacklist reloaded")
 			}
 			// Inside watchKeys, in the Ctrl+R lambda block:
 			if err := s.loadLocalHosts(); err != nil {
 				s.logFatal("Hosts reload failed:", err)
 			} else {
-				s.logger.Debug("Local hosts reloaded")
+				log.Debug("Local hosts reloaded")
 			}
 
 			//TODO: do I need this here? we're not currently updating these from config.json ! but I am using them in the below call to initDoHClients
@@ -1908,19 +1988,19 @@ func (s *Server) Run() error {
 
 			//clearLoginLockouts()//wired in startWebUI
 
-			s.logger.Debug("Running on-reload hooks")
+			log.Debug("Running on-reload hooks")
 			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
 			for _, hook := range s.onReloadHooks {
 				hook()
 			}
 
-			s.logger.Warn(
+			log.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
 				slog.String("config_file", configFileName),
 			)
 		},
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
-			s.logger.Debug("Shutdown signal received, clean exit.")
+			log.Debug("Shutdown signal received, clean exit.")
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			s.shutdown(0) // clean exit
@@ -1932,21 +2012,21 @@ func (s *Server) Run() error {
 	select {
 	case sig := <-sigChan:
 		// Case A: User pressed Ctrl+C
-		s.logger.Info("shutdown initiated by signal", slog.String("signal", sig.String()))
+		log.Info("shutdown initiated by signal", slog.String("signal", sig.String()))
 		// Proceed to graceful cleanup
 		//cancel()      // Cancel context for graceful close
 		s.shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
 
 	case err := <-s.errChan:
 		// Case B: A background goroutine (TCP/DoH) died
-		s.logger.Error("CRITICAL: background service failure", SafeErr(err))
+		log.Error("CRITICAL: background service failure", SafeErr(err))
 		// You can choose to exit(1) here because a vital organ failed
 		//cancel()    // Cancel context for graceful close
 		s.shutdown(3) // some error happened
 
 	case <-s.ctx.Done():
 		// Case C: Context was cancelled elsewhere
-		s.logger.Info("context cancelled, shutting down")
+		log.Info("context cancelled, shutting down")
 		//cancel()    // Cancel context for graceful close, this was already done since we hit this.
 		s.shutdown(4) // some error happened
 	}
@@ -1956,16 +2036,16 @@ func (s *Server) Run() error {
 
 func OldMain() {
 
-	// s.logger is the single source of truth. Every log event goes through ONE call here.
+	// log is the single source of truth. Every log event goes through ONE call here.
 	// The multiHandler then fans it out to:
 	//   - dnsbollocks.log (JSON, everything)
 	//   - queries.log (JSON, only category=query)
 	//   - console (colored text, >= ConsoleLogLevel)
 	//
-	// var s.logger *slog.Logger
-	// s.logger starts as a bootstrap colored console logger (Info level).
+	// var log *slog.Logger
+	// log starts as a bootstrap colored console logger (Info level).
 	// It is replaced after loadConfig() with the full multi-handler (files + config level).
-	// This guarantees the very first line of OldMain already uses s.logger.
+	// This guarantees the very first line of OldMain already uses log.
 	var mainLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelDebug, //TODO: allow env. var. to dictate the level? but nothing right now uses this yet because initBootstrapLogging gets hit early!
 	}))
@@ -1986,12 +2066,12 @@ func OldMain() {
 	//     _ = raceTest
 	// temporary placeholder — will be overwritten in initBootstrapLogging
 
-	mainLogger = initBootstrapLogging(mainLogger) // ← FIRST LINE — colored console, s.logger now exists
+	mainLogger = initBootstrapLogging(mainLogger) // ← FIRST LINE — colored console, log now exists
 	// go func() {
 	//     ticker := time.NewTicker(5 * time.Second)
 	//     defer ticker.Stop()
 	//     for range ticker.C {
-	//         s.logger.Debug("MARK")
+	//         log.Debug("MARK")
 	//     }
 	// }()
 	// go func() {
@@ -2035,8 +2115,10 @@ func OldMain() {
 }
 
 func (s *Server) loadConfig() error {
+	log := s.getLogger()
+	cfg := s.getConfig()
 	const cfgFname = configFileName
-	s.logger.Info("Loading config file", slog.String("config_file", cfgFname))
+	log.Info("Loading config file", slog.String("config_file", cfgFname))
 	var shouldSaveConfig = false
 	// ---> FIX: Pre-populate the global config with defaults BEFORE reading/decoding
 	// this way missing keys from config.json file will be set to default value!
@@ -2044,9 +2126,10 @@ func (s *Server) loadConfig() error {
 	// This is critical because Decode only overwrites what is in the file.
 	defaultConfig := defaultConfig()
 	//config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
-	s.config = defaultConfig.Clone() // deep copy
+	//cfg = defaultConfig.Clone() // deep copy
+	s.applyConfig(defaultConfig.Clone()) //deep copy
 
-	s.fileWriter.SetExtraSafety(s.config.ExtraSafety) //using default s.config.ExtraSafety
+	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //using default cfg.ExtraSafety
 
 	s.fileWriter.CheckPowerLossFile(cfgFname)
 	data, err := os.ReadFile(cfgFname)
@@ -2057,7 +2140,7 @@ func (s *Server) loadConfig() error {
 		} else {
 			// not admin, auto create config file with defaults
 			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
-			s.logger.Warn("Config file not found or unreadable; using defaults and creating new file", slog.String("config_file", cfgFname))
+			log.Warn("Config file not found or unreadable; using defaults and creating new file", slog.String("config_file", cfgFname))
 		}
 		// Defaults
 		// REMOVED: config = DefaultConfig() because it is already set above
@@ -2067,14 +2150,14 @@ func (s *Server) loadConfig() error {
 	} else {
 		// Duplicate config keys (e.g. "extra_safety" appearing twice) are silently
 		// last-write-wins in Go's json.Decoder.  Catch them before decoding.
-		// s.config.ExtraSafety is not yet populated from the file at this point, so
+		// cfg.ExtraSafety is not yet populated from the file at this point, so
 		// we always treat duplicate config keys as a hard error regardless of that
 		// setting — a config with duplicate keys is unambiguously a hand-edit mistake.
 		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
 			return fmt.Errorf("failed to scan config file %q for duplicate keys: %w", cfgFname, dupErr)
 		} else if len(dups) > 0 {
 			for _, dup := range dups {
-				s.logger.Error("Duplicate key found in config file (JSON silently kept only the last value; fix the file manually)",
+				log.Error("Duplicate key found in config file (JSON silently kept only the last value; fix the file manually)",
 					slog.String("duplicate_key", dup),
 					slog.String("config_file", cfgFname))
 			}
@@ -2090,9 +2173,9 @@ func (s *Server) loadConfig() error {
 
 		// dec.Decode will now overwrite ONLY the fields present in the JSON.
 		// Missing fields will retain the values from DefaultConfig().
-		if err = dec.Decode(&s.config); err != nil {
+		if err = dec.Decode(&cfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
-			s.logger.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
+			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
 		// 3. Second, check for MISSING fields (No manual list!)
@@ -2123,7 +2206,7 @@ func (s *Server) loadConfig() error {
 		missing := []string{}
 		t := reflect.TypeFor[Config]()
 		// reflect.Indirect safely handles both values and pointers (like *Config)
-		v := reflect.Indirect(reflect.ValueOf(s.config))
+		v := reflect.Indirect(reflect.ValueOf(cfg))
 		for _, field := range reflect.VisibleFields(t) {
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
@@ -2138,75 +2221,75 @@ func (s *Server) loadConfig() error {
 		}
 
 		if len(missing) > 0 {
-			s.logger.Warn("Config file has missing keys - using default values for those keys", slog.String("config_file", cfgFname),
+			log.Warn("Config file has missing keys - using default values for those keys", slog.String("config_file", cfgFname),
 				SafeStringSlice("missing", missing),
 			)
 			shouldSaveConfig = true
 		}
 		// if theReadConfig != config {
-		//     s.logger.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
+		//     log.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
 		//     config = theReadConfig
 		//     shouldSaveConfig = true
 		// }
 	}
 
-	s.fileWriter.SetExtraSafety(s.config.ExtraSafety) //uses newly loaded config settings ie. s.config.ExtraSafety
+	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
-	if s.config.GlobalBurstQPS < s.config.GlobalRateQPS {
-		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", s.config.GlobalBurstQPS, s.config.GlobalRateQPS, configFileName))
+	if cfg.GlobalBurstQPS < cfg.GlobalRateQPS {
+		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", cfg.GlobalBurstQPS, cfg.GlobalRateQPS, configFileName))
 	}
 
-	if s.config.ClientBurstQPS < s.config.ClientRateQPS {
-		s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", s.config.ClientBurstQPS, s.config.ClientRateQPS, configFileName))
+	if cfg.ClientBurstQPS < cfg.ClientRateQPS {
+		s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", cfg.ClientBurstQPS, cfg.ClientRateQPS, configFileName))
 	}
 
-	s.config.BlockMode = strings.ToLower(s.config.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	cfg.BlockMode = strings.ToLower(cfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
 	const CacheMinTTLClamp = 60 // seconds
 	// Validate loaded config
-	if s.config.CacheMinTTL < CacheMinTTLClamp {
-		s.config.CacheMinTTL = CacheMinTTLClamp // Min reasonable
-		s.logger.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
+	if cfg.CacheMinTTL < CacheMinTTLClamp {
+		cfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
+		log.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
 	}
 
-	if s.config.WebUIMaxLoginFailures <= 0 {
-		s.config.WebUIMaxLoginFailures = 5
-		s.logger.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
+	if cfg.WebUIMaxLoginFailures <= 0 {
+		cfg.WebUIMaxLoginFailures = 5
+		log.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
 	}
-	if s.config.WebUILoginLockoutSec <= 0 {
-		s.config.WebUILoginLockoutSec = 300
-		s.logger.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
+	if cfg.WebUILoginLockoutSec <= 0 {
+		cfg.WebUILoginLockoutSec = 300
+		log.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
 	}
-	if s.config.MaxConcurrentDNSTCPConns <= 0 {
-		s.config.MaxConcurrentDNSTCPConns = 50
-		s.logger.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
+	if cfg.MaxConcurrentDNSTCPConns <= 0 {
+		cfg.MaxConcurrentDNSTCPConns = 50
+		log.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
 	}
 
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
-	for i := len(s.config.SNIHostnames); i < len(s.config.UpstreamURLs); i++ {
-		host, err2 := hostFromURL(s.config.UpstreamURLs[i])
+	for i := len(cfg.SNIHostnames); i < len(cfg.UpstreamURLs); i++ {
+		host, err2 := hostFromURL(cfg.UpstreamURLs[i])
 		if err2 != nil {
-			s.logger.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
+			log.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
 			return fmt.Errorf("invalid1 upstream URL at index %d: %w", i, err2)
 		}
-		s.config.SNIHostnames = append(s.config.SNIHostnames, host)
+		cfg.SNIHostnames = append(cfg.SNIHostnames, host)
 		shouldSaveConfig = true
 	}
-	for i := range s.config.UpstreamURLs {
-		if s.config.SNIHostnames[i] == "" {
-			host, err2 := hostFromURL(s.config.UpstreamURLs[i])
+	for i := range cfg.UpstreamURLs {
+		if cfg.SNIHostnames[i] == "" {
+			host, err2 := hostFromURL(cfg.UpstreamURLs[i])
 			if err2 != nil {
-				s.logger.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
+				log.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
 				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
 			}
-			s.config.SNIHostnames[i] = host
+			cfg.SNIHostnames[i] = host
 			shouldSaveConfig = true
 		}
 	}
-	s.logger.Debug("Using upstream SNI hostnames:",
+	log.Debug("Using upstream SNI hostnames:",
 		//slog.Any("SNI_hostnames", config.SNIHostnames),
-		SafeStringSlice("SNI_hostnames", s.config.SNIHostnames),
+		SafeStringSlice("SNI_hostnames", cfg.SNIHostnames),
 	)
 
 	// Helper closure to apply the cleaning and track if a save is needed
@@ -2219,11 +2302,11 @@ func (s *Server) loadConfig() error {
 		}
 	}
 
-	checkAndClean(&s.config.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
-	checkAndClean(&s.config.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
-	checkAndClean(&s.config.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
-	checkAndClean(&s.config.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
-	checkAndClean(&s.config.HostsFile, "hosts_file", defaultConfig.HostsFile)
+	checkAndClean(&cfg.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
+	checkAndClean(&cfg.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
+	checkAndClean(&cfg.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
+	checkAndClean(&cfg.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
+	checkAndClean(&cfg.HostsFile, "hosts_file", defaultConfig.HostsFile)
 
 	// After decoding config
 	err = s.loadQueryWhitelist()
@@ -2239,32 +2322,32 @@ func (s *Server) loadConfig() error {
 	}
 
 	// Add your new clear architectural description line here:
-	switch s.config.UpstreamSelectionMode {
+	switch cfg.UpstreamSelectionMode {
 	case "strict":
-		s.logger.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
+		log.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
 	case "failover":
-		s.logger.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
+		log.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
 	case "fastest":
 		fallthrough
 	default:
-		s.logger.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
+		log.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
 	}
 
 	// NEW: Enforce password setup if it's missing from the config
-	if s.config.WebUIPasswordHash == "" {
-		s.logger.Warn("No WebUI password configured. Securing WebUI now...")
+	if cfg.WebUIPasswordHash == "" {
+		log.Warn("No WebUI password configured. Securing WebUI now...")
 		fmt.Println("\n========================================================")
 		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
 		fmt.Println("========================================================")
-		hash, err2 := promptAndHashPassword(s.logger)
+		hash, err2 := promptAndHashPassword(log)
 		if err2 != nil {
 			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
 		}
 
 		// Update live config instance
-		s.config.WebUIPasswordHash = hash
+		cfg.WebUIPasswordHash = hash
 
-		s.logger.Info("WebUI password successfully set.")
+		log.Info("WebUI password successfully set.")
 		if !shouldSaveConfig {
 			shouldSaveConfig = true
 		}
@@ -2279,7 +2362,7 @@ func (s *Server) loadConfig() error {
 }
 
 // func (s *Server) safeWriteFile(filename string, data []byte, perm os.FileMode) error {
-// 	if s.config.ExtraSafety {
+// 	if cfg.ExtraSafety {
 // 		tmpName := filename + powerlossFileExtension
 
 // 		// 1. Try to write to a temp file first to ensure disk space and data integrity.
@@ -2300,7 +2383,7 @@ func (s *Server) loadConfig() error {
 // 				// 	_ = targetFile.Sync()
 // 				// 	targetFile.Close()
 // 				// }
-// 				s.logger.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
+// 				log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
 // 				// and after the below fallthru (from step 2) then Clean up the temp file
 
 // 				// Queue cleanup. If we crash/lose power after this point,
@@ -2308,23 +2391,23 @@ func (s *Server) loadConfig() error {
 // 				defer func() {
 // 					ondeleteErr := os.Remove(tmpName)
 // 					if ondeleteErr == nil {
-// 						s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+// 						log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 // 						// Successful deletion, nothing more to do
 // 						return
 // 					}
 // 					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-// 					s.logger.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
+// 					log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
 // 					// Fallback: If we can't delete it, truncate it to 0 bytes.
 // 					// Since we already have write handle permissions to this file, this is highly likely to succeed.
 // 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
 // 					if truncErr == nil {
 // 						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
 // 						truncFile.Close()
-// 						s.logger.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
+// 						log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
 // 							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
 // 					} else {
 // 						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-// 						// s.logger.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
+// 						// log.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
 // 						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
 
 // 						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
@@ -2341,7 +2424,7 @@ func (s *Server) loadConfig() error {
 // 								"========================================================================\n",
 // 							tmpName, ondeleteErr, truncErr,
 // 						)
-// 						s.logger.Error(logmsg)
+// 						log.Error(logmsg)
 // 						panic(logmsg)
 // 					}
 // 				}()
@@ -2351,13 +2434,13 @@ func (s *Server) loadConfig() error {
 // 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
 // 				// to neutralize any partial garbage data that would trip up the next boot.
 // 				ondeleteErr := os.Remove(tmpName)
-// 				s.logger.Warn("ExtraSafety: Failed to fully write or/and sync staging file", slog.String("tempfilename", tmpName), SafeErr2("writeErr", writeErr), SafeErr2("syncErr", syncErr), SafeErr2("ondelete_err", ondeleteErr))
+// 				log.Warn("ExtraSafety: Failed to fully write or/and sync staging file", slog.String("tempfilename", tmpName), SafeErr2("writeErr", writeErr), SafeErr2("syncErr", syncErr), SafeErr2("ondelete_err", ondeleteErr))
 // 				if ondeleteErr != nil {
 // 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
 // 					if truncErr == nil {
 // 						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
 // 						truncFile.Close()
-// 						s.logger.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
+// 						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
 // 							slog.String("tempfilename", tmpName), SafeErr2("ondeleteErr", ondeleteErr), SafeErr2("syncErr", syncErr3))
 // 					} else {
 // 						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
@@ -2374,15 +2457,15 @@ func (s *Server) loadConfig() error {
 // 								"========================================================================\n",
 // 							tmpName, ondeleteErr, truncErr,
 // 						)
-// 						s.logger.Error(logmsg)
+// 						log.Error(logmsg)
 // 						panic(logmsg)
 // 					}
 // 				} else {
-// 					s.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+// 					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 // 				}
 // 			}
 // 		} else {
-// 			s.logger.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost", slog.String("filename", filename), slog.String("wanted_tempfilename", tmpName))
+// 			log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost", slog.String("filename", filename), slog.String("wanted_tempfilename", tmpName))
 // 		}
 // 	} //end 'if' extraSafety
 
@@ -2422,7 +2505,7 @@ func (s *Server) loadConfig() error {
 
 // 	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
 // 	if fi.Size() == 0 {
-// 		s.logger.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
+// 		log.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
 // 			"but the temporary file could not be deleted (likely due to directory permissions).",
 // 			slog.String("tempfilename", tmpName))
 // 		return
@@ -2441,7 +2524,7 @@ func (s *Server) loadConfig() error {
 // 			"========================================================================\n",
 // 		tmpName, fi.Size(), filename,
 // 	)
-// 	s.logger.Error(logmsg)
+// 	log.Error(logmsg)
 // 	panic(logmsg)
 // }
 
@@ -2458,7 +2541,7 @@ func (s *Server) loadConfig() error {
 //         if fallback == "" {
 //             panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
 //         }
-//         s.logger.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
+//         log.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
 //         *what = fallback
 //         didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
 //     }
@@ -2467,7 +2550,7 @@ func (s *Server) loadConfig() error {
 //     //from doc: If the result of this process is an empty string, Clean returns the string ".".
 
 //     if cleanedFile != *what {
-//         s.logger.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
+//         log.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
 //         didClean = true
 //         *what = cleanedFile
 //     }
@@ -2476,11 +2559,13 @@ func (s *Server) loadConfig() error {
 
 // cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
 func (s *Server) cleanFileName(original, description, fallback string) (string, bool) {
+	log := s.getLogger()
+
 	if original == "" {
 		if fallback == "" {
 			panic(fmt.Sprintf("dev fail: passed empty filename to clean for %q and the fallback was also empty!", description))
 		}
-		s.logger.Warn("Bad filename in config, used fallback",
+		log.Warn("Bad filename in config, used fallback",
 			slog.String("for_config_key", description),
 			slog.String("bad_filename", original),
 			slog.String("fallback_filename", fallback))
@@ -2495,7 +2580,7 @@ func (s *Server) cleanFileName(original, description, fallback string) (string, 
 
 	cleaned := filepath.Clean(original)
 	if cleaned != original {
-		s.logger.Debug("Cleaned filename from config file",
+		log.Debug("Cleaned filename from config file",
 			slog.String("filename_description", description),
 			slog.String("filename_before", original),
 			slog.String("filename_after", cleaned))
@@ -2524,14 +2609,16 @@ func hostFromURL(raw string) (string, error) {
 }
 
 func (s *Server) saveConfig() error {
-	data, err := json.MarshalIndent(s.config, "", "  ")
+	cfg := s.getConfig()
+	log := s.getLogger()
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
 	}
 	if err := s.fileWriter.SafeWriteFile(configFileName, data, 0600); err != nil {
 		return fmt.Errorf("config write failed: %w", err)
 	}
-	s.logger.Info("Saved config file", slog.String("config_file", configFileName))
+	log.Info("Saved config file", slog.String("config_file", configFileName))
 	return nil
 }
 
@@ -2550,62 +2637,42 @@ func isAdminNow() bool {
 	return elevated
 }
 
-// initLogging creates the single s.logger with three destinations.
+// initLogging creates the single log with three destinations.
 // Called once after config is loaded (files and console level are known).
 func (s *Server) initFullLogging() { //qpath, epath string) {
-	consoleLevel := parseConsoleLogLevel(s.config.ConsoleLogLevel)
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
 	// Simple rotation on open (respects your LogMaxSizeMB)
 	openLog := func(path string) io.Writer {
 		if path == "" {
 			panic("empty logging filename: '" + path + "'")
 		}
 		path = filepath.Clean(path)
-		s.rotateIfNeeded(path, s.config.LogMaxSizeMB)
+		s.rotateIfNeeded(path, cfg.LogMaxSizeMB)
 		// if fi, err := os.Stat(path); err == nil && fi.Size() > int64(config.LogMaxSizeMB)*1024*1024 {
 		//     os.Rename(path, path+".1") // one backup is enough for now
 		// }
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
-			s.logger.Error("cannot open log file", slog.String("file", path), SafeErr(err))
+			log.Error("cannot open log file", slog.String("file", path), SafeErr(err))
 			s.shutdown(1) //os.Exit(1)
 			//panic(fmt.Errorf("cannot open log %q: %w", path, err))
 		}
 		return f
 	}
-	// if qpath == "" || epath == "" {
-	//     panic("one of these is empty: '" + qpath + "','" + epath + "'")
-	// }
-	// qpath = filepath.Clean(qpath)
-	// epath = filepath.Clean(epath)
-	// Rotation stub: Rename if > max size
-	// rotateIfNeeded(qpath, config.LogMaxSizeMB)
-	// rotateIfNeeded(epath, config.LogMaxSizeMB)
 
-	// qfile, err := os.OpenFile(qpath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	// if err != nil {
-	//     logFatal("Query log open failed:", err)
-	// }
-	// opts := &slog.HandlerOptions{AddSource: false}
-	// qh := slog.NewJSONHandler(qfile, opts)
-	// queryLogger = slog.New(qh)
-
-	// efile, err := os.OpenFile(epath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	// if err != nil {
-	//     logFatal("Error log open failed:", err)
-	// }
-	// eh := slog.NewJSONHandler(efile, opts)
-	// errorLogger = slog.New(eh)
-
-	fullHandler := slog.NewJSONHandler(openLog(s.config.LogErrorsFile), &slog.HandlerOptions{
+	fullHandler := slog.NewJSONHandler(openLog(cfg.LogErrorsFile), &slog.HandlerOptions{
 		Level:       slog.LevelDebug, // full log gets EVERYTHING
 		ReplaceAttr: stripColorTags,  // Strips tags safely for files
 	})
 
-	consoleH := NewColoredConsoleHandler(consoleLevel, s.logger) // now uses the real config level
+	consoleH := NewColoredConsoleHandler(consoleLevel, log) // now uses the real config level
 
 	queryH := queryFilterHandler{
-		Handler: slog.NewJSONHandler(openLog(s.config.LogQueriesFile), &slog.HandlerOptions{
+		Handler: slog.NewJSONHandler(openLog(cfg.LogQueriesFile), &slog.HandlerOptions{
 			ReplaceAttr: stripColorTags, // Strips tags safely for files
 		}),
 	}
@@ -2614,46 +2681,54 @@ func (s *Server) initFullLogging() { //qpath, epath string) {
 	//     handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	// }
 
-	// s.logger = slog.New(root)
-	// s.logger.Info("Logging fully initialized")
-	s.logger = slog.New(multiHandler{ // <-- this REPLACES the global
+	// log = slog.New(root)
+	// log.Info("Logging fully initialized")
+	improvedLogger := slog.New(multiHandler{ // <-- this REPLACES the global, but it's only used by Server struct and its children
 		handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	})
 
-	//Give the failover selector the new, fully-powered logger
-	s.failoverSelect.logger = s.logger
-	//picks up the production logger:
-	s.fileWriter.SetLogger(s.logger)
-	//s.fileWriter.SetLogger(&s.logger)
+	// realLogger := slog.New(multiHandler{handlers: []slog.Handler{fullHandler, consoleH, queryH}})
+	//s.liveLogger.Store(improvedLogger)          // all consumers automatically see the new logger
+	s.applyLogger(improvedLogger) // all consumers automatically see the new logger
+	//s.failoverSelect.liveLogger = &s.liveLogger // FailoverSelector also uses the pointer, no need for this!
 
-	s.logger.Info("Logging initialized",
-		slog.String("full_log", s.config.LogErrorsFile),
-		slog.String("queries_log", s.config.LogQueriesFile),
-		slog.String("console_level", s.config.ConsoleLogLevel),
+	// //Give the failover selector the new, fully-powered logger
+	// s.failoverSelect.logger = log
+	// //picks up the production logger:
+	// s.fileWriter.SetLogger(log)
+	// //s.fileWriter.SetLogger(&log)
+
+	log.Info("Logging initialized",
+		slog.String("full_log", cfg.LogErrorsFile),
+		slog.String("queries_log", cfg.LogQueriesFile),
+		slog.String("console_level", cfg.ConsoleLogLevel),
 	)
 }
 
 func (s *Server) rotateIfNeeded(path string, maxMB int) {
+	log := s.getLogger()
+
 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
 		old := path + ".old"
 		if err := os.Rename(path, old); err != nil {
-			s.logger.Error("Log rotation failed", slog.String("path", path), SafeErr(err))
+			log.Error("Log rotation failed", slog.String("path", path), SafeErr(err))
 		} else {
-			s.logger.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
+			log.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
 		}
 	}
 }
 
 func (s *Server) validateUpstream() error {
+	cfg := s.getConfig()
 	s.upstreamURLs = nil
 	s.upstreamIPs = nil
 	s.upstreamSNIs = nil
 
-	if len(s.config.UpstreamURLs) == 0 {
+	if len(cfg.UpstreamURLs) == 0 {
 		return errors.New("upstream_urls list is empty")
 	}
 
-	for i, rawURL := range s.config.UpstreamURLs {
+	for i, rawURL := range cfg.UpstreamURLs {
 		u, err := url.Parse(rawURL)
 		if err != nil || u.Scheme != "https" {
 			return fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
@@ -2661,7 +2736,7 @@ func (s *Server) validateUpstream() error {
 		port := u.Port()
 		if port == "" {
 			port = "443" // since we're allowing only https scheme, this should always be 443
-			// s.logger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+			// log.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
 			//     slog.String("implied_port", ImpliedPort),
 			//     slog.Any("upstreamURL", u))
 			// This is how you add the port back into the URL object
@@ -2677,7 +2752,7 @@ func (s *Server) validateUpstream() error {
 			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
 		}
 		s.upstreamIPs = append(s.upstreamIPs, ip)
-		s.upstreamSNIs = append(s.upstreamSNIs, s.config.SNIHostnames[i])
+		s.upstreamSNIs = append(s.upstreamSNIs, cfg.SNIHostnames[i])
 	}
 
 	return nil
@@ -2865,16 +2940,19 @@ func recursiveMatch(pattern, name string) bool {
 }
 
 func (s *Server) generateCertIfNeeded() {
-	s.logger.Debug("check if cert is valid or needs regen")
+	log := s.getLogger()
+	cfg := s.getConfig()
+
+	log.Debug("check if cert is valid or needs regen")
 	certFile := "cert.pem"
 	keyFile := "key.pem"
 	needsRegen := false
 
 	var err error
 	// Extract the host/IP from the config to put it in the cert
-	host, _, err := net.SplitHostPort(s.config.ListenDoH)
+	host, _, err := net.SplitHostPort(cfg.ListenDoH)
 	if err != nil {
-		host = s.config.ListenDoH // Fallback if no port present
+		host = cfg.ListenDoH // Fallback if no port present
 	}
 	//In Go, net.ParseIP is a strict parser. It does not perform DNS lookups; it only checks if the string is a valid IPv4 or IPv6 literal. If you pass it "localhost", it returns nil.
 	currentIP := net.ParseIP(host)
@@ -2885,18 +2963,18 @@ func (s *Server) generateCertIfNeeded() {
 	certBytes, err := os.ReadFile(certFile)
 	if err != nil {
 		// File missing or unreadable
-		s.logger.Warn("Cert file doesn't exist", slog.String("file", certFile), SafeErr(err)) // no \n
+		log.Warn("Cert file doesn't exist", slog.String("file", certFile), SafeErr(err)) // no \n
 		needsRegen = true
 	} else {
 		// Parse the PEM
 		block, _ := pem.Decode(certBytes)
 		if block == nil {
-			s.logger.Warn("Cert file had empty decoded block.", slog.String("file", certFile)) // no \n
+			log.Warn("Cert file had empty decoded block.", slog.String("file", certFile)) // no \n
 			needsRegen = true
 		} else {
 			cert, err2 := x509.ParseCertificate(block.Bytes)
 			if err2 != nil {
-				s.logger.Warn("Cert file failed parsing", slog.String("file", certFile), SafeErr(err2)) // no \n
+				log.Warn("Cert file failed parsing", slog.String("file", certFile), SafeErr(err2)) // no \n
 				needsRegen = true
 			} else {
 				// Check if the current IP is in the cert's SAN list
@@ -2923,7 +3001,7 @@ func (s *Server) generateCertIfNeeded() {
 				}
 
 				if !found {
-					s.logger.Warn("Cert identity mismatch", slog.String("want", host)) // no \n
+					log.Warn("Cert identity mismatch", slog.String("want", host)) // no \n
 					needsRegen = true
 				}
 			}
@@ -2932,22 +3010,22 @@ func (s *Server) generateCertIfNeeded() {
 
 	// 3. Regen if necessary
 	if needsRegen {
-		s.logger.Warn("Due to above, regenerating self-signed cert(files: %s and %s) for DoH at %s...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
+		log.Warn("Due to above, regenerating self-signed cert(files: %s and %s) for DoH at %s...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
 			slog.String("sni_hostname", host))
 		if err = generateCert(certFile, keyFile, host); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
 			s.logFatal("cert generation failed", err) //SafeErr(err))
 			//os.Exit(1)
 		}
-		s.logger.Warn("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception, "+
+		log.Warn("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception, "+
 			"or about:preferences#privacy scroll to Security click Manage Certificates and in Certificate Manager window select Servers click [Add Exception...] "+
-			"button and use this IP with that https:// scheme or use full listen_address", slog.String("IP", currentIP.String() /*non nil here*/), slog.String("listen_address", s.config.ListenDoH))
+			"button and use this IP with that https:// scheme or use full listen_address", slog.String("IP", currentIP.String() /*non nil here*/), slog.String("listen_address", cfg.ListenDoH))
 	} else {
-		s.logger.Debug("Existing cert is valid for host. Skipping generation.", slog.String("sni_hostname", host))
+		log.Debug("Existing cert is valid for host. Skipping generation.", slog.String("sni_hostname", host))
 	}
 
 	// Load cert/key into global for reuse
-	s.logger.Info("Loading cert/key for DoH...")
+	log.Info("Loading cert/key for DoH...")
 
 	s.dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -2955,7 +3033,7 @@ func (s *Server) generateCertIfNeeded() {
 		// os.Exit(1)
 		s.logFatal("cert_load_failed", err)
 	}
-	s.logger.Info("Success - loaded into tls.Certificate")
+	log.Info("Success - loaded into tls.Certificate")
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
@@ -3039,23 +3117,26 @@ type clientMetadata struct {
 
 // non-blocking! listens on both UDP and TCP ports 53
 func (s *Server) startDNSListener(addr string) {
+	log := s.getLogger()
+	cfg := s.getConfig() //FIXME: this value gets captured by goroutines instead of using a fresh one when they start, and other places.
+
 	//    listenerErrs.Add(1)
 	//    defer listenerErrs.Done()
-	s.logger.Debug("Starting DNS listener", slog.String("addr", addr))
+	log.Debug("Starting DNS listener", slog.String("addr", addr))
 
 	// UDP
-	s.logger.Debug("Attempting UDP bind for DNS listener...")
+	log.Debug("Attempting UDP bind for DNS listener...")
 
 	// Assuming addr is a string like "127.0.0.1:53"
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		s.logger.Error("invalid UDP address", slog.String("addr", addr), SafeErr(err))
+		log.Error("invalid UDP address", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1) //FIXME: see the below comment
 	}
 	udpLn, err := net.ListenUDP("udp", udpAddr)
 
 	if err != nil {
-		s.logger.Error("UDP bind/listen failed", slog.String("addr", addr), SafeErr(err))
+		log.Error("UDP bind/listen failed", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1)
 		//os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
 	} else {
@@ -3083,7 +3164,7 @@ func (s *Server) startDNSListener(addr string) {
 				// If this runs, the 'defer' above will just return an error later.
 				closer()
 			}()
-			s.logger.Info("UDP DNS listening success", slog.String("addr", addr))
+			log.Info("UDP DNS listening success", slog.String("addr", addr))
 
 			// 1. Initialize the pool outside the loop
 			udpPool := sync.Pool{
@@ -3093,7 +3174,7 @@ func (s *Server) startDNSListener(addr string) {
 				New: func() any {
 					//buf := make([]byte, 512+512)
 					// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
-					b := make([]byte, s.config.DNSUDPBufferSize)
+					b := make([]byte, cfg.DNSUDPBufferSize)
 					return &b // Return a pointer to avoid interface conversion allocation
 				},
 			}
@@ -3110,19 +3191,19 @@ func (s *Server) startDNSListener(addr string) {
 					select {
 					case <-s.ctx.Done():
 						// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
-						s.logger.Debug("UDP DNS listener is quitting due to shutdown...")
+						log.Debug("UDP DNS listener is quitting due to shutdown...")
 
 						return // Quit on shutdown
 					default:
 						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-						s.logger.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
+						log.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
 						//time.Sleep(100 * time.Millisecond)
 						//break TheFor
 						continue // Real network error, keep trying
 					} //select
 				} //if err2
 
-				s.logger.Debug("client connected(early logging)",
+				log.Debug("client connected(early logging)",
 					slog.String("proto", "UDP"),
 					//slog.String("clientAddr", clientAddr.String()),
 					SafeAddr("clientAddr", clientAddr),
@@ -3163,13 +3244,13 @@ func (s *Server) startDNSListener(addr string) {
 	} // else
 
 	// TCP
-	s.logger.Debug("Attempting TCP bind for DNS listener...")
+	log.Debug("Attempting TCP bind for DNS listener...")
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
 	if err != nil {
 		// errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %q: %v", addr, err)
 		//errorLogger.Error(errStr)
-		s.logger.Error("invalid TCP address", slog.String("addr", addr), SafeErr(err))
+		log.Error("invalid TCP address", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
@@ -3177,21 +3258,21 @@ func (s *Server) startDNSListener(addr string) {
 	if err != nil {
 		//errStr := fmt.Sprintf("TCP bind failed on %q: %v", addr, err)
 		//errorLogger.Error(errStr)
-		s.logger.Error("TCP bind/listen failed", slog.String("addr", addr), SafeErr(err))
+		log.Error("TCP bind/listen failed", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1)
 	} else {
 		// ── Semaphore init ───────────────────────────────────────────────────
 		// Must happen before the accept goroutine starts so every Accept() can
 		// immediately check capacity.  loadConfig has already validated the
 		// value, but defend against a zero here just in case.
-		tcpMaxConns := s.config.MaxConcurrentDNSTCPConns
+		tcpMaxConns := cfg.MaxConcurrentDNSTCPConns
 		if tcpMaxConns <= 0 {
 			const constTCPMaxConns = 50
 			tcpMaxConns = constTCPMaxConns
-			s.logger.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
+			log.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
 		}
 		s.dnsTCPSem = make(chan struct{}, tcpMaxConns)
-		s.logger.Debug("DNS TCP concurrent-connection limit initialised",
+		log.Debug("DNS TCP concurrent-connection limit initialised",
 			slog.Int("max_concurrent", tcpMaxConns))
 
 		// caller provides ctx context.Context and tcpLn *net.TCPListener
@@ -3211,7 +3292,7 @@ func (s *Server) startDNSListener(addr string) {
 				<-s.ctx.Done()
 				closer() // This wakes up Accept() with an error safely
 			}()
-			s.logger.Info("TCP DNS listening", slog.String("address", addr))
+			log.Info("TCP DNS listening", slog.String("address", addr))
 
 			// // Then simplify your loop
 			// for {
@@ -3230,7 +3311,7 @@ func (s *Server) startDNSListener(addr string) {
 				// err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
 				// //err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
 				// if err != nil {
-				//     s.logger.Warn("can't set TCP deadline", SafeErr(err))
+				//     log.Warn("can't set TCP deadline", SafeErr(err))
 				//     panic("wtw")
 				// }
 
@@ -3239,7 +3320,7 @@ func (s *Server) startDNSListener(addr string) {
 					// if context canceled, exit cleanly
 					select {
 					case <-s.ctx.Done():
-						s.logger.Debug("TCP DNS listener is quitting due to shutdown...")
+						log.Debug("TCP DNS listener is quitting due to shutdown...")
 						return
 					default:
 						// // handle timeout-like errors (due to SetDeadline)
@@ -3253,14 +3334,14 @@ func (s *Server) startDNSListener(addr string) {
 						// }
 
 						// non-temporary error: log, backoff a bit to avoid hot loop, continue
-						s.logger.Warn("tcp_accept_error", SafeErr(err))
+						log.Warn("tcp_accept_error", SafeErr(err))
 
 						// if backoff == 0 {
 						//     backoff = 50 * time.Millisecond
 						// } else if backoff < 1*time.Second {
 						//     backoff *= 2
 						// }
-						// s.logger.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
+						// log.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
 						// time.Sleep(backoff)
 						continue
 					} // select
@@ -3274,7 +3355,7 @@ func (s *Server) startDNSListener(addr string) {
 				case s.dnsTCPSem <- struct{}{}:
 					// Slot acquired; fall through.
 				default:
-					s.logger.Warn("DNS TCP connection limit reached; rejecting new connection",
+					log.Warn("DNS TCP connection limit reached; rejecting new connection",
 						slog.Int("max_concurrent", cap(s.dnsTCPSem)),
 						SafeAddr("rejected_client", conn.RemoteAddr()),
 					)
@@ -3285,14 +3366,14 @@ func (s *Server) startDNSListener(addr string) {
 				tcpPacketCtx := s.ctx /* this is your global shutdown ctx*/
 				// 1. Get the remote address as a *net.TCPAddr
 				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
-				s.logger.Debug("client connected(early logging)",
+				log.Debug("client connected(early logging)",
 					slog.String("proto", "TCP"),
 					//slog.String("clientAddr", clientAddr.String()),
 					SafeAddr("clientAddr", clientAddr),
 				)
 				if !ok {
 					//FIXME: when can this happen?!
-					s.logger.Warn("could not cast remote addr to TCPAddr",
+					log.Warn("could not cast remote addr to TCPAddr",
 						//slog.String("addr", conn.RemoteAddr().String()),
 						SafeAddr("addr", conn.RemoteAddr()),
 					)
@@ -3328,15 +3409,17 @@ func (s *Server) startDNSListener(addr string) {
 
 	}
 	if udpLn == nil && tcpLn == nil { //XXX: this is deadcode because if ANY failed above shutdown/os.Exit is called
-		s.logger.Warn("No DNS listeners(neither TCP nor UDP!")
+		log.Warn("No DNS listeners(neither TCP nor UDP!")
 	}
 }
 
 func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.Addr, pid uint32, exe string, err error) context.Context {
+	log := s.getLogger()
+
 	var services []string
 	var serviceInfo string
 	if err != nil {
-		s.logger.Warn("couldn't get pid and exe name",
+		log.Warn("couldn't get pid and exe name",
 			slog.String("proto", protocol),
 			//slog.String("clientAddr", clientAddr.String()),
 			SafeAddr("clientAddr", clientAddr),
@@ -3362,7 +3445,7 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 		}
 	}
 
-	s.logger.Debug("client connected",
+	log.Debug("client connected",
 		slog.String("proto", protocol),
 		//slog.String("clientAddr", clientAddr.String()),
 		SafeAddr("clientAddr", clientAddr),
@@ -3429,13 +3512,15 @@ func SafeAddr(key string, addr net.Addr) slog.Attr {
 }
 
 func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
+	log := s.getLogger()
+
 	if clientAddr == nil {
 		panic("nil ClientAddr in handleUDP, not possible?!")
 	}
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
 		// Edge: Invalid packet (common in floods)
-		s.logger.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
+		log.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
 		return
 	}
 	resp := s.handleDNSQuery(ctx, msg, clientAddr.String())
@@ -3444,20 +3529,23 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	}
 	pack, err := resp.Pack()
 	if err != nil {
-		s.logger.Warn("failed to pack DNS UDP packet response thus not sent", SafeErr(err))
+		log.Warn("failed to pack DNS UDP packet response thus not sent", SafeErr(err))
 		return
 	}
 	wroteN, err := ln.WriteToUDP(pack, clientAddr)
 	if err != nil {
-		s.logger.Warn("failed to write to UDP the DNS packet response", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		log.Warn("failed to write to UDP the DNS packet response", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 		return
 	}
 }
 
 func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	defer conn.Close()
 
-	var timeoutDuration time.Duration = time.Duration(s.config.ClientTCPTimeoutSec) * time.Second
+	var timeoutDuration time.Duration = time.Duration(cfg.ClientTCPTimeoutSec) * time.Second
 	const maxDNSTCPPacketSize = 65535 //TODO: make this configurable in config.json
 
 	// --- 1. READ THE LENGTH HEADER ---
@@ -3468,13 +3556,13 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	buf := make([]byte, TWO)
 	if n, err := io.ReadFull(conn, buf); err != nil {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			s.logger.Warn("DNS TCP: client connected but sent no data before deadline "+
+			log.Warn("DNS TCP: client connected but sent no data before deadline "+
 				"(idle connection, port scanner, or client that opened then abandoned)",
 				SafeAddr("client", conn.RemoteAddr()),
 				slog.Duration("read_timeout", timeoutDuration),
 			)
 		} else {
-			s.logger.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored",
+			log.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored",
 				SafeErr(err),
 				slog.Int("read_bytes", n),
 				slog.Int("wanted_to_read_bytes", TWO),
@@ -3485,8 +3573,8 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	}
 
 	length := int(binary.BigEndian.Uint16(buf))
-	if length > s.config.DoHMaxRequestBodyBytes || length == 0 { // Edge: Oversize packet
-		s.logger.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Int("max", maxDNSTCPPacketSize),
+	if length > cfg.DoHMaxRequestBodyBytes || length == 0 { // Edge: Oversize packet
+		log.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Int("max", maxDNSTCPPacketSize),
 			slog.Int("min", 1))
 		return
 	}
@@ -3497,7 +3585,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
 	wire := make([]byte, length)
 	if n, err := io.ReadFull(conn, wire); err != nil {
-		s.logger.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
+		log.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
 			slog.String("timeout", timeoutDuration.String() /*not nil*/))
 		return
 	}
@@ -3505,7 +3593,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// --- 3. PROCESS ---
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
-		s.logger.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
+		log.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
 		return
 	}
 
@@ -3514,14 +3602,14 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	if resp != nil {
 		pack, err := resp.Pack() // Ignore err
 		if err != nil {
-			s.logger.Warn("failed to pack DNS TCP packet response thus not sent", SafeErr(err))
+			log.Warn("failed to pack DNS TCP packet response thus not sent", SafeErr(err))
 			return
 		}
 		// Prepare the output (length + payload)
 		out := new(bytes.Buffer)
 		err = binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
 		if err != nil {
-			s.logger.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", SafeErr(err))
+			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", SafeErr(err))
 			return
 		}
 		out.Write(pack)
@@ -3530,17 +3618,20 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		_ = conn.SetWriteDeadline(time.Now().Add(timeoutDuration))
 		wroteN, err := conn.Write(out.Bytes())
 		if err != nil {
-			s.logger.Warn("failed to write to TCP the DNS packet response body", SafeErr(err), slog.Int("wrote_bytes", wroteN),
+			log.Warn("failed to write to TCP the DNS packet response body", SafeErr(err), slog.Int("wrote_bytes", wroteN),
 				slog.Int("shoulda_written", len(pack)), slog.String("timeout", timeoutDuration.String() /*not nil*/))
 			return
 		}
 	}
-	s.logger.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho. FIXME")
+	log.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho. FIXME")
 }
 
 // non-blocking!
 func (s *Server) startDoHListener(addr string) {
-	s.logger.Debug("Starting DoH listener", slog.String("address", addr))
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	log.Debug("Starting DoH listener", slog.String("address", addr))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", s.dohHandler)
@@ -3552,14 +3643,14 @@ func (s *Server) startDoHListener(addr string) {
 	if err != nil {
 		// errStr := fmt.Sprintf("DoH listener failed on %q: %v", addr, err)
 		// errorLogger.Error(errStr)
-		s.logger.Error("DoH listener failed to bind/listen", slog.String("addr", addr), SafeErr(err))
+		log.Error("DoH listener failed to bind/listen", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
-	s.logger.Info("DoH listening", slog.String("address", addr))
+	log.Info("DoH listening", slog.String("address", addr))
 
 	dohSrv := &http.Server{Handler: mux,
-		ReadTimeout:  time.Duration(s.config.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
-		WriteTimeout: time.Duration(s.config.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
+		ReadTimeout:  time.Duration(cfg.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
+		WriteTimeout: time.Duration(cfg.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
 	}
 	/*
 	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
@@ -3578,7 +3669,7 @@ func (s *Server) startDoHListener(addr string) {
 	go func() {
 		defer s.shutdownWG.Done() // Signal this watcher is finished
 		<-s.ctx.Done()
-		s.logger.Debug("Shutting down DoH server...")
+		log.Debug("Shutting down DoH server...")
 		// Give it a max of 3 seconds to finish existing requests before force closing
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
@@ -3592,11 +3683,11 @@ func (s *Server) startDoHListener(addr string) {
 		defer listener.Close() // Graceful close on shutdown
 		//doneFIXME: how do we know if this failed to maybe restart it or exit the whole program or whatever!?
 		if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			s.logger.Error("doh_serve_failed", SafeErr(err))
+			log.Error("doh_serve_failed", SafeErr(err))
 			s.errChan <- fmt.Errorf("DoH server failed: %w", err)
 		}
 	}()
-	s.logger.Debug("DoH server loop launched in goroutine")
+	log.Debug("DoH server loop launched in goroutine")
 }
 
 func getSecureID() uint16 {
@@ -3631,6 +3722,9 @@ type CacheEntry struct {
 }
 
 func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	ctx := r.Context() // Get the request context
 
 	var err error
@@ -3639,7 +3733,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	// Firefox is sitting there waiting for its DNS-over-HTTPS answer, so it's the perfect time to "catch" it in the Windows TCP table.
 	remoteTCP, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err == nil {
-		s.logger.Debug("client connected(early logging)",
+		log.Debug("client connected(early logging)",
 			slog.String("proto", "DoH"),
 			//slog.String("clientAddr", remoteTCP.String()),
 			SafeAddr("clientAddr", remoteTCP),
@@ -3652,7 +3746,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		// var pErr error = nil
 		ctx = s.makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
 	} else {
-		s.logger.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
+		log.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
 		//FIXME: this is a bigger problem than a WARN, if it happens! but an ERROR here would make it mix with the red colored blocked requests, thus harder to be seen!
 		//TODO: see if we can trigger this! and/or think of what happens if it happens!
 	}
@@ -3665,7 +3759,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "POST" {
 		// Limit incoming DoH payload to 64KB to prevent memory exhaustion attacks
-		r.Body = http.MaxBytesReader(w, r.Body, int64(s.config.DoHMaxRequestBodyBytes))
+		r.Body = http.MaxBytesReader(w, r.Body, int64(cfg.DoHMaxRequestBodyBytes))
 		body, err = io.ReadAll(r.Body)
 	} else {
 		encoded := r.URL.Query().Get("dns")
@@ -3686,13 +3780,13 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := s.handleDNSQuery(ctx, msg, r.RemoteAddr) // Field, not method
 	if resp == nil {
-		s.logger.Warn("empty DNS response, replying to client with service unavailable", slog.String("client", r.RemoteAddr))
+		log.Warn("empty DNS response, replying to client with service unavailable", slog.String("client", r.RemoteAddr))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 	pack, err := resp.Pack()
 	if err != nil {
-		s.logger.Warn("doh_pack_response_to_client_failed", SafeErr(err), slog.String("client", r.RemoteAddr))
+		log.Warn("doh_pack_response_to_client_failed", SafeErr(err), slog.String("client", r.RemoteAddr))
 		// Return a 500 error to the DoH client
 		http.Error(w, "Failed to pack DNS response", http.StatusInternalServerError)
 		return
@@ -3703,12 +3797,15 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	wroteN, err := w.Write(pack)
 	if err != nil {
-		s.logger.Warn("failed to write the DoH reply to client (the DNS packet response body)", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		log.Warn("failed to write the DoH reply to client (the DNS packet response body)", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 		return
 	}
 }
 
 func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.Msg {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	if len(msg.Question) != 1 {
 		return formerrResponse(msg)
 	}
@@ -3721,7 +3818,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
-		s.logger.Warn(reason, slog.String("client", clientAddr))
+		log.Warn(reason, slog.String("client", clientAddr))
 		sfr := servfailResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
@@ -3736,7 +3833,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// 	clientIP, _, err := net.SplitHostPort(clientAddr)
 	// 	if err != nil {
 	// 		// Fallback safety: if string parsing fails, default back to the raw string
-	// 		s.logger.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
+	// 		log.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
 	// 		clientIP = clientAddr
 	// 	}
 	// 	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
@@ -3744,7 +3841,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// 		clientIP = "localhost"
 	// 	}
 	// 	// 3. Use the clean IP as the sync.Map key
-	// 	clIface, _ := s.clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(s.config.ClientRateQPS), s.config.ClientBurstQPS)) // Per-client qps/burst
+	// 	clIface, _ := s.clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(cfg.ClientRateQPS), cfg.ClientBurstQPS)) // Per-client qps/burst
 	// 	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
 	// 	cl := clIface.(*rate.Limiter)
 	// 	if !cl.Allow() {
@@ -3752,20 +3849,20 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// 	}
 	// }
 	// if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
-	// 	s.logger.Warn(rateLimited, slog.String("client", clientAddr))
+	// 	log.Warn(rateLimited, slog.String("client", clientAddr))
 	// 	sfr := servfailResponse(msg)
 	// 	s.logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 	// 	return sfr
 	// }
 
 	matchedID, matched := s.ruleStore.MatchForType(qtype, domain)
-	if !matched && s.config.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+	if !matched && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 		matchedID, matched = s.ruleStore.MatchForType("A", domain)
 	}
 
 	if !matched {
 		s.stats.Add(1)
-		s.recentBlocks.Record(domain, qtype, s.config.MaxRecentBlocks)
+		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
 		blocked := s.blockResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
 		return blocked
@@ -3808,12 +3905,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 			if qtype == "A" && isIPv4 {
 				rr := new(dns.A)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: s.config.LocalHostsOverrideTTLSec}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: cfg.LocalHostsOverrideTTLSec}
 				rr.A = ip
 				resp.Answer = append(resp.Answer, rr)
 			} else if qtype == "AAAA" && !isIPv4 {
 				rr := new(dns.AAAA)
-				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: s.config.LocalHostsOverrideTTLSec}
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: cfg.LocalHostsOverrideTTLSec}
 				rr.AAAA = ip
 				resp.Answer = append(resp.Answer, rr)
 			}
@@ -3824,7 +3921,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.dnsCache.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState5,
-		}, time.Duration(s.config.LocalHostsOverrideTTLSec)*time.Second) //doneTODO: configurable cache time and dns record aka ttl time? (see above)
+		}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second) //doneTODO: configurable cache time and dns record aka ttl time? (see above)
 
 		s.logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
@@ -3857,7 +3954,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.dnsCache.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
-		}, time.Duration(s.config.CacheNegativeTTLSec)*time.Second) // time to cache negatives
+		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second) // time to cache negatives
 		return negResp
 	}
 
@@ -3884,7 +3981,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// Cache with clamped TTL
 	//ttl := computeTTL(filtered)
 	//expiry := time.Duration(ttl) * time.Second
-	expiry := max(computeTTL(filtered), time.Duration(s.config.CacheMinTTL)*time.Second)
+	expiry := max(computeTTL(filtered), time.Duration(cfg.CacheMinTTL)*time.Second)
 	// if expiry < time.Duration(config.CacheMinTTL)*time.Second {
 	//     expiry = time.Duration(config.CacheMinTTL) * time.Second
 	// }
@@ -3950,18 +4047,21 @@ func computeTTL(msg *dns.Msg) time.Duration {
 //const ImpliedPort string = "443"
 
 // call once at startup or when upstream config changes
-func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, sni string) {
+func (s *Server) initDoHClients() []Upstream {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	//What this function does is purely preparatory. You are assembling a plan for future connections, not executing one.
 	//Here’s why nothing goes on the network yet:
 	//The http.Transport you create is just configuration.
 	//DialContext is a callback, not an action. Go stores that function and promises to call it later only when a request actually needs a connection.
 	//CloseIdleConnections() is the only thing here that might touch sockets — and even then, only previously established idle ones. If this is the first init, or if no DoH requests were ever made, there’s nothing to close and nothing goes out.
 	//http.Client and http.Transport are blueprints, not engines.
-	s.logger.Debug("starting initDoHClient()")
+	log.Debug("starting initDoHClient()")
 	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
 	s.dohMu.Lock()
 	defer s.dohMu.Unlock()
-	s.logger.Debug("past lock in initDoHClient()")
+	log.Debug("past lock in initDoHClient()")
 	// 4. DOUBLE CHECK
 	// While we were waiting for the lock, someone else might
 	// have finished the initialization. Check again.
@@ -3979,7 +4079,7 @@ func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, 
 			} else {
 				sn = "<nil>"
 			}
-			s.logger.Debug("Closed DoH idle connection",
+			log.Debug("Closed DoH idle connection",
 				//slog.Any("transport", dT), //this will race due to reflection and background goroutine(s) retrying connection(s)
 				slog.String("transport_ptr", fmt.Sprintf("%p", dT)),
 				slog.String("tls_servername", sn),
@@ -4003,11 +4103,11 @@ func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, 
 		//         //don't log in this case
 		//         port = ImpliedPort
 		//     } else if u.Scheme != "" {
-		//         s.logger.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
+		//         log.Warn("Ignoring incompatible scheme(using https instead)", slog.String("implied_port", ImpliedPort),
 		//             slog.Any("upstreamURL", u))
 		//     } else {
 		//         port = ImpliedPort
-		//         s.logger.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
+		//         log.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
 		//             slog.String("implied_port", ImpliedPort),
 		//             slog.Any("upstreamURL", u))
 		//     }
@@ -4027,9 +4127,9 @@ func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, 
 		t := &http.Transport{
 			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: time.Duration(s.config.UpstreamDialTimeoutSec) * time.Second}
+				d := &net.Dialer{Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second}
 				// Use the pre-computed dialAddr captured via closure!
-				s.logger.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
+				log.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
 				return d.DialContext(ctx, network, dialAddr)
 			},
 			TLSClientConfig: &tls.Config{
@@ -4038,20 +4138,20 @@ func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, 
 			},
 			Proxy:               nil,  // avoid proxy interference
 			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-			IdleConnTimeout:     time.Duration(s.config.UpstreamIdleConnTimeoutSec) * time.Second,
-			MaxIdleConns:        s.config.UpstreamMaxIdleConns,
-			MaxIdleConnsPerHost: s.config.UpstreamMaxIdleConnsPerHost,
+			IdleConnTimeout:     time.Duration(cfg.UpstreamIdleConnTimeoutSec) * time.Second,
+			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
 		}
 		s.dohTransportsPtrs = append(s.dohTransportsPtrs, t) //they're both pointers
 		if s.dohTransportsPtrs[i] != t {
 			panic("dev fail: dohTransportsPtrs[i] != t")
 		}
 		// newClients = append(newClients, &http.Client{
-		// 	Timeout:   time.Duration(s.config.UpstreamClientTimeoutSec) * time.Second,
+		// 	Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 		// 	Transport: t,
 		// })
 		client := &http.Client{
-			Timeout:   time.Duration(s.config.UpstreamClientTimeoutSec) * time.Second,
+			Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 			Transport: t,
 		}
 		// Bundle everything this specific upstream needs to execute queries completely independently
@@ -4059,18 +4159,18 @@ func (s *Server) initDoHClients() []Upstream { //[]*http.Client { //upstreamIP, 
 			Client:            client,
 			URL:               u,
 			SNI:               sniHost,
-			logger:            s.logger,
-			Retries:           s.config.UpstreamRetriesPerQuery,
-			RetryBackoff:      time.Duration(s.config.UpstreamRetryBackoffMs) * time.Millisecond,
+			liveLogger:        &s.liveLogger,
+			Retries:           cfg.UpstreamRetriesPerQuery,
+			RetryBackoff:      time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
 			BackgroundCtx:     s.ctx, // Pass the server-wide context to manage lifecycle quits
-			CertLogTimeoutSec: s.config.CertLogTimeoutSec,
+			CertLogTimeoutSec: cfg.CertLogTimeoutSec,
 		})
 	}
 	// 6. ATOMIC STORE
 	// s.dohClientsPtr.Store(&newClients)
 	s.upstreamsPtr.Store(&newUpstreams)
-	s.logger.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
-	s.logger.Debug("ending initDoHClients()")
+	log.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
+	log.Debug("ending initDoHClients()")
 	return newUpstreams
 }
 
@@ -4167,12 +4267,15 @@ type UpstreamState struct { //doneTODO: rename Telemetry to something normal
 
 // forwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
 func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, UpstreamState) {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	var upstreamState1 UpstreamState
-	upstreamState1.Strategy = s.config.UpstreamSelectionMode
+	upstreamState1.Strategy = cfg.UpstreamSelectionMode
 
 	reqBytes, err := req.Pack()
 	if err != nil {
-		s.logger.Error("doh_prepost_pack_failed", SafeErr(err))
+		log.Error("doh_prepost_pack_failed", SafeErr(err))
 		return nil, upstreamState1
 	}
 
@@ -4196,7 +4299,7 @@ func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, Upst
 		idx int // Useful for tracking which upstream won or failed
 	}
 
-	switch s.config.UpstreamSelectionMode {
+	switch cfg.UpstreamSelectionMode {
 	case "strict":
 		// ==========================================
 		// STRICT MODE: Wait for all & strict compare
@@ -4229,7 +4332,7 @@ func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, Upst
 		// Compare responses
 		for i, res := range results {
 			if res.err != nil || res.msg == nil {
-				s.logger.Error("upstream failed or returned nil", slog.String("url", s.upstreamURLs[i].String()),
+				log.Error("upstream failed or returned nil", slog.String("url", s.upstreamURLs[i].String()),
 					//slog.String("err", res.err.Error()),
 					SafeErr(res.err),
 				)
@@ -4249,7 +4352,7 @@ func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, Upst
 					// Extract IPs for the log message
 					refIPs := extractIPs(reference)
 					curIPs := extractIPs(res.msg)
-					s.logger.Warn("upstream DNS response mismatch! dropping query to protect client",
+					log.Warn("upstream DNS response mismatch! dropping query to protect client",
 						slog.String("query", req.Question[0].Name),
 						slog.String("upstream_DoH_url1", s.upstreamURLs[refIdx].String()),
 						//slog.Any("ips_returned1", refIPs),
@@ -4274,7 +4377,7 @@ func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, Upst
 		upstreamState1.UpstreamUsed = used
 		upstreamState1.FailedUpstreams = failed
 		if err != nil {
-			s.logger.Error("failover selection failed", SafeErr(err))
+			log.Error("failover selection failed", SafeErr(err))
 			return nil, upstreamState1
 		}
 		return resp, upstreamState1
@@ -4321,7 +4424,7 @@ func (s *Server) forwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, Upst
 		}
 
 		// If we reach here, every single upstream request failed
-		s.logger.Error("all upstreams failed to provide a valid response",
+		log.Error("all upstreams failed to provide a valid response",
 			//slog.String("last_err", lastErr.Error()),
 			SafeErr2("last_err", lastErr),
 		)
@@ -4345,15 +4448,14 @@ func SafeRequestAttr(key string, req *http.Request) slog.Attr {
 	)
 }
 
-func (u *Upstream) doSingleDoHRequest(ctx context.Context,
-	//client *http.Client, targetURL *url.URL, sni string,
-	reqBytes []byte) (*dns.Msg, error) {
+func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
+	log := u.getLogger()
 
 	if u.Client == nil {
 		panic(fmt.Sprintf("dev fail: dohClient is still nil at calling doSingleDoHRequest! shouldn't happen! upstreamURL=%s SNI=%s", u.URL, u.SNI))
 	}
 
-	retries := u.Retries //s.config.UpstreamRetriesPerQuery
+	retries := u.Retries //cfg.UpstreamRetriesPerQuery
 	if retries < 1 {
 		retries = 0 // Sanity check: must attempt at least once(see the 'for' below)
 	}
@@ -4394,7 +4496,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 			var e error
 			req, e = http.NewRequestWithContext(reqCtx, "POST", u.URL.String(), bytes.NewReader(reqBytes))
 			if e != nil {
-				//s.logger.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
+				//log.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
 				return true, e
 			}
 
@@ -4433,7 +4535,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 			(errors.As(err4ClientDo, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
 
 		if isRetryable {
-			u.logger.Error("doh_post_transient_error for this query", SafeErr(err4ClientDo),
+			log.Error("doh_post_transient_error for this query", SafeErr(err4ClientDo),
 				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries),
 				//slog.Any("query", req),
 				SafeRequestAttr("query", req),
@@ -4442,10 +4544,10 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 			select {
 			case <-time.After(time.Duration(u.RetryBackoff) * time.Millisecond):
 			case <-ctx.Done():
-				u.logger.Debug("doh sensed client quit during retry backoff...")
+				log.Debug("doh sensed client quit during retry backoff...")
 				return nil, ctx.Err()
 			case <-u.BackgroundCtx.Done():
-				u.logger.Debug("doh sensed quit during retry backoff...")
+				log.Debug("doh sensed quit during retry backoff...")
 				return nil, u.BackgroundCtx.Err()
 			}
 			continue
@@ -4453,7 +4555,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 		// non-retryable error
 		// --- NEW DIAGNOSTIC BLOCK ---
 		if strings.Contains(err4ClientDo.Error(), "tls:") || strings.Contains(err4ClientDo.Error(), "x509:") {
-			u.logger.Error("TLS verification failed when tried to query upstream DNS server",
+			log.Error("TLS verification failed when tried to query upstream DNS server",
 				slog.String("url", u.URL.String()),
 				slog.String("sni_used", u.SNI),
 				SafeErr(err4ClientDo))
@@ -4461,7 +4563,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 			// Run a manual probe to see what the server is actually sending
 			u.logCertDetails() //targetURL.Hostname(), targetURL.Port(), sni)
 		} else {
-			u.logger.Error("Failed to query upstream DNS server", SafeErr(err4ClientDo))
+			log.Error("Failed to query upstream DNS server", SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
 		return nil, err4ClientDo
@@ -4474,7 +4576,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 
 	if resp == nil {
 		// last attempt produced no response (shouldn't happen), treat as failure
-		u.logger.Error("doh_no_response")
+		log.Error("doh_no_response")
 		return nil, errors.New("no response")
 	}
 	defer resp.Body.Close()
@@ -4482,27 +4584,27 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
 	body, err4ReadAll := io.ReadAll(resp.Body)
 	if err4ReadAll != nil {
-		u.logger.Error("doh_readbody_failed", SafeErr(err4ReadAll))
+		log.Error("doh_readbody_failed", SafeErr(err4ReadAll))
 		return nil, err4ReadAll
 	}
 
 	// debug/log non-200 or unexpected content-type
 	if resp.StatusCode != 200 {
-		u.logger.Error("doh_upstream_status", slog.String("status", resp.Status))
+		log.Error("doh_upstream_status", slog.String("status", resp.Status))
 		return nil, fmt.Errorf("upstream status %s", resp.Status)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct != "application/dns-message" {
-		u.logger.Error("doh_upstream_content_type isn't the expected application/dns-message", slog.String("content_type", ct))
+		log.Error("doh_upstream_content_type isn't the expected application/dns-message", slog.String("content_type", ct))
 	}
 	if len(body) < 12 {
-		u.logger.Error("doh_upstream_body_too_short", slog.Int("len", len(body)))
+		log.Error("doh_upstream_body_too_short", slog.Int("len", len(body)))
 	}
 
 	upMsg := new(dns.Msg)
 	if err4Unpack := upMsg.Unpack(body); err4Unpack != nil {
 		n := len(body)
-		u.logger.Error("doh_unpack_failed", SafeErr(err4Unpack),
+		log.Error("doh_unpack_failed", SafeErr(err4Unpack),
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
@@ -4512,12 +4614,14 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context,
 }
 
 func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
+	log := u.getLogger()
+
 	port := u.URL.Port()
 	if port == "" {
 		//port = "443"
 		panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
 		// port = ImpliedPort
-		// s.logger.Warn("dev fail, port shoulda been already set in initDoHClients! Using default tho.",
+		// log.Warn("dev fail, port shoulda been already set in initDoHClients! Using default tho.",
 		//     slog.String("implied_port", ImpliedPort),
 		//     slog.Any("sni", sni))
 	}
@@ -4532,16 +4636,16 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	})
 
 	if err != nil {
-		u.logger.Error("Diagnostic probe failed", slog.String("addr", addr), SafeErr(err))
+		log.Error("Diagnostic probe failed", slog.String("addr", addr), SafeErr(err))
 		return
 	}
 	defer conn.Close()
 
 	state := conn.ConnectionState()
-	u.logger.Info("--- TLS Diagnostic Probe ---", slog.String("remote_addr", addr), slog.String("sni_sent", u.SNI))
+	log.Info("--- TLS Diagnostic Probe ---", slog.String("remote_addr", addr), slog.String("sni_sent", u.SNI))
 
 	for i, cert := range state.PeerCertificates {
-		u.logger.Info(fmt.Sprintf("Certificate [%d] in chain", i),
+		log.Info(fmt.Sprintf("Certificate [%d] in chain", i),
 			slog.String("subject", cert.Subject.String()),
 			slog.String("issuer", cert.Issuer.String()),
 			//slog.Any("dns_names", cert.DNSNames), // This is the most important part
@@ -4608,6 +4712,8 @@ var (
 )
 
 func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
+	cfg := s.getConfig()
+
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
 	// if you don't do this then, when you run the following in git-bash (git for windows's bash terminal):
@@ -4619,7 +4725,7 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// and we whitelist it in A afterwards, then dnscache might've cached the NXDOMAIN from AAAA and treat it as such for X more seconds thus
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
-	if s.config.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && s.config.BlockMode == "nxdomain" {
+	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == "nxdomain" {
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
 		resp.Rcode = dns.RcodeSuccess
@@ -4633,12 +4739,12 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	}
 
 	//in Go, implicit 'break' after each 'case'
-	switch s.config.BlockMode { //XXX: it's already lowercased!
+	switch cfg.BlockMode { //XXX: it's already lowercased!
 	case "nxdomain":
 		msg.SetRcode(msg, dns.RcodeNameError)
 	case "ip_block", "block_ip":
-		ttl := uint32(s.config.BlockedResponseTTLSec)
-		blockIP := net.ParseIP(s.config.BlockIP)
+		ttl := uint32(cfg.BlockedResponseTTLSec)
+		blockIP := net.ParseIP(cfg.BlockIP)
 		if blockIP == nil {
 			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this! unless we need a fresh instance each time?
 		}
@@ -4694,7 +4800,7 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// It prevents IP fragmentation on modern networks
 	//opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
 
-	if s.config.UseEDEInBlockedReply {
+	if cfg.UseEDEInBlockedReply {
 		opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
 		// You can reuse a global EDE struct here IF it is never modified
 		opt.Option = []dns.EDNS0{ede}
@@ -4715,6 +4821,8 @@ const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
 // mutates the passed arg
 func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) {
+	log := s.getLogger()
+
 	if msg == nil {
 		panic("msg was nil, unexpected bad programming/code ;p")
 	}
@@ -4763,7 +4871,7 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 				//     dropReasons = reason
 				// }
 
-				s.logger.Warn("Dropped "+sectionName+" from upstream",
+				log.Warn("Dropped "+sectionName+" from upstream",
 					slog.String("reason", reason),
 					slog.String("query_type", qtype),
 					slog.String("rr", rr.String() /*non-nil if here due to 'for' was entered*/),
@@ -4779,7 +4887,7 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
-		s.logger.Warn("response_filtered_all", slog.String("query_type", qtype), slog.String("domain", q.Name),
+		log.Warn("response_filtered_all", slog.String("query_type", qtype), slog.String("domain", q.Name),
 
 			// slog.String("drop_reasons",
 			//     //dropReasons
@@ -4815,6 +4923,9 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
 func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, string) {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
 	switch r := rr.(type) {
 	case *dns.A:
 		if r.A.IsUnspecified() { // Matches 0.0.0.0
@@ -4837,7 +4948,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
 		//doneTODO: make this configurable in config.json so only if 'true' do this:
-		if s.config.RemoveHTTPSIPv4Hints {
+		if cfg.RemoveHTTPSIPv4Hints {
 			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 			// Filter the SVCB/HTTPS parameters
@@ -4849,7 +4960,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 				if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
 					newParams = append(newParams, param)
 				} else {
-					s.logger.Warn("Dropping IP hint from the HTTPS reply", slog.String("param", param.String() /*non nil*/))
+					log.Warn("Dropping IP hint from the HTTPS reply", slog.String("param", param.String() /*non nil*/))
 				}
 			}
 			r.Value = newParams
@@ -5034,8 +5145,10 @@ func SafeSlice[T any](key string, slice []T, mapper func(T) string) slog.Attr {
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
 func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg, upstreamState2 UpstreamState) {
+	log := s.getLogger()
+
 	if ctx == nil {
-		s.logger.Error("bad coding: logQuery called with nil context", // should never happen
+		log.Error("bad coding: logQuery called with nil context", // should never happen
 			slog.String("client", client),
 			slog.String("domain", domain))
 		return
@@ -5063,7 +5176,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 
 	//     // Also, log a separate Error to your main system log/stderr
 	//     // so you get alerted that a handler is broken.
-	//     s.logger.Warn("coding_fail: logQuery called without metadata in context",
+	//     log.Warn("coding_fail: logQuery called without metadata in context",
 	//         slog.String("client", client),
 	//         slog.String("domain", domain))
 	// } else {
@@ -5107,7 +5220,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 
 		// Also, log a separate Error to your main system log/stderr
 		// so you get alerted that a handler is broken.
-		s.logger.Warn("coding_fail: logQuery called without metadata in context",
+		log.Warn("coding_fail: logQuery called without metadata in context",
 			slog.String("client", client),
 			slog.String("domain", domain))
 	}
@@ -5136,7 +5249,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	if len(upstreamState2.FailedUpstreams) > 0 {
 		attrs = append(attrs, slog.Any("failed_upstreams", upstreamState2.FailedUpstreams))
 	}
-	s.logger.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
+	log.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
 }
 
 func servfailResponse(msg *dns.Msg) *dns.Msg {
@@ -5151,6 +5264,8 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 }
 
 func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
 	if r.Method == "GET" {
 		data := map[string]any{
 			"Page":              "response-blacklist",
@@ -5205,33 +5320,33 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 
 					// Using the clean add helper method with natural defer unlock
 					if ui.blacklist.TryAdd(n) { //added so it didn't exist
-						ui.logger.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
+						log.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
 						if err := ui.OnSaveBlacklist(); err != nil {
 							ui.logFatal("failed to save response blacklist after add from webUI", err)
 						}
 						// Instantly evict cached entries that contain the newly blacklisted IP
 						ui.OnInvalidateBlacklist()
 					} else {
-						ui.logger.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
+						log.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
 					}
 				} else {
-					ui.logger.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
+					log.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
 					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
 					return
 				}
 			} else {
-				ui.logger.Warn("Failed to add IP/CIDR to blacklist: empty input")
+				log.Warn("Failed to add IP/CIDR to blacklist: empty input")
 			}
 		} else if action == "delete" {
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			// Using the clean delete helper method with natural defer unlock
 			if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
-				ui.logger.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
+				log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
 				if err := ui.OnSaveBlacklist(); err != nil {
 					ui.logFatal("failed to save response blacklist after delete from webUI", err)
 				}
 			} else {
-				ui.logger.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
+				log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
 			}
 
 			// deleted := false
@@ -5250,7 +5365,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			// 	}
 			// }
 		} else {
-			ui.logger.Warn("Response blacklist handler received unknown action", slog.String("action", action))
+			log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	}
@@ -5380,9 +5495,12 @@ func (ui *AdminUI) SetupRoutes() http.Handler {
 }
 
 func (s *Server) startWebUI(addr string) {
+	log := s.getLogger()
+	cfg := s.getConfig()
+
 	ui := NewAdminUI(
-		s.logger,
-		s.config,
+		&s.liveConfig,
+		&s.liveLogger,
 		s.ruleStore,
 		s.hostStore,
 		s.blacklist,
@@ -5410,7 +5528,7 @@ func (s *Server) startWebUI(addr string) {
 	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
 	baseListener, err := net.Listen("tcp", addr) //fmt.Sprintf("%s:%d", hostOrIP, port))
 	if err != nil {
-		s.logger.Error("UI listener failed to bind/listen", slog.String("addr", addr),
+		log.Error("UI listener failed to bind/listen", slog.String("addr", addr),
 			//slog.String("hostOrIp", hostOrIP), slog.Int("port", port),
 			SafeErr(err))
 		s.shutdown(1) //os.Exit(1) // Fail-fast serial
@@ -5426,8 +5544,8 @@ func (s *Server) startWebUI(addr string) {
 	// }()
 	protocolScheme := "http"
 
-	//s.logger.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
-	if s.config.WebUIUseTLS {
+	//log.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
+	if cfg.WebUIUseTLS {
 		// Leverage the global certificate loaded/generated during startup
 		tlsConfig := &tls.Config{
 			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
@@ -5457,7 +5575,7 @@ func (s *Server) startWebUI(addr string) {
 		//host = addr
 		//portStr = "unknown"
 	}
-	s.logger.Info("Web UI listening",
+	log.Info("Web UI listening",
 		slog.String("scheme", protocolScheme),
 		slog.String("host", host),
 		slog.String("port", portStr),
@@ -5470,7 +5588,7 @@ func (s *Server) startWebUI(addr string) {
 		defer s.shutdownWG.Done()
 
 		<-s.ctx.Done()
-		s.logger.Debug("Shutting down Web UI server...")
+		log.Debug("Shutting down Web UI server...")
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
 		_ = uiSrv.Shutdown(shutdownCtx)
@@ -5484,14 +5602,15 @@ func (s *Server) startWebUI(addr string) {
 			s.logFatal("ui_serve_failed", err)
 		}
 	}()
-	s.logger.Debug("UI server loop launched")
-	s.logger.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload (partial)config, Ctrl+C to break gracefully")
+	log.Debug("UI server loop launched")
+	log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload (partial)config, Ctrl+C to break gracefully")
 }
 
 const csrfTokenKey contextKey = "csrfToken"
 
 func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log := ui.getLogger()
 		// 1. Get or generate the CSRF cookie
 		cookie, err := r.Cookie("csrf_token")
 		var token string
@@ -5517,7 +5636,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		if r.Method == "POST" {
 			formToken := r.FormValue("csrf_token")
 			if formToken == "" || formToken != token {
-				//s.logger.Warn("CSRF token validation failed; dropping request", slog.String("client", r.RemoteAddr))
+				//log.Warn("CSRF token validation failed; dropping request", slog.String("client", r.RemoteAddr))
 
 				// Capture everything safely in local variables immediately (optional, but clean)
 				//because the request is completely isolated to this single thread of execution at this moment, you can read any field or header from r with zero risk of a data race.
@@ -5528,7 +5647,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 				refererHeader := r.Header.Get("Referer")
 				userAgent := r.Header.Get("User-Agent")
 
-				ui.logger.Warn("CSRF token validation failed; dropping request",
+				log.Warn("CSRF token validation failed; dropping request",
 					slog.String("client", clientIP),
 					slog.String("method", r.Method),
 					slog.String("path", targetPath),
@@ -6081,6 +6200,8 @@ type RuleView struct {
 }
 
 func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
 	if r.Method == "GET" {
 		// data := map[string]any{
 		//     "Page":     "rules",
@@ -6131,18 +6252,18 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			typ := r.FormValue("type")
 
 			if id == "" || typ == "" {
-				ui.logger.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
+				log.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, "id and type required for delete", http.StatusBadRequest)
 				return
 			}
 			if err := validateDNSType(typ); err != nil {
-				ui.logger.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+				log.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			// id is a UUID used only as a map key; sanitize it against injection just in case.
 			if _, modified := sanitizeDomainInput(id); modified {
-				ui.logger.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
+				log.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
@@ -6159,7 +6280,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// 			if rule.ID == id {
 			// 				s.invalidateCacheForPattern(rule.Pattern)
 			// 				// Replaces the shifting copy hacks with an isolated fresh array allocation
-			// 				s.whitelist[typ] = withRuleRemovedAt(rules, i, s.logger)
+			// 				s.whitelist[typ] = withRuleRemovedAt(rules, i, log)
 			// 				deleted = true
 			// 				break
 			// 			}
@@ -6167,24 +6288,24 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// 	}
 			// }() // lock released here
 			// if deleted {
-			// 	s.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
+			// 	log.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
 			// 	if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
 			// 		s.logFatal("failed to save whitelist after rule deletion from webUI", err)
 			// 	}
 			// 	http.Redirect(w, r, "/rules", http.StatusSeeOther)
 			// 	return
 			// } else {
-			// 	s.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
+			// 	log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
 			// 	http.Error(w, "rule not found", http.StatusNotFound)
 			// 	return
 			// }
-			pattern, err := ui.ruleStore.DeleteRule(typ, id, ui.logger)
+			pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
 			if err != nil {
-				ui.logger.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
+				log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			ui.logger.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
+			log.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
 			ui.OnInvalidatePattern(pattern)
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule deletion from webUI", err)
@@ -6200,18 +6321,18 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 		if patternLowercased == "" || typ == "" {
-			ui.logger.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
+			log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
 		}
 
 		if err := validateDNSType(typ); err != nil {
-			ui.logger.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+			log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := validateRulePattern(patternLowercased); err != nil {
-			ui.logger.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
+			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -6226,13 +6347,13 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			//     // Edit: Find and update (search all types)
 			// --- EDIT MODE ---
 			if _, modified := sanitizeDomainInput(id); modified {
-				ui.logger.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
+				log.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
-			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, ui.logger)
+			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, log)
 			if err != nil {
-				ui.logger.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
+				log.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
@@ -6271,20 +6392,20 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
 			// if oldType == typ {
 			// 	// Type didn't change -> Update fully IN-PLACE cleanly using our new function
-			// 	s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, s.logger)
+			// 	s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, log)
 			// } else {
 			// 	// Type changed -> Safely remove from old slice, safely prepend to new slice
 
-			// 	s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, s.logger)
+			// 	s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, log)
 
 			// 	// 2. Prepend smoothly to the new category using your new function
-			// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+			// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
 			// }
 			ui.OnInvalidatePattern(oldPattern)
 			if oldPattern != patternLowercased {
 				ui.OnInvalidatePattern(patternLowercased)
 			}
-			ui.logger.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
+			log.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
 				slog.String("old_pattern", oldPattern))
 		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
 			// --- ADD MODE ---
@@ -6297,25 +6418,25 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			// 	}
 			// }
 
-			// newID := generateUniqueRuleID(s.whitelist, s.logger)
+			// newID := generateUniqueRuleID(s.whitelist, log)
 			// newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
 			// // Replaces all the manual make() and copy() steps with your new helper function
-			// s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+			// s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
 
-			newID, err := ui.ruleStore.AddRule(typ, patternLowercased, enabledBool, ui.logger)
+			newID, err := ui.ruleStore.AddRule(typ, patternLowercased, enabledBool, log)
 			if err != nil {
-				ui.logger.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
+				log.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
 			ui.OnInvalidatePattern(patternLowercased)
-			ui.logger.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
+			log.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
 		}
 		// return nil
 		// }() // lock released here
 		// Handle any error returned by the thread-safe operations
 		// if err != nil {
-		// 	s.logger.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
+		// 	log.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
 		// 	http.Error(w, err.Error(), http.StatusConflict)
 		// 	return
 		// }
@@ -6436,6 +6557,8 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 	if s.dnsCache == nil {
 		return
 	}
+	log := s.getLogger()
+
 	for key := range s.dnsCache.Items() {
 		// key format is "domain:type" (e.g., "router.local:A")
 		parts := strings.SplitN(key, ":", 2)
@@ -6443,7 +6566,7 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 			domain := parts[0]
 			if matchPattern(pattern, domain) {
 				s.dnsCache.Delete(key)
-				s.logger.Debug("Evicted cached record due to rule change",
+				log.Debug("Evicted cached record due to rule change",
 					slog.String("key", key),
 					slog.String("matched_pattern", pattern),
 					slog.String("domain", domain))
@@ -6456,6 +6579,8 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 	if s.dnsCache == nil {
 		return
 	}
+	log := s.getLogger()
+
 	// 1. Grab a snapshot of pointers under a microsecond single lock
 	//Instead of a single s.blacklist.Contains(ip) call hitting a mutex over and over, you pull the whole list out once into blacklistedNets. Then, inside the loops, you do plain, local array iterations (for _, netEntry := range blacklistedNets).
 	blacklistedNets := s.blacklist.Snapshot()
@@ -6499,12 +6624,14 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 
 		if shouldEvict {
 			s.dnsCache.Delete(key)
-			s.logger.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
+			log.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
 		}
 	}
 }
 
 func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
 	if r.Method == "GET" {
 		// // 1. Snapshot the data under lock
 		// s.localHostsMu.RLock()
@@ -6537,13 +6664,13 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("delete") == "1" {
 			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
 			if pattern == "" {
-				ui.logger.Warn("Failed to delete local host: pattern required")
+				log.Warn("Failed to delete local host: pattern required")
 				http.Error(w, "pattern required for delete", http.StatusBadRequest)
 				return
 			}
 
 			if err := validateRulePattern(pattern); err != nil {
-				ui.logger.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6562,7 +6689,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			// }()
 
 			if ui.hostStore.DeleteHost(pattern) {
-				ui.logger.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
+				log.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
 				// --- NEW: Invalidate the cache for the deleted pattern ---
 				ui.OnInvalidatePattern(pattern)
 
@@ -6573,7 +6700,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			ui.logger.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
+			log.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
 			http.Error(w, "host not found", http.StatusNotFound)
 			return
 		}
@@ -6584,21 +6711,21 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		isEdit := r.FormValue("edit") == "1"
 
 		if pattern == "" {
-			ui.logger.Warn("Failed to add/edit local host: hostname required")
+			log.Warn("Failed to add/edit local host: hostname required")
 			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
 			return
 		}
 		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 
 		if err := validateRulePattern(pattern); err != nil {
-			ui.logger.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// old_pattern (edit path) needs the same check.
 		if isEdit && oldPattern != "" {
 			if err := validateRulePattern(oldPattern); err != nil {
-				ui.logger.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
+				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
 				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6614,14 +6741,14 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			if ip := net.ParseIP(ipStr); ip != nil {
 				netIPs = append(netIPs, ip)
 			} else {
-				ui.logger.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
+				log.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
 				http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
 				return
 			}
 		}
 
 		if len(netIPs) == 0 {
-			ui.logger.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
+			log.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
 			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
 			return
 		}
@@ -6670,7 +6797,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			ui.logger.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
+			log.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
@@ -6684,7 +6811,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
 		ui.OnInvalidatePattern(pattern) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
 		// -------------------------------
-		ui.logger.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
+		log.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
 
 		if err := ui.OnSaveHosts(); err != nil {
 			ui.logFatal("failed to save local hosts after add/edit", err)
@@ -6698,6 +6825,8 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 // before writing to the network, preventing "established connection aborted" errors
 // from being logged as template execution failures.
 func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
+	log := ui.getLogger()
+
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
 		data["CSRFToken"] = token
@@ -6705,7 +6834,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 
 	var buf bytes.Buffer
 	if err := uiTemplates.Execute(&buf, data); err != nil {
-		ui.logger.Error("template_render_failed",
+		log.Error("template_render_failed",
 			slog.String("page", pageName),
 			SafeErr(err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -6718,7 +6847,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	if _, err := buf.WriteTo(w); err != nil {
 		// Log as Debug/Info because this is usually just a client (browser)
 		// closing the connection or refreshing the page mid-download.
-		ui.logger.Debug("client_disconnected_during_ui_write",
+		log.Debug("client_disconnected_during_ui_write",
 			slog.String("page", pageName),
 			SafeErr(err))
 	}
@@ -6772,6 +6901,8 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 }
 
 func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
 	if r.Method == "GET" {
 		data := map[string]any{
 			"Page":           "blocks",
@@ -6790,7 +6921,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		sanitized, modified := sanitizeDomainInput(raw)
 
 		if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern via Quick Unblock here, but an actual valid DNS query domain (and without ending in a dot)
-			ui.logger.Warn("Invalid domain input submitted via Quick Unblock",
+			log.Warn("Invalid domain input submitted via Quick Unblock",
 				slog.String("raw", raw),
 				slog.String("sanitized", sanitized),
 				slog.Bool("modified", modified),
@@ -6829,7 +6960,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				// 		if rule.Enabled {
 				// 			s.whitelist[typ][i].Enabled = false //XXX: mutates in place
 				// 			successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-				// 			s.logger.Info("Quick re-block via WebUI: paused existing rule",
+				// 			log.Info("Quick re-block via WebUI: paused existing rule",
 				// 				slog.String("domainLowercased", domainLowercased),
 				// 				slog.String("DNSType", typ))
 				// 			s.invalidateCacheForPattern(domainLowercased)
@@ -6842,7 +6973,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-					ui.logger.Info("Quick re-block via WebUI: paused existing rule",
+					log.Info("Quick re-block via WebUI: paused existing rule",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
 					ui.OnInvalidatePattern(domainLowercased)
@@ -6853,21 +6984,21 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-					ui.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
+					log.Info("Quick unblock via WebUI: enabled existing paused rule",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
 					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-					ui.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
+					log.Info("Quick unblock via WebUI: ignored, rule is already active",
 						slog.String("domainLowercased", domainLowercased),
 						slog.String("DNSType", typ))
 				} else {
-					newID, addErr := ui.ruleStore.AddRule(typ, domainLowercased, true, ui.logger)
+					newID, addErr := ui.ruleStore.AddRule(typ, domainLowercased, true, log)
 					if addErr == nil {
 						_ = newID
 						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-						ui.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
+						log.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
 							slog.String("DNSType", typ))
 						ui.OnInvalidatePattern(domainLowercased)
@@ -6882,13 +7013,13 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				// 		if !rule.Enabled {
 				// 			s.whitelist[typ][i].Enabled = true //XXX: mutates in place
 				// 			successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-				// 			s.logger.Info("Quick unblock via WebUI: enabled existing paused rule",
+				// 			log.Info("Quick unblock via WebUI: enabled existing paused rule",
 				// 				slog.String("domainLowercased", domainLowercased),
 				// 				slog.String("DNSType", typ))
 				// 			s.invalidateCacheForPattern(domainLowercased)
 				// 		} else {
 				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-				// 			s.logger.Info("Quick unblock via WebUI: ignored, rule is already active",
+				// 			log.Info("Quick unblock via WebUI: ignored, rule is already active",
 				// 				slog.String("domainLowercased", domainLowercased),
 				// 				slog.String("DNSType", typ))
 				// 		}
@@ -6899,23 +7030,23 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 				// if !found {
 				// 	newRule := RuleEntry{
-				// 		ID:      generateUniqueRuleID(s.whitelist, s.logger),
+				// 		ID:      generateUniqueRuleID(s.whitelist, log),
 				// 		Pattern: domainLowercased,
 				// 		Enabled: true,
 				// 	}
 				// 	// whitelist[typ] = append(whitelist[typ], newRule)
 
 				// 	// Replace the standard append with your safe helper function
-				// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, s.logger)
+				// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
 
 				// 	successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-				// 	s.logger.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
+				// 	log.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 				// 		slog.String("domainLowercased", domainLowercased),
 				// 		slog.String("DNSType", typ))
 				// 	s.invalidateCacheForPattern(domainLowercased)
 				// }
 			} else {
-				ui.logger.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
+				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				// Reject any unauthorized or malformed action values
 				http.Error(w, "Invalid action specified", http.StatusBadRequest)
 				return //oh this was bugged before, it was exitting only the inner anon-func!
@@ -6943,7 +7074,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		// 	"Blocks":       getRecentBlocksCopy(),
 		// 	"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
 		// }
-		ui.logger.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
+		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
 
 		// renderTemplate(w, "blocks", data)
 		errMsg := "Failed to process unblock request. " + payloadDetails
@@ -6954,6 +7085,9 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+	cfg := ui.getConfig()
+	log := ui.getLogger()
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		// Fallback if file doesn't exist yet
@@ -6967,7 +7101,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	searchLower := strings.ToLower(filter)
 
 	// Cap the output to the last 5000 matches to save RAM and prevent browser crashes
-	var maxLines = ui.config.UILogMaxLines
+	var maxLines = cfg.UILogMaxLines
 	ring := make([]string, maxLines)
 	count := 0
 
@@ -6996,7 +7130,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	// If a line was too long ( > 1MB), the scanner stops here.
 	if err := scanner.Err(); err != nil {
 		if err == bufio.ErrTooLong {
-			ui.logger.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
+			log.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
 		}
 	}
 
@@ -7041,47 +7175,52 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 }
 
 func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := ui.getConfig()
+
 	filter := r.URL.Query().Get("q")
 	//no:// If they used the old 'domain' param, support it as a fallback
 	// if filter == "" {
 	//     filter = r.URL.Query().Get("domain")
 	// }
 
-	ui.renderLogPage(w, r, "Query Logs", ui.config.LogQueriesFile, filter)
+	ui.renderLogPage(w, r, "Query Logs", cfg.LogQueriesFile, filter)
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "System & Error Logs", ui.config.LogErrorsFile, filter)
+	ui.renderLogPage(w, r, "System & Error Logs", cfg.LogErrorsFile, filter)
 }
 
 func (s *Server) shutdown(exitCode int) {
+	log := s.getLogger()
+
 	s.shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
-		s.logger.Info("Shutting down...")
+		log.Info("Shutting down...")
 		// 1. Cancel the context immediately so all other listeners stop
 		s.cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
-		s.logger.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
+		log.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
 		s.flushCache()
 		//doneTODO: webUI shutdown (done via cancel() above)
-		//s.logger.Debug("webUI shutdown(fake)")
+		//log.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
 		// Wait 1 sec to allow graceful HTTP shutdowns and the "quitting" messages to show
 		//time.Sleep(1000 * time.Millisecond)
 		// ADD: Wait for all registered goroutines to signal they've exited
-		s.logger.Debug("Waiting for goroutines to finish...")
+		log.Debug("Waiting for goroutines to finish...")
 		s.shutdownWG.Wait()
-		s.logger.Debug("All goroutines exited.")
-		//s.logger.Debug("waited 1 sec for port cleanup")
+		log.Debug("All goroutines exited.")
+		//log.Debug("waited 1 sec for port cleanup")
 
-		// UnstickStdinRead(s.logger)
+		// UnstickStdinRead(log)
 		// if !wincoe.WaitAnyKeyIfInteractive() {
-		// 	s.logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
+		// 	log.Debug("Didn't wait for keypress due to not an interactive/terminal.")
 		// }
 		// //bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
-		// s.logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
+		// log.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 		// os.Exit(exitCode)
-		finalShutdownSequence(s.logger, exitCode)
+		finalShutdownSequence(log, exitCode)
 		panic("BUG: shoulda been unreachable after finalShutdownSequence, which means it didn't os.Exit!")
 	})
 	panic("BUG: shoulda been unreachable after s.shutdownOnce.Do")
@@ -7107,11 +7246,11 @@ func UnstickStdinRead(logger *slog.Logger) {
 	select {
 	case signalTheUnstick <- struct{}{}:
 		//this is entered here only because the channel is buffered (size 1) and thus will send
-		//s.logger.Debug("sent1")
+		//log.Debug("sent1")
 	default:
 		// Already shutting down
 	}
-	//s.logger.Debug("cont2")
+	//log.Debug("cont2")
 	// Wake up watchKeys goroutine by injecting an Enter key event
 	// into the console buffer. It will unblock Stdin.Read, see
 	// abortedByUser is true, restore terminal state, and exit safely.
@@ -7127,6 +7266,8 @@ func UnstickStdinRead(logger *slog.Logger) {
 }
 
 func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
+	log := s.getLogger()
+
 	fd := int(os.Stdin.Fd())
 
 	oldState, err := term.MakeRaw(fd)
@@ -7144,7 +7285,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		select {
 		case <-signalTheUnstick:
 			//XXX: this is to avoid waiting for an extra keypress when prompted to press a key to exit
-			//s.logger.Debug("1 watchKeys exiting due to external fatal error")
+			//log.Debug("1 watchKeys exiting due to external fatal error")
 			return
 		default:
 			// Continue to read
@@ -7163,7 +7304,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		select {
 		case <-signalTheUnstick:
 			//XXX: this is to avoid waiting for an extra keypress when prompted to press a key to exit
-			//s.logger.Debug("2 watchKeys woke up and saw external fatal error")
+			//log.Debug("2 watchKeys woke up and saw external fatal error")
 			return
 		default:
 		}
@@ -7172,7 +7313,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+X (0x18)
 		if buf[0] == 0x18 {
 			fmt.Print("\n")
-			s.logger.Info("Ctrl+X detected → clean exit")
+			log.Info("Ctrl+X detected → clean exit")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
@@ -7180,7 +7321,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+R (0x12)
 		if buf[0] == 0x12 {
 			fmt.Print("\n")
-			s.logger.Info("Ctrl+R detected → reloading config")
+			log.Info("Ctrl+R detected → reloading config")
 			//_ = term.Restore(fd, oldState)
 			// NO restore needed here because we want to stay in Raw mode
 			// to catch the next keypress after the reload.
@@ -7190,7 +7331,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		// Ctrl+C (0x03) or else can't break the program except with Ctrl+Break !
 		if buf[0] == 0x03 {
 			fmt.Print("\n")
-			s.logger.Info("Ctrl+C detected → breaking gracefully")
+			log.Info("Ctrl+C detected → breaking gracefully")
 			_ = term.Restore(fd, oldState)
 			cleanExitFn()
 		}
@@ -7200,12 +7341,12 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 			switch buf[1] {
 			case 'x', 'X':
 				fmt.Print("\n")
-				s.logger.Info("Alt+X detected → clean exit")
+				log.Info("Alt+X detected → clean exit")
 				_ = term.Restore(fd, oldState)
 				cleanExitFn()
 			case 'r', 'R':
 				fmt.Print("\n")
-				s.logger.Info("Alt+R detected → reloading config")
+				log.Info("Alt+R detected → reloading config")
 				//_ = term.Restore(fd, oldState)
 				reloadFn()
 			}
@@ -7215,7 +7356,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		_, err = term.MakeRaw(fd)
 		if err != nil {
 			fmt.Print("\n")
-			s.logger.Error("Failed to make the terminal raw", SafeErr(err))
+			log.Error("Failed to make the terminal raw", SafeErr(err))
 			return
 		}
 	}
@@ -7314,7 +7455,9 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 //
 // Expired lockout windows are reset lazily on the first call after expiry.
 func (ui *AdminUI) isLoginAllowed(clientIP string) (allowed bool, attemptsRemaining int, lockedUntil time.Time) {
-	return ui.loginTracker.IsAllowed(clientIP, ui.config.WebUIMaxLoginFailures)
+	cfg := ui.getConfig()
+
+	return ui.loginTracker.IsAllowed(clientIP, cfg.WebUIMaxLoginFailures)
 }
 
 // recordLoginFailure increments the failure counter for the given IP and
@@ -7325,21 +7468,28 @@ func (ui *AdminUI) isLoginAllowed(clientIP string) (allowed bool, attemptsRemain
 //   - lockedUntil: expiry time of the lockout (zero if not locked).
 //   - totalFailures: cumulative failure count for this IP in the current window.
 func (ui *AdminUI) recordLoginFailure(clientIP string) (lockedOut bool, lockedUntil time.Time, totalFailures int) {
-	return ui.loginTracker.RecordFailure(clientIP, ui.config.WebUIMaxLoginFailures, ui.config.WebUILoginLockoutSec)
+	cfg := ui.getConfig()
+
+	return ui.loginTracker.RecordFailure(clientIP, cfg.WebUIMaxLoginFailures, cfg.WebUILoginLockoutSec)
 }
 
 // recordLoginSuccess clears any accumulated failure record for the given IP.
 // Call after every successful authentication so a legitimate user is never
 // permanently locked out due to an earlier typo streak.
 func (ui *AdminUI) recordLoginSuccess(clientIP string) {
+	log := ui.getLogger()
+
 	ui.loginTracker.RecordSuccess(clientIP)
-	ui.logger.Info("Login success", slog.String("client", clientIP))
+	log.Info("Login success", slog.String("client", clientIP))
 }
 
 func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
+	log := ui.getLogger()
+	cfg := ui.getConfig()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Safety fallback: if somehow the hash is still blank, DON'T allow access
-		if ui.config.WebUIPasswordHash == "" {
+		if cfg.WebUIPasswordHash == "" {
 			panic("no webUI password was set, this shouldn't be possible, dev fail?")
 		}
 
@@ -7348,7 +7498,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		if splitErr != nil {
 			// r.RemoteAddr should always be host:port for TCP, but be defensive.
 			clientIP = r.RemoteAddr
-			ui.logger.Warn("WebUI auth: could not split RemoteAddr into host:port",
+			log.Warn("WebUI auth: could not split RemoteAddr into host:port",
 				slog.String("remoteAddr", r.RemoteAddr),
 				SafeErr(splitErr))
 		}
@@ -7356,7 +7506,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// ── Rate-limit gate ──────────────────────────────────────────────────
 		if allowed, _, lockedUntil := ui.isLoginAllowed(clientIP); !allowed {
 			retryAfterSecs := int(time.Until(lockedUntil).Seconds()) + 1
-			ui.logger.Warn("WebUI login rejected: IP is rate-limited",
+			log.Warn("WebUI login rejected: IP is rate-limited",
 				slog.String("clientIP", clientIP),
 				slog.Time("locked_until", lockedUntil),
 				slog.Int("retry_after_sec", retryAfterSecs),
@@ -7377,7 +7527,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// Extract the Basic Auth credentials provided by the browser
 		username, pass, ok := r.BasicAuth()
 		if username != "" {
-			ui.logger.Warn("WebUI login: username field is not used and was ignored",
+			log.Warn("WebUI login: username field is not used and was ignored",
 				slog.String("username", username),
 				slog.String("clientIP", clientIP))
 		}
@@ -7385,7 +7535,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// Compare the provided password against our stored bcrypt hash.
 		// If headers are missing (!ok) or the password is wrong (err != nil), block them.
 		// Only log and record a failure if credentials were provided but are invalid
-		if !ok || bcrypt.CompareHashAndPassword([]byte(ui.config.WebUIPasswordHash), []byte(pass)) != nil {
+		if !ok || bcrypt.CompareHashAndPassword([]byte(cfg.WebUIPasswordHash), []byte(pass)) != nil {
 			// Record the failure and get count/lockout state for logging.
 			lockedOut, newLockedUntil, totalFailures := ui.recordLoginFailure(clientIP)
 
@@ -7398,7 +7548,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 				pid, exe, pidExeLookupErr = wincoe.PidAndExeForTCP(remoteTCP)
 			}
 
-			remaining := ui.config.WebUIMaxLoginFailures - totalFailures
+			remaining := cfg.WebUIMaxLoginFailures - totalFailures
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -7415,16 +7565,16 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 				logAttrs = append(logAttrs,
 					slog.Bool("now_locked_out", true),
 					slog.Time("locked_until", newLockedUntil),
-					slog.Int("lockout_duration_sec", ui.config.WebUILoginLockoutSec),
+					slog.Int("lockout_duration_sec", cfg.WebUILoginLockoutSec),
 				)
-				ui.logger.Warn("WebUI login failed — IP is now locked out", logAttrs...)
+				log.Warn("WebUI login failed — IP is now locked out", logAttrs...)
 				//http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 
 				//FIXME: technically I'd have to dup some code from above here to include the Retry-After
 				http.Error(w, "429 Too Many Requests — Too many failed login attempts. Try again later.", http.StatusTooManyRequests)
 				return
 			} else {
-				ui.logger.Warn("WebUI login failed", logAttrs...)
+				log.Warn("WebUI login failed", logAttrs...)
 				//try again by doing the below dialog
 			}
 
@@ -7451,16 +7601,18 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 // The map is replaced rather than iterated so the operation is O(1)
 // regardless of how many IPs had recorded failures.
 func (ui *AdminUI) clearLoginLockouts() {
+	log := ui.getLogger()
+
 	// s.loginMu.Lock()
 	// n := len(s.loginRecords)
 	// s.loginRecords = make(map[string]*loginRecord)
 	// s.loginMu.Unlock()
 	n := ui.loginTracker.ClearAll()
 	if n > 0 {
-		ui.logger.Warn("WebUI login lockouts cleared by operator reload",
+		log.Warn("WebUI login lockouts cleared by operator reload",
 			slog.Int("cleared_entry_count", n))
 	} else {
-		ui.logger.Debug("WebUI login lockouts cleared by operator reload (none were active)")
+		log.Debug("WebUI login lockouts cleared by operator reload (none were active)")
 	}
 }
 
@@ -7473,6 +7625,7 @@ type RateLimitConfig struct {
 	ClientBurst int
 }
 
+// get a copy of the source
 func rateLimitConfigFrom(cfg Config) RateLimitConfig {
 	return RateLimitConfig{
 		GlobalQPS:   cfg.GlobalRateQPS,
@@ -7585,7 +7738,7 @@ func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
 type FileWriter interface {
 	SafeWriteFile(filename string, data []byte, perm os.FileMode) error
 	CheckPowerLossFile(filename string)
-	SetLogger(logger *slog.Logger)
+	// SetLogger(logger *slog.Logger)
 	SetExtraSafety(enabled bool)
 }
 
@@ -7596,21 +7749,31 @@ type FileWriter interface {
 type safeFileWriter struct {
 	mu          sync.Mutex
 	extraSafety bool
-	logger      *slog.Logger
+	//logger      *slog.Logger
+	liveLogger *atomic.Pointer[slog.Logger]
 }
 
-func newSafeFileWriter(extraSafety bool, logger *slog.Logger) FileWriter {
+func newSafeFileWriter(extraSafety bool, liveLogger *atomic.Pointer[slog.Logger]) FileWriter {
 	return &safeFileWriter{
 		extraSafety: extraSafety,
-		logger:      logger,
+		liveLogger:  liveLogger,
 	}
 }
 
-func (fw *safeFileWriter) SetLogger(logger *slog.Logger) {
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
-	fw.logger = logger
+func (fw *safeFileWriter) getLogger() *slog.Logger {
+	if l := fw.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: safeFileWriter.liveLogger wasn't inited, using default.")
+	return log
 }
+
+// func (fw *safeFileWriter) SetLogger(logger *slog.Logger) {
+// 	fw.mu.Lock()
+// 	defer fw.mu.Unlock()
+// 	log = logger
+// }
 
 func (fw *safeFileWriter) SetExtraSafety(enabled bool) {
 	fw.mu.Lock()
@@ -7629,6 +7792,8 @@ func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
 	if filename == "" {
 		return
 	}
+	log := fw.getLogger()
+
 	tmpName := filename + powerlossFileExtension
 	fi, err := os.Stat(tmpName)
 	if err != nil {
@@ -7638,7 +7803,7 @@ func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
 	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
 
 	if fi.Size() == 0 {
-		fw.logger.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
+		log.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
 			"but the temporary file could not be deleted (likely due to directory permissions).",
 			slog.String("tempfilename", tmpName))
 		return
@@ -7657,7 +7822,7 @@ func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
 		tmpName, fi.Size(), filename,
 		powerlossFileExtension, powerlossFileExtension,
 	)
-	fw.logger.Error(logmsg)
+	log.Error(logmsg)
 	panic(logmsg)
 }
 
@@ -7676,6 +7841,8 @@ const powerlossFileExtension string = ".powergotlost"
 //
 // By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
 func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
+	log := fw.getLogger()
+
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
@@ -7694,7 +7861,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 				// so we don't alter its existing Windows permissions/ACLs.
 				//XXX: which means we fallthru here
 
-				fw.logger.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
+				log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
 				// and after the below fallthru (from step 2) then Clean up the temp file
 
 				// Queue cleanup. If we crash/lose power after this point,
@@ -7702,23 +7869,23 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 				defer func() {
 					ondeleteErr := os.Remove(tmpName)
 					if ondeleteErr == nil {
-						fw.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+						log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 						// Successful deletion, nothing more to do
 						return
 					}
 					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-					fw.logger.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
+					log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
 					// Fallback: If we can't delete it, truncate it to 0 bytes.
 					// Since we already have write handle permissions to this file, this is highly likely to succeed.
 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
 					if truncErr == nil {
 						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
 						truncFile.Close()
-						fw.logger.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
+						log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
 							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
 					} else {
 						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-						// s.logger.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
+						// log.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
 						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
 
 						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
@@ -7735,7 +7902,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 								"========================================================================\n",
 							tmpName, ondeleteErr, truncErr,
 						)
-						fw.logger.Error(logmsg)
+						log.Error(logmsg)
 						panic(logmsg)
 					}
 				}()
@@ -7744,7 +7911,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
 				// to neutralize any partial garbage data that would trip up the next boot.
 				ondeleteErr := os.Remove(tmpName)
-				fw.logger.Warn("ExtraSafety: Failed to fully write or/and sync staging file",
+				log.Warn("ExtraSafety: Failed to fully write or/and sync staging file",
 					slog.String("tempfilename", tmpName),
 					SafeErr2("writeErr", writeErr),
 					SafeErr2("syncErr", syncErr),
@@ -7754,7 +7921,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 					if truncErr == nil {
 						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
 						truncFile.Close()
-						fw.logger.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
+						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
 							slog.String("tempfilename", tmpName),
 							SafeErr2("ondeleteErr", ondeleteErr),
 							SafeErr2("syncErr", syncErr3))
@@ -7773,15 +7940,15 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 								"========================================================================\n",
 							tmpName, ondeleteErr, truncErr,
 						)
-						fw.logger.Error(logmsg)
+						log.Error(logmsg)
 						panic(logmsg)
 					}
 				} else {
-					fw.logger.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 				}
 			}
 		} else {
-			fw.logger.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
+			log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
 				slog.String("filename", filename),
 				slog.String("wanted_tempfilename", tmpName))
 		}
@@ -7809,8 +7976,11 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 
 // AdminUI handles all the web control panel routes.
 type AdminUI struct {
-	logger       *slog.Logger
-	config       Config // Pass by value so UI can read it safely
+	// logger       *slog.Logger
+	// config       Config // Pass by value so UI can read it safely
+	liveConfig *atomic.Pointer[Config]
+	liveLogger *atomic.Pointer[slog.Logger]
+
 	ruleStore    *RuleStore
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
@@ -7832,9 +8002,29 @@ type AdminUI struct {
 	OnShutdown func(exitCode int)
 }
 
+func (ui *AdminUI) getLogger() *slog.Logger {
+	if l := ui.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: AdminUI.liveLogger wasn't inited, using default.")
+	return log
+}
+
+// pointer to live Server.Config via AdminUI
+func (ui *AdminUI) getConfig() *Config {
+	c := ui.liveConfig.Load()
+	if c == nil {
+		panic("BUG: AdminUI.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
+	}
+	return c
+}
+
 func NewAdminUI(
-	logger *slog.Logger,
-	cfg Config,
+	// logger *slog.Logger,
+	// cfg Config,
+	liveConfig *atomic.Pointer[Config],
+	liveLogger *atomic.Pointer[slog.Logger],
 	rs *RuleStore,
 	hs *HostStore,
 	bl *BlacklistStore,
@@ -7845,8 +8035,10 @@ func NewAdminUI(
 	tpls *template.Template,
 ) *AdminUI {
 	return &AdminUI{
-		logger:       logger,
-		config:       cfg,
+		// logger:       logger,
+		// config:       cfg,
+		liveConfig:   liveConfig,
+		liveLogger:   liveLogger,
 		ruleStore:    rs,
 		hostStore:    hs,
 		blacklist:    bl,

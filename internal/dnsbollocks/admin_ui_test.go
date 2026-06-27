@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -46,7 +47,13 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 		{{define "logs"}}{{end}}
 		{{define "stats"}}{{end}}
 	`))
-	ui := NewAdminUI(logger, cfg, rs, hs, bl, lt, rb, stats, upstreamIPs, tpls)
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(logger)
+
+	var liveConfig atomic.Pointer[Config]
+	liveConfig.Store(&cfg)
+
+	ui := NewAdminUI(&liveConfig, &liveLogger, rs, hs, bl, lt, rb, stats, upstreamIPs, tpls)
 	rec := httptest.NewRecorder()
 
 	return ui, rec

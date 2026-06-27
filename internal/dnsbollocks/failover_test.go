@@ -29,13 +29,16 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // createMockUpstream creates an Upstream configured with a specific RoundTripper behavior.
 func createMockUpstream(u string, handler func(*http.Request) (*http.Response, error)) Upstream {
 	parsedURL, _ := url.Parse(u)
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(slog.Default())
+
 	return Upstream{
 		URL: parsedURL,
 		SNI: parsedURL.Hostname(),
 		Client: &http.Client{
 			Transport: &mockTransport{roundTripFunc: handler},
 		},
-		logger:        slog.Default(),
+		liveLogger:    &liveLogger,
 		Retries:       0,
 		BackgroundCtx: context.Background(),
 	}
@@ -47,7 +50,7 @@ func makeDoHResponse() *http.Response {
 	msg.Id = 1234
 	msg.Rcode = dns.RcodeSuccess
 	b, _ := msg.Pack()
-	
+
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -61,10 +64,12 @@ func makeDoHResponse() *http.Response {
 
 func TestFailoverSelector_Exchange(t *testing.T) {
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var liveDiscardLogger atomic.Pointer[slog.Logger]
+	liveDiscardLogger.Store(discardLogger)
 	dummyReqBytes := []byte("dummy-dns-query")
 
 	t.Run("Primary Success", func(t *testing.T) {
-		fs := NewFailoverSelector(discardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", func(req *http.Request) (*http.Response, error) {
 				return makeDoHResponse(), nil
@@ -76,7 +81,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 		}
 
 		_, usedURL, failedURLs, err := fs.Exchange(context.Background(), upstreams, dummyReqBytes)
-		
+
 		if err != nil {
 			t.Fatalf("Expected success, got error: %v", err)
 		}
@@ -92,7 +97,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Primary Fails, Falls back to Secondary", func(t *testing.T) {
-		fs := NewFailoverSelector(discardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", func(req *http.Request) (*http.Response, error) {
 				return nil, errors.New("simulated timeout/failure")
@@ -113,7 +118,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 		if len(failedURLs) != 1 || failedURLs[0] != "https://primary.com" {
 			t.Errorf("Expected primary.com in failed list, got %v", failedURLs)
 		}
-		
+
 		// The selector should have promoted the secondary to active
 		fs.mu.RLock()
 		idx := fs.activeIndex
@@ -124,7 +129,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Global Blackout", func(t *testing.T) {
-		fs := NewFailoverSelector(discardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", func(req *http.Request) (*http.Response, error) {
 				return nil, errors.New("fail")
@@ -152,12 +157,12 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Healing Probe Restores Primary", func(t *testing.T) {
-		fs := NewFailoverSelector(discardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger)
 		// Force state to simulate that secondary is currently active
-		fs.activeIndex = 1 
+		fs.activeIndex = 1
 
 		var primaryCalled atomic.Bool
-		
+
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", func(req *http.Request) (*http.Response, error) {
 				primaryCalled.Store(true)
