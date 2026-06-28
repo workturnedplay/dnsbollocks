@@ -73,10 +73,9 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS string `json:"listen_dns"` // e.g., "127.0.0.1:53"
-	ListenDoH string `json:"listen_doh"` // e.g., "127.0.0.1:443"
-	//UIPort                  int      `json:"ui_port"`                    // 8080
-	ListenUI                string   `json:"listen_ui"`
+	ListenDNS               string   `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
+	ListenDoH               string   `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
+	ListenUI                string   `json:"listen_ui"`                  //ip:port
 	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
 	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
@@ -164,14 +163,6 @@ type Config struct {
 	ExtraSafety bool `json:"extra_safety"`
 }
 
-// func (s *Server) getConfig() Config {
-// 	return *s.liveConfig.Load()
-// }
-
-// func (s *Server) getLogger() *slog.Logger {
-// 	return s.liveLogger.Load()
-// }
-
 // pointer to live logger or default logger if uninited(bug)
 func (s *Server) getLogger() *slog.Logger {
 	if l := s.liveLogger.Load(); l != nil {
@@ -205,8 +196,6 @@ func (s *Server) applyLogger(l *slog.Logger) {
 
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
-	// config Config
-	// logger *slog.Logger
 	liveConfig atomic.Pointer[Config]      // shared with AdminUI, fileWriter, etc.
 	liveLogger atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
 
@@ -223,7 +212,6 @@ type Server struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
-	//loginTracker *LoginTracker
 
 	// fileWriteMu serialises all file-write calls across all stores.
 	fileWriter FileWriter
@@ -232,14 +220,11 @@ type Server struct {
 	dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
 
 	dohCert tls.Certificate // used by DoH listener AND WebUI TLS
-	// HTTP/DoH state aka upstreams
-	// dohTransportsPtrs []*http.Transport          //protected by dohMu, used only to clean up during reinit via initDoHClient
-	// upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
-	// dohMu             sync.Mutex                 // Only used for initialization/reloads
+
+	// Simple stats, FIXME.
+	stats *expvar.Int
 
 	// Lifecycle & Concurrency
-	// Simple stats, FIXME.
-	stats        *expvar.Int
 	ctx          context.Context //the old backgroundCtx
 	cancel       context.CancelFunc
 	errChan      chan error
@@ -892,21 +877,6 @@ func (s *Server) saveLocalHosts() error {
 	var data []byte
 	var err error
 
-	// // 1. Snapshot the data
-	// func() {
-	// 	s.localHostsMu.RLock()
-	// 	defer s.localHostsMu.RUnlock()
-	// 	raw := make(map[string][]string)
-	// 	for _, rule := range s.localHosts {
-	// 		var ips []string
-	// 		for _, ip := range rule.IPs {
-	// 			ips = append(ips, ip.String())
-	// 		}
-	// 		raw[rule.Pattern] = ips
-	// 	}
-	// 	data, err = json.MarshalIndent(raw, "", "  ")
-	// }()
-
 	// 1. Snapshot the data in the raw map format under lock safely
 	raw := s.hostStore.ToRawMap()
 	// 2. Marshal to JSON (happens completely lock-free)
@@ -914,10 +884,6 @@ func (s *Server) saveLocalHosts() error {
 	if err != nil {
 		return fmt.Errorf("hosts file marshal failed: %w", err)
 	}
-
-	// 2. Serialize the disk write
-	// s.fileWriteMu.Lock()
-	// defer s.fileWriteMu.Unlock()
 
 	if err := s.fileWriter.SafeWriteFile(cfg.HostsFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write hosts file %q: %w", cfg.HostsFile, err)
@@ -1047,12 +1013,6 @@ func (s *Server) loadQueryWhitelist() error {
 	data, err := os.ReadFile(whitelistFileName)
 	if os.IsNotExist(err) {
 		log.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
-		// func() {
-		// 	s.ruleMutex.Lock()
-		// 	defer s.ruleMutex.Unlock()
-		// 	s.whitelist = make(map[string][]RuleEntry)
-		// }() // lock released here
-
 		// Atomically set the internal map to an empty one
 		s.ruleStore.ReplaceAll(make(map[string][]RuleEntry))
 		s.flushCache()
@@ -1097,17 +1057,6 @@ func (s *Server) loadQueryWhitelist() error {
 	var changed uint64 = 0
 	var removed uint64 = 0
 
-	// func() {
-	// 	s.ruleMutex.Lock()
-	// 	defer s.ruleMutex.Unlock()
-
-	// 	totalRules := 0
-	// 	for _, rules := range rulesByType {
-	// 		totalRules += len(rules)
-	// 	}
-	// 	seenIDs := make(map[string]struct{}, totalRules)
-
-	// 	s.whitelist = make(map[string][]RuleEntry, len(rulesByType))
 	for typ, rules := range rulesByType {
 		seenPatterns := make(map[string]struct{}, len(rules)) // only per DNS type ie. A, AAAA, HTTPS
 		var cleaned []RuleEntry
@@ -2401,202 +2350,6 @@ func (s *Server) loadConfig() error {
 	return nil
 }
 
-// func (s *Server) safeWriteFile(filename string, data []byte, perm os.FileMode) error {
-// 	if cfg.ExtraSafety {
-// 		tmpName := filename + powerlossFileExtension
-
-// 		// 1. Try to write to a temp file first to ensure disk space and data integrity.
-// 		tmpFile, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-// 		if err == nil {
-// 			_, writeErr := tmpFile.Write(data)
-// 			syncErr := tmpFile.Sync()
-// 			tmpFile.Close()
-
-// 			if writeErr == nil && syncErr == nil {
-// 				// Temp file is safely on disk. Overwrite the target file directly
-// 				// so we don't alter its existing Windows permissions/ACLs.
-// 				//XXX: which means we fallthru here
-
-// 				// targetFile, targetErr := os.OpenFile(filename, os.O_WRONLY|os.O_TRUNC, perm)
-// 				// if targetErr == nil {
-// 				// 	_, _ = targetFile.Write(data)
-// 				// 	_ = targetFile.Sync()
-// 				// 	targetFile.Close()
-// 				// }
-// 				log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
-// 				// and after the below fallthru (from step 2) then Clean up the temp file
-
-// 				// Queue cleanup. If we crash/lose power after this point,
-// 				// this defer never runs, leaving the safe copy intact.
-// 				defer func() {
-// 					ondeleteErr := os.Remove(tmpName)
-// 					if ondeleteErr == nil {
-// 						log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-// 						// Successful deletion, nothing more to do
-// 						return
-// 					}
-// 					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-// 					log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
-// 					// Fallback: If we can't delete it, truncate it to 0 bytes.
-// 					// Since we already have write handle permissions to this file, this is highly likely to succeed.
-// 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
-// 					if truncErr == nil {
-// 						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
-// 						truncFile.Close()
-// 						log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
-// 							slog.String("tempfilename", tmpName), SafeErr2("syncErr", syncErr2))
-// 					} else {
-// 						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-// 						// log.Error("ExtraSafety: CRITICAL - Unable to clean up or truncate staging file. Next application boot WILL panic!",
-// 						// 	slog.String("tempfilename", tmpName), SafeErr(truncErr))
-
-// 						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
-// 						// The file is stuck on disk with data, making a future boot panic inevitable.
-// 						// Crash immediately while the administrator is interacting with the system.
-// 						logmsg := fmt.Sprintf(
-// 							"\n========================================================================\n"+
-// 								"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
-// 								"The temporary staging file %q cannot be deleted or truncated.\n\n"+
-// 								"Delete error: %v\n"+
-// 								"Truncation error: %v\n\n"+
-// 								"Because the file contains non-zero bytes, the next server boot will panic.\n"+
-// 								"Halting execution immediately to prevent corrupted filesystem operation.\n"+
-// 								"========================================================================\n",
-// 							tmpName, ondeleteErr, truncErr,
-// 						)
-// 						log.Error(logmsg)
-// 						panic(logmsg)
-// 					}
-// 				}()
-// 				//return targetErr
-// 			} else {
-// 				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
-// 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
-// 				// to neutralize any partial garbage data that would trip up the next boot.
-// 				ondeleteErr := os.Remove(tmpName)
-// 				log.Warn("ExtraSafety: Failed to fully write or/and sync staging file", slog.String("tempfilename", tmpName), SafeErr2("writeErr", writeErr), SafeErr2("syncErr", syncErr), SafeErr2("ondelete_err", ondeleteErr))
-// 				if ondeleteErr != nil {
-// 					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
-// 					if truncErr == nil {
-// 						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
-// 						truncFile.Close()
-// 						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
-// 							slog.String("tempfilename", tmpName), SafeErr2("ondeleteErr", ondeleteErr), SafeErr2("syncErr", syncErr3))
-// 					} else {
-// 						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
-// 						// Non-zero junk data is permanently locked on disk. Panic immediately.
-// 						logmsg := fmt.Sprintf(
-// 							"\n========================================================================\n"+
-// 								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
-// 								"The temporary staging file %q failed to write, and both deletion and\n"+
-// 								"truncation attempts failed.\n\n"+
-// 								"Delete error: %v\n"+
-// 								"Truncation error: %v\n\n"+
-// 								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
-// 								"execution is halted immediately.\n"+
-// 								"========================================================================\n",
-// 							tmpName, ondeleteErr, truncErr,
-// 						)
-// 						log.Error(logmsg)
-// 						panic(logmsg)
-// 					}
-// 				} else {
-// 					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-// 				}
-// 			}
-// 		} else {
-// 			log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost", slog.String("filename", filename), slog.String("wanted_tempfilename", tmpName))
-// 		}
-// 	} //end 'if' extraSafety
-
-// 	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
-// 	// do a direct write but enforce a hardware sync to minimize the corruption window.
-// 	// 2. Overwrite the target file directly (Retains Windows ACLs)
-// 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	_, writeErr := targetFile.Write(data)
-// 	if writeErr != nil {
-// 		targetFile.Close()
-// 		return writeErr
-// 	}
-
-// 	syncErr := targetFile.Sync()
-// 	closeErr := targetFile.Close()
-
-// 	if syncErr != nil {
-// 		return syncErr
-// 	}
-// 	return closeErr
-// }
-
-// func (s *Server) checkPowerLossFile(filename string) {
-// 	if filename == "" {
-// 		return
-// 	}
-// 	tmpName := filename + powerlossFileExtension
-// 	fi, err := os.Stat(tmpName)
-// 	if err != nil {
-// 		// File doesn't exist (or is completely inaccessible), safe to proceed
-// 		return
-// 	}
-
-// 	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
-// 	if fi.Size() == 0 {
-// 		log.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
-// 			"but the temporary file could not be deleted (likely due to directory permissions).",
-// 			slog.String("tempfilename", tmpName))
-// 		return
-// 	}
-
-// 	logmsg := fmt.Sprintf(
-// 		"\n========================================================================\n"+
-// 			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
-// 			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
-// 			"This indicates the server aborted mid-write while updating %q.\n"+
-// 			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
-// 			"ACTION REQUIRED:\n"+
-// 			"1. Manually inspect both files.\n"+
-// 			"2. The .powergotlost file contains your last valid saved data.\n"+
-// 			"3. Restore the data to the main file, then DELETE the .powergotlost file.\n"+
-// 			"========================================================================\n",
-// 		tmpName, fi.Size(), filename,
-// 	)
-// 	log.Error(logmsg)
-// 	panic(logmsg)
-// }
-
-// // don't pass empty or it will panic
-// func cleanFileName(what *string, description string, fallback string) (didClean bool) {
-//     if what == nil {
-//         panic("dev fail: nil config filename passed to cleanFileName")
-//     }
-
-//     didClean = false
-//     if *what == "" {
-//         //woulda been cleaned into "." aka a dot!
-//         //panic("dev fail: passed empty filename to clean for " + description)
-//         if fallback == "" {
-//             panic("dev fail: passed empty filename to clean for '" + description + "' and the passed(to func cleanFileName()) fallback '" + fallback + "' was empty!")
-//         }
-//         log.Warn("Bad filename in config, used fallback", slog.String("bad_filename", *what), slog.String("fallback_filename", fallback), slog.String("for_config_key", description))
-//         *what = fallback
-//         didClean = true //FIXME: acts like a write the change to config, but we should really do all this outside of this function! some DRY attempt while half-asleep this was!
-//     }
-
-//     var cleanedFile string = filepath.Clean(*what)
-//     //from doc: If the result of this process is an empty string, Clean returns the string ".".
-
-//     if cleanedFile != *what {
-//         log.Debug("Cleaned filename from config file, before vs after: %q vs %q\n", slog.String("filename_description", description), slog.String("filename_before", *what), slog.String("filename_after", cleanedFile))
-//         didClean = true
-//         *what = cleanedFile
-//     }
-//     return
-// }
-
 // cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
 func (s *Server) cleanFileName(original, description, fallback string) (string, bool) {
 	log := s.getLogger()
@@ -3489,13 +3242,6 @@ func SafeErr2(msg string, err error) slog.Attr {
 	}
 	return slog.String(msg, err.Error())
 }
-
-// func SafeUDPAddr(msg string, addr *net.UDPAddr) slog.Attr {
-//     if addr == nil {
-//         return slog.String(msg, "<nil>")
-//     }
-//     return slog.String(msg, (*addr).String())
-// }
 
 // SafeAddr converts any net.Addr (UDP, TCP, IP, Unix, etc.) to a safe primitive string.
 // It gracefully handles nil interface values and nil pointer implementations.
@@ -4657,15 +4403,6 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 	//panic("some unhandled case fell thru from switch/ifelse?")
 }
 
-// func ipInNets(ip net.IP, nets []*net.IPNet) bool {
-//     for _, n := range nets {
-//         if n.Contains(ip) {
-//             return true
-//         }
-//     }
-//     return false
-// }
-
 func extractIPs(msg *dns.Msg) []string {
 	var ips []string
 	if msg != nil { // if BlockMode is not "drop"
@@ -4760,23 +4497,6 @@ var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
 	}
 	return a
 }
-
-// func logQuery(client, domain, typ, action, ruleID string, ips []string) {
-//     attrs := []any{
-//         slog.String("client", client),
-//         slog.String("domain", domain),
-//         slog.String("type", typ),
-//         slog.String("action", action),
-//         slog.String("ts", time.Now().Format(time.RFC3339)),
-//     }
-//     if ruleID != "" {
-//         attrs = append(attrs, slog.String("rule_id", ruleID))
-//     }
-//     if len(ips) > 0 {
-//         attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
-//     }
-//     queryLogger.Log(ctx, slog.LevelInfo, "query", attrs...)
-// }
 
 // SafeStringSlice returns a race-safe, structured slog.Attr group.
 // It explicitly handles string quoting for items with spaces without using reflection.
@@ -4972,29 +4692,6 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				}
 
 				if n != nil {
-					// exists := false
-					// func() {
-					// 	s.responseBlacklistMu.Lock()
-					// 	defer s.responseBlacklistMu.Unlock()
-					// 	for _, existing := range s.responseBlacklist {
-					// 		if existing.String() == n.String() {
-					// 			exists = true
-					// 			break
-					// 		}
-					// 	}
-					// 	if !exists {
-					// 		s.responseBlacklist = append(s.responseBlacklist, n)
-					// 	}
-					// }()
-
-					// if !exists {
-					// 	if err := s.saveResponseBlacklist(); err != nil {
-					// 		s.logFatal("failed to save response blacklist after add from webUI", err)
-					// 	}
-					// 	// Instantly evict cached entries that contain the newly blacklisted IP
-					// 	s.invalidateCacheForBlacklistedIPs()
-					// }
-
 					// Using the clean add helper method with natural defer unlock
 					if ui.blacklist.TryAdd(n) { //added so it didn't exist
 						log.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
@@ -5106,16 +4803,6 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 
 	matches := []string{} // 👈 Initialize explicitly empty
 	if n != nil {
-		// func() {
-		// 	s.responseBlacklistMu.RLock()
-		// 	defer s.responseBlacklistMu.RUnlock()
-		// 	for _, existing := range s.responseBlacklist {
-		// 		// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
-		// 		if existing.String() == n.String() || existing.Contains(n.IP) {
-		// 			matches = append(matches, existing.String())
-		// 		}
-		// 	}
-		// }()
 		matches = ui.checkBlacklistMatches(n)
 	}
 
@@ -5215,15 +4902,8 @@ func (s *Server) startWebUI(addr string) {
 
 	// 2. Adaptive Upgrading: Intercept listener if TLS is requested
 	var finalListener net.Listener = baseListener
-	// // Using a closure looks up finalListener at the moment the function returns
-	// defer func() {
-	//     if finalListener != nil {
-	//         finalListener.Close()
-	//     }
-	// }()
 	protocolScheme := "http"
 
-	//log.Info("Web UI listening", slog.String("host", hostOrIP), slog.Int("port", port)) //, slog.String("stats_path", "/debug/vars"))
 	if cfg.WebUIUseTLS {
 		// Leverage the global certificate loaded/generated during startup
 		tlsConfig := &tls.Config{
@@ -5237,22 +4917,15 @@ func (s *Server) startWebUI(addr string) {
 		protocolScheme = "https"
 	}
 
-	//uiSrv := &http.Server{Handler: mux}
-	// CHANGED: Wrap the mux in our new authMiddleware
-	//uiSrv := &http.Server{Handler: s.authMiddleware(mux)}
-	//uiSrv := &http.Server{Handler: s.authMiddleware(s.csrfMiddleware(outerMux))}
 	uiSrv := &http.Server{Handler: handler}
 	// BETTER APPROACH: Query the active listener for its real bound address.
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
 	boundAddr := baseListener.Addr().String()
+	// Split the address for the logger to maintain your existing clean log output
 	host, portStr, err := net.SplitHostPort(boundAddr)
-	//// Split the address for the logger to maintain your existing clean log output
-	//host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		panic(fmt.Errorf("this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
-		//host = addr
-		//portStr = "unknown"
 	}
 	log.Info("Web UI listening",
 		slog.String("scheme", protocolScheme),
@@ -5315,8 +4988,6 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		if r.Method == "POST" {
 			formToken := r.FormValue("csrf_token")
 			if formToken == "" || formToken != token {
-				//log.Warn("CSRF token validation failed; dropping request", slog.String("client", r.RemoteAddr))
-
 				// Capture everything safely in local variables immediately (optional, but clean)
 				//because the request is completely isolated to this single thread of execution at this moment, you can read any field or header from r with zero risk of a data race.
 				clientIP := r.RemoteAddr
@@ -5355,13 +5026,9 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//ui.dnsCache.ItemCount(), //FIXME: add this back
 	//	ui.upstreamIPs
 	)
-	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
-		//"Page": "stats",
-
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
-	//uiTemplates.Execute(w, data)
 	ui.renderTemplate(w, r, "stats", data)
 }
 
@@ -5563,15 +5230,6 @@ func (hs *HostStore) Snapshot() []HostView {
 	}
 	return out
 }
-
-// // GetAll returns a shallow copy for saving.
-// func (hs *HostStore) GetAll() []LocalHostRule {
-// 	hs.mu.RLock()
-// 	defer hs.mu.RUnlock()
-// 	cp := make([]LocalHostRule, len(hs.hosts))
-// 	copy(cp, hs.hosts)
-// 	return cp
-// }
 
 // ToRawMap converts the host rules back to a flat map format for serialization.
 func (hs *HostStore) ToRawMap() map[string][]string {
@@ -5884,17 +5542,9 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
 	if r.Method == "GET" {
-		// data := map[string]any{
-		//     "Page":     "rules",
-		//     "DNSTypes": dnsTypes,
-		//     "Rules":    snapshotWhitelist(), // Safe, independent copy
-		// }
-
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
-		// var flatRules []RuleView
-		// for typ, rules := range rulesSnapshot {
-		//     for _, rule := range rules {
+
 		// 1. Extract and sort the keys (DNS Types) to stop random UI shuffling
 		var types []string
 		for typ := range rulesSnapshot {
@@ -5917,7 +5567,6 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data := map[string]any{
-			//"Page":     "rules",
 			"DNSTypes": dnsTypes,
 			"Rules":    flatRules, // Passing the flattened slice now
 		}
@@ -5949,37 +5598,6 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// var deleted bool = false
-
-			// //doneTODO: make proper delete rule function, heh.
-			// func() {
-			// 	s.ruleMutex.Lock()
-			// 	defer s.ruleMutex.Unlock()
-
-			// 	if rules, ok := s.whitelist[typ]; ok {
-			// 		for i, rule := range rules {
-			// 			if rule.ID == id {
-			// 				s.invalidateCacheForPattern(rule.Pattern)
-			// 				// Replaces the shifting copy hacks with an isolated fresh array allocation
-			// 				s.whitelist[typ] = withRuleRemovedAt(rules, i, log)
-			// 				deleted = true
-			// 				break
-			// 			}
-			// 		}
-			// 	}
-			// }() // lock released here
-			// if deleted {
-			// 	log.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
-			// 	if err := /*uses lock*/ s.saveQueryWhitelist(); err != nil {
-			// 		s.logFatal("failed to save whitelist after rule deletion from webUI", err)
-			// 	}
-			// 	http.Redirect(w, r, "/rules", http.StatusSeeOther)
-			// 	return
-			// } else {
-			// 	log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
-			// 	http.Error(w, "rule not found", http.StatusNotFound)
-			// 	return
-			// }
 			pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
 			if err != nil {
 				log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
@@ -6018,11 +5636,6 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Run the update/add logic inside a thread-safe closure that bubbles up errors
-		// err := func() error {
-		// 	s.ruleMutex.Lock()
-		// 	defer s.ruleMutex.Unlock()
-
 		// id, if present, is a UUID; guard it the same way as in the delete path.
 		if id != "" { //this is an EDIT attempt
 			//     // Edit: Find and update (search all types)
@@ -6038,50 +5651,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-			// var foundOldRule bool
-			// var oldType string
-			// var oldIndex int
-			// var oldPattern string
 
-			// // 1. Find where the rule currently lives
-			// for t, rules := range s.whitelist {
-			// 	for i, r := range rules {
-			// 		if r.ID == id {
-			// 			foundOldRule = true
-			// 			oldType = t
-			// 			oldIndex = i
-			// 			oldPattern = r.Pattern
-			// 			break
-			// 		}
-			// 	}
-			// 	if foundOldRule {
-			// 		break
-			// 	}
-			// }
-
-			// if !foundOldRule {
-			// 	return fmt.Errorf("rule not found")
-			// }
-
-			// // 2. Check for pattern conflicts in the TARGET type group
-			// for _, rule := range s.whitelist[typ] {
-			// 	if rule.ID != id && rule.Pattern == patternLowercased {
-			// 		return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
-			// 	}
-			// }
-
-			// newRule := RuleEntry{ID: id, Pattern: patternLowercased, Enabled: enabledBool}
-			// if oldType == typ {
-			// 	// Type didn't change -> Update fully IN-PLACE cleanly using our new function
-			// 	s.whitelist[typ] = withRuleUpdatedAtIndex(s.whitelist[typ], oldIndex, newRule, log)
-			// } else {
-			// 	// Type changed -> Safely remove from old slice, safely prepend to new slice
-
-			// 	s.whitelist[oldType] = withRuleRemovedAt(s.whitelist[oldType], oldIndex, log)
-
-			// 	// 2. Prepend smoothly to the new category using your new function
-			// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
-			// }
 			ui.OnInvalidatePattern(oldPattern)
 			if oldPattern != patternLowercased {
 				ui.OnInvalidatePattern(patternLowercased)
@@ -6091,18 +5661,6 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
 			// --- ADD MODE ---
 			// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
-			// for _, rule := range s.whitelist[typ] {
-			// 	//if strings.ToLower(rule.Pattern) == lowerPattern {
-			// 	if rule.Pattern /*already lowercase!*/ == patternLowercased {
-			// 		//http.Error(w, "Rule with this pattern '"+patternLowercased+"' already exists for type "+typ, http.StatusConflict)
-			// 		return fmt.Errorf("rule with this pattern '%s' already exists for type %s", patternLowercased, typ)
-			// 	}
-			// }
-
-			// newID := generateUniqueRuleID(s.whitelist, log)
-			// newRule := RuleEntry{ID: newID, Pattern: patternLowercased, Enabled: enabledBool}
-			// // Replaces all the manual make() and copy() steps with your new helper function
-			// s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
 
 			newID, err := ui.ruleStore.AddRule(typ, patternLowercased, enabledBool, log)
 			if err != nil {
@@ -6113,14 +5671,6 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			ui.OnInvalidatePattern(patternLowercased)
 			log.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
 		}
-		// return nil
-		// }() // lock released here
-		// Handle any error returned by the thread-safe operations
-		// if err != nil {
-		// 	log.Warn("Failed to add/edit rule", SafeErr(err), slog.String("id", id), slog.String("patternLowercased", patternLowercased))
-		// 	http.Error(w, err.Error(), http.StatusConflict)
-		// 	return
-		// }
 
 		if err := /*uses lock!*/ ui.OnSaveWhitelist(); err != nil {
 			ui.logFatal("failed to save whitelist after rule add/edit from webUI", err)
@@ -6278,10 +5828,6 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 		if msg == nil {
 			continue
 		}
-		//msg := new(dns.Msg)
-		// if err := msg.Unpack(packed); err != nil {
-		// 	continue
-		// }
 
 		shouldEvict := false
 		for _, rr := range msg.Answer {
@@ -6316,22 +5862,6 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
 	if r.Method == "GET" {
-		// // 1. Snapshot the data under lock
-		// s.localHostsMu.RLock()
-		// viewData := make([]HostView, len(s.localHosts))
-		// for i, h := range s.localHosts {
-		// 	var ipsStr []string
-		// 	for _, ip := range h.IPs {
-		// 		ipsStr = append(ipsStr, ip.String())
-		// 	}
-		// 	viewData[i] = HostView{
-		// 		Index:      i,
-		// 		Pattern:    h.Pattern,
-		// 		IPsDisplay: strings.Join(ipsStr, ", "),
-		// 	}
-		// }
-		// s.localHostsMu.RUnlock() // Lock released!
-
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			//"Page":  "hosts",
@@ -6357,19 +5887,6 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-
-			//var deleted bool =
-			// func() {
-			// 	s.localHostsMu.Lock()
-			// 	defer s.localHostsMu.Unlock()
-			// 	for i, rule := range s.localHosts {
-			// 		if rule.Pattern == pattern {
-			// 			s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-			// 			deleted = true
-			// 			break
-			// 		}
-			// 	}
-			// }()
 
 			if ui.hostStore.DeleteHost(pattern) {
 				log.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
@@ -6435,41 +5952,6 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
 			return
 		}
-
-		// var conflictErr bool
-		// func() {
-		// 	s.localHostsMu.Lock()
-		// 	defer s.localHostsMu.Unlock()
-
-		// 	if isEdit {
-		// 		// Remove the old rule if editing
-		// 		for i, rule := range s.localHosts {
-		// 			if rule.Pattern == oldPattern {
-		// 				s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-		// 				break
-		// 			}
-		// 		}
-		// 		// Remove the target pattern if we renamed to an existing one (overwrite logic)
-		// 		for i, rule := range s.localHosts {
-		// 			if rule.Pattern == pattern {
-		// 				s.localHosts = append(s.localHosts[:i], s.localHosts[i+1:]...)
-		// 				break
-		// 			}
-		// 		}
-		// 	} else {
-		// 		// Prevent duplicates on explicit 'Add'
-		// 		for _, rule := range s.localHosts {
-		// 			if rule.Pattern == pattern {
-		// 				conflictErr = true
-		// 				return
-		// 			}
-		// 		}
-		// 	}
-
-		// 	if !conflictErr {
-		// 		s.localHosts = append(s.localHosts, LocalHostRule{Pattern: pattern, IPs: netIPs})
-		// 	}
-		// }()
 
 		var err error = nil
 		if isEdit {
@@ -6549,40 +6031,6 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 		}
 		return false
 	})
-
-	// blocksCopy := func() []BlockedQuery {
-	// 	s.blockMutex.Lock()
-	// 	defer s.blockMutex.Unlock()
-
-	// 	// // Make a copy so we don't hold the lock while template renders
-	// 	// blocksCopy := make([]BlockedQuery, len(recentBlocks))
-	// 	// copy(blocksCopy, recentBlocks)
-
-	// 	blocksCopy := make([]BlockedQuery, 0, s.recentBlocksList.Len())
-	// 	// Walk the linked list from newest (front) to oldest (back)
-	// 	for e := s.recentBlocksList.Front(); e != nil; e = e.Next() {
-	// 		bq := e.Value.(*BlockedQuery)
-	// 		blocksCopy = append(blocksCopy, *bq) // value copy
-	// 	}
-
-	// 	return blocksCopy
-	// }() // defer triggers before this returned
-	// // Check live whitelist to see if these domains are currently unblocked
-	// s.ruleMutex.RLock()
-	// defer s.ruleMutex.RUnlock()
-	// for i := range blocksCopy {
-	// 	b := &blocksCopy[i]
-	// 	b.IsUnblocked = false
-	// 	if rules, ok := s.whitelist[b.Type]; ok {
-	// 		for _, r := range rules { //TODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
-	// 			if r.Pattern == b.Domain && r.Enabled {
-	// 				b.IsUnblocked = true
-	// 				break
-	// 			}
-	// 		}
-	// 	}
-	// }
-	// return blocksCopy
 }
 
 func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
@@ -6636,25 +6084,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		action := r.FormValue("action")
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
-			// func() { // anonymous function just for scoping defer
-			// s.ruleMutex.Lock()
-			// defer s.ruleMutex.Unlock()
 			if action == "reblock" {
-				// for i, rule := range s.whitelist[typ] {
-				// 	if rule.Pattern == domainLowercased {
-				// 		if rule.Enabled {
-				// 			s.whitelist[typ][i].Enabled = false //XXX: mutates in place
-				// 			successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
-				// 			log.Info("Quick re-block via WebUI: paused existing rule",
-				// 				slog.String("domainLowercased", domainLowercased),
-				// 				slog.String("DNSType", typ))
-				// 			s.invalidateCacheForPattern(domainLowercased)
-				// 		} else {
-				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
-				// 		}
-				// 		break
-				// 	}
-				// }
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
@@ -6691,74 +6121,22 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						panic(fmt.Errorf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s", typ, domainLowercased))
 					}
 				}
-
-				// found := false
-				// for i, rule := range s.whitelist[typ] {
-				// 	if rule.Pattern == domainLowercased {
-				// 		if !rule.Enabled {
-				// 			s.whitelist[typ][i].Enabled = true //XXX: mutates in place
-				// 			successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
-				// 			log.Info("Quick unblock via WebUI: enabled existing paused rule",
-				// 				slog.String("domainLowercased", domainLowercased),
-				// 				slog.String("DNSType", typ))
-				// 			s.invalidateCacheForPattern(domainLowercased)
-				// 		} else {
-				// 			successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
-				// 			log.Info("Quick unblock via WebUI: ignored, rule is already active",
-				// 				slog.String("domainLowercased", domainLowercased),
-				// 				slog.String("DNSType", typ))
-				// 		}
-				// 		found = true
-				// 		break
-				// 	}
-				// }
-
-				// if !found {
-				// 	newRule := RuleEntry{
-				// 		ID:      generateUniqueRuleID(s.whitelist, log),
-				// 		Pattern: domainLowercased,
-				// 		Enabled: true,
-				// 	}
-				// 	// whitelist[typ] = append(whitelist[typ], newRule)
-
-				// 	// Replace the standard append with your safe helper function
-				// 	s.whitelist[typ] = withRulePrepended(s.whitelist[typ], newRule, log)
-
-				// 	successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
-				// 	log.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
-				// 		slog.String("domainLowercased", domainLowercased),
-				// 		slog.String("DNSType", typ))
-				// 	s.invalidateCacheForPattern(domainLowercased)
-				// }
 			} else {
 				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				// Reject any unauthorized or malformed action values
 				http.Error(w, "Invalid action specified", http.StatusBadRequest)
 				return //oh this was bugged before, it was exitting only the inner anon-func!
 			}
-			// }() // lock released here
+
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 			}
-			// // Render the page directly with our success context!
-			// data := map[string]any{
-			// 	"Page":           "blocks",
-			// 	"Blocks":         getRecentBlocksCopy(),
-			// 	"SuccessMessage": successMessage,
-			// }
-			// renderTemplate(w, "blocks", data)
-
 			http.Redirect(w, r, "/blocks?success="+url.QueryEscape(successMessage), http.StatusSeeOther)
 			return
 		}
-		////http.Redirect(w, r, "/blocks", http.StatusSeeOther)
-		//// Re-render the form with an explicit payload error message showing what was passed
+
 		payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
-		// data := map[string]any{
-		// 	"Page":         "blocks",
-		// 	"Blocks":       getRecentBlocksCopy(),
-		// 	"ErrorMessage": "Failed to process unblock request. " + payloadDetails,
-		// }
+
 		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
 
 		// renderTemplate(w, "blocks", data)
@@ -7496,12 +6874,6 @@ func (fw *safeFileWriter) getLogger() *slog.Logger {
 	log.Error("BUG: safeFileWriter.liveLogger wasn't inited, using default.")
 	return log
 }
-
-// func (fw *safeFileWriter) SetLogger(logger *slog.Logger) {
-// 	fw.mu.Lock()
-// 	defer fw.mu.Unlock()
-// 	log = logger
-// }
 
 func (fw *safeFileWriter) SetExtraSafety(enabled bool) {
 	fw.mu.Lock()
