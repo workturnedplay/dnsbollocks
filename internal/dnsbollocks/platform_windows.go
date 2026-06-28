@@ -3967,7 +3967,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	originalCopy := resp.Copy()
 	originalIPs := extractIPs(originalCopy)
 	// Filter
-	filtered, filterReason := s.filterResponse(resp) // XXX: resp gets mutated here!
+	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, s.blacklist) // XXX: resp gets mutated here!
 	if filtered == nil {
 		// filterReason now holds exact info like "blockedByUpstream_ZeroIP" or "dns_rebinding_protection"
 
@@ -4816,8 +4816,8 @@ const StrippedRRSIG string = "stripped_rrsig"
 const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
 // mutates the passed arg
-func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.Msg, string) {
-	log := s.getLogger()
+func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, blacklist IPChecker) (*dns.Msg, string) {
+	//log := s.getLogger()
 
 	if msg == nil {
 		panic("msg was nil, unexpected bad programming/code ;p")
@@ -4829,19 +4829,7 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 	q := msg.Question[0]
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
-	// nets := make([]*net.IPNet, 0, len(blacklists))
-	// for _, cidr := range blacklists {
-	//     _, ipnet, err := net.ParseCIDR(cidr)
-	//     if err == nil {
-	//         nets = append(nets, ipnet)
-	//     } else {
-	//         //hard fail here (it should've alredy failed at startup or at some other future stage when updating the reponse blacklist)
-	//         errorLogger.Error("invalid_cidr", slog.String("cidr", cidr), "context", "in blacklist reponse") // 'go vet' caught it (indirectly via 'go test')
-	//         panic("unreachable2, or the logger is broken")
-	//     }
-	// }
-
-	// FIX: If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
+	// If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
 		return msg, NODATA
 	}
@@ -4853,7 +4841,7 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
 		var good []dns.RR
 		for _, rr := range records {
-			if keep, modifiedRR, reason := s.processRR(rr); keep {
+			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, blacklist); keep {
 				good = append(good, modifiedRR)
 			} else {
 				// Captures and mutates 'dropReasons' from the outer scope automatically
@@ -4918,16 +4906,16 @@ func (s *Server) filterResponse(msg *dns.Msg /*, blacklists []string)*/) (*dns.M
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, string) {
-	cfg := s.getConfig()
-	log := s.getLogger()
+func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist IPChecker) (bool, dns.RR, string) {
+	// cfg := s.getConfig()
+	// log := s.getLogger()
 
 	switch r := rr.(type) {
 	case *dns.A:
 		if r.A.IsUnspecified() { // Matches 0.0.0.0
 			return false, nil, BlockedZeroIP
 		}
-		if s.blacklist.Contains(r.A) {
+		if blacklist.Contains(r.A) {
 			return false, nil, BlockedBlacklistedIP
 		}
 		return true, r, ""
@@ -4936,7 +4924,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 		if r.AAAA.IsUnspecified() { // Matches ::
 			return false, nil, BlockedZeroIP
 		}
-		if s.blacklist.Contains(r.AAAA) {
+		if blacklist.Contains(r.AAAA) {
 			return false, nil, BlockedBlacklistedIP
 		}
 		return true, r, ""
@@ -4944,7 +4932,7 @@ func (s *Server) processRR(rr dns.RR /*, nets []*net.IPNet*/) (bool, dns.RR, str
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
 		//doneTODO: make this configurable in config.json so only if 'true' do this:
-		if cfg.RemoveHTTPSIPv4Hints {
+		if removeHTTPSIPv4Hints {
 			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 			// Filter the SVCB/HTTPS parameters
@@ -8098,4 +8086,9 @@ func NewAdminUI(
 // Add this directly to admin_ui.go
 func (ui *AdminUI) getResponseBlacklist() []string {
 	return ui.blacklist.List()
+}
+
+// IPChecker defines the interface for checking if an IP is blacklisted, allowing easy mocking in tests.
+type IPChecker interface {
+	Contains(ip net.IP) bool
 }
