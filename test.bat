@@ -39,11 +39,24 @@ echo Running go test
 go.exe test -v !MOD_FLAG! ./...
 :: ./... means “Walk the directory tree from here, find every Go package, and apply vet to each.”
 if errorlevel 1 goto :fail
+echo Those tests succeeded.
+
+echo Compiling firewall-requiring ^(ie. Portmaster-ready^) test binary...
+rem :: We add "-tags portmaster" here so Go includes the hidden test file
+go.exe test -c !MOD_FLAG! -tags portmasterFirewalled -o dev_dns_test.exe .\internal\dnsbollocks\
+if %ERRORLEVEL% equ 0 (
+    echo Running only the firewall-requiring^(localhost talk^) tests...
+    .\dev_dns_test.exe -test.v -test.run "^TestFWNeeded"
+    if errorlevel 1 goto :fail
+) else (
+    echo Compilation failed.
+    goto :fail
+)
 
 ::go.exe test -mod=vendor ./cmd/dnsbollocks
 ::pause
 
-echo Tests succeeded.
+echo All tests succeeded.
 pause
 goto :eof
 ::goto :eof means: return from the current batch context
