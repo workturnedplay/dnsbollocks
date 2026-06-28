@@ -551,6 +551,7 @@ func (s *Server) loadResponseBlacklist() error {
 			shouldSave = true
 		}
 	} else {
+		//actually this is kinda useless because there's only 1 key: 'response_blacklist', it's not testing the cidrs for dups here
 		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
 			return fmt.Errorf("failed to scan blacklist file %q for duplicate keys: %w", blacklistFileName, dupErr)
 		} else if len(dups) > 0 {
@@ -731,6 +732,7 @@ func (s *Server) loadLocalHosts() error {
 		// s.localHostsMu.Unlock()
 		// Pass nil or an empty slice to atomically reset the store
 		s.hostStore.ReplaceAll(nil)
+		s.flushCache()
 		return s.saveLocalHosts() // creates empty default file
 	}
 	if err != nil {
@@ -859,6 +861,7 @@ func (s *Server) loadLocalHosts() error {
 	// s.localHosts = parsed
 	// s.localHostsMu.Unlock()
 	s.hostStore.ReplaceAll(parsed)
+	s.flushCache()
 
 	// log.Info("Loaded host rules", slog.Int("count", len(s.localHosts)), slog.String("path", path))
 	log.Info("Loaded host rules",
@@ -1192,6 +1195,7 @@ func (s *Server) loadQueryWhitelist() error {
 
 	// ── Atomic swap ──────────────────────────────────────────────────────────────
 	s.ruleStore.ReplaceAll(newRules)
+	s.flushCache()
 
 	hmn := s.ruleStore.CountAll()
 	log.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
@@ -1206,7 +1210,6 @@ func (s *Server) loadQueryWhitelist() error {
 	}
 
 	if changed > 0 || removed > 0 {
-		s.flushCache()
 		return s.saveQueryWhitelist() //uses lock!
 	} else {
 		return nil // no error
@@ -4961,6 +4964,8 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			}
 		} else if action == "delete" {
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
+			//ok this will invalidate cache for all blacklisted IPs, and then delete the intended one
+			ui.OnInvalidateBlacklist() //we this is no good because the deleted cidrStr isn't in the blacklist anymore, unless I do it before deleting it?
 			// Using the clean delete helper method with natural defer unlock
 			if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
 				log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
