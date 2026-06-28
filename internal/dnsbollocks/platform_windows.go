@@ -3013,7 +3013,9 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 		return fmt.Errorf("key gen failed: %w", err)
 	}
 	serial := big.NewInt(0)
-	serial.SetString(uuid.New().String(), 16) // Unique serial
+	// Strip hyphens so it's a valid hex string
+	hexUUID := strings.ReplaceAll(uuid.New().String(), "-", "")
+	serial.SetString(hexUUID, 16) // Unique serial
 	certTemplate := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -3592,6 +3594,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 				slog.Int("shoulda_written", len(pack)), slog.String("timeout", timeoutDuration.String() /*not nil*/))
 			return
 		}
+		return
 	}
 	log.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho. FIXME")
 }
@@ -4388,9 +4391,10 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
 			rr.A = blockIP
 			msg.Answer = []dns.RR{rr}
-		} else { // AAAA stub, FIXME: what we doing here?! also, no IP?
+		} else { // AAAA record
 			rr := new(dns.AAAA)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
+			//rr.AAAA = blockIP //FIXME next
 			msg.Answer = []dns.RR{rr}
 		}
 		msg.SetRcode(msg, dns.RcodeSuccess)
@@ -7551,7 +7555,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 					log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback", SafeErr(ondeleteErr))
 					// Fallback: If we can't delete it, truncate it to 0 bytes.
 					// Since we already have write handle permissions to this file, this is highly likely to succeed.
-					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
 					if truncErr == nil {
 						syncErr2 := truncFile.Sync() // Ensure the 0-byte state hits disk //FIXME: should we handle sync err same as truncErr?
 						truncFile.Close()
@@ -7591,7 +7595,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 					SafeErr2("syncErr", syncErr),
 					SafeErr2("ondelete_err", ondeleteErr))
 				if ondeleteErr != nil {
-					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, 0)
+					truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
 					if truncErr == nil {
 						syncErr3 := truncFile.Sync() //FIXME: should we handle sync err same as truncErr?
 						truncFile.Close()
