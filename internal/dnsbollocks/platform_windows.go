@@ -4450,14 +4450,11 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	msg.Authoritative = true
 	msg.RecursionAvailable = true
 
-	// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
-	// 1. Manually build the EDE struct using the global variables
-	ede := &dns.EDNS0_EDE{
-		InfoCode:  edeCode,
-		ExtraText: edeText,
-	}
-
 	// Re-allocate the OPT "envelope" but use the static EDE logic
+
+	// 1. ALWAYS create the OPT "envelope" and calculate the safe UDP size.
+	// This is a crucial network optimization (EDNS0 Flag Day) that you want
+	// to send regardless of whether EDE text is enabled or not.
 	opt := new(dns.OPT)
 	opt.Hdr.Name = "."
 	opt.Hdr.Rrtype = dns.TypeOPT
@@ -4481,12 +4478,21 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// It prevents IP fragmentation on modern networks
 	//opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
 
+	// Only allocate memory for EDE and set the DNSSEC OK bit if the feature is actually enabled.
 	if cfg.UseEDEInBlockedReply {
 		opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
+		// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
+		// 1. Manually build the EDE struct using the global variables
+		ede := &dns.EDNS0_EDE{
+			InfoCode:  edeCode,
+			ExtraText: edeText,
+		}
+
 		// You can reuse a global EDE struct here IF it is never modified
 		opt.Option = []dns.EDNS0{ede}
 	}
 
+	// 3. Append the envelope to the response
 	msg.Extra = append(msg.Extra, opt)
 
 	return msg
