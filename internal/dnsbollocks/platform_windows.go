@@ -1946,7 +1946,7 @@ func (s *Server) Run() error {
 	s.generateCertIfNeeded() // For DoH and webUI!
 	//log.Debug("Cert checked/generated if needed")
 
-	_ = s.upstreamMgr.InitDoHClients()
+	s.upstreamMgr.InitDoHClients()
 	// Sequential launches for ordered logging
 	log.Debug("Launching listeners sequentially...")
 	s.startDNSListener(cfg.ListenDNS) // Blocks until complete/fail
@@ -1982,7 +1982,7 @@ func (s *Server) Run() error {
 			}
 
 			s.upstreamMgr.ResetForReload()
-			_ = s.upstreamMgr.InitDoHClients()
+			s.upstreamMgr.InitDoHClients()
 
 			//clearLoginLockouts()//wired in startWebUI
 
@@ -7740,11 +7740,13 @@ type UpstreamManager struct {
 	upstreamURLs []*url.URL
 	upstreamSNIs []string
 
-	failoverSelect *FailoverSelector
+	//failoverSelect *FailoverSelector
 
-	dohTransportsPtrs []*http.Transport          //protected by dohMu, used only to clean up during reinit via initDoHClient
-	upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
-	dohMu             sync.Mutex                 // Only used for initialization/reloads
+	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
+	//upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
+	activeSet atomic.Pointer[upstreamSet] // ← the atomic pair
+	buildMu   sync.Mutex                  // prevents concurrent builds only
+	// dohMu     sync.Mutex                  // Only used for initialization/reloads
 }
 
 func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger]) *UpstreamManager {
@@ -7762,7 +7764,8 @@ func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Co
 		liveConfig: liveConfig,
 		liveLogger: liveLogger,
 	}
-	um.failoverSelect = NewFailoverSelector(liveLogger)
+	//NewUpstreamManager no longer constructs a FailoverSelector upfront — it's created fresh inside buildSet:
+	//um.failoverSelect = NewFailoverSelector(liveLogger)
 	return um
 }
 
@@ -7831,120 +7834,20 @@ func (um *UpstreamManager) ValidateUpstream() error {
 // selector state so the next request rebuilds everything cleanly.
 // Call once at startup or when upstream config changes
 func (um *UpstreamManager) ResetForReload() {
-	um.dohMu.Lock()
-	um.upstreamsPtr.Store(nil)
-	um.dohMu.Unlock()
-	// 🟢 RESET THE SELECTOR STATE UNCONDITIONALLY HERE:
-	um.failoverSelect.mu.Lock()
-	um.failoverSelect.activeIndex = 0
-	um.failoverSelect.allFailed = false
-	um.failoverSelect.mu.Unlock()
+	// um.dohMu.Lock()
+	// um.upstreamsPtr.Store(nil)
+	// um.dohMu.Unlock()
+	// // 🟢 RESET THE SELECTOR STATE UNCONDITIONALLY HERE:
+	// um.failoverSelect.mu.Lock()
+	// um.failoverSelect.activeIndex = 0
+	// um.failoverSelect.allFailed = false
+	// um.failoverSelect.mu.Unlock()
+
+	um.activeSet.Store(nil)
 }
 
-func (um *UpstreamManager) InitDoHClients() []Upstream {
-	cfg := um.getConfig()
-	log := um.getLogger()
-
-	//What this function does is purely preparatory. You are assembling a plan for future connections, not executing one.
-	//Here’s why nothing goes on the network yet:
-	//The http.Transport you create is just configuration.
-	//DialContext is a callback, not an action. Go stores that function and promises to call it later only when a request actually needs a connection.
-	//CloseIdleConnections() is the only thing here that might touch sockets — and even then, only previously established idle ones. If this is the first init, or if no DoH requests were ever made, there’s nothing to close and nothing goes out.
-	//http.Client and http.Transport are blueprints, not engines.
-	log.Debug("starting InitDoHClients()")
-	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
-	um.dohMu.Lock()
-	defer um.dohMu.Unlock()
-	log.Debug("past lock in InitDoHClients()")
-	// 4. DOUBLE CHECK
-	// While we were waiting for the lock, someone else might
-	// have finished the initialization. Check again.
-	if current := um.upstreamsPtr.Load(); current != nil {
-		return *current
-	}
-	// 5. DO THE ACTUAL WORK
-	// Build your transport, tls config, etc.
-	for _, dT := range um.dohTransportsPtrs {
-		if dT != nil {
-			var sn string
-			if dT.TLSClientConfig != nil {
-				sn = dT.TLSClientConfig.ServerName
-			} else {
-				sn = "<nil>"
-			}
-			log.Debug("Closed DoH idle connection",
-				slog.String("transport_ptr", fmt.Sprintf("%p", dT)),
-				slog.String("tls_servername", sn),
-			)
-			dT.CloseIdleConnections()
-		}
-	}
-	um.dohTransportsPtrs = nil
-	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
-	var newUpstreams []Upstream
-
-	for i, u := range um.upstreamURLs {
-		ip := um.upstreamIPs[i]
-		port := u.Port()
-
-		if port == "" {
-			panic("dev fail: port is empty but shoulda been set in ValidateUpstream() to 443")
-		}
-
-		// Create the final "IP:Port" string once
-		// Pre-joining prevents doing string manipulation inside the DialContext closure
-		dialAddr := net.JoinHostPort(ip, port)
-		sniHost := um.upstreamSNIs[i]
-		if sniHost == "" {
-			panic("dev fail: SNIHostname shouldn't be empty at this point, upstream host=" + dialAddr)
-		}
-
-		t := &http.Transport{
-			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second}
-				// Use the pre-computed dialAddr captured via closure!
-				log.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
-				return d.DialContext(ctx, network, dialAddr)
-			},
-			TLSClientConfig: &tls.Config{
-				ServerName:         sniHost,
-				InsecureSkipVerify: false,
-			},
-			Proxy:               nil,  // avoid proxy interference
-			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-			IdleConnTimeout:     time.Duration(cfg.UpstreamIdleConnTimeoutSec) * time.Second,
-			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
-			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
-		}
-		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t) //they're both pointers
-		if um.dohTransportsPtrs[i] != t {
-			panic("dev fail: dohTransportsPtrs[i] != t")
-		}
-
-		client := &http.Client{
-			Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
-			Transport: t,
-		}
-
-		// Bundle everything this specific upstream needs to execute queries completely independently
-		newUpstreams = append(newUpstreams, Upstream{
-			Client:            client,
-			URL:               u,
-			SNI:               sniHost,
-			liveLogger:        um.liveLogger,
-			Retries:           cfg.UpstreamRetriesPerQuery,
-			RetryBackoff:      time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
-			BackgroundCtx:     um.serverCtx,
-			CertLogTimeoutSec: cfg.CertLogTimeoutSec,
-		})
-	}
-
-	// 6. ATOMIC STORE
-	um.upstreamsPtr.Store(&newUpstreams)
-	log.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
-	log.Debug("ending InitDoHClients()")
-	return newUpstreams
+func (um *UpstreamManager) InitDoHClients() {
+	um.buildSet()
 }
 
 // ForwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
@@ -7962,12 +7865,18 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 	}
 
 	// 1. Load the thread-safe slice of Upstream objects atomically
-	upstreamsPtr := um.upstreamsPtr.Load()
-	if upstreamsPtr == nil {
-		u := um.InitDoHClients()
-		upstreamsPtr = &u
+	// upstreamsPtr := um.upstreamsPtr.Load()
+	// if upstreamsPtr == nil {
+	// 	u := um.InitDoHClients()
+	// 	upstreamsPtr = &u
+	// }
+	// upstreams := *upstreamsPtr
+	set := um.activeSet.Load()
+	if set == nil {
+		set = um.buildSet()
 	}
-	upstreams := *upstreamsPtr
+	upstreams := set.upstreams
+	failover := set.failover
 
 	type result struct {
 		msg *dns.Msg
@@ -8048,7 +7957,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		// ==========================================
 		// FAILOVER MODE: Priority-based with active healing
 		// ==========================================
-		resp, used, failed, err := um.failoverSelect.Exchange(ctx, upstreams, reqBytes)
+		resp, used, failed, err := failover.Exchange(ctx, upstreams, reqBytes)
 		upstreamState1.UpstreamUsed = used
 		upstreamState1.FailedUpstreams = failed
 		if err != nil {
@@ -8102,4 +8011,108 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		)
 		return nil, upstreamState1
 	}
+}
+
+// upstreamSet is an immutable snapshot of clients + their failover selector.
+// It is replaced atomically on reload, so ForwardToDoH always sees a
+// consistent pair — never new clients with stale failover or vice versa.
+type upstreamSet struct {
+	upstreams []Upstream
+	failover  *FailoverSelector
+}
+
+func (um *UpstreamManager) buildSet() *upstreamSet {
+	log := um.getLogger()
+	log.Debug("starting UpstreamManager.buildSet()")
+	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
+	um.buildMu.Lock()
+	defer um.buildMu.Unlock()
+
+	// double-check: another goroutine may have built while we waited
+	// 4. DOUBLE CHECK
+	// While we were waiting for the lock, someone else might
+	// have finished the initialization. Check again.
+	if s := um.activeSet.Load(); s != nil {
+		return s
+	}
+
+	cfg := um.getConfig()
+
+	// close old idle connections
+	for _, dT := range um.dohTransportsPtrs {
+		if dT != nil {
+			var sn string
+			if dT.TLSClientConfig != nil {
+				sn = dT.TLSClientConfig.ServerName
+			} else {
+				sn = "<nil>"
+			}
+			log.Debug("Closing idle DoH connections", slog.String("tls_servername", sn))
+			dT.CloseIdleConnections()
+		}
+	}
+	um.dohTransportsPtrs = nil
+	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
+	var newUpstreams []Upstream
+	for i, u := range um.upstreamURLs {
+		ip := um.upstreamIPs[i]
+		port := u.Port()
+		if port == "" {
+			panic("BUG: dev fail: port is empty but shoulda been set in ValidateUpstream() to 443")
+		}
+		// Create the final "IP:Port" string once
+		// Pre-joining prevents doing string manipulation inside the DialContext closure
+		dialAddr := net.JoinHostPort(ip, port)
+		sniHost := um.upstreamSNIs[i]
+		if sniHost == "" {
+			panic("BUG: dev fail: SNIHostname shouldn't be empty, upstream host=" + dialAddr)
+		}
+
+		t := &http.Transport{
+			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				d := &net.Dialer{Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second}
+				// Use the pre-computed dialAddr captured via closure!
+				log.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
+				return d.DialContext(ctx, network, dialAddr)
+			},
+			TLSClientConfig: &tls.Config{
+				ServerName:         sniHost,
+				InsecureSkipVerify: false,
+			},
+			Proxy:               nil,  // avoid proxy interference
+			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+			IdleConnTimeout:     time.Duration(cfg.UpstreamIdleConnTimeoutSec) * time.Second,
+			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
+		}
+		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t)
+		if um.dohTransportsPtrs[i] != t {
+			panic("BUG: dev fail: dohTransportsPtrs[i] != t")
+		}
+
+		// Bundle everything this specific upstream needs to execute queries completely independently
+		newUpstreams = append(newUpstreams, Upstream{
+			Client: &http.Client{
+				Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+				Transport: t,
+			},
+			URL:               u,
+			SNI:               sniHost,
+			liveLogger:        um.liveLogger,
+			Retries:           cfg.UpstreamRetriesPerQuery,
+			RetryBackoff:      time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
+			BackgroundCtx:     um.serverCtx,
+			CertLogTimeoutSec: cfg.CertLogTimeoutSec,
+		})
+	}
+
+	newSet := &upstreamSet{
+		upstreams: newUpstreams,
+		failover:  NewFailoverSelector(um.liveLogger), // fresh: activeIndex=0, allFailed=false
+	}
+	// 6. ATOMIC STORE
+	um.activeSet.Store(newSet)
+	log.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
+	return newSet
 }
