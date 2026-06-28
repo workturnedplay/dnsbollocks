@@ -2062,9 +2062,6 @@ func OldMain() {
 		mainLogger.Debug("Generated new hash password(not logging it) via cmd line arg, not saved in config.", slog.String("config", configFileName))
 		finalShutdownSequence(mainLogger, 0)
 	}
-	// if len(os.Args) > 1 {
-	//     configPath = os.Args[1]
-	// }
 
 	srv := NewServer(mainLogger)
 
@@ -2155,19 +2152,6 @@ func (s *Server) loadConfig() error {
 		// 3. Check for MISSING fields
 		// Use reflection to compare the struct's "json" tags against the map
 
-		// missing := []string{}
-		// t := reflect.TypeOf(config)
-		// for i := 0; i < t.NumField(); i++ {
-		//     tag := t.Field(i).Tag.Get("json")
-		//     if tag == "" || tag == "-" {
-		//         continue
-		//     }
-
-		//     if _, ok := presentKeys[tag]; !ok {
-		//         missing = append(missing, tag)
-		//     }
-		// }
-
 		// Use TypeFor[T] (Go 1.22+) and VisibleFields (Go 1.17+)
 		missing := []string{}
 		t := reflect.TypeFor[Config]()
@@ -2192,11 +2176,6 @@ func (s *Server) loadConfig() error {
 			)
 			shouldSaveConfig = true
 		}
-		// if theReadConfig != config {
-		//     log.Warn("Config file had 1 or more missing fields, using defaults for those and triggering a save next.", slog.String("file", cfgFname))
-		//     config = theReadConfig
-		//     shouldSaveConfig = true
-		// }
 	}
 
 	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
@@ -2390,11 +2369,6 @@ func hostFromURL(raw string) (string, error) {
 		return "", err
 	}
 	host := u.Hostname() // Built-in method strips the port safely
-	// host := u.Host
-	// // Strip any port if present (e.g. "example.com:443" -> "example.com")
-	// if h, _, err := net.SplitHostPort(host); err == nil {
-	//     host = h
-	// }
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("hostname/IP is empty for %q", raw)
 	}
@@ -2452,7 +2426,6 @@ func (s *Server) initFullLogging() *slog.Logger { //qpath, epath string) {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
 			log.Error("cannot open log file", slog.String("file", path), SafeErr(err))
 			s.shutdown(1) //os.Exit(1)
-			//panic(fmt.Errorf("cannot open log %q: %w", path, err))
 		}
 		return f
 	}
@@ -2470,27 +2443,12 @@ func (s *Server) initFullLogging() *slog.Logger { //qpath, epath string) {
 		}),
 	}
 
-	// root := multiHandler{
-	//     handlers: []slog.Handler{fullHandler, consoleH, queryH},
-	// }
-
-	// log = slog.New(root)
-	// log.Info("Logging fully initialized")
 	improvedLogger := slog.New(multiHandler{ // <-- this REPLACES the global, but it's only used by Server struct and its children
 		handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	})
 
-	// realLogger := slog.New(multiHandler{handlers: []slog.Handler{fullHandler, consoleH, queryH}})
-	//s.liveLogger.Store(improvedLogger)          // all consumers automatically see the new logger
 	s.applyLogger(improvedLogger) // all consumers automatically see the new logger
 	log = s.getLogger()           //to use the new logger on the below log line!
-	//s.failoverSelect.liveLogger = &s.liveLogger // FailoverSelector also uses the pointer, no need for this!
-
-	// //Give the failover selector the new, fully-powered logger
-	// s.failoverSelect.logger = log
-	// //picks up the production logger:
-	// s.fileWriter.SetLogger(log)
-	// //s.fileWriter.SetLogger(&log)
 
 	log.Info("Logging initialized",
 		slog.String("full_log", cfg.LogErrorsFile),
@@ -2539,51 +2497,6 @@ func matchPattern(pattern, name string) bool {
 	if !isLowerASCII(name) {
 		panic("name was " + name + " which isn't lowercased, so bad coding somewhere!")
 	}
-
-	//pattern = strings.ToLower(pattern)//XXX: must be already lowercase
-	//name = strings.ToLower(name)//XXX: must be already lowercase
-
-	// idx := strings.Index(pattern, "**")
-	// if idx != -1 {
-	//     if idx > 0 && idx+2 < len(pattern) &&
-	//         pattern[idx-1] == '{' && pattern[idx+2] == '}' {
-	//         // {**}
-	//         // Handle {**} wildcard (cross-label, requiring at least one label when used with dot)
-	//         //The no allocs variant:
-	//         prefix := pattern[:idx-1]
-	//         suffix := pattern[idx+3:]
-
-	//         if prefix != "" && !strings.HasPrefix(name, prefix) {
-	//             return false
-	//         }
-	//         if suffix != "" && !strings.HasSuffix(name, suffix) {
-	//             return false
-	//         }
-
-	//         if prefix == "" && strings.HasPrefix(suffix, ".") {
-	//             return len(name) > len(suffix)
-	//         }
-	//         if suffix == "" && strings.HasSuffix(prefix, ".") {
-	//             return len(name) > len(prefix)
-	//         }
-
-	//         return true
-	//     } else {
-	//         // **
-	//         // Handle plain ** wildcard (cross-label, may match zero chars). This mirrors legacy behavior.
-	//         //The no allocs variant:
-	//         prefix := pattern[:idx]
-	//         suffix := pattern[idx+2:]
-
-	//         if prefix != "" && !strings.HasPrefix(name, prefix) {
-	//             return false
-	//         }
-	//         if suffix != "" && !strings.HasSuffix(name, suffix) {
-	//             return false
-	//         }
-	//         return true
-	//     }
-	// }
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
 	return recursiveMatch(pattern, name)
@@ -2774,8 +2687,6 @@ func (s *Server) generateCertIfNeeded() {
 
 	s.dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		// errorLogger.Error("cert_load_failed", SafeErr(err))
-		// os.Exit(1)
 		s.logFatal("cert_load_failed", err)
 	}
 	log.Info("Success - loaded into tls.Certificate")
@@ -2977,9 +2888,6 @@ func (s *Server) startDNSListener(addr string) {
 
 				pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
 				// wincoe.Smashy()
-				// pid := uint32(1)
-				// exe := "foo"
-				// err = nil
 
 				udpPacketCtx := s.makeClientInfoContext(s.ctx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
 				//go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
@@ -2999,16 +2907,12 @@ func (s *Server) startDNSListener(addr string) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
 	if err != nil {
-		// errStr := fmt.Sprintf("TCP bind failed(the address should be an IP) on %q: %v", addr, err)
-		//errorLogger.Error(errStr)
 		log.Error("invalid TCP address", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
 
 	if err != nil {
-		//errStr := fmt.Sprintf("TCP bind failed on %q: %v", addr, err)
-		//errorLogger.Error(errStr)
 		log.Error("TCP bind/listen failed", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1)
 	} else {
@@ -3017,11 +2921,6 @@ func (s *Server) startDNSListener(addr string) {
 		// immediately check capacity.  loadConfig has already validated the
 		// value, but defend against a zero here just in case.
 		tcpMaxConns := cfg.MaxConcurrentDNSTCPConns
-		// if tcpMaxConns <= 0 { //already doing this at load time
-		// 	const constTCPMaxConns = 50
-		// 	tcpMaxConns = constTCPMaxConns
-		// 	log.Warn(fmt.Sprintf("max_concurrent_dns_tcp_conns was <= 0 at listener start; using %d", constTCPMaxConns))
-		// }
 		s.dnsTCPSem = make(chan struct{}, tcpMaxConns)
 		log.Debug("DNS TCP concurrent-connection limit initialised",
 			slog.Int("max_concurrent", tcpMaxConns))
@@ -3046,27 +2945,8 @@ func (s *Server) startDNSListener(addr string) {
 			}()
 			log2.Info("TCP DNS listening", slog.String("address", addr))
 
-			// // Then simplify your loop
-			// for {
-			//     conn, err := tcpLn.Accept()
-			//     if err != nil {
-			//         return // Exit on any error (like closed listener)
-			//     }
-			//     // ... handle connection
-			// }
-
-			// // small buffer for accept errors backoff
-			// var backoff time.Duration
-
 			for {
 				log3 := s.getLogger()
-				// // allow Accept to be interruptible by context by using a deadline
-				// err := tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //doneFIXME: put 500ms back, or check the code above to not use deadline!
-				// //err := tcpLn.SetDeadline(time.Now().Add(10 * time.Nanosecond))
-				// if err != nil {
-				//     log.Warn("can't set TCP deadline", SafeErr(err))
-				//     panic("wtw")
-				// }
 
 				conn, err := tcpLn.Accept()
 				if err != nil {
@@ -3076,26 +2956,9 @@ func (s *Server) startDNSListener(addr string) {
 						log3.Debug("TCP DNS listener is quitting due to shutdown...")
 						return
 					default:
-						// // handle timeout-like errors (due to SetDeadline)
-						// // 1. Declare a variable for the interface you're looking for
-						// var netErr net.Error
-						// // 2. Use errors.As to check if 'err' (or anything it wraps) is a net.Error
-						// if errors.As(err, &netErr) && netErr.Timeout() {
-						//     // reset backoff and continue
-						//     backoff = 0
-						//     continue
-						// }
-
 						// non-temporary error: log, backoff a bit to avoid hot loop, continue
 						log3.Warn("tcp_accept_error", SafeErr(err))
 
-						// if backoff == 0 {
-						//     backoff = 50 * time.Millisecond
-						// } else if backoff < 1*time.Second {
-						//     backoff *= 2
-						// }
-						// log.Debug("DNS TCP accept sleeping", slog.Any("milliseconds", backoff))
-						// time.Sleep(backoff)
 						continue
 					} // select
 				} // if err
@@ -3136,17 +2999,10 @@ func (s *Server) startDNSListener(addr string) {
 					// 2. Call your new TCP PID/Exe helper
 					pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
 					// wincoe.Smashy()
-					// pid := uint32(2)
-					// exe := "foo2"
-					// err = nil
 					tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
 				}
 
 				// accepted a connection; handle in new goroutine
-				// go func(c net.Conn) {
-				//     defer func() { _ = c.Close() }()
-				//     handleTCP(tcpPacketCtx, c)
-				// }(conn)
 
 				//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
 				// TRACK INDIVIDUAL CONNECTIONS:
@@ -3209,9 +3065,6 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 	)
 
 	// Create a specific context for THIS packet
-	//packetCtx := ctx // this is your global shutdown ctx
-	//if pErr == nil {
-	//names, _ := wincoe.GetServiceNamesFromPID(pid)
 	return context.WithValue(ctx, clientInfoKey, clientMetadata{
 		protocol:   protocol,
 		pid:        pid,
@@ -3390,8 +3243,6 @@ func (s *Server) startDoHListener(addr string) {
 		Certificates: []tls.Certificate{s.dohCert}, // Use loaded cert
 	})
 	if err != nil {
-		// errStr := fmt.Sprintf("DoH listener failed on %q: %v", addr, err)
-		// errorLogger.Error(errStr)
 		log.Error("DoH listener failed to bind/listen", slog.String("addr", addr), SafeErr(err))
 		s.shutdown(1) //os.Exit(1) // Fail-fast serial
 	}
@@ -3491,9 +3342,6 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		// Use our TCP PID helper
 		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
 		// wincoe.Smashy()
-		// pid := uint32(3)
-		// exe := "foo3"
-		// var pErr error = nil
 		ctx = s.makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
 	} else {
 		log.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
@@ -3591,7 +3439,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	key := domain + ":" + qtype
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
-	//if cachedIf, ok := s.cacheStore.Get(key); ok {
 	if entry, ok := s.dnsCache.Get(key); ok {
 		//entry := cachedIf.(CacheEntry)
 		cached := entry.Msg
@@ -3669,7 +3516,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
 		// Cache negatives short
 		// Store a copy of the negative response as well
-		//cacheStore.Set(key, negResp.Copy(), 2*time.Second)
 		s.dnsCache.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
@@ -3698,12 +3544,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	}
 
 	// Cache with clamped TTL
-	//ttl := computeTTL(filtered)
-	//expiry := time.Duration(ttl) * time.Second
 	expiry := max(computeTTL(filtered), time.Duration(cfg.CacheMinTTL)*time.Second)
-	// if expiry < time.Duration(config.CacheMinTTL)*time.Second {
-	//     expiry = time.Duration(config.CacheMinTTL) * time.Second
-	// }
 
 	// Store a copy in the cache, not the pointer you are about to return
 	//cacheStore.Set(key, filtered.Copy(), expiry)
@@ -3824,10 +3665,6 @@ var memoizedVersion = func() string {
 	if vcsRevision != "" && !strings.Contains(baseVersion, vcsRevision) {
 		suffix += "-" + vcsRevision
 	}
-	// //datetime at the end
-	// if vcsTime != "" {
-	//     suffix += "-" + vcsTime
-	// }
 	if isModified {
 		suffix += "+dirty"
 	}
@@ -4032,12 +3869,8 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 
 	port := u.URL.Port()
 	if port == "" {
-		//port = "443"
+		//TODO: replace all panics with logFatal() ?
 		panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
-		// port = ImpliedPort
-		// log.Warn("dev fail, port shoulda been already set in initDoHClients! Using default tho.",
-		//     slog.String("implied_port", ImpliedPort),
-		//     slog.Any("sni", sni))
 	}
 	addr := net.JoinHostPort(u.URL.Hostname(), port)
 
@@ -4272,7 +4105,6 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 	}
 
 	var dropReasons []string
-	// var dropReasons string // Start as empty string ""
 
 	// Define a local closure to process any arbitrary DNS section
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
@@ -4282,15 +4114,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 				good = append(good, modifiedRR)
 			} else {
 				// Captures and mutates 'dropReasons' from the outer scope automatically
-
 				dropReasons = append(dropReasons, reason)
-
-				// // Append with a separator if it's not the first reason
-				// if dropReasons != "" {
-				//     dropReasons += ", " + reason
-				// } else {
-				//     dropReasons = reason
-				// }
 
 				log.Warn("Dropped "+sectionName+" from upstream",
 					slog.String("reason", reason),
@@ -4309,11 +4133,6 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
 		log.Warn("response_filtered_all", slog.String("query_type", qtype), slog.String("domain", q.Name),
-
-			// slog.String("drop_reasons",
-			//     //dropReasons
-			//     strings.Join(dropReasons, ", "),
-			// ),
 			SafeStringSlice("drop_reasons", dropReasons),
 		)
 
@@ -4502,20 +4321,6 @@ var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
 // It explicitly handles string quoting for items with spaces without using reflection.
 // All this is to avoid using slog.Any which can race when passed networking structs that are modified by other goroutines
 func SafeStringSlice(key string, slice []string) slog.Attr {
-	// if len(slice) == 0 {
-	//     // Return an empty group under the specified key safely
-	//     return slog.Group(key)
-	// }
-
-	// attrs := make([]slog.Attr, len(slice))
-	// for i, val := range slice {
-	//     // Explicitly map each item to an immutable slog.String attribute token.
-	//     // The index is the key ("0", "1", etc.), ensuring no structural reflection.
-	//     attrs[i] = slog.String(fmt.Sprintf("%d", i), val)
-	// }
-
-	// // slog.Group returns a single slog.Attr token containing the inner attributes
-	// return slog.GroupAttrs(key, attrs...)
 	return SafeSlice(key, slice, func(s string) string { return s })
 }
 
@@ -4725,21 +4530,6 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
 			}
 
-			// deleted := false
-			// s.responseBlacklistMu.Lock()
-			// for i, existing := range s.responseBlacklist {
-			// 	if existing.String() == cidrStr {
-			// 		s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
-			// 		deleted = true
-			// 		break
-			// 	}
-			// }
-			// s.responseBlacklistMu.Unlock()
-			// if deleted {
-			// 	if err := s.saveResponseBlacklist(); err != nil {
-			// 		s.logFatal("failed to save response blacklist after delete from webUI", err)
-			// 	}
-			// }
 		} else {
 			log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
 		}
@@ -4750,32 +4540,11 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
 // Returns true if the target was found and deleted, false otherwise.
 func (ui *AdminUI) tryDeleteBlacklistIP(cidrStr string) bool {
-	// s.responseBlacklistMu.Lock()
-	// defer s.responseBlacklistMu.Unlock()
-
-	// for i, existing := range s.responseBlacklist {
-	// 	if existing.String() == cidrStr {
-	// 		s.responseBlacklist = append(s.responseBlacklist[:i], s.responseBlacklist[i+1:]...)
-	// 		return true
-	// 	}
-	// }
-	// return false
 	return ui.blacklist.TryDelete(cidrStr)
 }
 
 // Add this helper to Server
 func (ui *AdminUI) checkBlacklistMatches(n *net.IPNet) []string {
-	// s.responseBlacklistMu.RLock()
-	// defer s.responseBlacklistMu.RUnlock()
-
-	// var matches []string
-	// for _, existing := range s.responseBlacklist {
-	// 	// Check if they match exactly, OR if the existing network fully encompasses the new IP/subnet
-	// 	if existing.String() == n.String() || existing.Contains(n.IP) {
-	// 		matches = append(matches, existing.String())
-	// 	}
-	// }
-	// return matches
 	return ui.blacklist.CheckMatches(n)
 }
 
