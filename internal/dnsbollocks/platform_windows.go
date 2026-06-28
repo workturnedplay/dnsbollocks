@@ -200,11 +200,8 @@ type Server struct {
 	liveLogger atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
 
 	// Upstream state
-	upstreamMgr *UpstreamManager
-	// upstreamIPs    []string
-	// upstreamURLs   []*url.URL
-	// upstreamSNIs   []string
-	// failoverSelect *FailoverSelector
+	upstreamMgr  *UpstreamManager
+	dohForwarder DoHForwarder // used by handleDNSQuery — injectable in tests
 
 	// Caching & Rate limiting
 	dnsCache    DNSCache
@@ -258,6 +255,7 @@ func NewServer(logger *slog.Logger) *Server {
 	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
 	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger)
+	s.dohForwarder = s.upstreamMgr
 	s.applyConfig(defaultConfig())
 	s.fileWriter = newSafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
 	return s // yes it escapes to heap
@@ -3875,7 +3873,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	oldID := msg.Id
 	msg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
 	// 3. DO THE ACTUAL UPSTREAM QUERY
-	resp, upstreamState3 := s.upstreamMgr.ForwardToDoH(ctx, msg)
+	resp, upstreamState3 := s.dohForwarder.ForwardToDoH(ctx, msg)
 	// 4. Restore the original ID so the client's DNS resolver accepts the answer
 	msg.Id = oldID // unconditionally restore so any msg-derived error response carries the right ID
 	if resp != nil {
@@ -8120,4 +8118,10 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 	um.activeSet.Store(newSet)
 	log.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
 	return newSet
+}
+
+// DoHForwarder is the testable seam around UpstreamManager.ForwardToDoH.
+// Swap in a mock to exercise handleDNSQuery without any real network calls.
+type DoHForwarder interface {
+	ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, UpstreamState)
 }
