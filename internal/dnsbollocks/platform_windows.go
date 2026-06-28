@@ -85,13 +85,24 @@ type Config struct {
 	//"failover": The new intelligent, stateful sticky failover behavior.
 	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "parallel", "strict", or "failover"
 	BlockMode             string `json:"block_mode"`              // "nxdomain", "drop", "ip_block"
-	BlockIP               string `json:"block_ip"`                // "0.0.0.0"
-	GlobalRateQPS         int    `json:"qps_rate_globally"`       // 100
-	GlobalBurstQPS        int    `json:"qps_burst_globally"`      // 100
-	ClientRateQPS         int    `json:"qps_rate_per_client"`     // 20
-	ClientBurstQPS        int    `json:"qps_burst_per_client"`    // 50
-	CacheMinTTL           int    `json:"cache_min_ttl"`           // 300s
-	CacheMaxEntries       int    `json:"cache_max_entries"`       // 10000
+	BlockIP               string `json:"block_ip"`                // "0.0.0.0" used by "ip_block"
+	BlockIPv6             string `json:"block_ipv6"`              // "::" used by "ip_block"
+
+	// Pre-parsed IPs for blazing fast performance and thread-safety
+	BlockIPv4Parsed net.IP `json:"-"` // this isn't persisted to disk
+	// Use net.IP directly; miekg/dns reads it safely
+	BlockIPv6Parsed net.IP `json:"-"` // this isn't persisted to disk
+	/*In Go, the json:"-" struct tag explicitly tells the standard library's json.Marshal and json.Unmarshal functions to completely ignore those fields.
+	  When saving (json.Marshal): The encoder bypasses those fields entirely. They won't be included in the generated JSON string/file.
+	  When loading (json.Unmarshal): The decoder skips right past them. Even if someone manually typed a "BlockIPv4Parsed" key into the JSON file, Go would ignore it and wouldn't modify the struct field.
+	*/
+
+	GlobalRateQPS   int `json:"qps_rate_globally"`    // 100
+	GlobalBurstQPS  int `json:"qps_burst_globally"`   // 100
+	ClientRateQPS   int `json:"qps_rate_per_client"`  // 20
+	ClientBurstQPS  int `json:"qps_burst_per_client"` // 50
+	CacheMinTTL     int `json:"cache_min_ttl"`        // 300s
+	CacheMaxEntries int `json:"cache_max_entries"`    // 10000
 	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
 	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
 	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
@@ -1228,6 +1239,7 @@ func defaultConfig() Config {
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
+		BlockIPv6:               "::", // Default unspecified IPv6
 		GlobalRateQPS:           100,
 		GlobalBurstQPS:          100,
 		ClientRateQPS:           20,
@@ -2239,6 +2251,22 @@ func (s *Server) loadConfig() error {
 	}
 
 	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+
+	// Clean up and pre-parse IPv4
+	if ip := net.ParseIP(cfg.BlockIP); ip != nil && ip.To4() != nil {
+		cfg.BlockIPv4Parsed = ip.To4()
+	} else {
+		cfg.BlockIP = "0.0.0.0"
+		cfg.BlockIPv4Parsed = net.IPv4(0, 0, 0, 0).To4()
+	}
+
+	// Clean up and pre-parse IPv6
+	if ip := net.ParseIP(cfg.BlockIPv6); ip != nil && ip.To16() != nil {
+		cfg.BlockIPv6Parsed = ip.To16()
+	} else {
+		cfg.BlockIPv6 = "::"
+		cfg.BlockIPv6Parsed = net.ParseIP("::").To16()
+	}
 
 	// 2. Prevent Missing Validation: Check Janitor Intervals
 	if cfg.CacheJanitorIntervalMinutes <= 0 {
@@ -3497,7 +3525,9 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	}
 	resp := s.handleDNSQuery(ctx, msg, clientAddr.String())
 	if resp == nil {
-		return // Drop
+		cfg := s.getConfig()
+		log.Debug("Dropped UDP DNS response (is BlockMode 'drop' ?)", slog.String("BlockMode", cfg.BlockMode))
+		return // BlockMode is "drop", so Drop
 	}
 	pack, err := resp.Pack()
 	if err != nil {
@@ -3595,8 +3625,8 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 			return
 		}
 		return
-	}
-	log.Warn("No TCP DNS response to write, filtered out maybe? Shouldn't happen tho. FIXME")
+	} // else it's nil like if BlockMode is "drop"
+	log.Debug("No TCP DNS response to write, likely due to BlockMode being 'drop' ?!")
 }
 
 // non-blocking!
@@ -3752,8 +3782,8 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusBadRequest)
 		return
 	}
-	resp := s.handleDNSQuery(ctx, msg, r.RemoteAddr) // Field, not method
-	if resp == nil {
+	resp := s.handleDNSQuery(ctx, msg, r.RemoteAddr /*field not method*/)
+	if resp == nil { //can happen when BlockMode is "drop" so FIXME?
 		log.Warn("empty DNS response, replying to client with service unavailable", slog.String("client", r.RemoteAddr))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -4379,28 +4409,40 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	//in Go, implicit 'break' after each 'case'
 	switch cfg.BlockMode { //XXX: it's already lowercased!
 	case "nxdomain":
-		msg.SetRcode(msg, dns.RcodeNameError)
-	case "ip_block", "block_ip":
+		msg.SetRcode(msg, dns.RcodeNameError) // this is NXDOMAIN
+	case "ip_block", "block_ip", "ipblock", "blockip":
 		ttl := uint32(cfg.BlockedResponseTTLSec)
-		blockIP := net.ParseIP(cfg.BlockIP)
-		if blockIP == nil {
-			blockIP = net.IPv4(0, 0, 0, 0) // Default, TODO: const or global this! unless we need a fresh instance each time?
-		}
-		if blockIP.To4() != nil { // A record
+		qtype := msg.Question[0].Qtype
+		switch qtype {
+		case dns.TypeA:
 			rr := new(dns.A)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
-			rr.A = blockIP
+			rr.A = cfg.BlockIPv4Parsed // Thread-safe shared reference copy
 			msg.Answer = []dns.RR{rr}
-		} else { // AAAA record
+			msg.SetRcode(msg, dns.RcodeSuccess)
+		case dns.TypeAAAA:
 			rr := new(dns.AAAA)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
-			//rr.AAAA = blockIP //FIXME next
+			rr.AAAA = cfg.BlockIPv6Parsed // Thread-safe shared reference copy
 			msg.Answer = []dns.RR{rr}
+			msg.SetRcode(msg, dns.RcodeSuccess)
+		default:
+			// non A or AAAA during this BlockMode?
+			/*
+				According to the DNS specifications (RFC 2308), if a domain name exists (i.e., it has an A or AAAA record), a query for any other record type on that same name (like TXT, MX, or SRV) must return NOERROR with an empty answer section (known as a NODATA response).
+				If you return NXDOMAIN (Name Error) for a TXT query on a domain where you just returned an IP address for an A query, downstream caching servers or the Windows dnscache service will cache that the entire domain does not exist. This will break your blocking mechanism or cause intermittent resolution failures.
+			*/
+			// For MX, TXT, etc., return an explicit NODATA response
+			// (Success with 0 answers) because the domain "exists" in our ip_block view.
+			msg.Answer = []dns.RR{}
+			msg.SetRcode(msg, dns.RcodeSuccess)
 		}
-		msg.SetRcode(msg, dns.RcodeSuccess)
+
 	case "drop":
 		return nil
 	default:
+		log := s.getLogger()
+		log.Warn("Unknown BlockMode in config file, falling back to NXDOMAIN", slog.String("blockmode", cfg.BlockMode))
 		// fallback to nxdomain
 		msg.SetRcode(msg, dns.RcodeNameError)
 	}
@@ -4620,12 +4662,14 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 
 func extractIPs(msg *dns.Msg) []string {
 	var ips []string
-	for _, rr := range msg.Answer {
-		switch r := rr.(type) {
-		case *dns.A:
-			ips = append(ips, r.A.String())
-		case *dns.AAAA:
-			ips = append(ips, r.AAAA.String())
+	if msg != nil { // if BlockMode is not "drop"
+		for _, rr := range msg.Answer {
+			switch r := rr.(type) {
+			case *dns.A:
+				ips = append(ips, r.A.String())
+			case *dns.AAAA:
+				ips = append(ips, r.AAAA.String())
+			}
 		}
 	}
 	return ips
