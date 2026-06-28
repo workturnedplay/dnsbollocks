@@ -7511,10 +7511,10 @@ func (ui *AdminUI) recordLoginSuccess(clientIP string) {
 }
 
 func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
-	log := ui.getLogger()
-	cfg := ui.getConfig()
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log := ui.getLogger()
+		cfg := ui.getConfig()
+
 		// Safety fallback: if somehow the hash is still blank, DON'T allow access
 		if cfg.WebUIPasswordHash == "" {
 			panic("no webUI password was set, this shouldn't be possible, dev fail?")
