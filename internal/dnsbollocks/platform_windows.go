@@ -1645,17 +1645,28 @@ func parseConsoleLogLevel(s string) slog.Level {
 
 // Globals.
 
-// var (
-// 	backgroundCtx, cancel = context.WithCancel(context.Background())
-// )
+var dnsTypesPriority = []string{"A", "AAAA", "HTTPS", "MX", "NS"}
 
-var dnsTypes = []string{
+var dnsTypes = func() []string {
+	seen := make(map[string]struct{}, len(dnsTypesPriority)+len(allDNSTypes))
+	out := make([]string, 0, len(dnsTypesPriority)+len(allDNSTypes))
+	for _, t := range append(dnsTypesPriority, allDNSTypes...) {
+		if _, ok := seen[t]; !ok {
+			seen[t] = struct{}{}
+			out = append(out, t)
+		}
+	}
+	return out
+}()
+
+// full list no dups
+var allDNSTypes = []string{
 	//most used first
 	"A",
-	"AAAA",  // dup on purpose
-	"HTTPS", // dup on purpose
-	"MX",    // dup on purpose
-	"NS",    // dup on purpose
+	// "AAAA",  // dup on purpose
+	// "HTTPS", // dup on purpose
+	// "MX",    // dup on purpose
+	// "NS",    // dup on purpose
 	"A6",
 	"AAAA",
 	"AFSDB",
@@ -1830,7 +1841,7 @@ func validateDNSType(typ string) error {
 	return nil
 }
 
-var uiTemplates = template.Must(template.ParseFS(templates.FS, "ui.html"))
+var uiTemplates0 = template.Must(template.ParseFS(templates.FS, "ui.html"))
 
 //var uiTemplates = template.Must(template.New("").Parse(
 //    `
@@ -5292,7 +5303,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 
 	if r.Method == "GET" {
 		data := map[string]any{
-			"Page":              "response-blacklist",
+			//"Page":              "response-blacklist",
 			"ResponseBlacklist": ui.getResponseBlacklist(),
 		}
 		ui.renderTemplate(w, r, "response-blacklist", data)
@@ -5532,7 +5543,7 @@ func (s *Server) startWebUI(addr string) {
 		s.recentBlocks,
 		s.stats,
 		//s.upstreamIPs,
-		uiTemplates,
+		uiTemplates0,
 	)
 	// Wire up the side-effects
 	ui.OnSaveWhitelist = s.saveQueryWhitelist
@@ -5702,7 +5713,7 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	//uiTemplates.Execute(w, struct{ Body template.HTML }{Body: template.HTML(body)}) // Raw HTML, no escape
 	data := map[string]any{
-		"Page": "stats", //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
+		//"Page": "stats",
 
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
 	}
@@ -6262,7 +6273,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data := map[string]any{
-			"Page":     "rules",
+			//"Page":     "rules",
 			"DNSTypes": dnsTypes,
 			"Rules":    flatRules, // Passing the flattened slice now
 		}
@@ -6545,6 +6556,8 @@ func withRulePrepended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logg
 
 // withRuleAppended safely inserts a new RuleEntry at the end of a slice
 // without mutating the underlying array of existing readers.
+//
+//nolint:unused
 func withRuleAppended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logger) []RuleEntry {
 	newTargetEntries := make([]RuleEntry, len(entries)+1)
 
@@ -6677,7 +6690,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
-			"Page":  "hosts",
+			//"Page":  "hosts",
 			"Hosts": ui.hostStore.Snapshot(),
 		}
 
@@ -6852,6 +6865,8 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 // from being logged as template execution failures.
 func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
 	log := ui.getLogger()
+	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
+	data["Path"] = r.URL.Path
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
@@ -6859,7 +6874,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 
 	var buf bytes.Buffer
-	if err := uiTemplates.Execute(&buf, data); err != nil {
+	if err := ui.uiTemplates.Execute(&buf, data); err != nil {
 		log.Error("template_render_failed",
 			slog.String("page", pageName),
 			SafeErr(err))
@@ -6931,7 +6946,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "GET" {
 		data := map[string]any{
-			"Page":           "blocks",
+			//"Page":           "blocks",
 			"Blocks":         ui.getRecentBlocksCopy(),
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
@@ -7118,7 +7133,9 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	if err != nil {
 		// Fallback if file doesn't exist yet
 		ui.renderTemplate(w, r, "logs", map[string]any{
-			"Page": "logs", "Path": r.URL.Path, "Title": title, "Filter": filter, "Content": "No log entries found.",
+			//"Page": "logs",
+			//"Path":  r.URL.Path,
+			"Title": title, "Filter": filter, "Content": "No log entries found.",
 		})
 		return
 	}
@@ -7190,8 +7207,8 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	}
 
 	renderData := map[string]any{
-		"Page":    "logs",
-		"Path":    r.URL.Path,
+		//"Page":    "logs",
+		//"Path":    r.URL.Path,
 		"Title":   title,
 		"Filter":  filter,
 		"Content": content,
