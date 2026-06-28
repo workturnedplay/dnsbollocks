@@ -47,7 +47,10 @@ go.exe test -c !MOD_FLAG! -tags portmasterFirewalled -o dev_dns_test.exe .\inter
 if %ERRORLEVEL% equ 0 (
     echo Running only the firewall-requiring^(localhost talk^) tests...
     .\dev_dns_test.exe -test.v -test.run "^TestFWNeeded"
-    if errorlevel 1 goto :fail
+    if errorlevel 1 (
+      echo You will have to allow "127.0.0.1 tcp/49152-65535" in firewall^(eg. portmaster^) both IN and OUT for these tests to pass
+      goto :fail
+    )
 ) else (
     echo Compilation failed.
     goto :fail
