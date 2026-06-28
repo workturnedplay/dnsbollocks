@@ -1916,7 +1916,7 @@ func (s *Server) Run() error {
 	log.Debug("Cache initialized")
 
 	//s.globalLimiter = rate.NewLimiter(rate.Limit(cfg.GlobalRateQPS), cfg.GlobalBurstQPS)
-	s.rateLimiter = newClientRateLimiter(rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
+	s.rateLimiter = newClientRateLimiter(s.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
 	log.Debug("Rate limiter initialized")
 
 	if err := s.validateUpstream(); err != nil {
@@ -7662,21 +7662,53 @@ func rateLimitConfigFrom(cfg Config) RateLimitConfig {
 	}
 }
 
+// clientEntry wraps the limiter with a timestamp for the janitor to inspect.
+type clientEntry struct {
+	limiter  *rate.Limiter
+	lastSeen int64 // Unix timestamp, managed via sync/atomic
+}
+
 // ClientRateLimiter enforces a global QPS cap and a per-client QPS cap.
 // A request must pass both gates. Extracted from Server so it can be
 // unit-tested and mocked without constructing a full Server.
 type ClientRateLimiter struct {
 	global  *rate.Limiter
-	clients sync.Map
+	clients sync.Map // Maps string (IP) -> *clientEntry
 	cfg     RateLimitConfig
 	logger  *slog.Logger
 }
 
-func newClientRateLimiter(cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
-	return &ClientRateLimiter{
+func newClientRateLimiter(ctx context.Context, cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
+	rl := &ClientRateLimiter{
 		global: rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
 		cfg:    cfg,
 		logger: logger,
+	}
+	// Spin up the janitor tied directly to the server lifecycle context
+	go rl.janitorLoop(ctx, 10*time.Minute)
+	return rl
+}
+
+func (rl *ClientRateLimiter) janitorLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now().Unix()
+			rl.clients.Range(func(key, value any) bool {
+				entry := value.(*clientEntry)
+				// Evict any client IP that hasn't sent a request in over an hour
+				if now-atomic.LoadInt64(&entry.lastSeen) > 3600 {
+					rl.clients.Delete(key)
+				}
+				return true
+			})
+		case <-ctx.Done():
+			// Server or configuration context cancelled; exit goroutine cleanly
+			return
+		}
 	}
 }
 
@@ -7700,13 +7732,21 @@ func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason stri
 	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.IsLoopback() {
 		clientIP = "localhost"
 	}
+	now := time.Now().Unix()
 	// 3. Use the clean IP as the sync.Map key
+	// Load or atomically store a newly provisioned tracker entry
 	clIface, _ := rl.clients.LoadOrStore(
 		clientIP,
-		rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+		&clientEntry{
+			//rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+			limiter:  rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+			lastSeen: now,
+		},
 	)
 	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-	if !clIface.(*rate.Limiter).Allow() {
+	entry := clIface.(*clientEntry)
+	atomic.StoreInt64(&entry.lastSeen, now) // Bump the activity clock
+	if !entry.limiter.Allow() {
 		return false, clientRateLimitExceeded
 	}
 	return true, ""

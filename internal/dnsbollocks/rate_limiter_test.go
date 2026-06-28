@@ -1,10 +1,11 @@
 package dnsbollocks
 
 import (
+	//"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
-  "fmt"
 )
 
 func TestClientRateLimiter_Allow(t *testing.T) {
@@ -16,12 +17,15 @@ func TestClientRateLimiter_Allow(t *testing.T) {
 		ClientQPS:   2,
 		ClientBurst: 2,
 	}
-
-	rl := newClientRateLimiter(cfg, logger)
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel() // <--- This cleanly shuts down the janitor goroutine when the test ends
+	// rl := newClientRateLimiter(ctx, cfg, logger)
+	// Modern Go 1.24+ approach: No manual context creation or defer cancel() required!
+	rl := newClientRateLimiter(t.Context(), cfg, logger)
 
 	// Test 1: Client burst limit
 	clientA := "192.168.1.10:53421"
-	
+
 	for i := 0; i < 2; i++ {
 		allowed, reason := rl.Allow(clientA)
 		if !allowed {
