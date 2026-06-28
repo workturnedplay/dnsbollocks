@@ -3858,37 +3858,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
 	}
-	// var rateLimited string
-	// gl := s.globalLimiter.Allow()
-	// if !gl {
-	// 	rateLimited = globalRateLimitExceeded
-	// } else {
-
-	// 	// 1. Extract only the IP address to strip away the ephemeral port
-	// 	clientIP, _, err := net.SplitHostPort(clientAddr)
-	// 	if err != nil {
-	// 		// Fallback safety: if string parsing fails, default back to the raw string
-	// 		log.Warn("Unexpected couldn't split clientAddr into IP:port to use only the IP as key in the limiter, so using it as is", slog.String("clientAddr", clientAddr))
-	// 		clientIP = clientAddr
-	// 	}
-	// 	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
-	// 	if parsedIP := net.ParseIP(clientIP); parsedIP != nil && parsedIP.IsLoopback() {
-	// 		clientIP = "localhost"
-	// 	}
-	// 	// 3. Use the clean IP as the sync.Map key
-	// 	clIface, _ := s.clientLimiters.LoadOrStore(clientIP, rate.NewLimiter(rate.Limit(cfg.ClientRateQPS), cfg.ClientBurstQPS)) // Per-client qps/burst
-	// 	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-	// 	cl := clIface.(*rate.Limiter)
-	// 	if !cl.Allow() {
-	// 		rateLimited = clientRateLimitExceeded
-	// 	}
-	// }
-	// if rateLimited != "" { //!gl || !cl.Allow() { //doneTODO: log if global or client limit was exceeded!
-	// 	log.Warn(rateLimited, slog.String("client", clientAddr))
-	// 	sfr := servfailResponse(msg)
-	// 	s.logQuery(ctx, clientAddr, domain, qtype, rateLimited, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
-	// 	return sfr
-	// }
 
 	matchedID, matched := s.ruleStore.MatchForType(qtype, domain)
 	if !matched && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
@@ -4037,15 +4006,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 func computeTTL(msg *dns.Msg) time.Duration {
 	//To correctly handle upstream negative caching responses (like NXDOMAIN or NODATA), we need to check both the Answer section and the Ns (Authority) section. Additionally, if an SOA (Start of Authority) record is found in the Authority section, RFC 2308 mandates that the negative cache TTL should be capped by the SOA's Minttl value.
 	var minTTL uint32 = 3600 // Default 1 hour,  not: //86400 // 24 hours
-	// for _, rr := range msg.Answer {
-	//     if int(rr.Header().Ttl) < minTTL {
-	//         minTTL = int(rr.Header().Ttl)
-	//     }
-	// }
-	// if minTTL == 0 { // Edge: Zero TTL
-	//     minTTL = 60
-	// }
-	// return minTTL
+
 	found := false
 
 	// 1. Check the Answer section
