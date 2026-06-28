@@ -3122,12 +3122,29 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 		log.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
 		return
 	}
+	// 1. EXTRACT MAX UDP SIZE
+	// Default to standard 512 bytes, but check if the client provided an EDNS0 OPT record.
+	maxUDPSize := 512
+	if clientOpt := msg.IsEdns0(); clientOpt != nil {
+		maxUDPSize = int(clientOpt.UDPSize())
+	}
+
 	resp := s.handleDNSQuery(ctx, msg, clientAddr.String())
 	if resp == nil {
 		cfg := s.getConfig()
 		log.Debug("Dropped UDP DNS response (is BlockMode 'drop' ?)", slog.String("BlockMode", cfg.BlockMode))
 		return // BlockMode is "drop", so Drop
 	}
+
+	// 2. TRUNCATE IF NECESSARY
+	// If the response exceeds the client's max UDP size, miekg/dns will
+	// strip excess records and automatically set the TC (Truncated) bit.
+	resp.Truncate(maxUDPSize)
+	/* press Alt+z in vscode to see long lines wrapped, press again to get back ie. toggle.
+	Safe Fallbacks: If maxUDPSize happens to be set dangerously low by a broken client, miekg/dns's .Truncate() method internally enforces the RFC minimum of 512 bytes, so you don't have to worry about adding sanity checks for tiny bounds.
+	TCP Handoff: When a large response gets truncated, the client sees the TC bit flip to true. They will immediately drop the UDP response, open a new TCP connection to your server (which hits your handleTCP listener where the limit is 65k bytes), and get the full, untruncated response.
+	*/
+
 	pack, err := resp.Pack()
 	if err != nil {
 		log.Warn("failed to pack DNS UDP packet response thus not sent", SafeErr(err))
