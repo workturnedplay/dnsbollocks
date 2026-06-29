@@ -286,7 +286,7 @@ type Upstream struct {
 	SNI    string
 	//logger            *slog.Logger
 	liveLogger                    *atomic.Pointer[slog.Logger]
-	Retries                       int //RetriesPerQuery
+	Retries                       int //RetriesPerQuery, so after first try, if fails, how many more to retry
 	RetryBackoffDuration          time.Duration
 	UpstreamClientTimeoutDuration time.Duration
 	BackgroundCtx                 context.Context
