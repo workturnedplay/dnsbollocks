@@ -14,6 +14,7 @@
   "upstream_selection_mode": "failover",
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
+  "block_ipv6": "::",
   "qps_rate_globally": 100,
   "qps_burst_globally": 100,
   "qps_rate_per_client": 20,
