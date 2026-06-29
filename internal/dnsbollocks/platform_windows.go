@@ -2247,6 +2247,22 @@ func (s *Server) loadMainConfig() error {
 
 	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
+	if newCfg.UpstreamClientTimeoutSec <= 0 {
+		const fallback = 5 // seconds
+		log.Warn("upstream_client_timeout_sec is 0 or negative (means no timeout in Go's http.Client), clamping",
+			slog.Int("given", newCfg.UpstreamClientTimeoutSec),
+			slog.Int("using", fallback))
+		newCfg.UpstreamClientTimeoutSec = fallback
+	}
+
+	if newCfg.UpstreamDialTimeoutSec <= 0 {
+		const fallback = 3 // seconds
+		log.Warn("upstream_dial_timeout_sec is 0 or negative, clamping",
+			slog.Int("given", newCfg.UpstreamDialTimeoutSec),
+			slog.Int("using", fallback))
+		newCfg.UpstreamDialTimeoutSec = fallback
+	}
+
 	// Clean up and pre-parse IPv4
 	if ip := net.ParseIP(newCfg.BlockIP); ip != nil && ip.To4() != nil {
 		newCfg.BlockIPv4Parsed = ip.To4()
