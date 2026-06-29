@@ -35,6 +35,7 @@ import (
 	"errors"
 	"expvar"
 	"reflect"
+	"slices"
 	"sort"
 	"sync/atomic"
 
@@ -231,6 +232,7 @@ type Server struct {
 	shutdownWG   sync.WaitGroup
 	shutdownOnce sync.Once
 
+	reloadMu      sync.RWMutex
 	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
 }
 
@@ -1859,7 +1861,19 @@ func getWebUIPasswordHashJSONTag() string {
 // OnReload registers a hook that is called after a config reload.
 // Must only be called during startup before reload processing begins.
 func (s *Server) OnReload(hook func()) {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	s.onReloadHooks = append(s.onReloadHooks, hook)
+}
+
+func (s *Server) runReloadHooks() {
+	s.reloadMu.RLock()
+	hooks := slices.Clone(s.onReloadHooks)
+	s.reloadMu.RUnlock()
+
+	for _, hook := range hooks {
+		hook()
+	}
 }
 
 func (s *Server) Run() error {
@@ -1951,9 +1965,10 @@ func (s *Server) Run() error {
 
 			log2.Debug("Running on-reload hooks")
 			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
-			for _, hook := range s.onReloadHooks {
-				hook()
-			}
+			s.runReloadHooks()
+			// for _, hook := range s.onReloadHooks {
+			// 	hook()
+			// }
 
 			log2.Warn(
 				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
