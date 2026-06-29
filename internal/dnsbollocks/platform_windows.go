@@ -472,6 +472,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	// If execution gets here, every single configured upstream failed
 	fs.mu.Lock()
 	fs.allFailed = true
+	fs.activeIndex = 0 // retry from the first one next time
 	fs.mu.Unlock()
 	return nil, "", failedUpstreams, errors.New("all upstreams failed to respond")
 }
