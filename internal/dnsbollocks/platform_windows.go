@@ -285,11 +285,12 @@ type Upstream struct {
 	URL    *url.URL
 	SNI    string
 	//logger            *slog.Logger
-	liveLogger           *atomic.Pointer[slog.Logger]
-	Retries              int //RetriesPerQuery
-	RetryBackoffDuration time.Duration
-	BackgroundCtx        context.Context
-	CertLogTimeoutSec    int
+	liveLogger                    *atomic.Pointer[slog.Logger]
+	Retries                       int //RetriesPerQuery
+	RetryBackoffDuration          time.Duration
+	UpstreamClientTimeoutDuration time.Duration
+	BackgroundCtx                 context.Context
+	CertLogTimeoutSec             int
 }
 
 // pointer to live logger or default logger if uninited(bug)
@@ -437,7 +438,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
 		}
 		// // FIX 1: Explicit log when a parallel/primary upstream fails
-		// log.Warn("⚠️ Upstream still failed; marking as failed",
+		// log.Warn("⚠️ Upstream still failed; marking as failed", // XXX: this is unnecessary spam
 		// 	slog.String("url", upstreams[res.index].URL.String()),
 		// 	slog.String("sni", upstreams[res.index].SNI),
 		// 	SafeErr(res.err),
@@ -3873,9 +3874,9 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		failedToCreateRequest, errReq := func() (bool, error) {
 			// 1. Create a transient request context derived from the client's ctx
 			// reqCtx, cancelReq := context.WithCancel(ctx)
-			//XXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
+			//NOTTRUEXXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
 			// 1. Derive a timed-out context from your incoming request context (reqCtx)
-			reqCtx, cancelReq := context.WithTimeout(ctx, time.Duration(5 /*FIXME: u.UpstreamClientTimeoutSec*/)*time.Second)
+			reqCtx, cancelReq := context.WithTimeout(ctx, time.Duration(u.UpstreamClientTimeoutDuration)*time.Second)
 			// Crucial: always defer cancel to prevent context leaks!
 			// defer cancel() NO
 			// Use a flag to track if responsibility for calling cancelReq() has been handed off
@@ -3934,7 +3935,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			break
 		}
 
-		//so we're here because the request error-ed, we cancel it first, to be sure it doesn't hang.
+		//so we're here because the request error-ed, we cancel it first, to be sure it doesn't hang(possibly? tho the bug wasn't here it was with u.RetryBackoffDuration).
 		// ✅ Ensure the active context gets cancelled
 		if cancelCurrentReq != nil {
 			cancelCurrentReq()
@@ -7507,13 +7508,14 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 				Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 				Transport: t,
 			},
-			URL:                  u,
-			SNI:                  sniHost,
-			liveLogger:           um.liveLogger,
-			Retries:              cfg.UpstreamRetriesPerQuery,
-			RetryBackoffDuration: time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
-			BackgroundCtx:        um.serverCtx,
-			CertLogTimeoutSec:    cfg.CertLogTimeoutSec,
+			URL:                           u,
+			SNI:                           sniHost,
+			liveLogger:                    um.liveLogger,
+			Retries:                       cfg.UpstreamRetriesPerQuery,
+			RetryBackoffDuration:          time.Duration(cfg.UpstreamRetryBackoffMs /*clamped later on, at use-site*/) * time.Millisecond,
+			UpstreamClientTimeoutDuration: time.Duration(cfg.UpstreamClientTimeoutSec /*used as is, good or bad, tho clamped in loadMainConfig()*/) * time.Second,
+			BackgroundCtx:                 um.serverCtx,
+			CertLogTimeoutSec:             cfg.CertLogTimeoutSec,
 		})
 	}
 
