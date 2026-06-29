@@ -88,6 +88,17 @@ rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem if errorlevel 1 goto :fail
 
 set "lintexe=%USERPROFILE%\go\bin\golangci-lint.exe"
+rem :: Check if golangci-lint.exe exists, if not, install it
+if not exist "%lintexe%" (
+    echo [!] golangci-lint.exe not found. Installing via go install...
+    "%goexe%" install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+    
+    :: Double check if installation actually succeeded
+    if not exist "%lintexe%" (
+        echo [ERROR] Failed to install golangci-lint. Check your internet/DNS.
+        exit /b 1
+    )
+)
 rem pushd internal\dnsbollocks
 echo Running %lintexe% run !LINT_MOD_FLAG! ./...
 "%lintexe%" run !LINT_MOD_FLAG! ./...
