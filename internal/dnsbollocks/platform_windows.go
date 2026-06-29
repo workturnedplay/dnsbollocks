@@ -3876,7 +3876,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// reqCtx, cancelReq := context.WithCancel(ctx)
 			//NOTTRUEXXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
 			// 1. Derive a timed-out context from your incoming request context (reqCtx)
-			reqCtx, cancelReq := context.WithTimeout(ctx, time.Duration(u.UpstreamClientTimeoutDuration)*time.Second)
+			reqCtx, cancelReq := context.WithTimeout(ctx, u.UpstreamClientTimeoutDuration)
 			// Crucial: always defer cancel to prevent context leaks!
 			// defer cancel() NO
 			// Use a flag to track if responsibility for calling cancelReq() has been handed off
