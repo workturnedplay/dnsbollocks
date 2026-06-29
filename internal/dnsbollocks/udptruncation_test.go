@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	//"os"
 	"testing"
 	"time"
 
@@ -19,9 +20,11 @@ import (
 func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	// 1. Initialize a Server instance with logs discarded to keep test output clean
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	//logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	server := NewServer(logger)
-
-	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(*server.getConfig() /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
+	cfg := server.getConfig()
+	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
+	server.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute)
 
 	// 2. Inject a local host rule with a large number of IP addresses.
 	// This ensures that the generated DNS response will easily exceed 512 bytes.
@@ -30,6 +33,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 		largeIPList = append(largeIPList, net.IPv4(192, 168, 1, byte(i)))
 	}
 
+	server.ruleStore.AddRule("A", "large-response.example.com", true, logger)
 	server.hostStore.ReplaceAll([]LocalHostRule{
 		{
 			Pattern: "large-response.example.com",
@@ -88,7 +92,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 		if err := resp.Unpack(buf[:n]); err != nil {
 			t.Fatalf("failed to unpack response: %v", err)
 		}
-
+		// t.Logf("DEBUG RESPONSE:\n%s", resp.String())
 		// Assertions: The TC (Truncated) bit must be flipped, and size restricted to <= 512 bytes
 		if !resp.MsgHdr.Truncated {
 			t.Error("expected response to be truncated (TC bit true), but it wasn't")
@@ -123,7 +127,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 		if err := resp.Unpack(buf[:n]); err != nil {
 			t.Fatalf("failed to unpack response: %v", err)
 		}
-
+		// t.Logf("DEBUG RESPONSE:\n%s", resp.String())
 		// Assertions: The response shouldn't be truncated and must contain all 40 elements
 		if resp.MsgHdr.Truncated {
 			t.Error("expected response NOT to be truncated, but the TC bit was true")
