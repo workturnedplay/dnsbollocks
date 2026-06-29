@@ -2877,7 +2877,13 @@ func (s *Server) startDNSListener(addr string) {
 
 				if n > len(buf) {
 					udpPool.Put(bufPtr) // Clean up before panicking
-					panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
+					// panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
+					log3.Error("BUG: ReadFromUDP returned n > dns_udp_buffer_size (from config); dropping packet",
+						slog.Int("n", n),
+						slog.Int("dns_udp_buffer_size", len(buf)),
+						SafeAddr("client", clientAddr),
+					)
+					continue
 				}
 
 				//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
