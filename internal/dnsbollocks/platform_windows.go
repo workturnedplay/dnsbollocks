@@ -5406,14 +5406,14 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		} //end delete
 
-		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern"))) //XXX: must be lowercased for matchPattern later on.
+		patternNormalized := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.FormValue("pattern"), "."))) //XXX: must be lowercased for matchPattern later on.
 		typ := r.FormValue("type")
 		id := r.FormValue("id")
 		enabledStr := r.FormValue("enabled")
 		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
-		if patternLowercased == "" || typ == "" {
-			log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternLowercased), slog.String("type", typ))
+		if patternNormalized == "" || typ == "" {
+			log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternNormalized), slog.String("type", typ))
 			http.Error(w, "Pattern and type required", http.StatusBadRequest)
 			return
 		}
@@ -5423,8 +5423,8 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := validateRulePattern(patternLowercased); err != nil {
-			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
+		if err := validateRulePattern(patternNormalized); err != nil {
+			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -5438,31 +5438,31 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
 				return
 			}
-			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternLowercased, enabledBool, log)
+			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
 			if err != nil {
-				log.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternLowercased))
+				log.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
 
 			ui.OnInvalidatePattern(oldPattern)
-			if oldPattern != patternLowercased {
-				ui.OnInvalidatePattern(patternLowercased)
+			if oldPattern != patternNormalized {
+				ui.OnInvalidatePattern(patternNormalized)
 			}
-			log.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternLowercased), slog.Bool("enabled", enabledBool),
+			log.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternNormalized), slog.Bool("enabled", enabledBool),
 				slog.String("old_pattern", oldPattern))
 		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
 			// --- ADD MODE ---
 			// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
 
-			newID, err := ui.ruleStore.AddRule(typ, patternLowercased, enabledBool, log)
+			newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
 			if err != nil {
-				log.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternLowercased))
+				log.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternNormalized))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-			ui.OnInvalidatePattern(patternLowercased)
-			log.Info("Rule added via WebUI", slog.String("patternLowercased", patternLowercased), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
+			ui.OnInvalidatePattern(patternNormalized)
+			log.Info("Rule added via WebUI", slog.String("patternLowercased", patternNormalized), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
 		}
 
 		if err := /*uses lock!*/ ui.OnSaveWhitelist(); err != nil {
