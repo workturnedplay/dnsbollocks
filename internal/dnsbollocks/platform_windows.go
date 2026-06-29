@@ -232,6 +232,8 @@ type Server struct {
 	shutdownWG   sync.WaitGroup
 	shutdownOnce sync.Once
 
+	reloadInProgress atomic.Bool
+
 	reloadMu      sync.RWMutex
 	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
 }
@@ -1876,6 +1878,94 @@ func (s *Server) runReloadHooks() {
 	}
 }
 
+// Reload via Ctrl+R aka reloadFn
+func (s *Server) Reload() {
+	log := s.getLogger()
+
+	if !s.reloadInProgress.CompareAndSwap(false, true) {
+		log.Warn("Reload already in progress")
+		return
+	}
+	defer s.reloadInProgress.Store(false)
+
+	log.Debug("Reload triggered...")
+	// s.flushCache()
+
+	cfg := s.getConfig()
+	oldJanitorInterval := cfg.CacheJanitorIntervalMinutes
+	if err := s.loadMainConfig(); err != nil {
+		s.logFatal("main config ("+configFileName+") reload failed:", err)
+	} else {
+		log.Debug("main config reloaded", slog.String("filename", configFileName))
+	}
+	cfg = s.getConfig()
+	if !cfg.AllowRunAsAdmin && isAdmin {
+		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
+	}
+
+	if err := s.loadQueryWhitelist(); err != nil {
+		s.logFatal("Whitelist ("+cfg.WhitelistFile+") reload failed:", err)
+	} else {
+		log.Debug("Whitelist reloaded", slog.String("filename", cfg.WhitelistFile))
+	}
+	if err := s.loadResponseBlacklist(); err != nil {
+		s.logFatal("Blacklist ("+cfg.BlacklistFile+") reload failed:", err)
+	} else {
+		log.Debug("Blacklist reloaded", slog.String("filename", cfg.BlacklistFile))
+	}
+	// Inside watchKeys, in the Ctrl+R lambda block:
+	if err := s.loadLocalHosts(); err != nil {
+		s.logFatal("Hosts ("+cfg.HostsFile+") reload failed:", err)
+	} else {
+		log.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
+	}
+
+	// 2. Re-initialize logging (applies new console levels or log files)
+	//We do this late here to keep same logger until reload is done-ish
+	s.initFullLogging()
+	log = s.getLogger() // Grab the newly initialized logger
+
+	log.Info("Configuration files reloaded successfully")
+
+	// 3. Flush the cache to apply new TTLs/rules
+	s.flushCache()
+	// s.dnsCache = newGoCacheStore(
+	// 	time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute,
+	// )
+	//log.Debug("Cache flushed")
+	if oldJanitorInterval != cfg.CacheJanitorIntervalMinutes {
+		log.Warn("You changed cachejanitor_interval_minutes. This has no effect and requires a restart if you want it applied.",
+			slog.Int("oldJanitorInterval", oldJanitorInterval),
+			slog.Int("newJanitorInterval", cfg.CacheJanitorIntervalMinutes))
+	}
+
+	// 4. Update the rate limiter with new QPS settings
+	s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfg /*it's been updated*/)) //s.getConfig()))
+	log.Debug("Rate limiter reinitialized")
+
+	// 5. Re-validate and rebuild Upstream DoH connections
+	if err := s.upstreamMgr.ValidateUpstream(); err != nil {
+		s.logFatal("Upstream validation failed:", err)
+	}
+	log.Debug("Upstreams revalidated",
+		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
+		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
+	)
+	s.generateCertIfNeeded() // For DoH and webUI!
+
+	s.upstreamMgr.ResetForReload()
+	s.upstreamMgr.InitDoHClients()
+
+	//clearLoginLockouts()//wired in startWebUI
+
+	// 6. Run external hooks (like clearing WebUI lockouts)
+	log.Debug("Running on-reload hooks")
+	// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
+	s.runReloadHooks()
+
+	log.Warn("Config reload complete! Note: TODO: Changes to ListenDNS, ListenDoH, ListenUI, or MaxConcurrentDNSTCPConns, CacheJanitorIntervalMinutes require a full server restart to take effect(FIXME).")
+}
+
 func (s *Server) Run() error {
 	log := s.getLogger()
 
@@ -1915,8 +2005,6 @@ func (s *Server) Run() error {
 	}
 	log.Debug("Upstreams validated",
 		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
-		//slog.Any("upstreamURLs", config.UpstreamURLs),
-		//slog.Any("upstreamIPs", upstreamIPs),
 		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
 	)
 
@@ -1930,79 +2018,7 @@ func (s *Server) Run() error {
 	s.startDoHListener(cfg.ListenDoH) // Blocks until complete/fail
 	go s.startWebUI(cfg.ListenUI)     // Concurrent server (blocks forever, but post-serial)
 
-	go s.watchKeys(
-		func() { // Ctrl+R aka reloadFn
-			log2 := s.getLogger()
-			log2.Debug("Reload triggered...")
-			// s.flushCache()
-
-			if err := s.loadMainConfig(); err != nil {
-				s.logFatal("main config ("+configFileName+") reload failed:", err)
-			} else {
-				log2.Debug("main config reloaded", slog.String("filename", configFileName))
-			}
-			cfg := s.getConfig()
-
-			if err := s.loadQueryWhitelist(); err != nil {
-				s.logFatal("Whitelist ("+cfg.WhitelistFile+") reload failed:", err)
-			} else {
-				log2.Debug("Whitelist reloaded", slog.String("filename", cfg.WhitelistFile))
-			}
-			if err := s.loadResponseBlacklist(); err != nil {
-				s.logFatal("Blacklist ("+cfg.BlacklistFile+") reload failed:", err)
-			} else {
-				log2.Debug("Blacklist reloaded", slog.String("filename", cfg.BlacklistFile))
-			}
-			// Inside watchKeys, in the Ctrl+R lambda block:
-			if err := s.loadLocalHosts(); err != nil {
-				s.logFatal("Hosts ("+cfg.HostsFile+") reload failed:", err)
-			} else {
-				log2.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
-			}
-
-			//// 1. Reload the main config (which natively cascades to whitelist, blacklist, and hosts)
-			// if err := s.loadConfig(); err != nil {
-			// 	log2.Error("Config reload failed. Keeping previous config.", SafeErr(err))
-			// 	return // Abort reload to keep the server stable
-			// }
-
-			//we do it late here to keep same logger until reload is done-ish
-			// 2. Re-initialize logging (applies new console levels or log files)
-			s.initFullLogging()
-			log2 = s.getLogger() // Grab the newly initialized logger
-
-			log2.Info("Configuration files reloaded successfully")
-
-			// 3. Flush the cache to apply new TTLs/rules
-			s.flushCache()
-
-			// 4. Update the rate limiter with new QPS settings
-			s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfg /*it's been updated*/)) //s.getConfig()))
-
-			// 5. Re-validate and rebuild Upstream DoH connections
-			if err := s.upstreamMgr.ValidateUpstream(); err != nil {
-				s.logFatal("Upstream validation failed:", err)
-			}
-
-			s.upstreamMgr.ResetForReload()
-			s.upstreamMgr.InitDoHClients()
-
-			//clearLoginLockouts()//wired in startWebUI
-
-			// 6. Run external hooks (like clearing WebUI lockouts)
-			log2.Debug("Running on-reload hooks")
-			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
-			s.runReloadHooks()
-			// for _, hook := range s.onReloadHooks {
-			// 	hook()
-			// }
-
-			// log2.Warn(
-			// 	"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
-			// 	slog.String("config_file", configFileName),
-			// )
-			log2.Warn("Config reload complete! Note: Changes to ListenDNS, ListenDoH, ListenUI, or MaxConcurrentDNSTCPConns require a full server restart to take effect(FIXME).")
-		},
+	go s.watchKeys(s.Reload, // Ctrl+R aka reloadFn
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
 			log3 := s.getLogger()
 			log3.Debug("Shutdown signal received, clean exit.")
