@@ -285,11 +285,11 @@ type Upstream struct {
 	URL    *url.URL
 	SNI    string
 	//logger            *slog.Logger
-	liveLogger        *atomic.Pointer[slog.Logger]
-	Retries           int //RetriesPerQuery
-	RetryBackoff      time.Duration
-	BackgroundCtx     context.Context
-	CertLogTimeoutSec int
+	liveLogger           *atomic.Pointer[slog.Logger]
+	Retries              int //RetriesPerQuery
+	RetryBackoffDuration time.Duration
+	BackgroundCtx        context.Context
+	CertLogTimeoutSec    int
 }
 
 // pointer to live logger or default logger if uninited(bug)
@@ -436,6 +436,12 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// No locks needed here anymore! The goroutine already handled it.
 			return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
 		}
+		// // FIX 1: Explicit log when a parallel/primary upstream fails
+		// log.Warn("⚠️ Upstream still failed; marking as failed",
+		// 	slog.String("url", upstreams[res.index].URL.String()),
+		// 	slog.String("sni", upstreams[res.index].SNI),
+		// 	SafeErr(res.err),
+		// )
 		// Track the failure
 		failedUpstreams = append(failedUpstreams, upstreams[res.index].URL.String())
 	}
@@ -443,12 +449,19 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
 	// step down the list sequentially to find the next working backup.
 	for i := currentIdx + 1; i < len(upstreams); i++ {
+		// FIX 2: Prevent the instant fallback loop spam during a Ctrl+C shutdown
+		if ctx.Err() != nil {
+			return nil, "", failedUpstreams, ctx.Err()
+		}
 		target := upstreams[i]
 		resp, err := target.doSingleDoHRequest(ctx, reqBytes) //doSingleDoHRequest(ctx, target.Client, target.URL, target.SNI, reqBytes)
 		if err == nil {
 			fs.mu.Lock()
 			wasBlackout := fs.allFailed
 			fs.allFailed = false // Connectivity restored by a fallback!
+			// Only log if WE are the thread that is actively shifting the
+			// state away from the stale index we started with.
+			shouldLogFailover := !wasBlackout && (fs.activeIndex == currentIdx)
 			fs.activeIndex = i
 			fs.mu.Unlock()
 			if wasBlackout { //TODO: DRY(see the above copy)
@@ -457,7 +470,8 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 					slog.String("sni", target.SNI),
 					slog.Int("index", i),
 				)
-			} else {
+			} else if shouldLogFailover {
+				// if 2 concurrent requests happen this would've otherwise been logged twice
 				oldTarget := upstreams[currentIdx]
 				// ⚠️ New log line for the standard failover case
 				log.Warn("⚠️ Upstream failover; switching to a different(next in list) upstream DoH server",
@@ -471,6 +485,12 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 			return resp, target.URL.String(), failedUpstreams, nil
 		}
+		// FIX 3: Explicit log when a sequential fallback upstream fails
+		log.Warn("⚠️ Fallback upstream failed; moving to next (if available)",
+			slog.String("url", target.URL.String()),
+			slog.String("sni", target.SNI),
+			SafeErr(err),
+		)
 		failedUpstreams = append(failedUpstreams, target.URL.String())
 	}
 	// If execution gets here, every single configured upstream failed
@@ -2263,6 +2283,14 @@ func (s *Server) loadMainConfig() error {
 		newCfg.UpstreamDialTimeoutSec = fallback
 	}
 
+	if newCfg.UpstreamRetryBackoffMs <= 0 {
+		const fallback = 100 // ms
+		log.Warn("upstream_retry_backoff_ms is 0 or negative (means no timeout in Go's http.Client and hung situations), clamping",
+			slog.Int("given", newCfg.UpstreamRetryBackoffMs),
+			slog.Int("using", fallback))
+		newCfg.UpstreamRetryBackoffMs = fallback
+	}
+
 	// Clean up and pre-parse IPv4
 	if ip := net.ParseIP(newCfg.BlockIP); ip != nil && ip.To4() != nil {
 		newCfg.BlockIPv4Parsed = ip.To4()
@@ -3289,7 +3317,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 				SafeErr(err),
 				slog.Int("read_bytes", n),
 				slog.Int("wanted_to_read_bytes", TWO),
-				slog.String("timeout", timeoutDuration.String() /*not nil*/),
+				slog.Duration("timeout", timeoutDuration),
 			)
 		}
 		return
@@ -3309,7 +3337,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	wire := make([]byte, length)
 	if n, err := io.ReadFull(conn, wire); err != nil {
 		log.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
-			slog.String("timeout", timeoutDuration.String() /*not nil*/))
+			slog.Duration("timeout", timeoutDuration))
 		return
 	}
 
@@ -3342,7 +3370,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		wroteN, err := conn.Write(out.Bytes())
 		if err != nil {
 			log.Warn("failed to write to TCP the DNS packet response body", SafeErr(err), slog.Int("wrote_bytes", wroteN),
-				slog.Int("shoulda_written", len(pack)), slog.String("timeout", timeoutDuration.String() /*not nil*/))
+				slog.Int("shoulda_written", len(pack)), slog.Duration("timeout", timeoutDuration))
 			return
 		}
 		return
@@ -3844,7 +3872,12 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		// Use an anonymous function wrapper so 'defer' operates on a per-iteration scope
 		failedToCreateRequest, errReq := func() (bool, error) {
 			// 1. Create a transient request context derived from the client's ctx
-			reqCtx, cancelReq := context.WithCancel(ctx)
+			// reqCtx, cancelReq := context.WithCancel(ctx)
+			//XXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
+			// 1. Derive a timed-out context from your incoming request context (reqCtx)
+			reqCtx, cancelReq := context.WithTimeout(ctx, time.Duration(5 /*FIXME: u.UpstreamClientTimeoutSec*/)*time.Second)
+			// Crucial: always defer cancel to prevent context leaks!
+			// defer cancel() NO
 			// Use a flag to track if responsibility for calling cancelReq() has been handed off
 			var handedOver bool
 			defer func() {
@@ -3901,6 +3934,13 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			break
 		}
 
+		//so we're here because the request error-ed, we cancel it first, to be sure it doesn't hang.
+		// ✅ Ensure the active context gets cancelled
+		if cancelCurrentReq != nil {
+			cancelCurrentReq()
+			cancelCurrentReq = nil
+		}
+
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
 		var netErr net.Error
@@ -3915,9 +3955,19 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				//slog.Any("query", req),
 				SafeRequestAttr("query", req),
 				slog.Bool("will_retry", attempt < maxTries))
+
+			// 🔴 FIX #1: If this was the last attempt, return the REAL error immediately!
+			// This prevents falling through to the bottom of the function.
+			if attempt >= maxTries {
+				return nil, err4ClientDo
+			}
+			if u.RetryBackoffDuration <= 0 {
+				u.RetryBackoffDuration = time.Duration(100) * time.Millisecond
+				log.Warn("BUG: retry backoff timer is set to <= 0 , preventing hang by using 100ms", slog.Int("retrybackoff", int(u.RetryBackoffDuration)))
+			}
 			// small backoff: sleep a bit but respect context
 			select {
-			case <-time.After(time.Duration(u.RetryBackoff) * time.Millisecond):
+			case <-time.After(u.RetryBackoffDuration):
 			case <-ctx.Done():
 				log.Debug("doh sensed client quit during retry backoff...")
 				return nil, ctx.Err()
@@ -3925,6 +3975,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				log.Debug("doh sensed quit during retry backoff...")
 				return nil, u.BackgroundCtx.Err()
 			}
+			log.Warn("Retrying", SafeRequestAttr("query", req)) //FIXME: it's warn now so i can see it easily, put Debug back
 			continue
 		}
 		// non-retryable error
@@ -3938,11 +3989,16 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// Run a manual probe to see what the server is actually sending
 			u.logCertDetails() //targetURL.Hostname(), targetURL.Port(), sni)
 		} else {
-			log.Error("Failed to query upstream DNS server", SafeErr(err4ClientDo))
+			log.Error("Failed to query upstream DNS server",
+				slog.String("url", u.URL.String()),
+				slog.String("sni_used", u.SNI),
+				SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
 		return nil, err4ClientDo
 	} //for retries
+
+	// --- THE CODE BELOW ONLY EXECUTES ON SUCCESSFUL BREAK ---
 
 	// ✅ Ensure the active context gets cancelled when the outer function returns
 	if cancelCurrentReq != nil {
@@ -7393,10 +7449,42 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 		t := &http.Transport{
 			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second}
+				d := &net.Dialer{
+					Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second,
+					// Encourages OS-level keep-alives
+					KeepAlive: 15 * time.Second, //TODO: const or configurable?
+					// doneFIXME: does this mean it will never be seen as idle conn? thus cfg.UpstreamIdleConnTimeoutSec will not be enforced?  no
+					/*
+						1. Does KeepAlive prevent IdleConnTimeout from working?
+
+						No, it does not prevent it. You should absolutely keep both, as they operate at completely different layers of the network stack and look for entirely different things.
+
+						    IdleConnTimeout is an Layer 7 (Application) concept: In Go's http.Transport, a connection is considered "idle" when there are no active HTTP requests or responses running across it. Go keeps track of this using internal timestamps.
+
+						    KeepAlive is a Layer 4 (Transport/TCP) concept: This tells the operating system's TCP stack to send tiny, empty tracking probes to the remote server to ensure the physical line hasn't been cut.
+
+						Because TCP Keep-Alive probes are handled entirely by the operating system (below Go's application layer), Go does not count them as HTTP traffic. If you set an IdleConnTimeout of 90 seconds and a KeepAlive of 15 seconds, and you stop browsing the web:
+
+						    Every 15 seconds, the OS will silently exchange a TCP keep-alive ping with the server. Go's HTTP layer doesn't see or care about this.
+
+						    At the 90-second mark, Go realizes no actual HTTP requests have used this connection. Go will cleanly close the connection, ignoring the fact that the TCP stack was keeping it warm.
+					*/
+				}
 				// Use the pre-computed dialAddr captured via closure!
 				log.Debug("opening new TCP socket for upstream DoH", slog.String("dialAddr", dialAddr))
-				return d.DialContext(ctx, network, dialAddr)
+				conn, err := d.DialContext(ctx, network, dialAddr)
+				if err != nil {
+					return nil, err
+				}
+
+				//return d.DialContext(ctx, network, dialAddr)
+
+				// Wrap the connection with a strict write deadline (e.g., 5 seconds).
+				// Match this to your cfg.UpstreamClientTimeoutSec or use a sensible default.
+				return &writeTimeoutConn{
+					Conn:    conn,
+					timeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+				}, nil
 			},
 			TLSClientConfig: &tls.Config{
 				ServerName:         sniHost,
@@ -7419,13 +7507,13 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 				Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 				Transport: t,
 			},
-			URL:               u,
-			SNI:               sniHost,
-			liveLogger:        um.liveLogger,
-			Retries:           cfg.UpstreamRetriesPerQuery,
-			RetryBackoff:      time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
-			BackgroundCtx:     um.serverCtx,
-			CertLogTimeoutSec: cfg.CertLogTimeoutSec,
+			URL:                  u,
+			SNI:                  sniHost,
+			liveLogger:           um.liveLogger,
+			Retries:              cfg.UpstreamRetriesPerQuery,
+			RetryBackoffDuration: time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond,
+			BackgroundCtx:        um.serverCtx,
+			CertLogTimeoutSec:    cfg.CertLogTimeoutSec,
 		})
 	}
 
@@ -7456,4 +7544,18 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 		rl.clients.Delete(key)
 		return true
 	})
+}
+
+// writeTimeoutConn wraps a net.Conn to enforce a strict timeout on every Write call.
+// This prevents HTTP/2 write loops from hanging indefinitely on blackholed connections.
+type writeTimeoutConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (w *writeTimeoutConn) Write(b []byte) (int, error) {
+	if w.timeout > 0 {
+		_ = w.Conn.SetWriteDeadline(time.Now().Add(w.timeout))
+	}
+	return w.Conn.Write(b)
 }
