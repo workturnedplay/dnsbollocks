@@ -3862,6 +3862,8 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				req.Host = u.SNI
 			}
 
+			log2 := u.getLogger()
+			log2.Debug("Attempting request to upstream", slog.String("url", u.URL.String()), slog.String("sni", u.SNI))
 			// Capture the HTTP client execution
 			resp, err4ClientDo = u.Client.Do(req) // this is concurrency safe
 			if err4ClientDo == nil {
@@ -7377,7 +7379,7 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				d := &net.Dialer{Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second}
 				// Use the pre-computed dialAddr captured via closure!
-				log.Debug("(re)connected to upstream DoH", slog.String("dialAddr", dialAddr))
+				log.Debug("opening new TCP socket for upstream DoH", slog.String("dialAddr", dialAddr))
 				return d.DialContext(ctx, network, dialAddr)
 			},
 			TLSClientConfig: &tls.Config{
