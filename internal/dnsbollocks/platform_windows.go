@@ -3964,11 +3964,15 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			}
 			if u.RetryBackoffDuration <= 0 {
 				u.RetryBackoffDuration = time.Duration(100) * time.Millisecond
-				log.Warn("BUG: retry backoff timer is set to <= 0 , preventing hang by using 100ms", slog.Int("retrybackoff", int(u.RetryBackoffDuration)))
+				log.Warn("BUG: retry backoff timer is set to <= 0 , preventing hang by using 100ms", slog.Duration("retrybackoff_duration", u.RetryBackoffDuration))
+			} else if u.RetryBackoffDuration >= time.Duration(5)*time.Second {
+				log.Warn("RetryBackoffDuration is >= 5 sec", slog.Duration("retrybackoff_duration", u.RetryBackoffDuration))
 			}
 			// small backoff: sleep a bit but respect context
 			select {
 			case <-time.After(u.RetryBackoffDuration):
+				log.Debug("Retrying after backoff", SafeRequestAttr("query", req), slog.Duration("retrybackoff_duration", u.RetryBackoffDuration))
+				//exits select
 			case <-ctx.Done():
 				log.Debug("doh sensed client quit during retry backoff...")
 				return nil, ctx.Err()
@@ -3976,8 +3980,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				log.Debug("doh sensed quit during retry backoff...")
 				return nil, u.BackgroundCtx.Err()
 			}
-			log.Warn("Retrying", SafeRequestAttr("query", req)) //FIXME: it's warn now so i can see it easily, put Debug back
-			continue
+			continue //next try
 		}
 		// non-retryable error
 		// --- NEW DIAGNOSTIC BLOCK ---
