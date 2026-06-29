@@ -48,7 +48,7 @@ if %ERRORLEVEL% equ 0 (
     echo Running only the firewall-requiring^(localhost talk^) tests...
     .\dev_dns_test.exe -test.v -test.run "^TestFWNeeded"
     if errorlevel 1 (
-      echo You will have to allow "127.0.0.1 tcp/49152-65535" in firewall^(eg. portmaster^) both IN and OUT for these tests to pass
+      echo You will have to allow "127.0.0.1 tcp/49152-65535" and "127.0.0.1 udp/49152-65535" in firewall^(eg. portmaster^) both IN and OUT for these tests to pass
       goto :fail
     )
 ) else (

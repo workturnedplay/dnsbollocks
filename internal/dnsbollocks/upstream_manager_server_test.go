@@ -1,4 +1,5 @@
 //go:build portmasterFirewalled
+// +build portmasterFirewalled
 
 //XXX: all test that will be run also need to be prefixed with TestFWNeeded
 

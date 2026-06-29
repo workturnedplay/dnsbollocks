@@ -1,5 +1,7 @@
-//go:build windows
-// +build windows
+//go:build portmasterFirewalled
+// +build portmasterFirewalled
+
+//XXX: all test that will be run also need to be prefixed with TestFWNeeded
 
 package dnsbollocks
 
@@ -14,10 +16,12 @@ import (
 	"github.com/miekg/dns"
 )
 
-func TestHandleUDP_TruncationAndEDNS0(t *testing.T) {
+func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	// 1. Initialize a Server instance with logs discarded to keep test output clean
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := NewServer(logger)
+
+	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(*server.getConfig() /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
 
 	// 2. Inject a local host rule with a large number of IP addresses.
 	// This ensures that the generated DNS response will easily exceed 512 bytes.
@@ -25,7 +29,7 @@ func TestHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	for i := 1; i <= 40; i++ {
 		largeIPList = append(largeIPList, net.IPv4(192, 168, 1, byte(i)))
 	}
-	
+
 	server.hostStore.ReplaceAll([]LocalHostRule{
 		{
 			Pattern: "large-response.example.com",
