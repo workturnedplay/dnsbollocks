@@ -1934,26 +1934,52 @@ func (s *Server) Run() error {
 		func() { // Ctrl+R aka reloadFn
 			log2 := s.getLogger()
 			log2.Debug("Reload triggered...")
-			s.flushCache()
+			// s.flushCache()
+
+			if err := s.loadMainConfig(); err != nil {
+				s.logFatal("main config ("+configFileName+") reload failed:", err)
+			} else {
+				log2.Debug("main config reloaded", slog.String("filename", configFileName))
+			}
+			cfg := s.getConfig()
 
 			if err := s.loadQueryWhitelist(); err != nil {
-				s.logFatal("Whitelist reload failed:", err)
+				s.logFatal("Whitelist ("+cfg.WhitelistFile+") reload failed:", err)
 			} else {
-				log2.Debug("Whitelist reloaded")
+				log2.Debug("Whitelist reloaded", slog.String("filename", cfg.WhitelistFile))
 			}
 			if err := s.loadResponseBlacklist(); err != nil {
-				s.logFatal("Blacklist reload failed:", err)
+				s.logFatal("Blacklist ("+cfg.BlacklistFile+") reload failed:", err)
 			} else {
-				log2.Debug("Blacklist reloaded")
+				log2.Debug("Blacklist reloaded", slog.String("filename", cfg.BlacklistFile))
 			}
 			// Inside watchKeys, in the Ctrl+R lambda block:
 			if err := s.loadLocalHosts(); err != nil {
-				s.logFatal("Hosts reload failed:", err)
+				s.logFatal("Hosts ("+cfg.HostsFile+") reload failed:", err)
 			} else {
-				log2.Debug("Local hosts reloaded")
+				log2.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
 			}
 
-			//TODO: do I need this here? we're not currently updating these from config.json ! but I am using them in the below call to initDoHClients
+			//// 1. Reload the main config (which natively cascades to whitelist, blacklist, and hosts)
+			// if err := s.loadConfig(); err != nil {
+			// 	log2.Error("Config reload failed. Keeping previous config.", SafeErr(err))
+			// 	return // Abort reload to keep the server stable
+			// }
+
+			//we do it late here to keep same logger until reload is done-ish
+			// 2. Re-initialize logging (applies new console levels or log files)
+			s.initFullLogging()
+			log2 = s.getLogger() // Grab the newly initialized logger
+
+			log2.Info("Configuration files reloaded successfully")
+
+			// 3. Flush the cache to apply new TTLs/rules
+			s.flushCache()
+
+			// 4. Update the rate limiter with new QPS settings
+			s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfg /*it's been updated*/)) //s.getConfig()))
+
+			// 5. Re-validate and rebuild Upstream DoH connections
 			if err := s.upstreamMgr.ValidateUpstream(); err != nil {
 				s.logFatal("Upstream validation failed:", err)
 			}
@@ -1963,6 +1989,7 @@ func (s *Server) Run() error {
 
 			//clearLoginLockouts()//wired in startWebUI
 
+			// 6. Run external hooks (like clearing WebUI lockouts)
 			log2.Debug("Running on-reload hooks")
 			// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
 			s.runReloadHooks()
@@ -1970,10 +1997,11 @@ func (s *Server) Run() error {
 			// 	hook()
 			// }
 
-			log2.Warn(
-				"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
-				slog.String("config_file", configFileName),
-			)
+			// log2.Warn(
+			// 	"Reloading of configuration file wasn't done; restart required for changes. This reload only works for whitelist and blacklist changes.",
+			// 	slog.String("config_file", configFileName),
+			// )
+			log2.Warn("Config reload complete! Note: Changes to ListenDNS, ListenDoH, ListenUI, or MaxConcurrentDNSTCPConns require a full server restart to take effect(FIXME).")
 		},
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
 			log3 := s.getLogger()
@@ -2091,7 +2119,7 @@ func OldMain() {
 	srv.shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 }
 
-func (s *Server) loadConfig() error {
+func (s *Server) loadMainConfig() error {
 	log := s.getLogger()
 	//cfg := s.getConfig()
 	const cfgFname = configFileName
@@ -2105,10 +2133,17 @@ func (s *Server) loadConfig() error {
 	// //config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
 	// //cfg = defaultConfig.Clone() // deep copy
 	//XXX: config is already set to defaultConfig() is already set from the NewServer() call! the only issue is do we want defaults if loadConfig is called again during Server's lifetime ie. Ctrl+R aka reload (but it's not yet implemented there)
-	s.applyConfig(defaultConfig.Clone()) //deep copy
-	cfg := s.getConfig()                 //XXX: must be done after applyConfig
+	//s.applyConfig(defaultConfig.Clone()) //deep copy
 
-	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //using default cfg.ExtraSafety
+	// Create a local copy to decode into and validate.
+	// This prevents live queries from reading a half-baked config.
+	tempCfg := defaultConfig.Clone()
+	newCfg := &tempCfg
+	//defaultCfgClone := defaultConfig.Clone()
+	//newCfg := &defaultCfgClone // Use a local pointer for all setup and decoding
+	//cfg := s.getConfig()                 //XXX: must be done after applyConfig
+
+	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //using default cfg.ExtraSafety
 
 	s.fileWriter.CheckPowerLossFile(cfgFname)
 	data, err := os.ReadFile(cfgFname)
@@ -2152,7 +2187,7 @@ func (s *Server) loadConfig() error {
 
 		// dec.Decode will now overwrite ONLY the fields present in the JSON.
 		// Missing fields will retain the values from DefaultConfig().
-		if err = dec.Decode(cfg); err != nil {
+		if err = dec.Decode(newCfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
@@ -2172,7 +2207,7 @@ func (s *Server) loadConfig() error {
 		missing := []string{}
 		t := reflect.TypeFor[Config]()
 		// reflect.Indirect safely handles both values and pointers (like *Config)
-		v := reflect.Indirect(reflect.ValueOf(cfg))
+		v := reflect.Indirect(reflect.ValueOf(newCfg))
 		for _, field := range reflect.VisibleFields(t) {
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
@@ -2194,86 +2229,86 @@ func (s *Server) loadConfig() error {
 		}
 	}
 
-	s.fileWriter.SetExtraSafety(cfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
 	// Clean up and pre-parse IPv4
-	if ip := net.ParseIP(cfg.BlockIP); ip != nil && ip.To4() != nil {
-		cfg.BlockIPv4Parsed = ip.To4()
+	if ip := net.ParseIP(newCfg.BlockIP); ip != nil && ip.To4() != nil {
+		newCfg.BlockIPv4Parsed = ip.To4()
 	} else {
-		cfg.BlockIP = "0.0.0.0"
-		cfg.BlockIPv4Parsed = net.IPv4(0, 0, 0, 0).To4()
+		newCfg.BlockIP = "0.0.0.0"                          //TODO: const?
+		newCfg.BlockIPv4Parsed = net.IPv4(0, 0, 0, 0).To4() //TODO: const?
 	}
 
 	// Clean up and pre-parse IPv6
-	if ip := net.ParseIP(cfg.BlockIPv6); ip != nil && ip.To16() != nil {
-		cfg.BlockIPv6Parsed = ip.To16()
+	if ip := net.ParseIP(newCfg.BlockIPv6); ip != nil && ip.To16() != nil {
+		newCfg.BlockIPv6Parsed = ip.To16()
 	} else {
-		cfg.BlockIPv6 = "::"
-		cfg.BlockIPv6Parsed = net.ParseIP("::").To16()
+		newCfg.BlockIPv6 = "::"                           //TODO: const?
+		newCfg.BlockIPv6Parsed = net.ParseIP("::").To16() //TODO: const?
 	}
 
 	// 2. Prevent Missing Validation: Check Janitor Intervals
-	if cfg.CacheJanitorIntervalMinutes <= 0 {
+	if newCfg.CacheJanitorIntervalMinutes <= 0 {
 		const whenBad = 5 //minutes
-		log.Warn("bad janitor interval in config", slog.Int("given", cfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
-		cfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
+		log.Warn("bad janitor interval in config", slog.Int("given", newCfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
+		newCfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
 	}
 
-	if cfg.GlobalBurstQPS < cfg.GlobalRateQPS {
-		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", cfg.GlobalBurstQPS, cfg.GlobalRateQPS, configFileName))
+	if newCfg.GlobalBurstQPS < newCfg.GlobalRateQPS {
+		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", newCfg.GlobalBurstQPS, newCfg.GlobalRateQPS, configFileName))
 	}
 
-	if cfg.ClientBurstQPS < cfg.ClientRateQPS {
-		s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", cfg.ClientBurstQPS, cfg.ClientRateQPS, configFileName))
+	if newCfg.ClientBurstQPS < newCfg.ClientRateQPS {
+		s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", newCfg.ClientBurstQPS, newCfg.ClientRateQPS, configFileName))
 	}
 
-	cfg.BlockMode = strings.ToLower(cfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	newCfg.BlockMode = strings.ToLower(newCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
 	const CacheMinTTLClamp = 60 // seconds
 	// Validate loaded config
-	if cfg.CacheMinTTL < CacheMinTTLClamp {
-		cfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
+	if newCfg.CacheMinTTL < CacheMinTTLClamp {
+		newCfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
 		log.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
 	}
 
-	if cfg.WebUIMaxLoginFailures <= 0 {
-		cfg.WebUIMaxLoginFailures = 5
+	if newCfg.WebUIMaxLoginFailures <= 0 {
+		newCfg.WebUIMaxLoginFailures = 5 //TODO: const?
 		log.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
 	}
-	if cfg.WebUILoginLockoutSec <= 0 {
-		cfg.WebUILoginLockoutSec = 300
+	if newCfg.WebUILoginLockoutSec <= 0 {
+		newCfg.WebUILoginLockoutSec = 300 //TODO: const?
 		log.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
 	}
-	if cfg.MaxConcurrentDNSTCPConns <= 0 {
-		cfg.MaxConcurrentDNSTCPConns = 50
+	if newCfg.MaxConcurrentDNSTCPConns <= 0 {
+		newCfg.MaxConcurrentDNSTCPConns = 50 //TODO: const?
 		log.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
 	}
 
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
-	for i := len(cfg.SNIHostnames); i < len(cfg.UpstreamURLs); i++ {
-		host, err2 := hostFromURL(cfg.UpstreamURLs[i])
+	for i := len(newCfg.SNIHostnames); i < len(newCfg.UpstreamURLs); i++ {
+		host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
 		if err2 != nil {
 			log.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
 			return fmt.Errorf("invalid1 upstream URL at index %d: %w", i, err2)
 		}
-		cfg.SNIHostnames = append(cfg.SNIHostnames, host)
+		newCfg.SNIHostnames = append(newCfg.SNIHostnames, host)
 		shouldSaveConfig = true
 	}
-	for i := range cfg.UpstreamURLs {
-		if cfg.SNIHostnames[i] == "" {
-			host, err2 := hostFromURL(cfg.UpstreamURLs[i])
+	for i := range newCfg.UpstreamURLs {
+		if newCfg.SNIHostnames[i] == "" {
+			host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
 			if err2 != nil {
 				log.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
 				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
 			}
-			cfg.SNIHostnames[i] = host
+			newCfg.SNIHostnames[i] = host
 			shouldSaveConfig = true
 		}
 	}
 	log.Debug("Using upstream SNI hostnames:",
 		//slog.Any("SNI_hostnames", config.SNIHostnames),
-		SafeStringSlice("SNI_hostnames", cfg.SNIHostnames),
+		SafeStringSlice("SNI_hostnames", newCfg.SNIHostnames),
 	)
 
 	// Helper closure to apply the cleaning and track if a save is needed
@@ -2286,13 +2321,66 @@ func (s *Server) loadConfig() error {
 		}
 	}
 
-	checkAndClean(&cfg.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
-	checkAndClean(&cfg.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
-	checkAndClean(&cfg.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
-	checkAndClean(&cfg.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
-	checkAndClean(&cfg.HostsFile, "hosts_file", defaultConfig.HostsFile)
+	checkAndClean(&newCfg.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
+	checkAndClean(&newCfg.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
+	checkAndClean(&newCfg.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
+	checkAndClean(&newCfg.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
+	checkAndClean(&newCfg.HostsFile, "hosts_file", defaultConfig.HostsFile)
 
-	// After decoding config
+	// NEW: Enforce password setup if it's missing from the config
+	if newCfg.WebUIPasswordHash == "" {
+		log.Warn("No WebUI password configured. Securing WebUI now...")
+		fmt.Println("\n========================================================")
+		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
+		fmt.Println("========================================================")
+		hash, err2 := promptAndHashPassword(log)
+		if err2 != nil {
+			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
+		}
+
+		// Update live config instance
+		newCfg.WebUIPasswordHash = hash
+
+		log.Info("WebUI password successfully set.")
+		if !shouldSaveConfig {
+			shouldSaveConfig = true
+		}
+	}
+
+	// Apply the fully validated config atomically
+	// 2. APPLY THE VALIDATED CONFIG ATOMICALLY
+	// From this exact microsecond, all new DNS queries will use the clamped, safe config.
+	s.applyConfig(*newCfg)
+	if shouldSaveConfig {
+		// saveConfig internally calls s.getConfig(), which now has the fully updated data
+		if err = s.saveConfig(); err != nil {
+			return fmt.Errorf("config save failed: %w", err)
+		}
+	}
+	// 4. LOG STRATEGY
+	// Add your new clear architectural description line here:
+	switch newCfg.UpstreamSelectionMode {
+	case "strict":
+		log.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
+	case "failover":
+		log.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
+	case "fastest":
+		fallthrough
+	default:
+		log.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
+	}
+	//so above was load config.json
+	return nil
+}
+
+func (s *Server) loadConfig() error {
+	var err error = s.loadMainConfig()
+	if err != nil {
+		return err
+	}
+	// After decoding and applying config, because these use it:
+	// 3. LOAD DEPENDENT FILES
+	// Now that s.getConfig() returns the NEW config, these will use the correct file paths.
 	err = s.loadQueryWhitelist()
 	if err != nil {
 		return err
@@ -2305,43 +2393,6 @@ func (s *Server) loadConfig() error {
 		return err
 	}
 
-	// Add your new clear architectural description line here:
-	switch cfg.UpstreamSelectionMode {
-	case "strict":
-		log.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
-	case "failover":
-		log.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
-	case "fastest":
-		fallthrough
-	default:
-		log.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
-	}
-
-	// NEW: Enforce password setup if it's missing from the config
-	if cfg.WebUIPasswordHash == "" {
-		log.Warn("No WebUI password configured. Securing WebUI now...")
-		fmt.Println("\n========================================================")
-		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
-		fmt.Println("========================================================")
-		hash, err2 := promptAndHashPassword(log)
-		if err2 != nil {
-			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
-		}
-
-		// Update live config instance
-		cfg.WebUIPasswordHash = hash
-
-		log.Info("WebUI password successfully set.")
-		if !shouldSaveConfig {
-			shouldSaveConfig = true
-		}
-	}
-
-	if shouldSaveConfig {
-		if err = s.saveConfig(); err != nil {
-			return fmt.Errorf("config save failed: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -7358,4 +7409,17 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 // Swap in a mock to exercise handleDNSQuery without any real network calls.
 type DoHForwarder interface {
 	ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, UpstreamState)
+}
+
+func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
+	// Update the global token bucket limits
+	rl.global.SetLimit(rate.Limit(cfg.GlobalQPS))
+	rl.global.SetBurst(cfg.GlobalBurst)
+	rl.cfg = cfg
+
+	// Flush existing per-client limiters so they immediately pick up the new config
+	rl.clients.Range(func(key, value any) bool {
+		rl.clients.Delete(key)
+		return true
+	})
 }
