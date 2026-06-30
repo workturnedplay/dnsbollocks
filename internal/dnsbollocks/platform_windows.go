@@ -79,7 +79,8 @@ type Config struct {
 	ListenUI                string   `json:"listen_ui"`                  //ip:port
 	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
-	SNIHostnames            []string `json:"sni_hostnames"`              // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
+	//TODO: rename this:
+	SNIHostnames []string `json:"sni_hostnames"` // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
 	//"parallel" (or "all"): The old default behavior where everything is queried simultaneously.
 	//"strict" (or "priority"): The existing strict rule matching behavior.
 	//"failover": The new intelligent, stateful sticky failover behavior.
@@ -96,7 +97,9 @@ type Config struct {
 	  When saving (json.Marshal): The encoder bypasses those fields entirely. They won't be included in the generated JSON string/file.
 	  When loading (json.Unmarshal): The decoder skips right past them. Even if someone manually typed a "BlockIPv4Parsed" key into the JSON file, Go would ignore it and wouldn't modify the struct field.
 	*/
-	//UpstreamIPs []string `json:"-"`
+	UpstreamURLsParsed []*url.URL `json:"-"` // Added: Keeps triplets grouped together
+	UpstreamIPs        []string   `json:"-"` // Added: Keeps triplets grouped together
+	UpstreamSNIs       []string   `json:"-"` // Added: Keeps triplets grouped together
 
 	GlobalRateQPS   int `json:"qps_rate_globally"`    // 100
 	GlobalBurstQPS  int `json:"qps_burst_globally"`   // 100
@@ -545,10 +548,28 @@ func (c Config) Clone() Config {
 		copy(dst.SNIHostnames, c.SNIHostnames)
 	}
 
-	// if c.UpstreamIPs != nil {
-	// 	dst.UpstreamIPs = make([]string, len(c.UpstreamIPs))
-	// 	copy(dst.UpstreamIPs, c.UpstreamIPs)
-	// }
+	//Deep-copy the newly added parsed triplets
+	if c.UpstreamURLsParsed != nil {
+		dst.UpstreamURLsParsed = make([]*url.URL, len(c.UpstreamURLsParsed))
+		for i, v := range c.UpstreamURLsParsed {
+			if v != nil {
+				uCopy := *v
+				if v.User != nil {
+					uUser := *v.User
+					uCopy.User = &uUser
+				}
+				dst.UpstreamURLsParsed[i] = &uCopy
+			}
+		}
+	}
+	if c.UpstreamIPs != nil {
+		dst.UpstreamIPs = make([]string, len(c.UpstreamIPs))
+		copy(dst.UpstreamIPs, c.UpstreamIPs)
+	}
+	if c.UpstreamSNIs != nil {
+		dst.UpstreamSNIs = make([]string, len(c.UpstreamSNIs))
+		copy(dst.UpstreamSNIs, c.UpstreamSNIs)
+	}
 
 	// Deep-copy net.IP byte slices
 	if c.BlockIPv4Parsed != nil {
@@ -6902,12 +6923,6 @@ type UpstreamManager struct {
 	liveLogger *atomic.Pointer[slog.Logger]
 	serverCtx  context.Context // server lifetime ctx for Upstream.BackgroundCtx
 
-	upstreamIPs  []string
-	upstreamURLs []*url.URL
-	upstreamSNIs []string
-
-	//failoverSelect *FailoverSelector
-
 	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
 	//upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
 	activeSet atomic.Pointer[upstreamSet] // ← the atomic pair
@@ -6964,9 +6979,9 @@ func (um *UpstreamManager) updateInnerState() error {
 	snapSNI := cfg.SNIHostnames
 	snapURL := cfg.UpstreamURLs
 
-	um.upstreamURLs = nil
-	um.upstreamIPs = nil
-	um.upstreamSNIs = nil
+	cfg.UpstreamURLsParsed = nil
+	cfg.UpstreamIPs = nil
+	cfg.UpstreamSNIs = nil
 
 	if len(cfg.UpstreamURLs) == 0 {
 		return errors.New("upstream_urls list is empty")
@@ -6989,14 +7004,14 @@ func (um *UpstreamManager) updateInnerState() error {
 		if u.Port() == "" {
 			panic("dev fail: port is empty")
 		}
-		um.upstreamURLs = append(um.upstreamURLs, u)
+		cfg.UpstreamURLsParsed = append(cfg.UpstreamURLsParsed, u)
 
 		ip := u.Hostname()
 		if net.ParseIP(ip) == nil {
 			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
 		}
-		um.upstreamIPs = append(um.upstreamIPs, ip)
-		um.upstreamSNIs = append(um.upstreamSNIs, snapSNI[i])
+		cfg.UpstreamIPs = append(cfg.UpstreamIPs, ip)
+		cfg.UpstreamSNIs = append(cfg.UpstreamSNIs, snapSNI[i])
 	}
 
 	return nil
@@ -7048,7 +7063,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		for i, upstream := range upstreams {
 			if upstream.Client == nil {
 				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
-					i, um.upstreamURLs[i], um.upstreamSNIs[i]))
+					i, upstream.URL, upstream.SNI)) //um.upstreamURLs[i], um.upstreamSNIs[i]))
 			}
 			wg.Add(1)
 			go func(idx int, target Upstream) {
@@ -7065,32 +7080,33 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 		// Compare responses
 		for i, res := range results {
+			strURL := upstreams[i].URL.String()
 			if res.err != nil || res.msg == nil {
 				log.Error("upstream failed or returned nil",
-					slog.String("url", um.upstreamURLs[i].String()),
+					slog.String("url", strURL), // um.upstreamURLs[i].String()),
 					SafeErr(res.err),
 				)
-				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, um.upstreamURLs[i].String())
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
 				return nil, upstreamState1 // Refuse to resolve if any upstream completely fails
 			}
 
 			if reference == nil {
 				reference = res.msg
 				refIdx = i
-				upstreamState1.UpstreamUsed = um.upstreamURLs[i].String()
+				upstreamState1.UpstreamUsed = strURL
 			} else {
 				if !compareDNSResponses(reference, res.msg) {
 					// Mismatch means failure to agree
-					upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, um.upstreamURLs[i].String())
+					upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
 
 					// Extract IPs for the log message
 					refIPs := extractIPs(reference)
 					curIPs := extractIPs(res.msg)
 					log.Warn("upstream DNS response mismatch! dropping query to protect client",
 						slog.String("query", req.Question[0].Name),
-						slog.String("upstream_DoH_url1", um.upstreamURLs[refIdx].String()),
+						slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()), //um.upstreamURLs[refIdx].String()),
 						SafeStringSlice("ips_returned1", refIPs),
-						slog.String("upstream_DoH_url2", um.upstreamURLs[i].String()),
+						slog.String("upstream_DoH_url2", strURL),
 						SafeStringSlice("ips_returned2", curIPs),
 						slog.String("reference", reference.String()),
 						slog.String("current", res.msg.String()),
@@ -7132,7 +7148,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		for i, upstream := range upstreams {
 			if upstream.Client == nil {
 				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
-					i, um.upstreamURLs[i], um.upstreamSNIs[i]))
+					i, upstream.URL, upstream.SNI)) //um.upstreamURLs[i], um.upstreamSNIs[i]))
 			}
 			go func(idx int, target Upstream) {
 				msg, err := target.doSingleDoHRequest(ctx, reqBytes)
@@ -7143,12 +7159,13 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		var lastErr error
 		for range len(upstreams) {
 			res := <-resChan
+			strURL := upstreams[res.idx].URL.String()
 			// If we got a valid DNS response (even an NXDOMAIN), return it immediately
 			if res.err == nil && res.msg != nil {
-				upstreamState1.UpstreamUsed = um.upstreamURLs[res.idx].String()
+				upstreamState1.UpstreamUsed = strURL //um.upstreamURLs[res.idx].String()
 				return res.msg, upstreamState1
 			}
-			upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, um.upstreamURLs[res.idx].String())
+			upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL) //um.upstreamURLs[res.idx].String())
 			// Keep track of the error in case they ALL fail
 			if res.err != nil {
 				lastErr = res.err
@@ -7227,8 +7244,8 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 	}
 	log.Debug("Upstreams (re)validated",
 		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs), //FIXME: use the one from um.
-		SafeStringSlice("upstreamSNIs", um.upstreamSNIs),
-		SafeStringSlice("upstreamIPs", um.upstreamIPs),
+		SafeStringSlice("upstreamSNIs", cfg.SNIHostnames),
+		SafeStringSlice("upstreamIPs", cfg.UpstreamIPs),
 	)
 
 	// close old idle connections
@@ -7247,8 +7264,8 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 	um.dohTransportsPtrs = nil
 	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
 	var newUpstreams []Upstream
-	for i, u := range um.upstreamURLs {
-		ip := um.upstreamIPs[i]
+	for i, u := range cfg.UpstreamURLsParsed {
+		ip := cfg.UpstreamIPs[i]
 		port := u.Port()
 		if port == "" {
 			panic("BUG: dev fail: port is empty but shoulda been set in ValidateUpstream() to 443")
@@ -7256,7 +7273,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 		// Create the final "IP:Port" string once
 		// Pre-joining prevents doing string manipulation inside the DialContext closure
 		dialAddr := net.JoinHostPort(ip, port)
-		sniHost := um.upstreamSNIs[i]
+		sniHost := cfg.UpstreamSNIs[i]
 		if sniHost == "" {
 			panic("BUG: dev fail: SNIHostname shouldn't be empty, upstream host=" + dialAddr)
 		}

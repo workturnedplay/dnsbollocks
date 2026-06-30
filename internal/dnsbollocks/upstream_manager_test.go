@@ -3,7 +3,8 @@ package dnsbollocks
 import (
 	"context"
 	"log/slog"
-	//"net/url"
+	"net"
+	"net/url"
 	"os"
 	//"strings"
 	"sync/atomic"
@@ -77,6 +78,7 @@ func TestValidateUpstream(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			um := setupTestContext(&tt.config)
 			err := um.updateInnerState()
+			cfg := um.getConfig()
 
 			if tt.wantErr {
 				if err == nil {
@@ -89,13 +91,29 @@ func TestValidateUpstream(t *testing.T) {
 					t.Errorf("expected no error, got %v", err)
 				}
 				// Verify internal state mutations
-				if len(um.upstreamURLs) != len(tt.config.UpstreamURLs) {
-					t.Errorf("expected %d mapped URLs, got %d", len(tt.config.UpstreamURLs), len(um.upstreamURLs))
+				if len(cfg.UpstreamURLsParsed) != len(tt.config.UpstreamURLs) {
+					t.Errorf("expected %d mapped URLs, got %d", len(tt.config.UpstreamURLs), len(cfg.UpstreamURLsParsed))
 				}
 				// Ensure port 443 was injected if missing
-				for _, u := range um.upstreamURLs {
+				for i, u := range cfg.UpstreamURLsParsed {
+					ip := u.Hostname()
+					if net.ParseIP(ip) == nil {
+						t.Errorf("expected IP not hostname for parsed url %q, got %q", u, ip)
+					}
 					if u.Port() != "443" {
 						t.Errorf("expected port to be strictly 443, got %q for URL %s", u.Port(), u.String())
+					}
+					rawURL := tt.config.UpstreamURLs[i]
+					u2, err := url.Parse(rawURL)
+					if err != nil {
+						t.Errorf("failed to parse URL %q", rawURL)
+					}
+					ip2 := u2.Hostname()
+					if net.ParseIP(ip2) == nil {
+						t.Errorf("expected IP not hostname for parsed url %q raw: %q, got %q", u2, rawURL, ip2)
+					}
+					if ip != ip2 {
+						t.Errorf("expected host(or IP) to be same, got %q != %q for URL %s", ip, ip2, rawURL)
 					}
 				}
 			}
