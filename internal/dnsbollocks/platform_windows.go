@@ -4621,7 +4621,7 @@ func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 }
 
-func (ui *AdminUI) SetupRoutes(boundAddr string) http.Handler {
+func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	// ── Inner mux: all routes that require authentication ────────────────
 	innerMux := http.NewServeMux()
 	innerMux.HandleFunc("/", ui.statsHandler)
@@ -4658,12 +4658,56 @@ func (ui *AdminUI) SetupRoutes(boundAddr string) http.Handler {
 	// Everything else goes through sechead->hostvalid->auth → CSRF → inner mux.
 	var h http.Handler = innerMux
 	h = ui.csrfMiddleware(h)
+	h = ui.originValidation(boundAddr, usedTLS, h)
 	h = ui.authMiddleware(h)
 	h = ui.hostValidation(boundAddr, h)
 	h = ui.securityHeadersMiddleware(h)
 	outerMux.Handle("/", h)
 	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
 	return outerMux
+}
+
+func (ui *AdminUI) originValidation(expectedHost string, useTLS bool, next http.Handler) http.Handler {
+	expectedScheme := "http"
+	if useTLS {
+		expectedScheme = "https"
+	}
+
+	expectedOrigin := expectedScheme + "://" + expectedHost
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only protect state-changing requests.
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if !strings.EqualFold(origin, expectedOrigin) {
+				http.Error(w, "Invalid Origin", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Fallback for clients that omit Origin.
+		if ref := r.Referer(); ref != "" {
+			u, err := url.Parse(ref)
+			if err == nil &&
+				strings.EqualFold(u.Scheme, expectedScheme) &&
+				strings.EqualFold(u.Host, expectedHost) {
+
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		http.Error(w, "Missing or invalid Origin/Referer", http.StatusForbidden)
+	})
 }
 
 func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
@@ -7908,7 +7952,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
 	boundAddr := baseListener.Addr().String() //TODO: save this and use it for hostValidation middleware
-	srv := &http.Server{Handler: s.adminUI.SetupRoutes(boundAddr)}
+	srv := &http.Server{Handler: s.adminUI.SetupRoutes(boundAddr, params.UseTLS)}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
 
