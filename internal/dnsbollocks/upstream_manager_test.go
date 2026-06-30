@@ -18,7 +18,7 @@ func setupTestContext(cfg *Config) *UpstreamManager {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	liveLogger.Store(logger)
 
-	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger)
+	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, nil)
 }
 
 func TestValidateUpstream(t *testing.T) {
@@ -75,7 +75,7 @@ func TestValidateUpstream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			um := setupTestContext(&tt.config)
-			err := um.ValidateUpstream()
+			err := um.updateInnerState()
 
 			if tt.wantErr {
 				if err == nil {
@@ -124,10 +124,10 @@ func TestLifecycleManagement(t *testing.T) {
 	}
 	um := setupTestContext(&cfg)
 
-	// Must validate first to populate internal IPs/URLs
-	if err := um.ValidateUpstream(); err != nil {
-		t.Fatalf("setup failed: %v", err)
-	}
+	// // Must validate first to populate internal IPs/URLs
+	// if err := um.updateInnerState(); err != nil {
+	// 	t.Fatalf("setup failed: %v", err)
+	// }
 
 	// 1. Test Initialization
 	um.InitDoHClients()
@@ -138,23 +138,35 @@ func TestLifecycleManagement(t *testing.T) {
 	if len(set1.upstreams) != 1 {
 		t.Fatalf("expected 1 upstream in the set, got %d", len(set1.upstreams))
 	}
-
-	// 2. Test Reset (Simulation of a config reload trigger)
-	um.ResetForReload()
-	if um.activeSet.Load() != nil {
-		t.Fatal("expected activeSet to be explicitly nil after ResetForReload")
+	set11 := um.GetOrBuildSet()
+	if set11 != set1 {
+		t.Fatalf("expected activeSet to be the same as before")
 	}
 
 	// 3. Test Rebuild (Ensuring old state doesn't persist)
-	um.InitDoHClients()
+	um.ReInitDoHClients()
 	set2 := um.activeSet.Load()
 	if set2 == nil {
 		t.Fatal("expected activeSet to be rebuilt after calling InitDoHClients again")
 	}
-
 	// We want to ensure it generated an entirely new object in memory,
 	// not just passing back the old activeSet pointer.
 	if set1 == set2 {
 		t.Fatal("expected a completely new pointer for activeSet after rebuild to prevent state leakage")
 	}
+
+	set21 := um.GetOrBuildSet()
+	if set21 != set2 {
+		t.Fatalf("expected activeSet to be the same as before")
+	}
+
+	um.activeSet.Store(nil)
+	set3 := um.GetOrBuildSet()
+	if set3 == nil {
+		t.Fatalf("expected non-nil activeSet")
+	}
+	if set21 == set3 {
+		t.Fatalf("expected activeSet to be different than before")
+	}
+
 }

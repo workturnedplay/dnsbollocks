@@ -64,7 +64,7 @@ func TestFWNeededForwardToDoH_Failover(t *testing.T) {
 		UpstreamSelectionMode:    "failover", // Corrected field name
 	}
 	um := setupTestContext(&cfg)
-	_ = um.ValidateUpstream()
+	//_ = um.updateInnerState()
 	um.InitDoHClients()
 
 	// 3. Bypass TLS Verification for Local Test Certs
@@ -112,7 +112,7 @@ func TestFWNeededForwardToDoH_FastestWins(t *testing.T) {
 		UpstreamSelectionMode:    "fastest", // Corrected field name
 	}
 	um := setupTestContext(&cfg)
-	_ = um.ValidateUpstream()
+	//_ = um.updateInnerState()
 	um.InitDoHClients()
 
 	// 3. Bypass TLS
@@ -164,7 +164,7 @@ func TestFWNeededForwardToDoH_Strict_MatchSuccess(t *testing.T) {
 		UpstreamSelectionMode:    "strict",
 	}
 	um := setupTestContext(&cfg)
-	_ = um.ValidateUpstream()
+	//_ = um.updateInnerState()
 	um.InitDoHClients()
 
 	active := um.activeSet.Load()
@@ -201,7 +201,7 @@ func TestFWNeededForwardToDoH_Strict_RefuseOnSingleOutage(t *testing.T) {
 		UpstreamSelectionMode:    "strict",
 	}
 	um := setupTestContext(&cfg)
-	_ = um.ValidateUpstream()
+	//_ = um.updateInnerState()
 	um.InitDoHClients()
 
 	active := um.activeSet.Load()
@@ -240,7 +240,7 @@ func TestFWNeededForwardToDoH_Strict_DropOnMismatch(t *testing.T) {
 		UpstreamSelectionMode:    "strict",
 	}
 	um := setupTestContext(&cfg)
-	_ = um.ValidateUpstream()
+	//_ = um.updateInnerState()
 	um.InitDoHClients()
 
 	active := um.activeSet.Load()

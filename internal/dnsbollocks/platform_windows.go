@@ -96,6 +96,7 @@ type Config struct {
 	  When saving (json.Marshal): The encoder bypasses those fields entirely. They won't be included in the generated JSON string/file.
 	  When loading (json.Unmarshal): The decoder skips right past them. Even if someone manually typed a "BlockIPv4Parsed" key into the JSON file, Go would ignore it and wouldn't modify the struct field.
 	*/
+	//UpstreamIPs []string `json:"-"`
 
 	GlobalRateQPS   int `json:"qps_rate_globally"`    // 100
 	GlobalBurstQPS  int `json:"qps_burst_globally"`   // 100
@@ -264,7 +265,7 @@ func NewServer(logger *slog.Logger) *Server {
 	s.applyLogger(logger) // seed the atomic with the bootstrap logger
 	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
-	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger)
+	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 	s.applyConfig(defaultConfig())
 	s.fileWriter = newSafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
@@ -542,6 +543,21 @@ func (c Config) Clone() Config {
 	if c.SNIHostnames != nil {
 		dst.SNIHostnames = make([]string, len(c.SNIHostnames))
 		copy(dst.SNIHostnames, c.SNIHostnames)
+	}
+
+	// if c.UpstreamIPs != nil {
+	// 	dst.UpstreamIPs = make([]string, len(c.UpstreamIPs))
+	// 	copy(dst.UpstreamIPs, c.UpstreamIPs)
+	// }
+
+	// Deep-copy net.IP byte slices
+	if c.BlockIPv4Parsed != nil {
+		dst.BlockIPv4Parsed = make(net.IP, len(c.BlockIPv4Parsed))
+		copy(dst.BlockIPv4Parsed, c.BlockIPv4Parsed)
+	}
+	if c.BlockIPv6Parsed != nil {
+		dst.BlockIPv6Parsed = make(net.IP, len(c.BlockIPv6Parsed))
+		copy(dst.BlockIPv6Parsed, c.BlockIPv6Parsed)
 	}
 
 	return dst
@@ -1876,8 +1892,10 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 	// 2. Trigger the application shutdown if the callback is wired
 	if ui.OnShutdown != nil {
 		ui.OnShutdown(1) // Exit code 1 for crashes/errors
+		panic("BUG: AdminUI.OnShutdown returned but is designed to terminate execution")
+		//return           // should be unreachable
 	} else {
-		log.Warn("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+		panic("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
 	}
 }
 
@@ -1971,17 +1989,18 @@ func (s *Server) Reload() {
 	log.Debug("Rate limiter reinitialized")
 
 	// 5. Re-validate and rebuild Upstream DoH connections
-	if err := s.upstreamMgr.ValidateUpstream(); err != nil {
-		s.logFatal("Upstream validation failed:", err)
-	}
-	log.Debug("Upstreams revalidated",
-		SafeStringSlice("upstreamURLs", cfgNew.UpstreamURLs),
-		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
-	)
+	// if err := s.upstreamMgr.updateInnerState(); err != nil {
+	// 	s.logFatal("Upstream validation failed:", err)
+	// }
+	// log.Debug("Upstreams revalidated",
+	// 	SafeStringSlice("upstreamURLs", cfgNew.UpstreamURLs),
+	// 	SafeStringSlice("upstreamSNIs", s.upstreamMgr.upstreamSNIs),
+	// 	SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
+	// )
 	s.generateCertIfNeeded() // For DoH and webUI! just mutates certGeneration if needed
 
-	s.upstreamMgr.ResetForReload()
-	s.upstreamMgr.InitDoHClients()
+	s.upstreamMgr.ReInitDoHClients()
+	//s.upstreamMgr.InitDoHClients()
 	//clearLoginLockouts()//wired in startWebUI
 
 	if oldJanitorInterval != cfgNew.CacheJanitorIntervalMinutes {
@@ -2048,13 +2067,14 @@ func (s *Server) Run() error {
 	s.swapDNSTCPSemaphore(cfg.MaxConcurrentDNSTCPConns)
 	log.Debug("DNS TCP concurrent-connection limit initialised", slog.Int("max_concurrent", cfg.MaxConcurrentDNSTCPConns))
 
-	if err := s.upstreamMgr.ValidateUpstream(); err != nil {
-		s.logFatal("Upstream validation failed:", err)
-	}
-	log.Debug("Upstreams validated",
-		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
-		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
-	)
+	// if err := s.upstreamMgr.updateInnerState(); err != nil {
+	// 	s.logFatal("Upstream validation failed:", err)
+	// }
+	// log.Debug("Upstreams validated",
+	// 	SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
+	// 	SafeStringSlice("upstreamSNIs", s.upstreamMgr.upstreamSNIs),
+	// 	SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
+	// )
 
 	s.generateCertIfNeeded() // For DoH and webUI!
 	//log.Debug("Cert checked/generated if needed")
@@ -6893,9 +6913,12 @@ type UpstreamManager struct {
 	activeSet atomic.Pointer[upstreamSet] // ← the atomic pair
 	buildMu   sync.Mutex                  // prevents concurrent builds only
 	// dohMu     sync.Mutex                  // Only used for initialization/reloads
+
+	//UM calls this when a fatal exception or manual admin shutdown occurs
+	OnShutdown func(exitCode int)
 }
 
-func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger]) *UpstreamManager {
+func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int)) *UpstreamManager {
 	if serverCtx == nil {
 		panic("NewUpstreamManager: nil serverCtx")
 	}
@@ -6909,6 +6932,8 @@ func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Co
 		serverCtx:  serverCtx,
 		liveConfig: liveConfig,
 		liveLogger: liveLogger,
+		//Pass the server's shutdown method directly
+		OnShutdown: shutdownFunc,
 	}
 	//NewUpstreamManager no longer constructs a FailoverSelector upfront — it's created fresh inside buildSet:
 	//um.failoverSelect = NewFailoverSelector(liveLogger)
@@ -6936,8 +6961,13 @@ func (um *UpstreamManager) UpstreamIPs() []string {
 	return um.upstreamIPs
 }
 
-func (um *UpstreamManager) ValidateUpstream() error {
+// due to presumed config changes the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs must be updated.
+func (um *UpstreamManager) updateInnerState() error {
 	cfg := um.getConfig()
+	//FIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window
+	snapSNI := cfg.SNIHostnames
+	snapURL := cfg.UpstreamURLs
+
 	um.upstreamURLs = nil
 	um.upstreamIPs = nil
 	um.upstreamSNIs = nil
@@ -6946,7 +6976,7 @@ func (um *UpstreamManager) ValidateUpstream() error {
 		return errors.New("upstream_urls list is empty")
 	}
 
-	for i, rawURL := range cfg.UpstreamURLs {
+	for i, rawURL := range snapURL {
 		u, err := url.Parse(rawURL)
 		if err != nil || u.Scheme != "https" {
 			return fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
@@ -6970,30 +7000,10 @@ func (um *UpstreamManager) ValidateUpstream() error {
 			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
 		}
 		um.upstreamIPs = append(um.upstreamIPs, ip)
-		um.upstreamSNIs = append(um.upstreamSNIs, cfg.SNIHostnames[i])
+		um.upstreamSNIs = append(um.upstreamSNIs, snapSNI[i])
 	}
 
 	return nil
-}
-
-// ResetForReload clears both the cached upstream clients and the failover
-// selector state so the next request rebuilds everything cleanly.
-// Call once at startup or when upstream config changes
-func (um *UpstreamManager) ResetForReload() {
-	// um.dohMu.Lock()
-	// um.upstreamsPtr.Store(nil)
-	// um.dohMu.Unlock()
-	// // 🟢 RESET THE SELECTOR STATE UNCONDITIONALLY HERE:
-	// um.failoverSelect.mu.Lock()
-	// um.failoverSelect.activeIndex = 0
-	// um.failoverSelect.allFailed = false
-	// um.failoverSelect.mu.Unlock()
-
-	um.activeSet.Store(nil)
-}
-
-func (um *UpstreamManager) InitDoHClients() {
-	um.buildSet()
 }
 
 // ForwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
@@ -7017,10 +7027,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 	// 	upstreamsPtr = &u
 	// }
 	// upstreams := *upstreamsPtr
-	set := um.activeSet.Load()
-	if set == nil {
-		set = um.buildSet()
-	}
+	set := um.GetOrBuildSet()
 	upstreams := set.upstreams
 	failover := set.failover
 
@@ -7168,22 +7175,65 @@ type upstreamSet struct {
 	failover  *FailoverSelector
 }
 
-func (um *UpstreamManager) buildSet() *upstreamSet {
+// InitDoHClients to be run first time
+// can panic/shutdown
+func (um *UpstreamManager) InitDoHClients() {
+	_ = um.buildSet(false)
+}
+
+// ReInitDoHClients to be run on reload
+// can panic/shutdown
+func (um *UpstreamManager) ReInitDoHClients() {
+	_ = um.buildSet(true)
+}
+
+// GetOrBuildSet will init if not already done so
+// can panic/shutdown
+func (um *UpstreamManager) GetOrBuildSet() *upstreamSet {
+	set := um.activeSet.Load()
+	if set == nil {
+		set = um.buildSet(false)
+	}
+	return set
+}
+
+// can panic/shutdown
+func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 	log := um.getLogger()
 	log.Debug("starting UpstreamManager.buildSet()")
 	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
 	um.buildMu.Lock()
 	defer um.buildMu.Unlock()
 
-	// double-check: another goroutine may have built while we waited
-	// 4. DOUBLE CHECK
-	// While we were waiting for the lock, someone else might
-	// have finished the initialization. Check again.
-	if s := um.activeSet.Load(); s != nil {
-		return s
+	if rebuild {
+		um.activeSet.Store(nil)
+	} else {
+		// double-check: another goroutine may have built while we waited
+		// 4. DOUBLE CHECK
+		// While we were waiting for the lock, someone else might
+		// have finished the initialization. Check again.
+		if s := um.activeSet.Load(); s != nil {
+			return s
+		}
 	}
 
 	cfg := um.getConfig()
+	if err := um.updateInnerState(); err != nil {
+		log.Error("Upstream validation failed:", SafeErr(err))
+		// 2. Trigger the application shutdown if the callback is wired
+		if um.OnShutdown != nil {
+			um.OnShutdown(1) // Exit code 1 for crashes/errors
+			panic("BUG: UpstreamManager.OnShutdown returned but is designed to terminate execution")
+			//return nil       // should be unreachable
+		} else {
+			panic("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+		}
+	}
+	log.Debug("Upstreams (re)validated",
+		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs), //FIXME: use the one from um.
+		SafeStringSlice("upstreamSNIs", um.upstreamSNIs),
+		SafeStringSlice("upstreamIPs", um.UpstreamIPs()),
+	)
 
 	// close old idle connections
 	for _, dT := range um.dohTransportsPtrs {
