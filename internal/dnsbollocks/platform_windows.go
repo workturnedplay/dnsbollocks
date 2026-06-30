@@ -2545,28 +2545,32 @@ func isAdminNow() bool {
 
 // initLogging creates the single log with three destinations.
 // Called once after config is loaded (files and console level are known).
-func (s *Server) initFullLogging() *slog.Logger { //qpath, epath string) {
+func (s *Server) initFullLogging() *slog.Logger {
 	cfg := s.getConfig()
 	log := s.getLogger()
 
 	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
-	// Simple rotation on open (respects your LogMaxSizeMB)
+	// Simple rotation on each log line write (respects your LogMaxSizeMB)
 	openLog := func(path string) io.Writer {
 		if path == "" {
 			panic("empty logging filename: '" + path + "'")
 		}
 		path = filepath.Clean(path)
-		s.rotateIfNeeded(path, cfg.LogMaxSizeMB)
-		// if fi, err := os.Stat(path); err == nil && fi.Size() > int64(config.LogMaxSizeMB)*1024*1024 {
-		//     os.Rename(path, path+".1") // one backup is enough for now
-		// }
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+
+		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
 		if err != nil {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
 			log.Error("cannot open log file", slog.String("file", path), SafeErr(err))
-			s.shutdown(1) //os.Exit(1)
+			s.shutdown(1) // Keep your existing fatal shutdown here if the initial boot fails
+
+			return nil // unreachable
 		}
-		return f
+
+		// We can safely trigger a manual size check/rotation on boot here just in case!
+		// The next Write() will rotate it automatically anyway if it's over the limit.
+		writer.RotateIfNeeded()
+
+		return writer
 	}
 
 	fullHandler := slog.NewJSONHandler(openLog(cfg.LogErrorsFile), &slog.HandlerOptions{
@@ -2597,18 +2601,31 @@ func (s *Server) initFullLogging() *slog.Logger { //qpath, epath string) {
 	return log
 }
 
-func (s *Server) rotateIfNeeded(path string, maxMB int) {
-	log := s.getLogger()
-
-	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
-		old := path + ".old"
-		if err := os.Rename(path, old); err != nil {
-			log.Error("Log rotation failed", slog.String("path", path), SafeErr(err))
-		} else {
-			log.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
+func getNextLogBackupName(basePath string) string {
+	for i := 1; ; i++ {
+		backupName := fmt.Sprintf("%s.%d", basePath, i)
+		if _, err := os.Stat(backupName); os.IsNotExist(err) {
+			return backupName
+		}
+		// Put a hard cap to avoid infinite loops in extreme edge cases
+		if i >= 10000 {
+			return fmt.Sprintf("%s.%d", basePath, time.Now().Unix())
 		}
 	}
 }
+
+// func (s *Server) rotateIfNeeded(path string, maxMB int) {
+// 	log := s.getLogger()
+
+// 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
+// 		old := path + ".old"
+// 		if err := os.Rename(path, old); err != nil {
+// 			log.Error("Log rotation failed", slog.String("path", path), SafeErr(err))
+// 		} else {
+// 			log.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
+// 		}
+// 	}
+// }
 
 func countRules(wl map[string][]RuleEntry) uint64 {
 	var total uint64 = 0
@@ -7708,4 +7725,120 @@ type uiListenerInstance struct {
 	srv      *http.Server
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+}
+
+type rotatingLogWriter struct {
+	mu       sync.Mutex
+	path     string
+	maxBytes int64
+	file     *os.File
+	size     int64
+	logger   *slog.Logger
+}
+
+func newRotatingLogWriter(path string, maxMB int, logger *slog.Logger) (*rotatingLogWriter, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file %q: %w", path, err)
+	}
+
+	var size int64
+	if stat, err := f.Stat(); err == nil {
+		size = stat.Size()
+	}
+
+	// Calculate maxBytes (0 means no limit)
+	maxBytes := int64(maxMB) * 1024 * 1024
+	if maxMB <= 0 {
+		maxBytes = 0 // no limit
+	}
+
+	return &rotatingLogWriter{
+		path:     path,
+		maxBytes: maxBytes,
+		file:     f,
+		size:     size,
+		logger:   logger,
+	}, nil
+}
+
+func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return 0, errors.New("log file is not open")
+	}
+	w.rotateIfNeededYouHoldLock()
+
+	n, err = w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+// must be done under lock!
+func (w *rotatingLogWriter) rotateIfNeededYouHoldLock() {
+	// Check if rotation is needed
+	if w.maxBytes > 0 && w.size >= w.maxBytes {
+		w.rotateYouHoldLock()
+	}
+}
+func (w *rotatingLogWriter) RotateIfNeeded() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.rotateIfNeededYouHoldLock()
+}
+
+// must be done under lock!
+func (w *rotatingLogWriter) rotateYouHoldLock() {
+	if w.file == nil {
+		w.logger.Error("Log rotation failed: log file isn't open yet")
+		return
+	}
+
+	// 1. Close the current file so Windows doesn't block the rename
+	if err := w.file.Close(); err != nil {
+		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), SafeErr(err))
+		w.reopenOriginal()
+		return
+	}
+
+	// 2. Determine the dynamic backup name (.1, .2, etc.)
+	backupPath := getNextLogBackupName(w.path)
+
+	// 3. Rename the file
+	if err := os.Rename(w.path, backupPath); err != nil {
+		w.logger.Error("Log rotation failed: rename error", slog.String("path", w.path), slog.String("backup", backupPath), SafeErr(err))
+		w.reopenOriginal()
+		return
+	}
+
+	// 4. Attempt to create the fresh log file
+	newFile, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		w.logger.Warn("Log rotation failed to create new file; rolling back to previous log", slog.String("path", w.path), SafeErr(err))
+
+		// 5. ROLLBACK: Rename it back if creating the new one failed
+		if rbErr := os.Rename(backupPath, w.path); rbErr != nil {
+			w.logger.Error("CRITICAL: Log rotation rollback failed! Logs may be detached.", slog.String("from", backupPath), slog.String("to", w.path), SafeErr(rbErr))
+		}
+
+		w.reopenOriginal()
+		return
+	}
+
+	// Success!
+	w.file = newFile
+	w.size = 0
+	w.logger.Info("Rotated log file", slog.String("path", w.path), slog.String("backup_path", backupPath))
+}
+
+// reopenOriginal is a safety net to ensure we always have an open file handle
+// to write to, even if rotation or rollback fails.
+func (w *rotatingLogWriter) reopenOriginal() {
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		w.logger.Error("CRITICAL: Failed to reopen original log file after rotation failure", slog.String("path", w.path), SafeErr(err))
+	} else {
+		w.file = f
+	}
 }
