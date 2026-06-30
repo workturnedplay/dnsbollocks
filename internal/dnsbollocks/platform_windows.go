@@ -429,29 +429,49 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 		}(i, isProbe)
 	}
 
-	// Wait and evaluate results as they arrive
+	// Wait only until we get a definitive answer for the "real" query
+	// (index == currentIdx), or any success arrives first (which can come
+	// from a healing probe winning the race). We deliberately do NOT wait
+	// for slower/hung probe goroutines to finish: a probe is purely
+	// opportunistic healing and must never delay the critical fallback
+	// path. Abandoned probe goroutines still run to completion in the
+	// background — resChan is sized to numParallel so their sends never
+	// block — and still apply their healing side-effect (fs.activeIndex
+	// update) even though Exchange has stopped listening for their result.
 	receivedResults := 0
-	for receivedResults < numParallel {
-		res := <-resChan
-		receivedResults++
+	currentIdxAnswered := false
+	for receivedResults < numParallel && !currentIdxAnswered {
+		select {
+		case res := <-resChan:
+			receivedResults++
 
-		if res.err == nil {
-			// fs.mu.Lock()
-			// if res.index < fs.activeIndex {
-			//     fs.activeIndex = res.index
-			// }
-			// fs.mu.Unlock()
-			// No locks needed here anymore! The goroutine already handled it.
-			return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
-		}
-		// // FIX 1: Explicit log when a parallel/primary upstream fails
-		// log.Warn("⚠️ Upstream still failed; marking as failed", // XXX: this is unnecessary spam
-		// 	slog.String("url", upstreams[res.index].URL.String()),
-		// 	slog.String("sni", upstreams[res.index].SNI),
-		// 	SafeErr(res.err),
-		// )
-		// Track the failure
-		failedUpstreams = append(failedUpstreams, upstreams[res.index].URL.String())
+			if res.err == nil {
+				// fs.mu.Lock()
+				// if res.index < fs.activeIndex {
+				//     fs.activeIndex = res.index
+				// }
+				// fs.mu.Unlock()
+				// No locks needed here anymore! The goroutine already handled it.
+				return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
+			}
+			// // FIX 1: Explicit log when a parallel/primary upstream fails
+			// log.Warn("⚠️ Upstream still failed; marking as failed", // XXX: this is unnecessary spam
+			// 	slog.String("url", upstreams[res.index].URL.String()),
+			// 	slog.String("sni", upstreams[res.index].SNI),
+			// 	SafeErr(res.err),
+			// )
+			// Track the failure
+			failedUpstreams = append(failedUpstreams, upstreams[res.index].URL.String())
+
+			if res.index == currentIdx {
+				currentIdxAnswered = true
+			}
+		case <-ctx.Done():
+			// Caller gave up. Abandoned in-flight goroutines (including any
+			// probe) still run to completion and still apply their healing
+			// side-effect; we just stop waiting on their results here.
+			return nil, "", failedUpstreams, ctx.Err()
+		} //select
 	}
 
 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
