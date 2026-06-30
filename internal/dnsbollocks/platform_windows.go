@@ -4706,13 +4706,19 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 	//w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var body strings.Builder
+	cfg := ui.getConfig()
 	body.WriteString("<h2>Statistics</h2>")
-	fmt.Fprintf(&body, "<p>Blocks: %q</p>",
+	fmt.Fprintf(&body, "<p>Blocks: %q</p>"+
 		//"<p>Cache size: %d</p>"+//FIXME: add this back
-		//	"<p>Upstream IPs: %v</p>",
+		"<p>Upstream URLs: %v</p>"+ //XXX: this contains the nextdns profile ID but since webUI can also show it in logs no point in hiding it?
+		"<p>Upstream SNIs: %v</p>"+
+		"<p>Upstream IPs: %v</p>",
 		ui.stats.String(),
-	//ui.dnsCache.ItemCount(), //FIXME: add this back
-	//	ui.upstreamIPs
+		//ui.dnsCache.ItemCount(), //FIXME: add this back
+		//	ui.upstreamIPs
+		cfg.UpstreamURLsParsed,
+		cfg.SNIHostnames,
+		cfg.UpstreamIPs,
 	)
 	data := map[string]any{
 		"RawBody": template.HTML(body.String()), // Tells template "I'm not ready to be a sub-template yet"
