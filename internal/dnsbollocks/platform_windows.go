@@ -4394,9 +4394,13 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 	log := ui.getLogger()
 
 	if r.Method == "GET" {
+		cidrs := ui.getResponseBlacklist()
+		views := make([]BlacklistView, len(cidrs))
+		for i, c := range cidrs {
+			views[i] = BlacklistView{Index: i, CIDR: c}
+		}
 		data := map[string]any{
-			//"Page":              "response-blacklist",
-			"ResponseBlacklist": ui.getResponseBlacklist(),
+			"ResponseBlacklist": views,
 		}
 		ui.renderTemplate(w, r, "response-blacklist", data)
 		return
@@ -4441,6 +4445,52 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				}
 			} else {
 				log.Warn("Failed to add IP/CIDR to blacklist: empty input")
+			}
+		case "edit":
+			oldCIDR := strings.TrimSpace(r.FormValue("old_cidr"))
+			newCIDRStr := strings.TrimSpace(r.FormValue("cidr"))
+
+			if oldCIDR == "" || newCIDRStr == "" {
+				log.Warn("Failed to edit blacklist entry: old_cidr and cidr required",
+					slog.String("old_cidr", oldCIDR), slog.String("cidr", newCIDRStr))
+				http.Error(w, "old_cidr and cidr required", http.StatusBadRequest)
+				return
+			}
+
+			_, n, err := net.ParseCIDR(newCIDRStr)
+			if err != nil {
+				ip := net.ParseIP(newCIDRStr)
+				if ip != nil {
+					var err2 error
+					if ip.To4() != nil {
+						_, n, err2 = net.ParseCIDR(newCIDRStr + "/32")
+					} else {
+						_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
+					}
+					if err2 != nil {
+						panic("impossible" + err2.Error())
+					}
+				}
+			}
+			if n == nil {
+				log.Warn("Failed to edit blacklist entry: invalid IP/CIDR format", slog.String("input", newCIDRStr))
+				http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
+				return
+			}
+
+			ui.OnInvalidateBlacklist()
+
+			if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
+				log.Warn("Failed to edit blacklist entry", SafeErr(err),
+					slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+
+			log.Info("Successfully edited response blacklist entry via WebUI",
+				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+			if err := ui.OnSaveBlacklist(); err != nil {
+				ui.logFatal("failed to save response blacklist after edit from webUI", err)
 			}
 		case "delete":
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
@@ -4947,8 +4997,42 @@ func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
 			return false // Already exists
 		}
 	}
-	bs.nets = append(bs.nets, n)
+	//bs.nets = append(bs.nets, n)//appends
+	// Prepend so newly added entries show up first, mirroring RuleStore.AddRule's behavior.
+	bs.nets = append([]*net.IPNet{n}, bs.nets...)
 	return true // Added successfully
+}
+
+// TryEdit replaces an existing CIDR entry (matched by its exact string form) with a new one,
+// moving the edited entry to the front of the list. Returns an error if oldCIDR isn't found,
+// or if newNet's string form collides with a different existing entry.
+func (bs *BlacklistStore) TryEdit(oldCIDR string, newNet *net.IPNet) error {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+
+	idx := -1
+	for i, existing := range bs.nets {
+		if existing.String() == oldCIDR {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("entry not found: %q", oldCIDR)
+	}
+
+	newStr := newNet.String()
+	if newStr != oldCIDR {
+		for i, existing := range bs.nets {
+			if i != idx && existing.String() == newStr {
+				return fmt.Errorf("entry %q already exists", newStr)
+			}
+		}
+	}
+
+	bs.nets = append(bs.nets[:idx:idx], bs.nets[idx+1:]...)
+	bs.nets = append([]*net.IPNet{newNet}, bs.nets...)
+	return nil
 }
 
 // TryDelete removes the matching CIDR string. Returns true if removed.
@@ -5355,6 +5439,11 @@ func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntr
 		logger.Debug("Updated rule", slog.Any("new_rule", updatedRule), slog.Any("old_rule", oldRule)) // XXX: slog.Any is no longer forbidden for this RuleEntry struct
 	}
 	return newEntries
+}
+
+type BlacklistView struct {
+	Index int
+	CIDR  string
 }
 
 type HostView struct {
@@ -5794,7 +5883,8 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 		if !scanner.Scan() {
 			if parseErr := scanner.Err(); parseErr != nil {
 				// Fallback: If scanning the first chunk fails, you could log it
-				// or reset, though scanner will stop execution gracefully.
+				// or reset, though scanner will stop execution gracefully.\
+				log.Warn("failed to read the first line after seeking in the log", slog.String("log_file", filePath), SafeErr(parseErr))
 			}
 		}
 	}

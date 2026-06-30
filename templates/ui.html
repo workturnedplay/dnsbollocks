@@ -855,7 +855,7 @@
     <p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
         The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
     </p>
-    
+
     <div style="margin-bottom: 20px;">
         <form id="add-blacklist-form" method="POST" action="/response-blacklist" style="display: flex; gap: 10px;">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -865,23 +865,42 @@
         </form>
     </div>
 
-    <table>
+    <div style="margin-top: 25px;">
+        <input
+            type="text"
+            id="blacklistFilter"
+            placeholder="Filter entries ... (ordered match, e.g., '10.0 8')"
+            style="width: 100%;"
+        >
+    </div>
+
+    <table id="blacklistTable">
+        <colgroup>
+            <col style="width: 70%;">
+            <col style="width: 30%;">
+        </colgroup>
         <thead>
             <tr>
                 <th>IP / CIDR Block</th>
-                <th style="width: 100px; text-align: center;">Actions</th>
+                <th style="text-align: center;">Actions</th>
             </tr>
         </thead>
         <tbody>
             {{range .ResponseBlacklist}}
-            <tr>
-                <td>{{.}}</td>
-                <td style="text-align: center;">
-                    <form method="POST" action="/response-blacklist" style="margin: 0;">
+            <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}">
+                <td title="{{.CIDR}}">{{.CIDR}}</td>
+                <td class="actions" style="text-align: center;">
+                    <button type="button" class="btn-edit"
+                            data-index="{{.Index}}"
+                            data-cidr="{{.CIDR}}"
+                            onclick="editBlacklist(this)">
+                        Edit
+                    </button>
+                    <form method="POST" action="/response-blacklist" style="display:inline; margin-left:6px;">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <input type="hidden" name="action" value="delete">
-                        <input type="hidden" name="cidr" value="{{.}}">
-                        <button type="submit" class="btn-del" onclick="return confirm('Remove {{.}} from blacklist?');">Delete</button>
+                        <input type="hidden" name="cidr" value="{{.CIDR}}">
+                        <button type="submit" class="btn-del" onclick="return confirm('Remove {{.CIDR}} from blacklist?');">Delete</button>
                     </form>
                 </td>
             </tr>
@@ -893,53 +912,136 @@
         </tbody>
     </table>
 
+    <template id="editBlacklistTemplate">
+        <tr class="edit-row">
+            <td>
+                <input type="hidden" name="old_cidr" class="edit-blacklist-old-cidr" form="">
+                <input type="text" name="cidr" class="edit-blacklist-cidr" form="" style="width:100%" required>
+            </td>
+            <td class="actions" style="text-align: center;">
+                <form method="POST" action="/response-blacklist" class="edit-blacklist-form" style="display:inline; margin:0;">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="action" value="edit">
+                    <button type="submit" class="btn-save">Save</button>
+                    <button type="button" class="btn-cancel">Cancel</button>
+                </form>
+            </td>
+        </tr>
+    </template>
+
     <script>
+    // --- Edit / Cancel for inline row editing ---
+    function editBlacklist(btn) {
+        const index = btn.dataset.index;
+        const cidr = btn.dataset.cidr;
+
+        const row = document.getElementById('blacklistRow_' + index);
+        if (!row) return;
+        row.style.display = 'none';
+
+        const tmpl = document.getElementById('editBlacklistTemplate');
+        const clone = tmpl.content.cloneNode(true);
+
+        const editRow = clone.querySelector('tr');
+        editRow.id = 'editBlacklistRow_' + index;
+
+        const form = clone.querySelector('.edit-blacklist-form');
+        const formId = 'editBlacklistForm_' + index;
+        form.id = formId;
+
+        const oldCidrInput = clone.querySelector('.edit-blacklist-old-cidr');
+        oldCidrInput.value = cidr;
+        oldCidrInput.setAttribute('form', formId);
+
+        const cidrInput = clone.querySelector('.edit-blacklist-cidr');
+        cidrInput.value = cidr;
+        cidrInput.setAttribute('form', formId);
+
+        clone.querySelector('.btn-cancel').onclick = () => cancelBlacklistEdit(index);
+
+        row.after(clone);
+    }
+
+    function cancelBlacklistEdit(index) {
+        const editRow = document.getElementById('editBlacklistRow_' + index);
+        if (editRow) editRow.remove();
+        const row = document.getElementById('blacklistRow_' + index);
+        if (row) row.style.display = '';
+    }
+
+    // --- Client-side ordered-substring filter, mirrors /rules' filter ---
+    window.applyBlacklistFilter = function() {
+        const filterInput = document.getElementById('blacklistFilter');
+        if (!filterInput) return;
+
+        const raw = filterInput.value.trim().toLowerCase();
+        const terms = raw.split(/\s+/).filter(t => t.length > 0);
+        const tbody = document.querySelector('#blacklistTable tbody');
+        if (!tbody) return;
+
+        function matchesOrderedTerms(text, searchTerms) {
+            let pos = 0;
+            for (const term of searchTerms) {
+                const found = text.indexOf(term, pos);
+                if (found === -1) return false;
+                pos = found + term.length;
+            }
+            return true;
+        }
+
+        Array.from(tbody.rows).forEach(row => {
+            if (row.classList.contains('edit-row')) return;
+            const cidr = (row.dataset.cidr || "").toLowerCase();
+            const isMatch = terms.length === 0 || matchesOrderedTerms(cidr, terms);
+            row.style.display = isMatch ? '' : 'none';
+        });
+    };
+
+    document.getElementById('blacklistFilter')?.addEventListener('input', window.applyBlacklistFilter);
+
+    // --- Existing "check for overlapping filters before add" validation ---
     document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
         e.preventDefault(); // Stop form from auto-posting immediately
-        
+
         const form = this;
         const cidrInput = form.querySelector('input[name="cidr"]');
         const cidrValue = cidrInput.value.trim();
-        
+
         if (!cidrValue) return;
 
         try {
             const response = await fetch(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
             if (response.ok) {
                 const data = await response.json();
-                
+
                 if (data.matches && data.matches.length > 0) {
                     // Double-ask user confirmation showing exact matching filters
-                    const message = `This target is already covered or matched by these existing filters:\n• ` + 
-                                    data.matches.join('\n• ') + 
+                    const message = `This target is already covered or matched by these existing filters:\n• ` +
+                                    data.matches.join('\n• ') +
                                     `\n\nDo you still want to add it as a separate redundant entry?`;
-                    
+
                     if (!confirm(message)) {
                         return; // User clicked "Cancel" -> abort
                     }
                 }
             }
         } catch (err) {
-            // const msg = `Validation check failed (you must allow "fetch"(under "Custom") in NoScript Firefox extension), err: ${err}`;
-            // console.error(msg);
-            // alert(msg);
-            // return;
             const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
                         `Error details: ${err}\n\n` +
                         `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
-            
+
             console.error(msg);
-            
+
             // If user clicks "Cancel" (No), abort form submission.
             // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
             if (!confirm(msg)) {
-                console.log("chose to NOT add it without validation, cidrValue="+cidrValue)
-                return; 
+                console.log("chose to NOT add it without validation, cidrValue=" + cidrValue);
+                return;
             } else {
-                console.log("chose to add it without validation, cidrValue="+cidrValue)
+                console.log("chose to add it without validation, cidrValue=" + cidrValue);
             }
         }
-        
+
         form.submit(); // User clicked "OK" or check passed -> fire native submission
     });
     </script>
