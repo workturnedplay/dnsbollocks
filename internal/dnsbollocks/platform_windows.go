@@ -272,7 +272,6 @@ func NewServer(logger *slog.Logger) *Server {
 }
 
 type FailoverSelector struct {
-	// logger         *slog.Logger // Passed during initialization
 	liveLogger     *atomic.Pointer[slog.Logger]
 	mu             sync.RWMutex
 	activeIndex    int
@@ -7615,7 +7614,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		if err2 := srv.Serve(finalListener); err2 != nil && err2 != http.ErrServerClosed {
 			log := s.getLogger()
 			log.Error("ui_serve_failed", SafeErr(err2), slog.String("addr", addr))
-			s.errChan <- fmt.Errorf("Web UI server failed on %q: %w", addr, err2)
+			s.errChan <- fmt.Errorf("webUI server failed on %q: %w", addr, err2)
 		}
 	}()
 
