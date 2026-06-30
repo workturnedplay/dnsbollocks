@@ -135,6 +135,7 @@ linters:
         - performance
         - opinionated
       disabled-checks:
+        - emptyStringTest
         - unnamedResult       # you *intentionally* use named returns
         - ifElseChain
         - octalLiteral

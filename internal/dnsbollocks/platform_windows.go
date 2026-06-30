@@ -426,7 +426,6 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 			// 2. Push to the channel last
 			resChan <- result{index: idx, resp: resp, err: err}
-
 		}(i, isProbe)
 	}
 
@@ -841,7 +840,6 @@ func (s *Server) loadLocalHosts() error {
 				slog.String("invalid_pattern", normalizedPat))
 			removed++
 			continue
-
 		}
 
 		if _, dup := seenPatterns[normalizedPat]; dup {
@@ -2438,6 +2436,7 @@ func (s *Server) loadMainConfig() error {
 	case "failover":
 		log.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
 	case "fastest":
+		//nolint:gocritic // Reason: Keeping 'fastest' explicit for readability
 		fallthrough
 	default:
 		log.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
@@ -3957,7 +3956,6 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	msg.Extra = append(msg.Extra, opt)
 
 	return msg
-
 }
 
 const NODATA string = "upstream_nodata"
@@ -6936,6 +6934,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		return resp, upstreamState1
 
 	case "fastest":
+		//nolint:gocritic // Reason: Keeping 'fastest' explicit for readability
 		fallthrough
 	default:
 		// ==========================================
