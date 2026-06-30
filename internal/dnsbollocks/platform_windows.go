@@ -5725,6 +5725,32 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	ring := make([]string, maxLines)
 	count := 0
 
+	// 1. Get stats and check size
+	var didSeek bool
+	stat, err := file.Stat()
+	if err == nil {
+		const maxReadBytes = 20 * 1024 * 1024 // 20MB Lookback Limit
+		if stat.Size() > maxReadBytes {
+			startOffset := stat.Size() - maxReadBytes
+			// 2. Seek to the lookback offset with error checking
+			if _, err2 := file.Seek(startOffset, io.SeekStart); err2 == nil {
+				didSeek = true
+			} else {
+				log.Warn("failed to seek ahead in log", slog.String("log_file", filePath), slog.Int64("seek_to_offset", startOffset))
+				// Fallback: If seeking fails, reset to the beginning so the UI doesn't break
+				if _, err3 := file.Seek(0, io.SeekStart); err3 != nil {
+					log.Warn("failed to seek back to beginning in log", slog.String("log_file", filePath))
+				}
+			}
+			// // Read until the next newline to ensure we don't parse a truncated string
+			// bufio.NewReader(file).ReadBytes('\n')
+			/*
+				When you instantiate a temporary bufio.NewReader(file), it creates an internal buffer (typically 4KB) and eagerly reads a large block from the file to satisfy your ReadBytes('\n') request.
+				Even if your first newline is only 50 bytes away, the remaining ~4046 bytes inside that reader's internal buffer are thrown away when the object is discarded. When you call scanner := bufio.NewScanner(file) right after, the scanner reads from the file descriptor's current position (which has advanced by 4KB), causing a chunk of your logs to silently disappear from the WebUI.
+			*/
+		}
+	}
+
 	// Stream the file line-by-line instead of loading it all at once
 	scanner := bufio.NewScanner(file)
 	// This tells the scanner:
@@ -5733,6 +5759,18 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	const maxCapacity = 1024 * 1024 // 1 MB
 	lineBuf := make([]byte, 2*1024) // 2 KB initial size
 	scanner.Buffer(lineBuf, maxCapacity)
+
+	// 4. If we successfully jumped into the middle of a large file,
+	// discard the very first scanned line since it's likely truncated.
+	if didSeek {
+		if !scanner.Scan() {
+			if parseErr := scanner.Err(); parseErr != nil {
+				// Fallback: If scanning the first chunk fails, you could log it
+				// or reset, though scanner will stop execution gracefully.
+			}
+		}
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -5749,7 +5787,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	// ALWAYS check for errors after the loop.
 	// If a line was too long ( > 1MB), the scanner stops here.
 	if err := scanner.Err(); err != nil {
-		if err == bufio.ErrTooLong {
+		if errors.Is(err, bufio.ErrTooLong) {
 			log.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
 		}
 	}
@@ -5784,8 +5822,6 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	}
 
 	renderData := map[string]any{
-		//"Page":    "logs",
-		//"Path":    r.URL.Path,
 		"Title":   title,
 		"Filter":  filter,
 		"Content": content,

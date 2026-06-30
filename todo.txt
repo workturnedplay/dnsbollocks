@@ -1,6 +1,6 @@
 todo:
 * put a "return //unreachable" after every s.shutdown(x) so it's more obvious it doesn't return (funny)
-* fix inconsistencies in v0.8.1 (intended: 2,6 done: 1,3, todo: 4,5): https://gemini.google.com/app/a782dd82602c19aa
+* fix inconsistencies in v0.8.1 (intended: 2,6 done: 1,3,4, todo: 5): https://gemini.google.com/app/a782dd82602c19aa
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
 * make the webUI page for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
