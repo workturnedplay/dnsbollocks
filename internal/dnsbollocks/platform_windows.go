@@ -4675,53 +4675,165 @@ func (ui *AdminUI) originValidation(expectedHost string, useTLS bool, next http.
 
 	expectedOrigin := expectedScheme + "://" + expectedHost
 
+	// isSafeReferer returns true only when the Referer URL's scheme+host
+	// exactly matches our expected origin. Used as fallback when Origin is
+	// absent or null. Referer can be spoofed by non-browser clients, but
+	// that's fine — our CSRF token is the primary mutation guard; this is
+	// defence-in-depth for browser-originated requests.
+	isSafeReferer := func(ref string) bool {
+		if ref == "" {
+			return false
+		}
+		u, err := url.Parse(ref)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Scheme, expectedScheme) &&
+			strings.EqualFold(u.Host, expectedHost)
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only protect state-changing requests.
-		switch r.Method {
-		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			//exit switch
-		default:
-			next.ServeHTTP(w, r)
-			return
-		}
+		// // Only protect state-changing requests.
+		// switch r.Method {
+		// case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		// 	//exit switch
+		// default:
+		// 	next.ServeHTTP(w, r)
+		// 	return
+		// }
 
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if origin == "null" { //yes firefox(at least) sends this
-				ui.getLogger().Debug("missing origin context ie. it's \"null\" (literally), allowing(for now)",
+		// if origin := r.Header.Get("Origin"); origin != "" {
+		// 	if origin == "null" { //yes firefox(at least) sends this
+		// 		ui.getLogger().Debug("missing origin context ie. it's \"null\" (literally), allowing(for now)",
+		// 			slog.String("method", r.Method),
+		// 			slog.String("Origin", origin),
+		// 			slog.String("expected_Origin", expectedOrigin))
+		// 		//allowing
+		// 	} else if !strings.EqualFold(origin, expectedOrigin) {
+		// 		ui.getLogger().Debug("Invalid Origin",
+		// 			slog.String("method", r.Method),
+		// 			slog.String("Origin", origin),
+		// 			slog.String("expected_Origin", expectedOrigin))
+		// 		//disallow
+		// 		http.Error(w,
+		// 			fmt.Sprintf("Invalid Origin for method %q got: %q expected: %q", r.Method, origin, expectedOrigin),
+		// 			http.StatusForbidden)
+		// 		return
+		// 	}
+
+		// 	//allowing
+		// 	next.ServeHTTP(w, r)
+		// 	return
+		// }
+
+		// // Fallback for clients that omit Origin.
+		// if ref := r.Referer(); ref != "" {
+		// 	//only if has referer check it
+		// 	u, err := url.Parse(ref)
+		// 	if err == nil &&
+		// 		strings.EqualFold(u.Scheme, expectedScheme) &&
+		// 		strings.EqualFold(u.Host, expectedHost) {
+		// 		next.ServeHTTP(w, r)
+		// 		return
+		// 	}
+		// }
+		// //no origin and no or bad referrer
+		// http.Error(w, "Missing or invalid Origin/Referer", http.StatusForbidden)
+
+		log := ui.getLogger()
+		origin := r.Header.Get("Origin")
+
+		switch {
+		case origin == "null":
+			// "null" arrives from two very different sources:
+			//
+			//   BENIGN:  Firefox emits null for some same-origin form POSTs
+			//            (localhost, certain privacy modes, non-TLS origins).
+			//            These requests carry a valid same-origin Referer.
+			//
+			//   ATTACK:  <iframe sandbox="allow-scripts allow-forms"> also
+			//            produces a null origin but, crucially, its Referer
+			//            policy is "no-referrer", so Referer is empty.
+			//
+			// Distinguishing them via Referer is therefore sound.
+			if isSafeReferer(r.Referer()) {
+				log.Debug("null Origin allowed via matching Referer (expected for Firefox same-origin form quirk)",
 					slog.String("method", r.Method),
-					slog.String("Origin", origin),
-					slog.String("expected_Origin", expectedOrigin))
-				//allowing
-			} else if !strings.EqualFold(origin, expectedOrigin) {
-				ui.getLogger().Debug("Invalid Origin",
-					slog.String("method", r.Method),
-					slog.String("Origin", origin),
-					slog.String("expected_Origin", expectedOrigin))
-				//disallow
-				http.Error(w,
-					fmt.Sprintf("Invalid Origin for method %q got: %q expected: %q", r.Method, origin, expectedOrigin),
-					http.StatusForbidden)
-				return
-			}
-
-			//allowing
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Fallback for clients that omit Origin.
-		if ref := r.Referer(); ref != "" {
-			//only if has referer check it
-			u, err := url.Parse(ref)
-			if err == nil &&
-				strings.EqualFold(u.Scheme, expectedScheme) &&
-				strings.EqualFold(u.Host, expectedHost) {
+					slog.String("path", r.URL.Path),
+					slog.String("referer", r.Referer()),
+				)
 				next.ServeHTTP(w, r)
 				return
 			}
+			log.Warn("Blocked request with null Origin and missing/mismatched Referer — possible sandboxed-iframe attack",
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+				slog.String("referer", r.Referer()),
+				slog.String("client", r.RemoteAddr),
+			)
+			http.Error(w, "403 Forbidden", http.StatusForbidden)
+			return
+
+		case origin != "":
+			// A real Origin header is present. Browsers send this for:
+			//   - all cross-origin requests (fetch, XHR)
+			//   - same-origin POST/PUT/DELETE/PATCH (most browsers)
+			//   - same-origin GET via fetch() — inconsistent across browsers
+			//
+			// Check it for all methods, not just mutations. A cross-origin
+			// fetch() GET with credentials still makes the request even though
+			// the response is opaque to the attacker; rejecting it outright is
+			// cheaper and cleaner than relying solely on the CORS-header absence.
+			if !strings.EqualFold(origin, expectedOrigin) {
+				log.Warn("Blocked cross-origin request",
+					slog.String("origin", origin),
+					slog.String("expected_origin", expectedOrigin),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.String("client", r.RemoteAddr),
+				)
+				http.Error(w, "403 Forbidden - cross-origin request rejected", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+
+		default:
+			// No Origin header at all. Normal for:
+			//   - Direct browser navigation (address bar, bookmark, Enter)
+			//   - curl / non-browser API clients
+			//   - <script src>, <link>, <img> tags (which can't read HTML responses anyway)
+			//   - Some same-origin navigations in older browsers
+			//
+			// For safe (idempotent) methods: allow unconditionally. Cross-origin
+			// no-Origin GETs cannot read the response (no CORS headers served),
+			// and X-Frame-Options + CSP frame-ancestors block iframe embedding.
+			//
+			// For mutations (POST etc.): require a valid Referer as a secondary
+			// signal. The CSRF token in csrfMiddleware is the primary guard here.
+			isSafeMethod := r.Method == http.MethodGet ||
+				r.Method == http.MethodHead ||
+				r.Method == http.MethodOptions
+
+			if isSafeMethod {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if isSafeReferer(r.Referer()) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			log.Warn("Blocked mutation request: no Origin header and missing/mismatched Referer",
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+				slog.String("referer", r.Referer()),
+				slog.String("client", r.RemoteAddr),
+			)
+			http.Error(w, "403 Forbidden - missing or invalid Origin/Referer", http.StatusForbidden)
+			return
 		}
-		//no origin and no or bad referrer
-		http.Error(w, "Missing or invalid Origin/Referer", http.StatusForbidden)
 	})
 }
 
