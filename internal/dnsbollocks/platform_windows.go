@@ -374,7 +374,6 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 		}
 		go func(idx int, wasProbe bool) {
-
 			// Clean up the probe lock when this request finishes
 			if wasProbe {
 				defer fs.inFlightProbes.Delete(idx)
@@ -4363,7 +4362,8 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 	if r.Method == "POST" {
 		action := r.FormValue("action")
 
-		if action == "add" { //FIXME: could use tagged switch on action QF1003 default
+		switch action { //doneFIXME: could use tagged switch on action QF1003 default
+		case "add":
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			if cidrStr != "" {
 				_, n, err := net.ParseCIDR(cidrStr)
@@ -4399,7 +4399,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			} else {
 				log.Warn("Failed to add IP/CIDR to blacklist: empty input")
 			}
-		} else if action == "delete" {
+		case "delete":
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
 			//ok this will invalidate cache for all blacklisted IPs, and then delete the intended one
 			ui.OnInvalidateBlacklist() //we this is no good because the deleted cidrStr isn't in the blacklist anymore, unless I do it before deleting it?
@@ -4413,9 +4413,9 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
 			}
 
-		} else {
+		default:
 			log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
-		}
+		} //switch
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	}
 }
@@ -5302,24 +5302,6 @@ func withRulePrepended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logg
 	return newTargetEntries
 }
 
-// withRuleAppended safely inserts a new RuleEntry at the end of a slice
-// without mutating the underlying array of existing readers.
-//
-//nolint:unused
-func withRuleAppended(entries []RuleEntry, newRule RuleEntry, logger *slog.Logger) []RuleEntry {
-	newTargetEntries := make([]RuleEntry, len(entries)+1)
-
-	// Copy old entries starting at index 0
-	copy(newTargetEntries, entries)
-
-	// Drop the new item at the very last index position
-	newTargetEntries[len(entries)] = newRule
-	if logger != nil {
-		logger.Debug("Appended rule", slog.Any("rule", newRule)) // XXX: slog.Any is no longer forbidden for this RuleEntry struct
-	}
-	return newTargetEntries
-}
-
 // withRuleUpdatedAtIndex safely updates a rule at a specific index without mutating the original array.
 func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntry, logger *slog.Logger) []RuleEntry {
 	newEntries := make([]RuleEntry, len(entries))
@@ -5641,7 +5623,8 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		action := r.FormValue("action")
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
-			if action == "reblock" {
+			switch action {
+			case "reblock":
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
@@ -5652,7 +5635,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				} else if found {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
 				}
-			} else if action == "unblock" { //doneFIXME: assuming 'block' ?!
+			case "unblock":
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
@@ -5678,12 +5661,12 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 						panic(fmt.Errorf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s", typ, domainLowercased))
 					}
 				}
-			} else {
+			default:
 				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				// Reject any unauthorized or malformed action values
 				http.Error(w, "Invalid action specified", http.StatusBadRequest)
 				return //oh this was bugged before, it was exitting only the inner anon-func!
-			}
+			} //switch
 
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)

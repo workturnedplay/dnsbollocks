@@ -123,25 +123,25 @@ func upstreamAResp(query *dns.Msg, ips ...string) *dns.Msg {
 	return r
 }
 
-// upstreamAAAAResp builds an upstream success response containing AAAA records.
-func upstreamAAAAResp(query *dns.Msg, ips ...string) *dns.Msg {
-	r := new(dns.Msg)
-	r.SetReply(query)
-	r.Rcode = dns.RcodeSuccess
-	r.RecursionAvailable = true
-	for _, ip := range ips {
-		r.Answer = append(r.Answer, &dns.AAAA{
-			Hdr: dns.RR_Header{
-				Name:   query.Question[0].Name,
-				Rrtype: dns.TypeAAAA,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
-			AAAA: net.ParseIP(ip),
-		})
-	}
-	return r
-}
+// // upstreamAAAAResp builds an upstream success response containing AAAA records.
+// func upstreamAAAAResp(query *dns.Msg, ips ...string) *dns.Msg {
+// 	r := new(dns.Msg)
+// 	r.SetReply(query)
+// 	r.Rcode = dns.RcodeSuccess
+// 	r.RecursionAvailable = true
+// 	for _, ip := range ips {
+// 		r.Answer = append(r.Answer, &dns.AAAA{
+// 			Hdr: dns.RR_Header{
+// 				Name:   query.Question[0].Name,
+// 				Rrtype: dns.TypeAAAA,
+// 				Class:  dns.ClassINET,
+// 				Ttl:    300,
+// 			},
+// 			AAAA: net.ParseIP(ip),
+// 		})
+// 	}
+// 	return r
+// }
 
 // upstreamFailResp builds a non-success upstream response (e.g. SERVFAIL).
 func upstreamFailResp(query *dns.Msg, rcode int) *dns.Msg {
