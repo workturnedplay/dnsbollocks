@@ -4621,7 +4621,7 @@ func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 }
 
-func (ui *AdminUI) SetupRoutes() http.Handler {
+func (ui *AdminUI) SetupRoutes(boundAddr string) http.Handler {
 	// ── Inner mux: all routes that require authentication ────────────────
 	innerMux := http.NewServeMux()
 	innerMux.HandleFunc("/", ui.statsHandler)
@@ -4639,12 +4639,60 @@ func (ui *AdminUI) SetupRoutes() http.Handler {
 	// chance to enter credentials.  Letting them hit authMiddleware would
 	// silently burn failure-counter slots on every single page load.
 	outerMux := http.NewServeMux()
-	outerMux.HandleFunc("/favicon.ico", faviconHandler)
-	outerMux.HandleFunc("/robots.txt", robotsTxtHandler)
-	// Everything else goes through auth → CSRF → inner mux.
-	outerMux.Handle("/", ui.authMiddleware(ui.csrfMiddleware(innerMux)))
+	// outerMux.HandleFunc("/favicon.ico", ui.hostValidationFunc(boundAddr, faviconHandler))
+	// outerMux.HandleFunc("/robots.txt", ui.hostValidationFunc(boundAddr, robotsTxtHandler))
+	outerMux.Handle(
+		"/favicon.ico",
+		ui.hostValidation(boundAddr, http.HandlerFunc(faviconHandler)),
+	)
+
+	outerMux.Handle(
+		"/robots.txt",
+		ui.hostValidation(boundAddr, http.HandlerFunc(robotsTxtHandler)),
+	)
+	// Everything else goes through hostvalid->auth → CSRF → inner mux.
+	var h http.Handler = innerMux
+
+	h = ui.csrfMiddleware(h)
+	h = ui.authMiddleware(h)
+	h = ui.hostValidation(boundAddr, h)
+
+	outerMux.Handle("/", h)
+	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
 	return outerMux
 }
+func (ui *AdminUI) hostValidation(expectedHost string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Host, expectedHost) {
+			http.Error(w, "Invalid Host header", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// func (ui *AdminUI) hostValidation(next http.Handler) http.Handler {
+
+// 	//by default use the host:port from config.json
+// 	var expected string = ui.getConfig().ListenUI
+// 	if boundAddr != "" {
+// 		expected = boundAddr
+// 	}
+
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		if ui.getExpectedHost != nil {
+// 			//use the saved boundAddr from startWebUIListenerInstance
+// 			expected = ui.getExpectedHost()
+// 		}
+// 		if !strings.EqualFold(r.Host, expected) {
+// 			http.Error(w, "Invalid Host header", http.StatusForbidden)
+// 			return
+// 		}
+
+// 		next.ServeHTTP(w, r)
+// 	})
+// }
 
 const csrfTokenKey contextKey = "csrfToken"
 
@@ -6864,6 +6912,7 @@ type AdminUI struct {
 
 	//UI calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
+	//getExpectedHost func() string // used by hostValidation
 }
 
 func (ui *AdminUI) getLogger() *slog.Logger {
@@ -7784,6 +7833,7 @@ func (s *Server) initAdminUI() {
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
 	//Pass the server's shutdown method directly
 	ui.OnShutdown = s.shutdown
+	// ui.getExpectedHost = s.currentUIExpectedHost // used by hostValidation
 
 	// Clear any WebUI login lockouts so an operator who locked
 	// themselves out with a typo streak can recover via Ctrl+R
@@ -7794,12 +7844,21 @@ func (s *Server) initAdminUI() {
 	s.adminUI = ui
 }
 
+// // return the host:port that the webUI is listening on, which is expected to be in requests (used by hostValidation middleware)
+// func (s *Server) currentUIExpectedHost() string {
+// 	inst := s.uiListener.Load()
+// 	if inst == nil {
+// 		return ""
+// 	}
+// 	return inst.expectedHost
+// }
+
 func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListenerInstance, error) {
 	if s.adminUI == nil {
 		panic("BUG: startWebUIListenerInstance called before initAdminUI")
 	}
 	addr := params.Addr
-	baseListener, err := net.Listen("tcp", addr)
+	baseListener, err := net.Listen("tcp", addr) //FIXME: use tcp4 if it's ipv4 or tcp6 if it's ipv6, read the description for net.Listen
 	if err != nil {
 		return nil, fmt.Errorf("UI listener failed to bind/listen on %q: %w", addr, err)
 	}
@@ -7816,10 +7875,20 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		scheme = "https"
 	}
 
-	srv := &http.Server{Handler: s.adminUI.SetupRoutes()}
+	// BETTER APPROACH: Query the active listener for its real bound address.
+	// This is guaranteed to be split-safe, and correctly exposes the port
+	// if the user passes ":0" for a dynamically allocated port.
+	boundAddr := baseListener.Addr().String() //TODO: save this and use it for hostValidation middleware
+	srv := &http.Server{Handler: s.adminUI.SetupRoutes(boundAddr)}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
-	inst := &uiListenerInstance{params: params, listener: finalListener, srv: srv, cancel: cancel}
+
+	inst := &uiListenerInstance{params: params,
+		listener: finalListener,
+		//expectedHost: boundAddr,
+		srv:    srv,
+		cancel: cancel,
+	}
 
 	inst.wg.Add(1)
 	// Listen for the global shutdown signal to gracefully close the Web UI
@@ -7848,10 +7917,6 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		}
 	}()
 
-	// BETTER APPROACH: Query the active listener for its real bound address.
-	// This is guaranteed to be split-safe, and correctly exposes the port
-	// if the user passes ":0" for a dynamically allocated port.
-	boundAddr := baseListener.Addr().String()
 	// Split the address for the logger to maintain your existing clean log output
 	host, portStr, err := net.SplitHostPort(boundAddr)
 	if err != nil {
@@ -7864,6 +7929,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		slog.String("port", portStr),
 		slog.String("url", fmt.Sprintf("%s://%s", scheme, boundAddr)),
 	)
+
 	log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")
 
 	return inst, nil
@@ -7945,9 +8011,10 @@ type dohListenerInstance struct {
 type uiListenerInstance struct {
 	params   uiListenerParams
 	listener net.Listener
-	srv      *http.Server
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	//expectedHost string // baseListener.Addr().String() this is used to limit r.Host to only these aka hostValidation middleware! r is request
+	srv    *http.Server
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 type rotatingLogWriter struct {
@@ -8065,3 +8132,138 @@ func (w *rotatingLogWriter) reopenOriginal() {
 		w.file = f
 	}
 }
+
+// func SecurityHeadersMiddleware(next http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		// 1. Protect against DNS Rebinding
+// 		host := r.Host
+// 		if h, _, err := net.SplitHostPort(r.Host); err == nil {
+// 			host = h
+// 		}
+// 		// Only allow explicitly authorized local hosts
+// 		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+// 			http.Error(w, "Forbidden: Invalid Host Header (DNS Rebinding Protection)", http.StatusForbidden)
+// 			return
+// 		}
+
+// 		// 2. Protect against Cross-Origin state changes (Origin Validation)
+// 		if r.Method == http.MethodPost {
+// 			origin := r.Header.Get("Origin")
+// 			if origin != "" {
+// 				// Ensure the origin explicitly matches your expected local schemes
+// 				if !strings.HasPrefix(origin, "http://localhost") && !strings.HasPrefix(origin, "http://127.0.0.1") {
+// 					http.Error(w, "Forbidden: Cross-Origin Request Blocked", http.StatusForbidden)
+// 					return
+// 				}
+// 			}
+// 		}
+
+// 		next.ServeHTTP(w, r)
+// 	})
+// }
+
+// func HostValidationMiddleware(listenAddr string, next http.Handler) http.Handler {
+// 	_, configuredPort, err := net.SplitHostPort(listenAddr)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		host := r.Host
+
+// 		h, p, err := net.SplitHostPort(host)
+// 		if err != nil {
+// 			h = host
+// 			p = ""
+// 		}
+
+// 		if p != configuredPort {
+// 			http.Error(w, "invalid host", http.StatusForbidden)
+// 			return
+// 		}
+
+// 		allowed := false
+
+// 		switch strings.ToLower(h) {
+
+// 		case "localhost":
+// 			allowed = true
+
+// 		case "127.0.0.1":
+// 			allowed = true
+
+// 		case "::1":
+// 			allowed = true
+// 		}
+
+// 		//
+// 		// If ListenUI itself is configured to another hostname/IP,
+// 		// also allow exactly that.
+// 		//
+
+// 		cfgHost, _, _ := net.SplitHostPort(listenAddr)
+
+// 		if strings.EqualFold(h, cfgHost) {
+// 			allowed = true
+// 		}
+
+// 		if !allowed {
+// 			http.Error(w, "forbidden host", http.StatusForbidden)
+// 			return
+// 		}
+
+// 		next.ServeHTTP(w, r)
+// 	})
+// }
+
+// func VerifyOrigin(expected string) func(http.Handler) http.Handler {
+
+// 	return func(next http.Handler) http.Handler {
+
+// 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+// 			if r.Method == http.MethodGet ||
+// 				r.Method == http.MethodHead ||
+// 				r.Method == http.MethodOptions {
+
+// 				next.ServeHTTP(w, r)
+// 				return
+// 			}
+
+// 			origin := r.Header.Get("Origin")
+
+// 			if origin != "" {
+
+// 				u, err := url.Parse(origin)
+
+// 				if err != nil ||
+// 					!strings.EqualFold(u.Host, expected) {
+
+// 					http.Error(w, "bad origin", http.StatusForbidden)
+// 					return
+// 				}
+
+// 			} else {
+
+// 				ref := r.Referer()
+
+// 				if ref == "" {
+// 					http.Error(w, "missing origin", http.StatusForbidden)
+// 					return
+// 				}
+
+// 				u, err := url.Parse(ref)
+
+// 				if err != nil ||
+// 					!strings.EqualFold(u.Host, expected) {
+
+// 					http.Error(w, "bad referer", http.StatusForbidden)
+// 					return
+// 				}
+// 			}
+
+// 			next.ServeHTTP(w, r)
+
+// 		})
+// 	}
+// }
