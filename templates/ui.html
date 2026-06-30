@@ -424,7 +424,103 @@
                 });
             });
         }
+
+        // --- Client-Side Table Sorting Logic (Generic Refactor) ---
+        function setupTableSorting(tableId, storageKeyPrefix, postSortCallback) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const tbody = table.querySelector('tbody');
+            const headers = table.querySelectorAll('th.sortable');
+            if (!tbody) return;
+
+            // Store original row order to revert back to 'none'
+            const originalRows = Array.from(tbody.rows);
+            originalRows.forEach((row, i) => row.dataset.origIndex = i);
+
+            headers.forEach(th => {
+                th.dataset.sortDir = 'none'; // none, asc, desc
+                
+                th.addEventListener('click', () => {
+                    // 1. Cancel any active inline edits so they don't break during sort
+                    document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+
+                    const colIndex = parseInt(th.dataset.col);
+                    const currentDir = th.dataset.sortDir;
+                    let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
+
+                    // 2. Save the new sorting state to sessionStorage so it survives page reloads
+                    sessionStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
+                    sessionStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
+
+                    // Reset all headers
+                    headers.forEach(h => {
+                        h.dataset.sortDir = 'none';
+                        const icon = h.querySelector('.sort-icon');
+                        if (icon) icon.textContent = '';
+                    });
+
+                    // Update clicked header
+                    th.dataset.sortDir = newDir;
+                    const icon = th.querySelector('.sort-icon');
+                    if (icon) {
+                        if (newDir === 'asc') icon.textContent = '▲';
+                        if (newDir === 'desc') icon.textContent = '▼';
+                    }
+
+                    let rowsArray = Array.from(tbody.rows);
+                    
+                    // Filter out custom inline edit rows and empty placeholder colspan messages
+                    rowsArray = rowsArray.filter(row => row.cells.length > colIndex && !row.querySelector('td[colspan]') && !row.classList.contains('edit-row') && !row.classList.contains('edit-host-row'));
+
+                    if (newDir === 'none') {
+                        // Revert to original order
+                        rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
+                    } else {
+                        // Sort ascending or descending
+                        rowsArray.sort((a, b) => {
+                            let valA = a.cells[colIndex].innerText.trim().toLowerCase();
+                            let valB = b.cells[colIndex].innerText.trim().toLowerCase();
+                            
+                            if (valA < valB) return newDir === 'asc' ? -1 : 1;
+                            if (valA > valB) return newDir === 'asc' ? 1 : -1;
+                            return 0;
+                        });
+                    }
+
+                    // Append rows back to tbody in sorted order
+                    rowsArray.forEach(row => tbody.appendChild(row));
+
+                    // Re-apply filter immediately after sorting array structure changes
+                    // Re-apply filter immediately if applicable
+                    if (typeof postSortCallback === 'function') {
+                        postSortCallback();
+                    }
+                });
+            });
+
+            // --- Restore sort state on page load ---
+            const savedCol = sessionStorage.getItem(storageKeyPrefix + '_sortCol');
+            const savedDir = sessionStorage.getItem(storageKeyPrefix + '_sortDir');
+
+            if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
+                const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+                if (targetHeader) {
+                    // Set the current direction to the logical "previous" state, 
+                    // so that calling .click() toggles it to our desired saved state.
+                    targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
+                    targetHeader.click();
+                }
+            }
+        }
+
+        // Initialize table sorting states across views
+        setupTableSorting('rulesTable', 'rulesTable', window.applyRulesFilter);
+        setupTableSorting('hostsTable', 'hostsTable', null);
+        setupTableSorting('blacklistTable', 'blacklistTable', window.applyBlacklistFilter);
+
     }); // end of domcontentloaded
+    
     // --- Client-Side Table Ordered-Substring Filter Logic ---
     //properties placed on window become globals in normal browser scripts, so can call it as applyRulesFilter or window.applyRulesFilter anywhere.
     window.applyRulesFilter = function(clearingInteracted = false) {
@@ -490,81 +586,7 @@
             row.style.display = isMatch ? '' : 'none';
         });
     }
-    // --- Client-Side Table Sorting Logic ---
-        const table = document.getElementById('rulesTable');
-        if (table) {
-            const tbody = table.querySelector('tbody');
-            const headers = table.querySelectorAll('th.sortable');
-            // Store original row order to revert back to 'none'
-            const originalRows = Array.from(tbody.rows);
-            originalRows.forEach((row, i) => row.dataset.origIndex = i);
-
-            headers.forEach(th => {
-                th.dataset.sortDir = 'none'; // none, asc, desc
-                
-                th.addEventListener('click', () => {
-                    // 1. Cancel any active inline edits so they don't break during sort
-                    document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
-
-                    const colIndex = parseInt(th.dataset.col);
-                    const currentDir = th.dataset.sortDir;
-                    let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
-
-                    // 2. Save the new sorting state to sessionStorage so it survives page reloads
-                    sessionStorage.setItem('rulesTable_sortCol', colIndex);
-                    sessionStorage.setItem('rulesTable_sortDir', newDir);
-
-                    // Reset all headers
-                    headers.forEach(h => {
-                        h.dataset.sortDir = 'none';
-                        h.querySelector('.sort-icon').textContent = '';
-                    });
-
-                    // Update clicked header
-                    th.dataset.sortDir = newDir;
-                    const icon = th.querySelector('.sort-icon');
-                    if (newDir === 'asc') icon.textContent = '▲';
-                    if (newDir === 'desc') icon.textContent = '▼';
-
-                    let rowsArray = Array.from(tbody.rows);
-
-                    if (newDir === 'none') {
-                        // Revert to original order
-                        rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
-                    } else {
-                        // Sort ascending or descending
-                        rowsArray.sort((a, b) => {
-                            let valA = a.cells[colIndex].innerText.trim().toLowerCase();
-                            let valB = b.cells[colIndex].innerText.trim().toLowerCase();
-                            
-                            if (valA < valB) return newDir === 'asc' ? -1 : 1;
-                            if (valA > valB) return newDir === 'asc' ? 1 : -1;
-                            return 0;
-                        });
-                    }
-
-                    // Append rows back to tbody in sorted order
-                    rowsArray.forEach(row => tbody.appendChild(row));
-
-                    // Re-apply filter immediately after sorting array structure changes
-                    window.applyRulesFilter();
-                });
-            });
-
-            // --- Restore sort state on page load ---
-            const savedCol = sessionStorage.getItem('rulesTable_sortCol');
-            const savedDir = sessionStorage.getItem('rulesTable_sortDir');
-
-            if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
-                const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
-                if (targetHeader) {
-                    // Set the current direction to the logical "previous" state, 
-                    // so that calling .click() toggles it to our desired saved state.
-                    targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
-                    targetHeader.click();
-                }
-            }
-        }
+        
     </script>
 </body></html>
 
@@ -726,7 +748,7 @@
     </form>
 
     <h2>Local Hosts</h2>
-    <table>
+    <table id="hostsTable">
         <colgroup>
             <col style="width: 35%;">
             <col style="width: 45%;">
@@ -734,8 +756,8 @@
         </colgroup>
         <thead>
             <tr>
-                <th>Pattern</th>
-                <th>IPs</th>
+                <th class="sortable" data-col="0">Pattern <span class="sort-icon"></span></th>
+                <th class="sortable" data-col="1">IPs <span class="sort-icon"></span></th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -881,7 +903,7 @@
         </colgroup>
         <thead>
             <tr>
-                <th>IP / CIDR Block</th>
+                <th class="sortable" data-col="0">IP / CIDR Block <span class="sort-icon"></span></th>
                 <th style="text-align: center;">Actions</th>
             </tr>
         </thead>
