@@ -205,8 +205,10 @@ type Server struct {
 	dohForwarder DoHForwarder // used by handleDNSQuery — injectable in tests
 
 	// Caching & Rate limiting
-	dnsCache    DNSCache
-	rateLimiter *ClientRateLimiter
+	// dnsCache    DNSCache
+	// rateLimiter *ClientRateLimiter
+	liveDNSCache atomic.Pointer[DNSCache]
+	rateLimiter  *ClientRateLimiter
 
 	// Data stores (each owns its own mutex).
 	ruleStore    *RuleStore
@@ -218,7 +220,14 @@ type Server struct {
 	fileWriter FileWriter
 	//fileWriteMu sync.Mutex
 
-	dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
+	//dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
+	dnsTCPSem atomic.Pointer[chan struct{}]
+
+	dnsListener atomic.Pointer[dnsListenerInstance]
+	dohListener atomic.Pointer[httpListenerInstance]
+	uiListener  atomic.Pointer[httpListenerInstance]
+
+	adminUI *AdminUI
 
 	dohCert tls.Certificate // used by DoH listener AND WebUI TLS
 
@@ -1012,17 +1021,6 @@ func (s *Server) saveQueryWhitelist() error {
 	}
 	log.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
 	return nil
-}
-
-func (s *Server) flushCache() {
-	log := s.getLogger()
-
-	if s.dnsCache != nil { // this guard is real and necessary
-		s.dnsCache.Flush()
-		log.Debug("Cache flushed/deleted.")
-	} else {
-		log.Debug("Cache wasn't inited so can't be flushed here.")
-	}
 }
 
 // Loads whitelist rules from dedicated file
@@ -1912,33 +1910,33 @@ func (s *Server) Reload() {
 	log.Debug("Reload triggered...")
 	// s.flushCache()
 
-	cfg := s.getConfig()
-	oldJanitorInterval := cfg.CacheJanitorIntervalMinutes
+	oldCfg := s.getConfig()
+	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
 	if err := s.loadMainConfig(); err != nil {
 		s.logFatal("main config ("+configFileName+") reload failed:", err)
 	} else {
 		log.Debug("main config reloaded", slog.String("filename", configFileName))
 	}
-	cfg = s.getConfig()
-	if !cfg.AllowRunAsAdmin && isAdmin {
+	cfgNew := s.getConfig()
+	if !cfgNew.AllowRunAsAdmin && isAdmin {
 		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
 	}
 
 	if err := s.loadQueryWhitelist(); err != nil {
-		s.logFatal("Whitelist ("+cfg.WhitelistFile+") reload failed:", err)
+		s.logFatal("Whitelist ("+cfgNew.WhitelistFile+") reload failed:", err)
 	} else {
-		log.Debug("Whitelist reloaded", slog.String("filename", cfg.WhitelistFile))
+		log.Debug("Whitelist reloaded", slog.String("filename", cfgNew.WhitelistFile))
 	}
 	if err := s.loadResponseBlacklist(); err != nil {
-		s.logFatal("Blacklist ("+cfg.BlacklistFile+") reload failed:", err)
+		s.logFatal("Blacklist ("+cfgNew.BlacklistFile+") reload failed:", err)
 	} else {
-		log.Debug("Blacklist reloaded", slog.String("filename", cfg.BlacklistFile))
+		log.Debug("Blacklist reloaded", slog.String("filename", cfgNew.BlacklistFile))
 	}
 	// Inside watchKeys, in the Ctrl+R lambda block:
 	if err := s.loadLocalHosts(); err != nil {
-		s.logFatal("Hosts ("+cfg.HostsFile+") reload failed:", err)
+		s.logFatal("Hosts ("+cfgNew.HostsFile+") reload failed:", err)
 	} else {
-		log.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
+		log.Debug("Local hosts reloaded", slog.String("filename", cfgNew.HostsFile))
 	}
 
 	// 2. Re-initialize logging (applies new console levels or log files)
@@ -1950,18 +1948,9 @@ func (s *Server) Reload() {
 
 	// 3. Flush the cache to apply new TTLs/rules
 	s.flushCache()
-	// s.dnsCache = newGoCacheStore(
-	// 	time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute,
-	// )
-	//log.Debug("Cache flushed")
-	if oldJanitorInterval != cfg.CacheJanitorIntervalMinutes {
-		log.Warn("You changed cachejanitor_interval_minutes. This has no effect and requires a restart if you want it applied.",
-			slog.Int("oldJanitorInterval", oldJanitorInterval),
-			slog.Int("newJanitorInterval", cfg.CacheJanitorIntervalMinutes))
-	}
 
 	// 4. Update the rate limiter with new QPS settings
-	s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfg /*it's been updated*/)) //s.getConfig()))
+	s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfgNew /*it's been updated*/))
 	log.Debug("Rate limiter reinitialized")
 
 	// 5. Re-validate and rebuild Upstream DoH connections
@@ -1969,22 +1958,43 @@ func (s *Server) Reload() {
 		s.logFatal("Upstream validation failed:", err)
 	}
 	log.Debug("Upstreams revalidated",
-		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
+		SafeStringSlice("upstreamURLs", cfgNew.UpstreamURLs),
 		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
 	)
-	s.generateCertIfNeeded() // For DoH and webUI!
+	certRegenerated := s.generateCertIfNeeded() // For DoH and webUI!
 
 	s.upstreamMgr.ResetForReload()
 	s.upstreamMgr.InitDoHClients()
-
 	//clearLoginLockouts()//wired in startWebUI
+
+	if oldJanitorInterval != cfgNew.CacheJanitorIntervalMinutes {
+		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes)
+		log.Warn("Cache janitor interval changed; cache instance replaced (all cached entries dropped)",
+			slog.Int("old_interval_minutes", oldJanitorInterval),
+			slog.Int("new_interval_minutes", cfgNew.CacheJanitorIntervalMinutes))
+	}
+	if oldCfg.ListenDNS != cfgNew.ListenDNS {
+		s.rebindDNSListener(cfgNew.ListenDNS)
+	}
+	if oldCfg.ListenDoH != cfgNew.ListenDoH || certRegenerated {
+		s.rebindDoHListener(cfgNew.ListenDoH)
+	}
+	if oldCfg.ListenUI != cfgNew.ListenUI || oldCfg.WebUIUseTLS != cfgNew.WebUIUseTLS || (cfgNew.WebUIUseTLS && certRegenerated) {
+		s.rebindWebUIListener(cfgNew.ListenUI, cfgNew.WebUIUseTLS)
+	}
+	if oldCfg.MaxConcurrentDNSTCPConns != cfgNew.MaxConcurrentDNSTCPConns {
+		s.swapDNSTCPSemaphore(cfgNew.MaxConcurrentDNSTCPConns)
+		log.Debug("DNS TCP concurrent-connection limit updated",
+			slog.Int("old_max", oldCfg.MaxConcurrentDNSTCPConns),
+			slog.Int("new_max", cfgNew.MaxConcurrentDNSTCPConns))
+	}
 
 	// 6. Run external hooks (like clearing WebUI lockouts)
 	log.Debug("Running on-reload hooks")
 	// 2. TRIGGER HOOKS HERE: Notify any external components that signed up
 	s.runReloadHooks()
 
-	log.Warn("Config reload complete! Note: TODO: Changes to ListenDNS, ListenDoH, ListenUI, or MaxConcurrentDNSTCPConns, CacheJanitorIntervalMinutes require a full server restart to take effect(FIXME).")
+	log.Info("Config reload complete. Listeners, cache, and connection limits rebound as needed.")
 }
 
 func (s *Server) Run() error {
@@ -2014,12 +2024,16 @@ func (s *Server) Run() error {
 	// log = s.getLogger()
 
 	//s.cacheStore = cache.New(time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
-	s.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
+	//s.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
+	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes)
 	log.Debug("Cache initialized")
 
 	//s.globalLimiter = rate.NewLimiter(rate.Limit(cfg.GlobalRateQPS), cfg.GlobalBurstQPS)
 	s.rateLimiter = newClientRateLimiter(s.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
 	log.Debug("Rate limiter initialized")
+
+	s.swapDNSTCPSemaphore(cfg.MaxConcurrentDNSTCPConns)
+	log.Debug("DNS TCP concurrent-connection limit initialised", slog.Int("max_concurrent", cfg.MaxConcurrentDNSTCPConns))
 
 	if err := s.upstreamMgr.ValidateUpstream(); err != nil {
 		s.logFatal("Upstream validation failed:", err)
@@ -2035,9 +2049,10 @@ func (s *Server) Run() error {
 	s.upstreamMgr.InitDoHClients()
 	// Sequential launches for ordered logging
 	log.Debug("Launching listeners sequentially...")
-	s.startDNSListener(cfg.ListenDNS) // Blocks until complete/fail
-	s.startDoHListener(cfg.ListenDoH) // Blocks until complete/fail
-	go s.startWebUI(cfg.ListenUI)     // Concurrent server (blocks forever, but post-serial)
+	s.initAdminUI()
+	s.rebindDNSListener(cfg.ListenDNS)                      // non-blocking, Blocks until init completes/fails
+	s.rebindDoHListener(cfg.ListenDoH)                      // non-blocking, Blocks until init completes/fails
+	go s.rebindWebUIListener(cfg.ListenUI, cfg.WebUIUseTLS) // Concurrent server (blocks forever, but post-serial)
 
 	go s.watchKeys(s.Reload, // Ctrl+R aka reloadFn
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
@@ -2725,7 +2740,7 @@ func recursiveMatch(pattern, name string) bool {
 	return len(name) == 0
 }
 
-func (s *Server) generateCertIfNeeded() {
+func (s *Server) generateCertIfNeeded() (regenerated bool) {
 	log := s.getLogger()
 	cfg := s.getConfig()
 
@@ -2818,6 +2833,7 @@ func (s *Server) generateCertIfNeeded() {
 		s.logFatal("cert_load_failed", err)
 	}
 	log.Info("Success - loaded into tls.Certificate")
+	return needsRegen
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
@@ -2900,261 +2916,6 @@ type clientMetadata struct {
 }
 
 // Listeners...
-
-// non-blocking! listens on both UDP and TCP ports 53
-func (s *Server) startDNSListener(addr string) {
-	log := s.getLogger()
-	cfg := s.getConfig() //FIXME: this value gets captured by goroutines instead of using a fresh one when they start, and other places.
-
-	//    listenerErrs.Add(1)
-	//    defer listenerErrs.Done()
-	log.Debug("Starting DNS listener", slog.String("addr", addr))
-
-	// UDP
-	log.Debug("Attempting UDP bind for DNS listener...")
-
-	// Assuming addr is a string like "127.0.0.1:53"
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		log.Error("invalid UDP address", slog.String("addr", addr), SafeErr(err))
-		s.shutdown(1) //os.Exit(1) //FIXME: see the below comment
-	}
-	udpLn, err := net.ListenUDP("udp", udpAddr)
-
-	if err != nil {
-		log.Error("UDP bind/listen failed", slog.String("addr", addr), SafeErr(err))
-		s.shutdown(1)
-		//os.Exit(1) //FIXME: need to use winbollocks' dual deferrers as the traps for clean exit and thus have only 1-2 os.Exit in whole program!
-	} else {
-
-		s.shutdownWG.Add(1) // +1 for the Main UDP Loop
-
-		go func() { //we won't be blocking here.
-			// Fetch fresh logger at the start of each accept cycle
-			log2 := s.getLogger()
-			defer s.shutdownWG.Done()
-			//defer udpLn.Close()
-			// 1. DEFENSIVE DEFER: This ensures the port is freed even if the
-			// function panics or returns unexpectedly before the goroutine starts.
-			closer := func() {
-				// Use a local error variable here
-				if closeErr := udpLn.Close(); closeErr != nil {
-					_ = closeErr
-				}
-			} // will be called twice usually, because of the below goroutine
-			defer closer()
-			// 2. SHUTDOWN WATCHER: This handles the "Press any key" / context cancel
-			s.shutdownWG.Add(1) // +1 for the UDP Shutdown Watcher
-			go func() {
-				defer s.shutdownWG.Done()
-				<-s.ctx.Done()
-				// We call Close here to unblock the Read/Accept loop immediately.
-				// If this runs, the 'defer' above will just return an error later.
-				closer()
-			}()
-			log2.Info("UDP DNS listening success", slog.String("addr", addr))
-
-			// 1. Initialize the pool outside the loop
-			udpPool := sync.Pool{
-				//Zero-Allocation Happy Path: Reading an incoming packet, processing it, and handling it in a goroutine now requires zero new heap allocations for the packet data.
-				//Thread Safety: Because each goroutine gets its own buffer straight from the pool, there are no race conditions with the ReadFromUDP loop overwriting data while the goroutine parses it.
-				//Memory Bound: Under high bursts, the pool will scale up automatically to handle concurrent connections, but once traffic settles, the Go runtime will garbage collect the unused buffered slices in the pool automatically.
-				New: func() any {
-					cfg2 := s.getConfig()
-					//buf := make([]byte, 512+512)
-					// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
-					b := make([]byte, cfg2.DNSUDPBufferSize)
-					return &b // Return a pointer to avoid interface conversion allocation
-				},
-			}
-
-			//TheFor:
-			for {
-				log3 := s.getLogger()
-				// 2. Grab a buffer pointer from the pool
-				bufPtr := udpPool.Get().(*[]byte)
-				buf := *bufPtr
-
-				n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
-				if err2 != nil {
-					udpPool.Put(bufPtr) // Return buffer on error
-					select {
-					case <-s.ctx.Done():
-						// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
-						log3.Debug("UDP DNS listener is quitting due to shutdown...")
-
-						return // Quit on shutdown
-					default:
-						//runtime.Gosched()  // Yield to scheduler on error (deep yield, 0% CPU during)
-						log3.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
-						//time.Sleep(100 * time.Millisecond)
-						//break TheFor
-						continue // Real network error, keep trying
-					} //select
-				} //if err2
-
-				log3.Debug("client connected(early logging)",
-					slog.String("proto", "UDP"),
-					//slog.String("clientAddr", clientAddr.String()),
-					SafeAddr("clientAddr", clientAddr),
-					//slog.Any("pid", pid),
-					//slog.String("exe", exe),
-					//slog.String("service", serviceInfo),
-					//SafeErr(err),
-				)
-
-				if n > len(buf) {
-					udpPool.Put(bufPtr) // Clean up before panicking
-					// panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
-					log3.Error("BUG: ReadFromUDP returned n > dns_udp_buffer_size (from config); dropping packet",
-						slog.Int("n", n),
-						slog.Int("dns_udp_buffer_size", len(buf)),
-						SafeAddr("client", clientAddr),
-					)
-					continue
-				}
-
-				//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
-
-				// // Create a distinct copy for the background worker
-				// wireCopy := make([]byte, n)
-				// copy(wireCopy, buf[:n])
-
-				pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
-				// wincoe.Smashy()
-
-				udpPacketCtx := s.makeClientInfoContext(s.ctx /* this is your global shutdown ctx*/, "UDP", clientAddr, pid, exe, err2)
-				//go handleUDP(udpPacketCtx, wireCopy, clientAddr, udpLn)
-				// TRACK INDIVIDUAL REQUESTS:
-				s.shutdownWG.Add(1)
-				go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn) {
-					defer s.shutdownWG.Done()
-					defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
-					s.handleUDP(pCtx, data, addr, ln)
-				}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn)
-			} //infinite 'for'
-		}()
-	} // else
-
-	// TCP
-	log.Debug("Attempting TCP bind for DNS listener...")
-
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
-	if err != nil {
-		log.Error("invalid TCP address", slog.String("addr", addr), SafeErr(err))
-		s.shutdown(1) //os.Exit(1)
-	}
-	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
-
-	if err != nil {
-		log.Error("TCP bind/listen failed", slog.String("addr", addr), SafeErr(err))
-		s.shutdown(1) //os.Exit(1)
-	} else {
-		// ── Semaphore init ───────────────────────────────────────────────────
-		// Must happen before the accept goroutine starts so every Accept() can
-		// immediately check capacity.  loadConfig has already validated the
-		// value, but defend against a zero here just in case.
-		tcpMaxConns := cfg.MaxConcurrentDNSTCPConns
-		s.dnsTCPSem = make(chan struct{}, tcpMaxConns)
-		log.Debug("DNS TCP concurrent-connection limit initialised",
-			slog.Int("max_concurrent", tcpMaxConns))
-
-		// caller provides ctx context.Context and tcpLn *net.TCPListener
-		s.shutdownWG.Add(1) // +1 for the Main TCP Loop
-		go func() {
-			log2 := s.getLogger()
-			defer s.shutdownWG.Done()
-
-			closer := func() {
-				err := tcpLn.Close()
-				_ = err
-			} // just in case we exit via non-shutdown(x)
-			defer closer()
-			// In a separate goroutine watch for shutdown and close the listener
-			s.shutdownWG.Add(1) // +1 for the TCP Shutdown Watcher
-			go func() {
-				defer s.shutdownWG.Done()
-				<-s.ctx.Done()
-				closer() // This wakes up Accept() with an error safely
-			}()
-			log2.Info("TCP DNS listening", slog.String("address", addr))
-
-			for {
-				log3 := s.getLogger()
-
-				conn, err := tcpLn.Accept()
-				if err != nil {
-					// if context canceled, exit cleanly
-					select {
-					case <-s.ctx.Done():
-						log3.Debug("TCP DNS listener is quitting due to shutdown...")
-						return
-					default:
-						// non-temporary error: log, backoff a bit to avoid hot loop, continue
-						log3.Warn("tcp_accept_error", SafeErr(err))
-
-						continue
-					} // select
-				} // if err
-
-				// ── Concurrent-connection gate ───────────────────────────────
-				// Non-blocking try: if all slots are occupied, close the new
-				// connection immediately rather than queuing another goroutine.
-				// This bounds memory and goroutine count under idle-scanner load.
-				select {
-				case s.dnsTCPSem <- struct{}{}:
-					// Slot acquired; fall through.
-				default:
-					log3.Warn("DNS TCP connection limit reached; rejecting new connection",
-						slog.Int("max_concurrent", cap(s.dnsTCPSem)),
-						SafeAddr("rejected_client", conn.RemoteAddr()),
-					)
-					conn.Close()
-					continue
-				}
-
-				tcpPacketCtx := s.ctx /* this is your global shutdown ctx*/
-				// 1. Get the remote address as a *net.TCPAddr
-				clientAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
-				log3.Debug("client connected(early logging)",
-					slog.String("proto", "TCP"),
-					//slog.String("clientAddr", clientAddr.String()),
-					SafeAddr("clientAddr", clientAddr),
-				)
-				if !ok {
-					//FIXME: when can this happen?!
-					log3.Warn("could not cast remote addr to TCPAddr",
-						//slog.String("addr", conn.RemoteAddr().String()),
-						SafeAddr("addr", conn.RemoteAddr()),
-					)
-					// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
-				} else {
-					//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
-					// 2. Call your new TCP PID/Exe helper
-					pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
-					// wincoe.Smashy()
-					tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
-				}
-
-				// accepted a connection; handle in new goroutine
-
-				//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
-				// TRACK INDIVIDUAL CONNECTIONS:
-				s.shutdownWG.Add(1)
-				go func(c net.Conn, pCtx context.Context) {
-					defer s.shutdownWG.Done()        // This fires when handleTCP returns
-					defer func() { <-s.dnsTCPSem }() // always release the slot
-					defer c.Close()
-					s.handleTCP(pCtx, c)
-				}(conn, tcpPacketCtx)
-			}
-		}()
-
-	}
-	if udpLn == nil && tcpLn == nil { //XXX: this is deadcode because if ANY failed above shutdown/os.Exit is called
-		log.Warn("No DNS listeners(neither TCP nor UDP!")
-	}
-}
 
 func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.Addr, pid uint32, exe string, err error) context.Context {
 	log := s.getLogger()
@@ -3379,69 +3140,6 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	log.Debug("No TCP DNS response to write, likely due to BlockMode being 'drop' ?!")
 }
 
-// non-blocking!
-func (s *Server) startDoHListener(addr string) {
-	cfg := s.getConfig()
-	log := s.getLogger()
-
-	log.Debug("Starting DoH listener", slog.String("address", addr))
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/dns-query", s.dohHandler)
-
-	listener, err := tls.Listen("tcp", addr, &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{s.dohCert}, // Use loaded cert
-	})
-	if err != nil {
-		log.Error("DoH listener failed to bind/listen", slog.String("addr", addr), SafeErr(err))
-		s.shutdown(1) //os.Exit(1) // Fail-fast serial
-	}
-	log.Info("DoH listening", slog.String("address", addr))
-
-	//XXX: in the future if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart).
-	dohSrv := &http.Server{Handler: mux,
-		ReadTimeout:  time.Duration(cfg.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
-		WriteTimeout: time.Duration(cfg.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
-	}
-	/*
-	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
-
-	       If Add(1) is inside: There is a tiny window of time where the goroutine is "scheduled" but hasn't actually started running.
-	       If your shutdown() function calls Wait() during that tiny window, the WaitGroup counter is still 0. The program thinks there is no work to wait for and exits immediately,
-	       killing the goroutine before it even begins.
-
-	       If Add(1) is outside: You increment the counter before the goroutine is even created. This ensures that Wait() will see a counter of at least 1,
-	       effectively "blocking the exit" until that goroutine starts, runs, and eventually calls Done().
-
-	   The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
-	*/
-	s.shutdownWG.Add(1)
-	// Listen for the global shutdown signal to gracefully close the DoH server
-	go func() {
-		defer s.shutdownWG.Done() // Signal this watcher is finished
-		<-s.ctx.Done()
-		log.Debug("Shutting down DoH server...")
-		// Give it a max of 3 seconds to finish existing requests before force closing
-		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancelDown()
-		_ = dohSrv.Shutdown(shutdownCtx)
-	}()
-
-	s.shutdownWG.Add(1)
-	go func() {
-		defer s.shutdownWG.Done() // Signal the server is officially stopped
-
-		defer listener.Close() // Graceful close on shutdown
-		//doneFIXME: how do we know if this failed to maybe restart it or exit the whole program or whatever!?
-		if err := dohSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Error("doh_serve_failed", SafeErr(err))
-			s.errChan <- fmt.Errorf("DoH server failed: %w", err)
-		}
-	}()
-	log.Debug("DoH server loop launched in goroutine")
-}
-
 func getSecureID() uint16 {
 	b := make([]byte, 2)
 	maxRetries := 3
@@ -3554,6 +3252,8 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.Msg {
 	cfg := s.getConfig()
 	log := s.getLogger()
+	//This is the important one — without capturing it once, a reload landing between the cachee-hit check and a later Set for the same request could write into a freshly-swapped (empty) cachee generation while having read from the old one.
+	cachee := s.getCache()
 
 	if len(msg.Question) != 1 {
 		return formerrResponse(msg)
@@ -3590,7 +3290,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	key := domain + ":" + qtype
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
-	if entry, ok := s.dnsCache.Get(key); ok {
+	if entry, ok := cachee.Get(key); ok {
 		//entry := cachedIf.(CacheEntry)
 		cached := entry.Msg
 
@@ -3635,7 +3335,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 		// Cache this override so subsequent queries bypass the pattern loop
 		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
-		s.dnsCache.Set(key, CacheEntry{
+		cachee.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState5,
 		}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second) //doneTODO: configurable cache time and dns record aka ttl time? (see above)
@@ -3667,7 +3367,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
 		// Cache negatives short
 		// Store a copy of the negative response as well
-		s.dnsCache.Set(key, CacheEntry{
+		cachee.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
 		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second) // time to cache negatives
@@ -3699,7 +3399,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 	// Store a copy in the cache, not the pointer you are about to return
 	//cacheStore.Set(key, filtered.Copy(), expiry)
-	s.dnsCache.Set(key, CacheEntry{
+	cachee.Set(key, CacheEntry{
 		Msg:   filtered.Copy(),
 		State: upstreamState3,
 	}, expiry)
@@ -4813,104 +4513,6 @@ func (ui *AdminUI) SetupRoutes() http.Handler {
 	return outerMux
 }
 
-func (s *Server) startWebUI(addr string) {
-	log := s.getLogger()
-	cfg := s.getConfig()
-
-	ui := NewAdminUI(
-		&s.liveConfig,
-		&s.liveLogger,
-		s.ruleStore,
-		s.hostStore,
-		s.blacklist,
-		newLoginTracker(),
-		s.recentBlocks,
-		s.stats,
-		//s.upstreamIPs,
-		uiTemplates0,
-	)
-	// Wire up the side-effects
-	ui.OnSaveWhitelist = s.saveQueryWhitelist
-	ui.OnSaveBlacklist = s.saveResponseBlacklist
-	ui.OnSaveHosts = s.saveLocalHosts
-	ui.OnInvalidatePattern = s.invalidateCacheForPattern
-	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
-	//Pass the server's shutdown method directly
-	ui.OnShutdown = s.shutdown
-	// Clear any WebUI login lockouts so an operator who locked
-	// themselves out with a typo streak can recover via Ctrl+R
-	// without restarting the server.
-	// WIRE THIS UP: Register Server -> UI event notification!
-	s.OnReload(ui.clearLoginLockouts)
-	handler := ui.SetupRoutes()
-
-	//FIXME: need the IP to be settable for UI as well, not just the port, else cannot run multiple UIs on diff. localhost IPs w/ same port.
-	baseListener, err := net.Listen("tcp", addr) //fmt.Sprintf("%s:%d", hostOrIP, port))
-	if err != nil {
-		log.Error("UI listener failed to bind/listen", slog.String("addr", addr),
-			//slog.String("hostOrIp", hostOrIP), slog.Int("port", port),
-			SafeErr(err))
-		s.shutdown(1) //os.Exit(1) // Fail-fast serial
-	}
-
-	// 2. Adaptive Upgrading: Intercept listener if TLS is requested
-	var finalListener net.Listener = baseListener
-	protocolScheme := "http"
-
-	if cfg.WebUIUseTLS {
-		// Leverage the global certificate loaded/generated during startup
-		tlsConfig := &tls.Config{
-			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
-			Certificates: []tls.Certificate{s.dohCert}, // Reuse the global keypair directly!
-			MinVersion:   tls.VersionTLS12,
-		}
-
-		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
-		finalListener = tls.NewListener(baseListener, tlsConfig)
-		protocolScheme = "https"
-	}
-
-	uiSrv := &http.Server{Handler: handler}
-	// BETTER APPROACH: Query the active listener for its real bound address.
-	// This is guaranteed to be split-safe, and correctly exposes the port
-	// if the user passes ":0" for a dynamically allocated port.
-	boundAddr := baseListener.Addr().String()
-	// Split the address for the logger to maintain your existing clean log output
-	host, portStr, err := net.SplitHostPort(boundAddr)
-	if err != nil {
-		panic(fmt.Errorf("this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
-	}
-	log.Info("Web UI listening",
-		slog.String("scheme", protocolScheme),
-		slog.String("host", host),
-		slog.String("port", portStr),
-		slog.String("url", fmt.Sprintf("%s://%s", protocolScheme, boundAddr)),
-	)
-
-	// Listen for the global shutdown signal to gracefully close the Web UI
-	s.shutdownWG.Add(1)
-	go func() {
-		defer s.shutdownWG.Done()
-
-		<-s.ctx.Done()
-		log.Debug("Shutting down Web UI server...")
-		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancelDown()
-		_ = uiSrv.Shutdown(shutdownCtx)
-	}()
-	s.shutdownWG.Add(1)
-	go func() {
-		defer s.shutdownWG.Done()
-
-		defer finalListener.Close() // Graceful close
-		if err := uiSrv.Serve(finalListener); err != nil && err != http.ErrServerClosed {
-			s.logFatal("ui_serve_failed", err)
-		}
-	}()
-	log.Debug("UI server loop launched")
-	log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload (partial)config, Ctrl+C to break gracefully")
-}
-
 const csrfTokenKey contextKey = "csrfToken"
 
 func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
@@ -5740,18 +5342,20 @@ type HostView struct {
 // invalidateCacheForPattern surgically removes any cached DNS responses
 // that match the given host pattern (handling wildcards correctly).
 func (s *Server) invalidateCacheForPattern(pattern string) {
-	if s.dnsCache == nil {
+	c := s.liveDNSCache.Load()
+	if c == nil {
 		return
 	}
+	cachee := *c
 	log := s.getLogger()
 
-	for key := range s.dnsCache.Items() {
+	for key := range cachee.Items() {
 		// key format is "domain:type" (e.g., "router.local:A")
 		parts := strings.SplitN(key, ":", 2)
 		if len(parts) > 0 {
 			domain := parts[0]
 			if matchPattern(pattern, domain) {
-				s.dnsCache.Delete(key)
+				cachee.Delete(key)
 				log.Debug("Evicted cached record due to rule change",
 					slog.String("key", key),
 					slog.String("matched_pattern", pattern),
@@ -5762,17 +5366,18 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 }
 
 func (s *Server) invalidateCacheForBlacklistedIPs() {
-	if s.dnsCache == nil {
+	c := s.liveDNSCache.Load()
+	if c == nil {
 		return
 	}
+	cachee := *c
 	log := s.getLogger()
 
 	// 1. Grab a snapshot of pointers under a microsecond single lock
 	//Instead of a single s.blacklist.Contains(ip) call hitting a mutex over and over, you pull the whole list out once into blacklistedNets. Then, inside the loops, you do plain, local array iterations (for _, netEntry := range blacklistedNets).
 	blacklistedNets := s.blacklist.Snapshot()
 
-	for key, item := range s.dnsCache.Items() { //iterates on a snapshot of cache
-		//packed, ok := item.Object.([]byte)
+	for key, item := range cachee.Items() { //iterates on a snapshot of cache
 		entry, ok := item.Object.(CacheEntry)
 		if !ok {
 			continue
@@ -5805,7 +5410,7 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 		}
 
 		if shouldEvict {
-			s.dnsCache.Delete(key)
+			cachee.Delete(key)
 			log.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
 		}
 	}
@@ -7563,4 +7168,496 @@ func (w *writeTimeoutConn) Write(b []byte) (int, error) {
 		_ = w.Conn.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	return w.Conn.Write(b)
+}
+
+type dnsListenerInstance struct {
+	addr   string
+	udp    *net.UDPConn
+	tcp    *net.TCPListener
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+type httpListenerInstance struct {
+	addr     string
+	useTLS   bool
+	listener net.Listener
+	srv      *http.Server
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+}
+
+func (s *Server) getCache() DNSCache {
+	c := s.liveDNSCache.Load()
+	if c == nil {
+		panic("BUG: Server.liveDNSCache not initialized before use — Run() must call swapDNSCache() before listeners start")
+	}
+	return *c
+}
+
+func (s *Server) swapDNSCache(janitorIntervalMinutes int) {
+	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes) * time.Minute)
+	s.liveDNSCache.Store(&newCache)
+}
+func (s *Server) flushCache() {
+	log := s.getLogger()
+
+	c := s.liveDNSCache.Load()
+	if c != nil {
+		(*c).Flush()
+		log.Debug("Cache flushed/deleted.")
+	} else {
+		log.Debug("Cache wasn't inited so can't be flushed here.")
+	}
+}
+
+func (s *Server) swapDNSTCPSemaphore(maxConns int) {
+	// ── Semaphore init ───────────────────────────────────────────────────
+	// Must happen before the accept goroutine starts so every Accept() can
+	// immediately check capacity.  loadConfig has already validated the
+	// value, but defend against a zero here just in case.
+	sem := make(chan struct{}, maxConns)
+	s.dnsTCPSem.Store(&sem)
+}
+
+func (s *Server) acquireDNSTCPSlot() (release func(), ok bool) {
+	// ── Concurrent-connection gate ───────────────────────────────
+	// Non-blocking try: if all slots are occupied, close the new
+	// connection immediately rather than queuing another goroutine.
+	// This bounds memory and goroutine count under idle-scanner load.
+
+	sem := *s.dnsTCPSem.Load()
+	select {
+	case sem <- struct{}{}:
+		// Slot acquired
+		return func() { <-sem }, true
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
+	log2 := s.getLogger()
+	log2.Info("UDP DNS listening success", slog.String("addr", udpLn.LocalAddr().String()))
+
+	udpPool := sync.Pool{
+		//Zero-Allocation Happy Path: Reading an incoming packet, processing it, and handling it in a goroutine now requires zero new heap allocations for the packet data.
+		//Thread Safety: Because each goroutine gets its own buffer straight from the pool, there are no race conditions with the ReadFromUDP loop overwriting data while the goroutine parses it.
+		//Memory Bound: Under high bursts, the pool will scale up automatically to handle concurrent connections, but once traffic settles, the Go runtime will garbage collect the unused buffered slices in the pool automatically.
+		New: func() any {
+			cfg2 := s.getConfig()
+			// Use a 4096-byte buffer to safely accommodate modern EDNS0 UDP packets
+			b := make([]byte, cfg2.DNSUDPBufferSize)
+			return &b // Return a pointer to avoid interface conversion allocation
+		},
+	}
+	//TheFor:
+	for {
+		log3 := s.getLogger()
+		// 2. Grab a buffer pointer from the pool
+		bufPtr := udpPool.Get().(*[]byte)
+		buf := *bufPtr
+
+		n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
+		if err2 != nil {
+			udpPool.Put(bufPtr) // Return buffer on error
+			select {
+			case <-ctx.Done():
+				// to see this you've to wait like 1 sec in shutdown() or that "press a key" msg does it.
+				log3.Debug("UDP DNS listener is quitting due to shutdown/rebind...")
+				return // Quit on shutdown
+			default:
+				log3.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
+				continue // Real network error, keep trying
+			}
+		}
+
+		log3.Debug("client connected(early logging)",
+			slog.String("proto", "UDP"),
+			SafeAddr("clientAddr", clientAddr),
+		)
+
+		if n > len(buf) {
+			udpPool.Put(bufPtr) // Clean up before panicking
+			// panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
+			log3.Error("BUG: ReadFromUDP returned n > dns_udp_buffer_size (from config); dropping packet",
+				slog.Int("n", n),
+				slog.Int("dns_udp_buffer_size", len(buf)),
+				SafeAddr("client", clientAddr),
+			)
+			continue
+		}
+		//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
+
+		pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
+		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
+		// query's upstream forwarding should only be cancelled by full process shutdown, not
+		// by this specific listener instance being torn down during a hot rebind.
+		udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
+
+		// TRACK INDIVIDUAL REQUESTS:
+		s.shutdownWG.Add(1)
+		go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn) {
+			defer s.shutdownWG.Done()
+			defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
+			s.handleUDP(pCtx, data, addr, ln)
+		}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn)
+	} //infinite 'for'
+}
+
+func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
+	log2 := s.getLogger()
+	log2.Info("TCP DNS listening", slog.String("address", tcpLn.Addr().String()))
+
+	for {
+		log3 := s.getLogger()
+
+		conn, err := tcpLn.Accept()
+		if err != nil {
+			// if context canceled, exit cleanly
+			select {
+			case <-ctx.Done():
+				log3.Debug("TCP DNS listener is quitting due to shutdown/rebind...")
+				return
+			default:
+				// non-temporary error: log, backoff a bit to avoid hot loop, continue
+
+				log3.Warn("tcp_accept_error", SafeErr(err))
+				continue
+			}
+		}
+
+		// ── Concurrent-connection gate ───────────────────────────────
+		// Non-blocking try: if all slots are occupied, close the new
+		// connection immediately rather than queuing another goroutine.
+		// This bounds memory and goroutine count under idle-scanner load.
+		release, ok := s.acquireDNSTCPSlot()
+		if !ok {
+			sem := *s.dnsTCPSem.Load()
+			log3.Warn("DNS TCP connection limit reached; rejecting new connection",
+				slog.Int("max_concurrent", cap(sem)),
+				SafeAddr("rejected_client", conn.RemoteAddr()),
+			)
+			conn.Close()
+			continue
+		}
+
+		tcpPacketCtx := s.ctx // see UDP-side note above: rooted in full server lifetime, not the listener instance's
+		// 1. Get the remote address as a *net.TCPAddr
+		clientAddr, ok2 := conn.RemoteAddr().(*net.TCPAddr)
+		log3.Debug("client connected(early logging)",
+			slog.String("proto", "TCP"),
+			SafeAddr("clientAddr", conn.RemoteAddr()),
+		)
+		if !ok2 {
+			//FIXME: when can this happen?!
+			log3.Warn("could not cast remote addr to TCPAddr", SafeAddr("addr", conn.RemoteAddr()))
+			// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
+		} else {
+			//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
+			// 2. Call your new TCP PID/Exe helper
+
+			pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
+			tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
+		}
+		// accepted a connection; handle in new goroutine
+
+		//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
+		// TRACK INDIVIDUAL CONNECTIONS:
+
+		s.shutdownWG.Add(1)
+		go func(c net.Conn, pCtx context.Context, rel func()) {
+			defer s.shutdownWG.Done() // This fires when handleTCP returns
+			defer rel()               // always release the slot
+			defer c.Close()
+			s.handleTCP(pCtx, c)
+		}(conn, tcpPacketCtx, release)
+	}
+}
+
+// non-blocking! listens on both UDP and TCP ports 53
+func (s *Server) startDNSListenerInstance(addr string) (*dnsListenerInstance, error) {
+	log := s.getLogger()
+	log.Debug("Starting DNS listener", slog.String("addr", addr))
+
+	log.Debug("Attempting UDP bind for DNS listener...")
+	// Assuming addr is a string like "127.0.0.1:53"
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid UDP address %q: %w", addr, err)
+	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("UDP bind/listen failed for %q: %w", addr, err)
+	}
+	log.Debug("Attempting TCP bind for DNS listener...")
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
+	if err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("invalid TCP address %q: %w", addr, err)
+	}
+	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
+	if err != nil {
+		udpConn.Close()
+		return nil, fmt.Errorf("TCP bind/listen failed for %q: %w", addr, err)
+	}
+
+	instCtx, cancel := context.WithCancel(s.ctx)
+	inst := &dnsListenerInstance{addr: addr, udp: udpConn, tcp: tcpLn, cancel: cancel}
+
+	inst.wg.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		<-instCtx.Done()
+		udpConn.Close()
+		tcpLn.Close() // This wakes up Accept() with an error safely
+	}()
+
+	inst.wg.Add(1)
+	s.shutdownWG.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done()
+		s.runDNSUDPLoop(instCtx, udpConn)
+	}()
+
+	inst.wg.Add(1)
+	s.shutdownWG.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done()
+		s.runDNSTCPLoop(instCtx, tcpLn)
+	}()
+
+	return inst, nil
+}
+
+// non-blocking!
+func (s *Server) rebindDNSListener(newAddr string) {
+	old := s.dnsListener.Load()
+	if old != nil && old.addr == newAddr {
+		return
+	}
+	newInst, err := s.startDNSListenerInstance(newAddr)
+	if err != nil {
+		s.logFatal(fmt.Sprintf("DNS listener rebind to %q failed", newAddr), err)
+		return // unreachable: logFatal -> shutdown(1) -> os.Exit()
+	}
+	s.dnsListener.Store(newInst)
+	if old != nil {
+		old.cancel()
+		old.wg.Wait()
+	}
+}
+
+// non-blocking!
+func (s *Server) startDoHListenerInstance(addr string) (*httpListenerInstance, error) {
+	cfg := s.getConfig()
+	log := s.getLogger()
+
+	log.Debug("Starting DoH listener", slog.String("address", addr))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dns-query", s.dohHandler)
+
+	listener, err := tls.Listen("tcp", addr, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{s.dohCert}, // Use loaded cert, FIXME: ensure it was loaded or fail-fast here!
+	})
+	if err != nil {
+		return nil, fmt.Errorf("DoH listener failed to bind/listen on %q: %w", addr, err)
+	}
+
+	//FIXME: XXX: in the future(so now lol) if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart). ok, we're already doing the relisten, but make sure we do it even when only these cfg values change! or do it unconditionally!
+
+	srv := &http.Server{
+		Handler:      mux,
+		ReadTimeout:  time.Duration(cfg.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
+		WriteTimeout: time.Duration(cfg.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
+	}
+
+	instCtx, cancel := context.WithCancel(s.ctx)
+	inst := &httpListenerInstance{addr: addr, useTLS: true, listener: listener, srv: srv, cancel: cancel}
+
+	/*
+	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
+
+	       If Add(1) is inside: There is a tiny window of time where the goroutine is "scheduled" but hasn't actually started running.
+	       If your shutdown() function calls Wait() during that tiny window, the WaitGroup counter is still 0. The program thinks there is no work to wait for and exits immediately,
+	       killing the goroutine before it even begins.
+
+	       If Add(1) is outside: You increment the counter before the goroutine is even created. This ensures that Wait() will see a counter of at least 1,
+	       effectively "blocking the exit" until that goroutine starts, runs, and eventually calls Done().
+
+	   The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
+	*/
+	inst.wg.Add(1)
+	s.shutdownWG.Add(1)
+	// Listen for the global shutdown signal to gracefully close the DoH server
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done() // Signal this watcher is finished
+		<-instCtx.Done()
+		log := s.getLogger()
+		log.Debug("Shutting down DoH listener instance...", slog.String("addr", addr))
+		// Give it a max of 3 seconds to finish existing requests before force closing
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second) //TODO: const or configurable in config.json ?
+		defer cancelDown()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	inst.wg.Add(1)
+	s.shutdownWG.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done() // Signal the server is officially stopped
+		defer listener.Close()    // Graceful close on shutdown
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			s.getLogger().Error("doh_serve_failed", SafeErr(err), slog.String("addr", addr))
+			s.errChan <- fmt.Errorf("DoH server failed on %q: %w", addr, err)
+		}
+	}()
+
+	s.getLogger().Info("DoH listening", slog.String("address", addr))
+	return inst, nil
+}
+
+// non-blocking!
+func (s *Server) rebindDoHListener(newAddr string) {
+	old := s.dohListener.Load()
+	if old != nil && old.addr == newAddr {
+		return
+	}
+	newInst, err := s.startDoHListenerInstance(newAddr)
+	if err != nil {
+		s.logFatal(fmt.Sprintf("DoH listener rebind to %q failed", newAddr), err)
+		return
+	}
+	s.dohListener.Store(newInst)
+	if old != nil {
+		old.cancel()
+		old.wg.Wait()
+	}
+}
+
+func (s *Server) initAdminUI() {
+	ui := NewAdminUI(
+		&s.liveConfig,
+		&s.liveLogger,
+		s.ruleStore,
+		s.hostStore,
+		s.blacklist,
+		newLoginTracker(),
+		s.recentBlocks,
+		s.stats,
+		uiTemplates0,
+	)
+	// Wire up the side-effects
+	ui.OnSaveWhitelist = s.saveQueryWhitelist
+	ui.OnSaveBlacklist = s.saveResponseBlacklist
+	ui.OnSaveHosts = s.saveLocalHosts
+	ui.OnInvalidatePattern = s.invalidateCacheForPattern
+	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
+	//Pass the server's shutdown method directly
+	ui.OnShutdown = s.shutdown
+
+	// Clear any WebUI login lockouts so an operator who locked
+	// themselves out with a typo streak can recover via Ctrl+R
+	// without restarting the server.
+	// WIRE THIS UP: Register Server -> UI event notification!
+	s.OnReload(ui.clearLoginLockouts)
+
+	s.adminUI = ui
+}
+
+func (s *Server) startWebUIListenerInstance(addr string, useTLS bool) (*httpListenerInstance, error) {
+	if s.adminUI == nil {
+		panic("BUG: startWebUIListenerInstance called before initAdminUI")
+	}
+
+	baseListener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("UI listener failed to bind/listen on %q: %w", addr, err)
+	}
+	// 2. Adaptive Upgrading: Intercept listener if TLS is requested
+	var finalListener net.Listener = baseListener
+	scheme := "http"
+	if useTLS {
+		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
+		finalListener = tls.NewListener(baseListener, &tls.Config{
+			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
+			Certificates: []tls.Certificate{s.dohCert}, // Reuse the keypair directly!
+			MinVersion:   tls.VersionTLS12,
+		})
+		scheme = "https"
+	}
+
+	srv := &http.Server{Handler: s.adminUI.SetupRoutes()}
+
+	instCtx, cancel := context.WithCancel(s.ctx)
+	inst := &httpListenerInstance{addr: addr, useTLS: useTLS, listener: finalListener, srv: srv, cancel: cancel}
+
+	inst.wg.Add(1)
+	// Listen for the global shutdown signal to gracefully close the Web UI
+	s.shutdownWG.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done()
+		<-instCtx.Done()
+		log := s.getLogger()
+		log.Debug("Shutting down Web UI listener instance...", slog.String("addr", addr))
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancelDown()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	inst.wg.Add(1)
+	s.shutdownWG.Add(1)
+	go func() {
+		defer inst.wg.Done()
+		defer s.shutdownWG.Done()
+		defer finalListener.Close() // Graceful close
+		if err2 := srv.Serve(finalListener); err2 != nil && err2 != http.ErrServerClosed {
+			log := s.getLogger()
+			log.Error("ui_serve_failed", SafeErr(err2), slog.String("addr", addr))
+			s.errChan <- fmt.Errorf("Web UI server failed on %q: %w", addr, err2)
+		}
+	}()
+
+	// BETTER APPROACH: Query the active listener for its real bound address.
+	// This is guaranteed to be split-safe, and correctly exposes the port
+	// if the user passes ":0" for a dynamically allocated port.
+	boundAddr := baseListener.Addr().String()
+	// Split the address for the logger to maintain your existing clean log output
+	host, portStr, err := net.SplitHostPort(boundAddr)
+	if err != nil {
+		panic(fmt.Errorf("this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
+	}
+	log := s.getLogger()
+	log.Info("Web UI listening",
+		slog.String("scheme", scheme),
+		slog.String("host", host),
+		slog.String("port", portStr),
+		slog.String("url", fmt.Sprintf("%s://%s", scheme, boundAddr)),
+	)
+	log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")
+
+	return inst, nil
+}
+
+func (s *Server) rebindWebUIListener(newAddr string, useTLS bool) {
+	old := s.uiListener.Load()
+	if old != nil && old.addr == newAddr && old.useTLS == useTLS {
+		return
+	}
+	newInst, err := s.startWebUIListenerInstance(newAddr, useTLS)
+	if err != nil {
+		s.logFatal(fmt.Sprintf("WebUI listener rebind to %q failed", newAddr), err)
+		return
+	}
+	s.uiListener.Store(newInst)
+	if old != nil {
+		old.cancel()
+		old.wg.Wait()
+	}
 }

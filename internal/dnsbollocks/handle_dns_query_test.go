@@ -62,10 +62,11 @@ func newQueryTestServer(t *testing.T, cfg Config, fwd DoHForwarder) *Server {
 		hostStore:    newHostStore(),
 		blacklist:    newBlacklistStore(),
 		recentBlocks: newRecentBlocksTracker(),
-		dnsCache:     newGoCacheStore(5 * time.Minute),
+		//dnsCache:     newGoCacheStore(5 * time.Minute),
 		stats:        new(expvar.Int), // unregistered; avoids expvar duplicate-key panic
 		dohForwarder: fwd,
 	}
+	s.swapDNSCache(5)
 	s.liveConfig.Store(&cfg)
 	s.liveLogger.Store(log)
 	// t.Context() is cancelled when the test ends, which cleanly stops the
@@ -449,7 +450,7 @@ func TestHandleDNSQuery_CacheHit_BypassesForwarder(t *testing.T) {
 	// Pre-populate the cache with the exact key handleDNSQuery would produce.
 	key := "cached.example.com:A"
 	cachedMsg := upstreamAResp(aQuery("cached.example.com"), "1.2.3.4")
-	s.dnsCache.Set(key, CacheEntry{
+	s.getCache().Set(key, CacheEntry{
 		Msg:   cachedMsg,
 		State: UpstreamState{Strategy: "fastest", UpstreamUsed: "https://1.1.1.1/dns-query"},
 	}, time.Minute)
