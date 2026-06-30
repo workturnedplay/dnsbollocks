@@ -7034,7 +7034,7 @@ func (um *UpstreamManager) buildSet() *upstreamSet {
 			} else {
 				sn = "<nil>"
 			}
-			log.Debug("Closing idle DoH connections", slog.String("tls_servername", sn))
+			log.Debug("Closing any potential idle DoH connections", slog.String("tls_servername", sn))
 			dT.CloseIdleConnections()
 		}
 	}
@@ -7429,11 +7429,12 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 func (s *Server) rebindDNSListener(params dnsListenerParams) {
 	old := s.dnsListener.Load()
 	if old != nil && old.params == params {
+		s.getLogger().Debug("DNS rebind/relisten not done, params are same")
 		return
 	}
 	newInst, err := s.startDNSListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("DNS listener rebind to %+v failed", params), err)
+		s.logFatal(fmt.Sprintf("DNS listener (re)ind to %+v failed", params), err)
 		return // unreachable: logFatal -> shutdown(1) -> os.Exit()
 	}
 	s.dnsListener.Store(newInst)
@@ -7519,11 +7520,12 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 func (s *Server) rebindDoHListener(params dohListenerParams) {
 	old := s.dohListener.Load()
 	if old != nil && old.params == params {
+		s.getLogger().Debug("DoH rebind/relisten not done, params are same")
 		return
 	}
 	newInst, err := s.startDoHListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("DoH listener rebind to %+v failed", params), err)
+		s.logFatal(fmt.Sprintf("DoH listener (re)bind to %+v failed", params), err)
 		return
 	}
 	s.dohListener.Store(newInst)
@@ -7641,11 +7643,12 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 func (s *Server) rebindWebUIListener(params uiListenerParams) {
 	old := s.uiListener.Load()
 	if old != nil && old.params == params {
+		s.getLogger().Debug("webUI rebind/relisten not done, params are same")
 		return
 	}
 	newInst, err := s.startWebUIListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("WebUI listener rebind to %+v failed", params), err)
+		s.logFatal(fmt.Sprintf("WebUI listener (re)bind to %+v failed", params), err)
 		return
 	}
 	s.uiListener.Store(newInst)
