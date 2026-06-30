@@ -4679,33 +4679,48 @@ func (ui *AdminUI) originValidation(expectedHost string, useTLS bool, next http.
 		// Only protect state-changing requests.
 		switch r.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			//exit switch
 		default:
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		if origin := r.Header.Get("Origin"); origin != "" {
-			if !strings.EqualFold(origin, expectedOrigin) {
-				http.Error(w, "Invalid Origin", http.StatusForbidden)
+			if origin == "null" { //yes firefox(at least) sends this
+				ui.getLogger().Debug("missing origin context ie. it's \"null\" (literally), allowing(for now)",
+					slog.String("method", r.Method),
+					slog.String("Origin", origin),
+					slog.String("expected_Origin", expectedOrigin))
+				//allowing
+			} else if !strings.EqualFold(origin, expectedOrigin) {
+				ui.getLogger().Debug("Invalid Origin",
+					slog.String("method", r.Method),
+					slog.String("Origin", origin),
+					slog.String("expected_Origin", expectedOrigin))
+				//disallow
+				http.Error(w,
+					fmt.Sprintf("Invalid Origin for method %q got: %q expected: %q", r.Method, origin, expectedOrigin),
+					http.StatusForbidden)
 				return
 			}
 
+			//allowing
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Fallback for clients that omit Origin.
 		if ref := r.Referer(); ref != "" {
+			//only if has referer check it
 			u, err := url.Parse(ref)
 			if err == nil &&
 				strings.EqualFold(u.Scheme, expectedScheme) &&
 				strings.EqualFold(u.Host, expectedHost) {
-
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
-
+		//no origin and no or bad referrer
 		http.Error(w, "Missing or invalid Origin/Referer", http.StatusForbidden)
 	})
 }
