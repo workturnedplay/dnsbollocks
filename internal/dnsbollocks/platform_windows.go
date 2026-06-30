@@ -1965,7 +1965,7 @@ func (s *Server) Reload() {
 	//clearLoginLockouts()//wired in startWebUI
 
 	if oldJanitorInterval != cfgNew.CacheJanitorIntervalMinutes {
-		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes)
+		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes, cfgNew.CacheMaxEntries)
 		log.Warn("Cache janitor interval changed; cache instance replaced (all cached entries dropped)",
 			slog.Int("old_interval_minutes", oldJanitorInterval),
 			slog.Int("new_interval_minutes", cfgNew.CacheJanitorIntervalMinutes))
@@ -2018,7 +2018,7 @@ func (s *Server) Run() error {
 
 	//s.cacheStore = cache.New(time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute, time.Duration(cfg.CacheJanitorIntervalMinutes)*time.Minute) // Janitor every hour
 	//s.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute) // Janitor every hour
-	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes)
+	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
 	log.Debug("Cache initialized")
 
 	//s.globalLimiter = rate.NewLimiter(rate.Limit(cfg.GlobalRateQPS), cfg.GlobalBurstQPS)
@@ -6349,12 +6349,14 @@ type DNSCache interface {
 // All type assertions against interface{} are confined here;
 // callers work with concrete CacheEntry values.
 type goCacheStore struct {
-	c *cache.Cache
+	c          *cache.Cache
+	maxEntries int
 }
 
-func newGoCacheStore(janitorInterval time.Duration) DNSCache {
+func newGoCacheStore(janitorInterval time.Duration, maxEntries int) DNSCache {
 	return &goCacheStore{
-		c: cache.New(janitorInterval, janitorInterval),
+		c:          cache.New(janitorInterval, janitorInterval),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -6367,6 +6369,12 @@ func (s *goCacheStore) Get(key string) (CacheEntry, bool) {
 }
 
 func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
+	if s.maxEntries > 0 && s.c.ItemCount() >= s.maxEntries {
+		s.c.DeleteExpired() // Try to make room first
+		if s.c.ItemCount() >= s.maxEntries {
+			return // Cache is full, safely drop the new entry to prevent memory leaks
+		}
+	}
 	s.c.Set(key, e, d)
 }
 
@@ -7168,8 +7176,8 @@ func (s *Server) getCache() DNSCache {
 	return *c
 }
 
-func (s *Server) swapDNSCache(janitorIntervalMinutes int) {
-	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes) * time.Minute)
+func (s *Server) swapDNSCache(janitorIntervalMinutes int, maxEntries int) {
+	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries)
 	s.liveDNSCache.Store(&newCache)
 }
 func (s *Server) flushCache() {

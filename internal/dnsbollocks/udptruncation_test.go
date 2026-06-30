@@ -25,7 +25,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	cfg := server.getConfig()
 	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
 	//server.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute)
-	server.swapDNSCache(cfg.CacheJanitorIntervalMinutes)
+	server.swapDNSCache(cfg.CacheJanitorIntervalMinutes, 100)
 
 	// 2. Inject a local host rule with a large number of IP addresses.
 	// This ensures that the generated DNS response will easily exceed 512 bytes.

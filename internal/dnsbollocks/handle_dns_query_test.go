@@ -66,7 +66,7 @@ func newQueryTestServer(t *testing.T, cfg Config, fwd DoHForwarder) *Server {
 		stats:        new(expvar.Int), // unregistered; avoids expvar duplicate-key panic
 		dohForwarder: fwd,
 	}
-	s.swapDNSCache(5)
+	s.swapDNSCache(5, 100)
 	s.liveConfig.Store(&cfg)
 	s.liveLogger.Store(log)
 	// t.Context() is cancelled when the test ends, which cleanly stops the

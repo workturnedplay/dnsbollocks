@@ -9,11 +9,11 @@ import (
 
 func TestDNSCache(t *testing.T) {
 	// Initialize cache with a fast janitor interval for testing if needed
-	cache := newGoCacheStore(5 * time.Minute)
+	cache := newGoCacheStore(5*time.Minute, 100)
 
 	msg := new(dns.Msg)
 	msg.SetQuestion("example.com.", dns.TypeA)
-	
+
 	entry := CacheEntry{
 		Msg: msg,
 		State: UpstreamState{
@@ -32,7 +32,7 @@ func TestDNSCache(t *testing.T) {
 
 	// Test: Set and Get
 	cache.Set(key, entry, 1*time.Minute)
-	
+
 	cachedEntry, ok := cache.Get(key)
 	if !ok {
 		t.Fatal("Expected cache hit after Set")
@@ -59,11 +59,11 @@ func TestDNSCache(t *testing.T) {
 	// Test: Flush
 	cache.Set("another.com.:A", entry, 1*time.Minute)
 	cache.Set("third.com.:AAAA", entry, 1*time.Minute)
-	
+
 	if cache.ItemCount() != 2 {
 		t.Fatalf("Expected 2 items, got %d", cache.ItemCount())
 	}
-	
+
 	cache.Flush()
 	if cache.ItemCount() != 0 {
 		t.Errorf("Expected cache to be empty after Flush, got %d items", cache.ItemCount())
