@@ -665,6 +665,10 @@
     }
 </script>
 
+<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">
+    <strong>Note:</strong> Only queries blocked by the whitelist rules are shown here. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
+</div>
+
 {{if .ErrorMessage}}
     <div class="alert-error">
         <strong>Error:</strong> {{.ErrorMessage}}
@@ -680,9 +684,7 @@
     <h2 style="display: inline-block; margin: 0; border: none; padding: 0; vertical-align: middle;">Recent Blocks (Quick Unblock)</h2>
     <button type="button" class="btn-edit" style="display: inline-block; margin-left: 15px; vertical-align: middle;" onclick="window.location.href='/blocks'">🔄 Refresh Page (Ctrl+R or F5)</button>
 </div>
-<p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
-    Note: Only queries blocked locally by DNSbollocks are shown here. Blocks applied by upstream providers (like Quad9 or NextDNS) are not tracked.
-</p>
+
 <ul>
 {{range .Blocks}}
     <li>
