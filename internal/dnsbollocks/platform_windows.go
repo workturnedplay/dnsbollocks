@@ -4720,7 +4720,8 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 		//object-src 'none' — disables old plugins (<object>, <embed>). Not hugely relevant today, but harmless and recommended.
 		//base-uri 'none' — prevents an injected <base> tag from rewriting relative URLs.
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+			//"default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",//fails loading CSS and js stuff
+			"object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
 		)
 		h.Set("X-Frame-Options", "DENY")
 
