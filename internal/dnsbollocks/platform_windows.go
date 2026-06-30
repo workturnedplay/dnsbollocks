@@ -3077,12 +3077,17 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
-	_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
+	if err1 := conn.SetReadDeadline(time.Now().Add(timeoutDuration)); err1 != nil {
+		log.Warn("failed to set read deadline for length header, thus dropped/ignored", SafeErr(err1))
+		return
+	}
 
 	const TWO = 2
 	buf := make([]byte, TWO)
 	if n, err := io.ReadFull(conn, buf); err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		var netErr net.Error
+		//if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			log.Warn("DNS TCP: client connected but sent no data before deadline "+
 				"(idle connection, port scanner, or client that opened then abandoned)",
 				SafeAddr("client", conn.RemoteAddr()),
@@ -3127,25 +3132,28 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	resp := s.handleDNSQuery(ctx, msg, conn.RemoteAddr().String())
 	// --- 4. WRITE THE RESPONSE ---
 	if resp != nil {
-		pack, err := resp.Pack() // Ignore err
-		if err != nil {
-			log.Warn("failed to pack DNS TCP packet response thus not sent", SafeErr(err))
+		pack, err1 := resp.Pack() // Ignore err
+		if err1 != nil {
+			log.Warn("failed to pack DNS TCP packet response thus not sent", SafeErr(err1))
 			return
 		}
 		// Prepare the output (length + payload)
 		out := new(bytes.Buffer)
-		err = binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
-		if err != nil {
-			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", SafeErr(err))
+		err2 := binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
+		if err2 != nil {
+			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", SafeErr(err2))
 			return
 		}
 		out.Write(pack)
 		// Set a WRITE deadline. This prevents a "slow receiver" from
 		// hanging your goroutine forever while you try to push data.
-		_ = conn.SetWriteDeadline(time.Now().Add(timeoutDuration))
-		wroteN, err := conn.Write(out.Bytes())
-		if err != nil {
-			log.Warn("failed to write to TCP the DNS packet response body", SafeErr(err), slog.Int("wrote_bytes", wroteN),
+		if err3 := conn.SetWriteDeadline(time.Now().Add(timeoutDuration)); err3 != nil {
+			log.Warn("failed to set write TCP deadline, thus dropped/ignored", SafeErr(err3))
+			return
+		}
+		wroteN, err4 := conn.Write(out.Bytes())
+		if err4 != nil {
+			log.Warn("failed to write to TCP the DNS packet response body, thus dropped/ignored", SafeErr(err4), slog.Int("wrote_bytes", wroteN),
 				slog.Int("shoulda_written", len(pack)), slog.Duration("timeout", timeoutDuration))
 			return
 		}
