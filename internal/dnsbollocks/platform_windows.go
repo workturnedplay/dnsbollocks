@@ -6957,11 +6957,7 @@ func (um *UpstreamManager) getConfig() *Config {
 	return c
 }
 
-func (um *UpstreamManager) UpstreamIPs() []string {
-	return um.upstreamIPs
-}
-
-// due to presumed config changes the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs must be updated.
+// due to presumed config changes ie. UpstreamManager.liveConfig, update the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs
 func (um *UpstreamManager) updateInnerState() error {
 	cfg := um.getConfig()
 	//FIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window
@@ -7232,7 +7228,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 	log.Debug("Upstreams (re)validated",
 		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs), //FIXME: use the one from um.
 		SafeStringSlice("upstreamSNIs", um.upstreamSNIs),
-		SafeStringSlice("upstreamIPs", um.UpstreamIPs()),
+		SafeStringSlice("upstreamIPs", um.upstreamIPs),
 	)
 
 	// close old idle connections
