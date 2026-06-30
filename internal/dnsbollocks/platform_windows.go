@@ -4059,7 +4059,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	addr := net.JoinHostPort(u.URL.Hostname(), port)
 
 	dialer := &net.Dialer{Timeout: time.Duration(u.CertLogTimeoutSec) * time.Second}
-	// We use InsecureSkipVerify: true ONLY for this probe so we can read the cert
+	// XXX: We use InsecureSkipVerify: true ONLY for this probe so we can read the cert
 	// that was otherwise rejected.
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
 		ServerName:         u.SNI,

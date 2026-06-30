@@ -1,10 +1,10 @@
 todo:
+* make Ctrl+R relisten, so those TODO: Changes to ListenDNS, ListenDoH, ListenUI, or MaxConcurrentDNSTCPConns,
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
-* make the webUI entry for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
+* make the webUI page for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
 * handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
-* make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
 * hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
   * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
   * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
@@ -13,13 +13,14 @@ todo:
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
 * link to Tinywall in readme and to Go lang to install Go.
-* add more tests, lots more
 
 no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 
 
 done:
+//* add more tests, lots more
+//* make the whole config reloadable via Ctrl+R, not just the whitelist&blacklist.
 //* change .bat to install golangci-lint.exe the way shadow.exe is installed, if not found.
 //* let's add rate-limiting on login attempts (even basic in-memory) and log failed attempts with client PID/exe
 //* ensure add/edit/delete (success or fail too) of rules/hosts etc. are s.logger-ed (many aren't at all currently)
