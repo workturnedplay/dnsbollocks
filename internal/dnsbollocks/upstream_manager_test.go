@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	//"net/url"
 	"os"
+	//"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -169,4 +170,116 @@ func TestLifecycleManagement(t *testing.T) {
 		t.Fatalf("expected activeSet to be different than before")
 	}
 
+}
+
+// Test 1: Verify that a wired shutdown handler triggers successfully and halts control flow
+func TestUpstreamManager_ValidationPanicOnEmptyURLs(t *testing.T) {
+	// 1. Force a validation failure via empty UpstreamURLs
+	cfg := Config{
+		UpstreamURLs: []string{}, // Triggers "upstream_urls list is empty"
+	}
+
+	// setupTestContext sets the shutdown handler argument to nil
+	um := setupTestContext(&cfg)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("Expected InitDoHClients to panic on invalid config when handler is nil")
+		} else {
+			expectedPanic := "Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
+			if r != expectedPanic {
+				t.Errorf("Expected panic message %q, got: %v", expectedPanic, r)
+			}
+		}
+	}()
+
+	// Triggers buildSet(false) -> updateInnerState() -> Validation Error -> Panic
+	um.InitDoHClients()
+}
+
+func TestUpstreamManager_ValidationShutdownCallbackOnInvalidScheme(t *testing.T) {
+	// 2. Force a validation failure via an invalid URL scheme (must be https)
+	cfg := Config{
+		UpstreamURLs: []string{"http://127.0.0.1:853"},
+	}
+
+	var liveConfig atomic.Pointer[Config]
+	liveConfig.Store(&cfg)
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+
+	var capturedExitCode int
+	callbackInvoked := false
+
+	// Define a unique sentinel to identify our simulated exit
+	const shutdownSentinel = "process-terminated-sentinel"
+
+	shutdownHandler := func(exitCode int) {
+		callbackInvoked = true
+		capturedExitCode = exitCode
+		// 🟢 Fix: Panic here so we never return normally, satisfying your production guardrail
+		panic(shutdownSentinel)
+	}
+
+	// Manually wire the UpstreamManager with the shutdownHandler callback instead of nil
+	um := NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, shutdownHandler)
+
+	// 🟢 Fix: Set up the defer block to catch the sentinel and safely evaluate assertions
+	defer func() {
+		if r := recover(); r != nil {
+			if r != shutdownSentinel {
+				// It was an accidental runtime panic from a different bug entirely!
+				t.Fatalf("Caught an unexpected runtime crash instead of a clean shutdown signal: %v", r)
+			}
+		} else {
+			t.Fatal("Expected buildSet to trigger a termination sequence via OnShutdown, but it returned normally.")
+		}
+
+		// Run your assertions here inside the safe defer window
+		if !callbackInvoked {
+			t.Errorf("Expected UpstreamManager to fire the OnShutdown callback on invalid URL scheme")
+		}
+		if capturedExitCode != 1 {
+			t.Errorf("Expected exit code 1 to be fed into the shutdown callback, got %d", capturedExitCode)
+		}
+	}()
+
+	// Should safely hit the callback and panic straight into the deferred recovery above
+	um.InitDoHClients()
+}
+
+func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
+	const shutdownSentinel = "um-shutdown-sentinel"
+
+	// Create a broken config that causes updateInnerState() to fail
+	cfg := Config{
+		UpstreamURLs: []string{"invalid-url-no-scheme"},
+	}
+
+	liveConfig := &atomic.Pointer[Config]{}
+	liveConfig.Store(&cfg)
+	liveLogger := &atomic.Pointer[slog.Logger]{}
+	liveLogger.Store(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+
+	// Wire up the panic sentinel directly into the manager
+	um := NewUpstreamManager(context.Background(), liveConfig, liveLogger, func(exitCode int) {
+		if exitCode != 1 {
+			t.Errorf("expected exit code 1, got %d", exitCode)
+		}
+		panic(shutdownSentinel)
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			if r != shutdownSentinel {
+				t.Fatalf("Caught a chaotic downstream crash instead of a clean shutdown intercept: %v", r)
+			}
+			// Success: Code was stopped exactly at um.OnShutdown(1)
+		} else {
+			t.Fatal("Expected buildSet to trigger an application shutdown on validation failure, but it kept going.")
+		}
+	}()
+
+	// This triggers updateInnerState(), fails, and hits the OnShutdown branch
+	um.InitDoHClients()
 }

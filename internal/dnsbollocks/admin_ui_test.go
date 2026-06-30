@@ -2,6 +2,7 @@ package dnsbollocks
 
 import (
 	//"context"
+	"errors"
 	"expvar"
 	"html/template"
 	"io"
@@ -138,24 +139,107 @@ func TestAdminUI_RulesHandlerSaveCallback(t *testing.T) {
 
 // 3. Test that catastrophic failures gracefully trigger the application shutdown sequence
 func TestAdminUI_FatalCrashIsolation(t *testing.T) {
-	ui, _ := setupTestAdminUI(t)
+	// 1. Define a unique string sentinel for this test shutdown
+	const shutdownSentinel = "sentinel-shutdown-triggered"
 
-	shutdownCalled := false
+	var shutdownCalled bool
 	var capturedExitCode int
 
-	// Intercept the shutdown callback
+	// ui := &AdminUI{
+	// 	// 2. Design the mock to panic immediately, halting downstream execution
+	// 	OnShutdown: func(exitCode int) {
+	// 		shutdownCalled = true
+	// 		capturedExitCode = exitCode
+	// 		panic(shutdownSentinel)
+	// 	},
+	// }
+	ui, _ := setupTestAdminUI(t)
+	// 2. Design the mock to panic immediately, halting downstream execution
 	ui.OnShutdown = func(exitCode int) {
 		shutdownCalled = true
 		capturedExitCode = exitCode
+		panic(shutdownSentinel)
 	}
 
-	// Trigger a forced fatal event
-	ui.logFatal("Simulating an irrecoverable template parsing error", nil)
+	// 3. Set up the recovery handler before running the production code
+	defer func() {
+		if r := recover(); r != nil {
+			// Check if it's our intentional shutdown signal
+			if r == shutdownSentinel {
+				// Safe zone: Execution was stopped cleanly at the shutdown point.
+				// Now we can perform our assertions.
+				if !shutdownCalled {
+					t.Error("Expected shutdown callback to have been executed")
+				}
+				if capturedExitCode != 1 {
+					t.Errorf("Expected exit code 1, got %d", capturedExitCode)
+				}
+			} else {
+				// It was a real, unintended runtime panic from a bug somewhere else!
+				t.Fatalf("Test caught an unexpected runtime crash instead of a clean shutdown signal: %v", r)
+			}
+		} else {
+			// If it reached here without panicking or exiting, the code failed to shut down
+			t.Fatal("Expected production code to trigger a shutdown, but it returned normally.")
+		}
+	}()
 
-	if !shutdownCalled {
-		t.Fatal("Expected application shutdown sequence to execute, but it was never called")
+	// 4. Trigger the fatal path that executes logFatal
+	ui.logFatal("Critical configuration missing", errors.New("malformed upstream URL"))
+}
+
+// Test 3: Verify AdminUI triggers its wired shutdown handler on fatal errors
+func TestAdminUI_ShutdownPanic(t *testing.T) {
+	// 1. Verify it panics with the exact expected string if OnShutdown is nil
+	// uiWithoutHandler := &AdminUI{
+	// 	OnShutdown: nil,
+	// }
+	uiWithoutHandler, _ := setupTestAdminUI(t)
+	uiWithoutHandler.OnShutdown = nil
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("Expected logFatal to panic when OnShutdown is nil, but it did not panic")
+		} else {
+			expectedPanic := "Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
+			if r != expectedPanic {
+				t.Errorf("Expected panic message %q, got: %v", expectedPanic, r)
+			}
+		}
+	}()
+
+	uiWithoutHandler.logFatal("Critical UI Failure", errors.New("database connection lost"))
+}
+
+func TestAdminUI_ShutdownCallback(t *testing.T) {
+	// 2. Verify it invokes the wired callback with exit code 1
+	var capturedExitCode int
+	callbackInvoked := false
+
+	uiWithHandler, _ := setupTestAdminUI(t)
+	uiWithHandler.OnShutdown = func(exitCode int) {
+		callbackInvoked = true
+		capturedExitCode = exitCode
 	}
-	if capturedExitCode != 1 {
-		t.Errorf("Expected application termination exit code 1, captured %d instead", capturedExitCode)
-	}
+
+	// 🟢 Fix: Defer a recovery function to catch the panic and run assertions
+	defer func() {
+		if r := recover(); r == nil {
+			// Optional: if logFatal is strictly expected to panic every time,
+			// you could uncomment the line below to fail if it *doesn't* panic:
+			t.Errorf("Expected logFatal to panic, but it completed normally")
+		}
+
+		// Assertions must live inside the defer block so they execute
+		// even after a panic is triggered.
+		if !callbackInvoked {
+			t.Errorf("Expected OnShutdown callback to be executed")
+		}
+		if capturedExitCode != 1 {
+			t.Errorf("Expected exit code 1, got %d", capturedExitCode)
+		}
+	}()
+
+	// This call panics, jumping straight to the deferred block above
+	uiWithHandler.logFatal("Critical UI Failure", errors.New("database connection lost"))
 }
