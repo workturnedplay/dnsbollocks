@@ -4643,24 +4643,53 @@ func (ui *AdminUI) SetupRoutes(boundAddr string) http.Handler {
 	// outerMux.HandleFunc("/robots.txt", ui.hostValidationFunc(boundAddr, robotsTxtHandler))
 	outerMux.Handle(
 		"/favicon.ico",
-		ui.hostValidation(boundAddr, http.HandlerFunc(faviconHandler)),
+		ui.securityHeadersMiddleware(
+			ui.hostValidation(boundAddr, http.HandlerFunc(faviconHandler)),
+		),
 	)
 
 	outerMux.Handle(
 		"/robots.txt",
-		ui.hostValidation(boundAddr, http.HandlerFunc(robotsTxtHandler)),
+		ui.securityHeadersMiddleware(
+			ui.hostValidation(boundAddr, http.HandlerFunc(robotsTxtHandler)),
+		),
 	)
-	// Everything else goes through hostvalid->auth → CSRF → inner mux.
-	var h http.Handler = innerMux
 
+	// Everything else goes through sechead->hostvalid->auth → CSRF → inner mux.
+	var h http.Handler = innerMux
 	h = ui.csrfMiddleware(h)
 	h = ui.authMiddleware(h)
 	h = ui.hostValidation(boundAddr, h)
-
+	h = ui.securityHeadersMiddleware(h)
 	outerMux.Handle("/", h)
 	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
 	return outerMux
 }
+
+func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+
+		// Prevent embedding the UI in <iframe>, <frame>, <object>, etc.
+		// CSP is the modern standard; X-Frame-Options helps older browsers.
+		//h.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		//object-src 'none' — disables old plugins (<object>, <embed>). Not hugely relevant today, but harmless and recommended.
+		//base-uri 'none' — prevents an injected <base> tag from rewriting relative URLs.
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+		)
+		h.Set("X-Frame-Options", "DENY")
+
+		// Prevent MIME sniffing.
+		h.Set("X-Content-Type-Options", "nosniff")
+
+		// Never send the page URL in the Referer header when navigating away.
+		h.Set("Referrer-Policy", "no-referrer")
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (ui *AdminUI) hostValidation(expectedHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Host, expectedHost) {
