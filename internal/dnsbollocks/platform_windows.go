@@ -224,12 +224,13 @@ type Server struct {
 	dnsTCPSem atomic.Pointer[chan struct{}]
 
 	dnsListener atomic.Pointer[dnsListenerInstance]
-	dohListener atomic.Pointer[httpListenerInstance]
-	uiListener  atomic.Pointer[httpListenerInstance]
+	dohListener atomic.Pointer[dohListenerInstance] // Changed type
+	uiListener  atomic.Pointer[uiListenerInstance]  // Changed type
 
 	adminUI *AdminUI
 
-	dohCert tls.Certificate // used by DoH listener AND WebUI TLS
+	dohCert        tls.Certificate // used by DoH listener AND WebUI TLS
+	certGeneration atomic.Uint64
 
 	// Simple stats, FIXME.
 	stats *expvar.Int
@@ -1961,7 +1962,7 @@ func (s *Server) Reload() {
 		SafeStringSlice("upstreamURLs", cfgNew.UpstreamURLs),
 		SafeStringSlice("upstreamIPs", s.upstreamMgr.UpstreamIPs()),
 	)
-	certRegenerated := s.generateCertIfNeeded() // For DoH and webUI!
+	s.generateCertIfNeeded() // For DoH and webUI! just mutates certGeneration if needed
 
 	s.upstreamMgr.ResetForReload()
 	s.upstreamMgr.InitDoHClients()
@@ -1973,21 +1974,17 @@ func (s *Server) Reload() {
 			slog.Int("old_interval_minutes", oldJanitorInterval),
 			slog.Int("new_interval_minutes", cfgNew.CacheJanitorIntervalMinutes))
 	}
-	if oldCfg.ListenDNS != cfgNew.ListenDNS {
-		s.rebindDNSListener(cfgNew.ListenDNS)
-	}
-	if oldCfg.ListenDoH != cfgNew.ListenDoH || certRegenerated {
-		s.rebindDoHListener(cfgNew.ListenDoH)
-	}
-	if oldCfg.ListenUI != cfgNew.ListenUI || oldCfg.WebUIUseTLS != cfgNew.WebUIUseTLS || (cfgNew.WebUIUseTLS && certRegenerated) {
-		s.rebindWebUIListener(cfgNew.ListenUI, cfgNew.WebUIUseTLS)
-	}
+
 	if oldCfg.MaxConcurrentDNSTCPConns != cfgNew.MaxConcurrentDNSTCPConns {
 		s.swapDNSTCPSemaphore(cfgNew.MaxConcurrentDNSTCPConns)
 		log.Debug("DNS TCP concurrent-connection limit updated",
 			slog.Int("old_max", oldCfg.MaxConcurrentDNSTCPConns),
 			slog.Int("new_max", cfgNew.MaxConcurrentDNSTCPConns))
 	}
+	// The magic happens here: entirely data-driven rebinds.
+	s.rebindDNSListener(dnsListenerParamsFrom(cfgNew))
+	s.rebindDoHListener(s.dohListenerParamsFrom(cfgNew))
+	s.rebindWebUIListener(s.uiListenerParamsFrom(cfgNew))
 
 	// 6. Run external hooks (like clearing WebUI lockouts)
 	log.Debug("Running on-reload hooks")
@@ -2050,9 +2047,11 @@ func (s *Server) Run() error {
 	// Sequential launches for ordered logging
 	log.Debug("Launching listeners sequentially...")
 	s.initAdminUI()
-	s.rebindDNSListener(cfg.ListenDNS)                      // non-blocking, Blocks until init completes/fails
-	s.rebindDoHListener(cfg.ListenDoH)                      // non-blocking, Blocks until init completes/fails
-	go s.rebindWebUIListener(cfg.ListenUI, cfg.WebUIUseTLS) // Concurrent server (blocks forever, but post-serial)
+
+	// Pass params instead of raw config fields
+	s.rebindDNSListener(dnsListenerParamsFrom(cfg))       // non-blocking, Blocks until init completes/fails
+	s.rebindDoHListener(s.dohListenerParamsFrom(cfg))     // non-blocking, Blocks until init completes/fails
+	go s.rebindWebUIListener(s.uiListenerParamsFrom(cfg)) //blocking but runs in goroutine so this line isn't blocking
 
 	go s.watchKeys(s.Reload, // Ctrl+R aka reloadFn
 		func() { // alt+x Ctrl+X etc. aka cleanExitFn
@@ -2740,7 +2739,7 @@ func recursiveMatch(pattern, name string) bool {
 	return len(name) == 0
 }
 
-func (s *Server) generateCertIfNeeded() (regenerated bool) {
+func (s *Server) generateCertIfNeeded() {
 	log := s.getLogger()
 	cfg := s.getConfig()
 
@@ -2817,7 +2816,9 @@ func (s *Server) generateCertIfNeeded() (regenerated bool) {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
 			s.logFatal("cert generation failed", err) //SafeErr(err))
 			//os.Exit(1)
+			return // unreachable
 		}
+		s.certGeneration.Add(1) // <-- Increment here instead of returning true
 		log.Warn("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception, "+
 			"or about:preferences#privacy scroll to Security click Manage Certificates and in Certificate Manager window select Servers click [Add Exception...] "+
 			"button and use this IP with that https:// scheme or use full listen_address", slog.String("IP", currentIP.String() /*non nil here*/), slog.String("listen_address", cfg.ListenDoH))
@@ -2833,7 +2834,6 @@ func (s *Server) generateCertIfNeeded() (regenerated bool) {
 		s.logFatal("cert_load_failed", err)
 	}
 	log.Info("Success - loaded into tls.Certificate")
-	return needsRegen
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
@@ -7170,22 +7170,14 @@ func (w *writeTimeoutConn) Write(b []byte) (int, error) {
 	return w.Conn.Write(b)
 }
 
-type dnsListenerInstance struct {
-	addr   string
-	udp    *net.UDPConn
-	tcp    *net.TCPListener
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-}
-
-type httpListenerInstance struct {
-	addr     string
-	useTLS   bool
-	listener net.Listener
-	srv      *http.Server
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-}
+// type httpListenerInstance struct {
+// 	addr     string
+// 	useTLS   bool
+// 	listener net.Listener
+// 	srv      *http.Server
+// 	cancel   context.CancelFunc
+// 	wg       sync.WaitGroup
+// }
 
 func (s *Server) getCache() DNSCache {
 	c := s.liveDNSCache.Load()
@@ -7376,8 +7368,9 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 }
 
 // non-blocking! listens on both UDP and TCP ports 53
-func (s *Server) startDNSListenerInstance(addr string) (*dnsListenerInstance, error) {
+func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListenerInstance, error) {
 	log := s.getLogger()
+	addr := params.Addr
 	log.Debug("Starting DNS listener", slog.String("addr", addr))
 
 	log.Debug("Attempting UDP bind for DNS listener...")
@@ -7403,7 +7396,7 @@ func (s *Server) startDNSListenerInstance(addr string) (*dnsListenerInstance, er
 	}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
-	inst := &dnsListenerInstance{addr: addr, udp: udpConn, tcp: tcpLn, cancel: cancel}
+	inst := &dnsListenerInstance{params: params, udp: udpConn, tcp: tcpLn, cancel: cancel}
 
 	inst.wg.Add(1)
 	go func() {
@@ -7433,14 +7426,14 @@ func (s *Server) startDNSListenerInstance(addr string) (*dnsListenerInstance, er
 }
 
 // non-blocking!
-func (s *Server) rebindDNSListener(newAddr string) {
+func (s *Server) rebindDNSListener(params dnsListenerParams) {
 	old := s.dnsListener.Load()
-	if old != nil && old.addr == newAddr {
+	if old != nil && old.params == params {
 		return
 	}
-	newInst, err := s.startDNSListenerInstance(newAddr)
+	newInst, err := s.startDNSListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("DNS listener rebind to %q failed", newAddr), err)
+		s.logFatal(fmt.Sprintf("DNS listener rebind to %+v failed", params), err)
 		return // unreachable: logFatal -> shutdown(1) -> os.Exit()
 	}
 	s.dnsListener.Store(newInst)
@@ -7451,10 +7444,10 @@ func (s *Server) rebindDNSListener(newAddr string) {
 }
 
 // non-blocking!
-func (s *Server) startDoHListenerInstance(addr string) (*httpListenerInstance, error) {
-	cfg := s.getConfig()
+func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListenerInstance, error) {
+	//cfg := s.getConfig()
 	log := s.getLogger()
-
+	addr := params.Addr
 	log.Debug("Starting DoH listener", slog.String("address", addr))
 
 	mux := http.NewServeMux()
@@ -7472,12 +7465,12 @@ func (s *Server) startDoHListenerInstance(addr string) (*httpListenerInstance, e
 
 	srv := &http.Server{
 		Handler:      mux,
-		ReadTimeout:  time.Duration(cfg.UpstreamServerReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
-		WriteTimeout: time.Duration(cfg.UpstreamServerWriteTimeoutSec) * time.Second, // Optional, for responses
+		ReadTimeout:  time.Duration(params.ReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
+		WriteTimeout: time.Duration(params.WriteTimeoutSec) * time.Second, // Optional, for responses
 	}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
-	inst := &httpListenerInstance{addr: addr, useTLS: true, listener: listener, srv: srv, cancel: cancel}
+	inst := &dohListenerInstance{params: params, listener: listener, srv: srv, cancel: cancel}
 
 	/*
 	       When you call go func(), you aren't running the function immediately. You are telling the Go scheduler: "Hey, when you have a spare millisecond, please start this task."
@@ -7523,14 +7516,14 @@ func (s *Server) startDoHListenerInstance(addr string) (*httpListenerInstance, e
 }
 
 // non-blocking!
-func (s *Server) rebindDoHListener(newAddr string) {
+func (s *Server) rebindDoHListener(params dohListenerParams) {
 	old := s.dohListener.Load()
-	if old != nil && old.addr == newAddr {
+	if old != nil && old.params == params {
 		return
 	}
-	newInst, err := s.startDoHListenerInstance(newAddr)
+	newInst, err := s.startDoHListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("DoH listener rebind to %q failed", newAddr), err)
+		s.logFatal(fmt.Sprintf("DoH listener rebind to %+v failed", params), err)
 		return
 	}
 	s.dohListener.Store(newInst)
@@ -7570,11 +7563,11 @@ func (s *Server) initAdminUI() {
 	s.adminUI = ui
 }
 
-func (s *Server) startWebUIListenerInstance(addr string, useTLS bool) (*httpListenerInstance, error) {
+func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListenerInstance, error) {
 	if s.adminUI == nil {
 		panic("BUG: startWebUIListenerInstance called before initAdminUI")
 	}
-
+	addr := params.Addr
 	baseListener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("UI listener failed to bind/listen on %q: %w", addr, err)
@@ -7582,7 +7575,7 @@ func (s *Server) startWebUIListenerInstance(addr string, useTLS bool) (*httpList
 	// 2. Adaptive Upgrading: Intercept listener if TLS is requested
 	var finalListener net.Listener = baseListener
 	scheme := "http"
-	if useTLS {
+	if params.UseTLS {
 		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
 		finalListener = tls.NewListener(baseListener, &tls.Config{
 			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
@@ -7595,7 +7588,7 @@ func (s *Server) startWebUIListenerInstance(addr string, useTLS bool) (*httpList
 	srv := &http.Server{Handler: s.adminUI.SetupRoutes()}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
-	inst := &httpListenerInstance{addr: addr, useTLS: useTLS, listener: finalListener, srv: srv, cancel: cancel}
+	inst := &uiListenerInstance{params: params, listener: finalListener, srv: srv, cancel: cancel}
 
 	inst.wg.Add(1)
 	// Listen for the global shutdown signal to gracefully close the Web UI
@@ -7645,14 +7638,14 @@ func (s *Server) startWebUIListenerInstance(addr string, useTLS bool) (*httpList
 	return inst, nil
 }
 
-func (s *Server) rebindWebUIListener(newAddr string, useTLS bool) {
+func (s *Server) rebindWebUIListener(params uiListenerParams) {
 	old := s.uiListener.Load()
-	if old != nil && old.addr == newAddr && old.useTLS == useTLS {
+	if old != nil && old.params == params {
 		return
 	}
-	newInst, err := s.startWebUIListenerInstance(newAddr, useTLS)
+	newInst, err := s.startWebUIListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("WebUI listener rebind to %q failed", newAddr), err)
+		s.logFatal(fmt.Sprintf("WebUI listener rebind to %+v failed", params), err)
 		return
 	}
 	s.uiListener.Store(newInst)
@@ -7660,4 +7653,67 @@ func (s *Server) rebindWebUIListener(newAddr string, useTLS bool) {
 		old.cancel()
 		old.wg.Wait()
 	}
+}
+
+type dnsListenerParams struct {
+	Addr string
+}
+
+func dnsListenerParamsFrom(cfg *Config) dnsListenerParams {
+	return dnsListenerParams{Addr: cfg.ListenDNS}
+}
+
+type dohListenerParams struct {
+	Addr            string
+	ReadTimeoutSec  int
+	WriteTimeoutSec int
+	CertGeneration  uint64
+}
+
+func (s *Server) dohListenerParamsFrom(cfg *Config) dohListenerParams {
+	return dohListenerParams{
+		Addr:            cfg.ListenDoH,
+		ReadTimeoutSec:  cfg.UpstreamServerReadTimeoutSec,
+		WriteTimeoutSec: cfg.UpstreamServerWriteTimeoutSec,
+		CertGeneration:  s.certGeneration.Load(),
+	}
+}
+
+type uiListenerParams struct {
+	Addr           string
+	UseTLS         bool
+	CertGeneration uint64
+}
+
+func (s *Server) uiListenerParamsFrom(cfg *Config) uiListenerParams {
+	return uiListenerParams{
+		Addr:           cfg.ListenUI,
+		UseTLS:         cfg.WebUIUseTLS,
+		CertGeneration: s.certGeneration.Load(),
+	}
+}
+
+// Replace your existing listener structs with these:
+type dnsListenerInstance struct {
+	params dnsListenerParams
+	udp    *net.UDPConn
+	tcp    *net.TCPListener
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+type dohListenerInstance struct {
+	params   dohListenerParams
+	listener net.Listener
+	srv      *http.Server
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+}
+
+type uiListenerInstance struct {
+	params   uiListenerParams
+	listener net.Listener
+	srv      *http.Server
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
