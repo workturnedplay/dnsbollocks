@@ -226,6 +226,7 @@
                 // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
                 row.id = 'rule-row-' + id;
                 row.style.display = 'none';
+                row.classList.add('being-edited');
 
                 // 1. Clone the template natively
                 const tmpl = document.getElementById('editRuleTemplate');
@@ -365,12 +366,14 @@
             if (originalRow) {
                 originalRow.style.display = ''; // Bring it back into view!
                 originalRow.removeAttribute('id'); // Clean up the temporary ID
+                originalRow.classList.remove('being-edited');
             }
             
-            //// Re-apply filter if active to keep canceled row hidden if it shouldn't be here
-            //if (typeof applyFilter === 'function') {
-            //    applyFilter();
-            //}
+            // Re-apply the active filter now that editing has ended, so the row
+            // is only shown if it still matches the current filter text.
+            if (typeof window.applyRulesFilter === 'function') {
+                window.applyRulesFilter();
+            }
         };
 
         
@@ -558,7 +561,7 @@
 
         Array.from(tbody.rows).forEach(row => {
             // Do not filter out or hide the inline edit row
-            if (row.classList.contains('edit-row')) return;
+            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
 
             //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
             // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
@@ -969,6 +972,7 @@
         const row = document.getElementById('blacklistRow_' + index);
         if (!row) return;
         row.style.display = 'none';
+        row.classList.add('being-edited');
 
         const tmpl = document.getElementById('editBlacklistTemplate');
         const clone = tmpl.content.cloneNode(true);
@@ -1003,7 +1007,10 @@
         const editRow = document.getElementById('editBlacklistRow_' + index);
         if (editRow) editRow.remove();
         const row = document.getElementById('blacklistRow_' + index);
-        if (row) row.style.display = '';
+        if (row) {
+            row.style.display = '';
+            row.classList.remove('being-edited'); 
+        }
 
         // Discarding active inline changes cleanly respects and updates current active layout filter state
         window.applyBlacklistFilter();
@@ -1034,7 +1041,7 @@
         }
 
         Array.from(tbody.rows).forEach(row => {
-            if (row.classList.contains('edit-row')) return;
+            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
             const cidr = (row.dataset.cidr || "").toLowerCase();
            
             let isMatch = terms.length === 0 || matchesOrderedTerms(cidr, terms);
@@ -1217,6 +1224,7 @@
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
         row.style.display = 'none';
+        row.classList.add('being-edited');
 
         // Setup Template
         const tmpl = document.getElementById('editConfigTemplate');
@@ -1251,6 +1259,11 @@
         clone.querySelector('.config-cancel-btn').onclick = () => {
             editRow.remove();
             row.style.display = '';
+            row.classList.remove('being-edited');
+
+            if (typeof window.applyConfigFilter === 'function') {
+                window.applyConfigFilter();
+            }
         };
 
         // Handle Staging the change
@@ -1274,11 +1287,17 @@
             // Save to object, modify UI, flag it
             stagedChanges[key] = parsedVal;
             row.querySelector('.display-value').innerText = displayVal;
+            row.dataset.original = displayVal;
             row.classList.add('staged');
+            row.classList.remove('being-edited'); 
 
             editRow.remove();
             row.style.display = '';
-            
+
+            if (typeof window.applyConfigFilter === 'function') {
+                window.applyConfigFilter();
+            }
+
             // Pop the banner
             updateBanner();
         };
@@ -1329,23 +1348,6 @@
         }
     }
 
-    // Config Table Filter
-    // document.getElementById('configFilter')?.addEventListener('input', function(e) {
-    //     const raw = e.target.value.trim().toLowerCase();
-    //     const terms = raw.split(/\s+/).filter(t => t.length > 0);
-    //     const tbody = document.querySelector('#configTable tbody');
-    //     if (!tbody) return;
-
-    //     Array.from(tbody.rows).forEach(row => {
-    //         if (row.classList.contains('edit-row')) return;
-    //         const key = (row.dataset.key || "").toLowerCase();
-    //         const val = (row.dataset.original || "").toLowerCase();
-    //         const searchTarget = key + " " + val;
-            
-    //         const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
-    //         row.style.display = isMatch ? '' : 'none';
-    //     });
-    // });
     // --- Client-side Config Filter Logic (with persistent storage) ---
     window.applyConfigFilter = function() {
         const filterInput = document.getElementById('configFilter');
@@ -1359,7 +1361,7 @@
         if (!tbody) return;
 
         Array.from(tbody.rows).forEach(row => {
-            if (row.classList.contains('edit-row')) return;
+            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
             const key = (row.dataset.key || "").toLowerCase();
             const val = (row.dataset.original || "").toLowerCase();
             const searchTarget = key + " " + val;
