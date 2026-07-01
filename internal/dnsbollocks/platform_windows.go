@@ -490,7 +490,14 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// Caller gave up. Abandoned in-flight goroutines (including any
 			// probe) still run to completion and still apply their healing
 			// side-effect; we just stop waiting on their results here.
-			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err())
+
+			var wrapped error
+			if cerr := ctx.Err(); cerr != nil { // it's non-nil but checking anyway :P
+				wrapped = fmt.Errorf("caller gave up(context done): %w", cerr)
+			} else {
+				wrapped = nil
+			}
+			return nil, "", failedUpstreams, wrapped
 		} //select
 	}
 
@@ -499,7 +506,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	for i := currentIdx + 1; i < len(upstreams); i++ {
 		// FIX 2: Prevent the instant fallback loop spam during a Ctrl+C shutdown
 		if ctx.Err() != nil {
-			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err())
+			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err() /*non-nil*/)
 		}
 		target := upstreams[i]
 		resp, err := target.doSingleDoHRequest(ctx, reqBytes)
@@ -1573,8 +1580,12 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	buf.WriteString("\x1b[K\x1b[0m\n")
 	//buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
 
-	_, err := h.Out.Write(buf.Bytes())
-	return fmt.Errorf("failed to buffer of the colored console handler: %w", err)
+	if _, err := h.Out.Write(buf.Bytes()); err == nil {
+		return nil
+	} else {
+		//wrapped
+		return fmt.Errorf("failed to buffer of the colored console handler: %w", err)
+	}
 }
 
 func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -1623,8 +1634,12 @@ func (h queryFilterHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !isQuery {
 		return nil // silently dropped — this is the magic
 	}
-	err := h.Handler.Handle(ctx, r)
-	return fmt.Errorf("handle query filter in webUI backend: %w", err)
+
+	if err := h.Handler.Handle(ctx, r); err == nil {
+		return nil
+	} else {
+		return fmt.Errorf("handle query filter in webUI backend: %w", err)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -2832,7 +2847,7 @@ func (s *Server) cleanFileName(original, description, fallback string) (string, 
 func hostFromURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse rawurl %q err: %w", raw, err)
+		return "", fmt.Errorf("failed to parse rawurl %q err: %w", raw, err /*non-nil*/)
 	}
 	host := u.Hostname() // Built-in method strips the port safely
 	if strings.TrimSpace(host) == "" {
@@ -3952,7 +3967,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, u.URL.String(), bytes.NewReader(reqBytes))
 			if e != nil {
 				// Wrap the error to give it context and satisfy wrapcheck
-				return true, fmt.Errorf("failed to create DoH HTTP request: %w", e)
+				return true, fmt.Errorf("failed to create DoH HTTP request: %w", e /*non-nil*/)
 			}
 
 			req.Header.Set("Content-Type", "application/dns-message")
@@ -3978,7 +3993,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		}
 
 		// If client.Do succeeded, we can stop retrying
-		if err4ClientDo == nil {
+		if err4ClientDo == nil { //XXX: if you change or move this, the logic below changes drastically! be careful
 			//success!
 			break
 		}
@@ -4008,7 +4023,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 🔴 FIX #1: If this was the last attempt, return the REAL error immediately!
 			// This prevents falling through to the bottom of the function.
 			if attempt >= maxTries {
-				return nil, fmt.Errorf("exhausted %d/%d tries to upstream DoH, last request's err: %w", attempt, maxTries, err4ClientDo)
+				return nil, fmt.Errorf("exhausted %d/%d tries to upstream DoH, last request's err: %w", attempt, maxTries, err4ClientDo /*non-nil here*/)
 			}
 			if u.RetryBackoffDuration <= 0 {
 				u.RetryBackoffDuration = time.Duration(100) * time.Millisecond
@@ -4023,10 +4038,10 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				//exits select
 			case <-ctx.Done():
 				log.Debug("doh sensed client quit during retry backoff...")
-				return nil, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err())
+				return nil, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err() /*non-nil guaranteed*/)
 			case <-u.BackgroundCtx.Done():
 				log.Debug("doh sensed quit during retry backoff...")
-				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err())
+				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err() /*non-nil guaranteed*/)
 			}
 			continue //next try
 		}
@@ -4068,7 +4083,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	body, err4ReadAll := io.ReadAll(resp.Body)
 	if err4ReadAll != nil {
 		log.Error("doh_readbody_failed", SafeErr(err4ReadAll))
-		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll)
+		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll /*non-nil here*/)
 	}
 
 	// debug/log non-200 or unexpected content-type
@@ -4091,7 +4106,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
-		return nil, fmt.Errorf("failed to unpack response body for upstream DoH %q, err: %w", u.URL.String(), err4Unpack)
+		return nil, fmt.Errorf("failed to unpack response body for upstream DoH %q, err: %w", u.URL.String(), err4Unpack /*non-nil here*/)
 	}
 	return upMsg, nil
 }
@@ -4904,6 +4919,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
 	innerMux.HandleFunc("/logs", ui.logsHandler)
 	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
+	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	// ── Outer mux: browser-automatic routes that must bypass auth ────────
@@ -6844,7 +6860,7 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	}
 	fmt.Println()
 	if err != nil {
-		return "", fmt.Errorf("failed to read password from the terminal: %w", err)
+		return "", fmt.Errorf("failed to read password from the terminal: %w", err /*non-nil here*/)
 	}
 	if len(pwd1) == 0 {
 		return "", errors.New("password cannot be empty")
@@ -6860,7 +6876,7 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	}
 	fmt.Println()
 	if err != nil {
-		return "", fmt.Errorf("failed to re-read password from the terminal: %w", err)
+		return "", fmt.Errorf("failed to re-read password from the terminal: %w", err /*non-nil here*/)
 	}
 
 	//if string(pwd1) != string(pwd2) {
@@ -6871,7 +6887,7 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	// DefaultCost is 10, which is perfectly balanced for modern hardware
 	hash, err := bcrypt.GenerateFromPassword(pwd1, bcrypt.DefaultCost)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate bcrypt from password: %w", err)
+		return "", fmt.Errorf("failed to generate bcrypt from password: %w", err /*non-nil here*/)
 	}
 
 	return string(hash), nil
@@ -7433,19 +7449,23 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	// 2. Overwrite the target file directly (Retains Windows ACLs)
 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
-		return fmt.Errorf("failed to open the file directly: %w", err)
+		return fmt.Errorf("failed to open the file directly: %w", err /*non-nil here*/)
 	}
 	_, writeErr := targetFile.Write(data)
 	if writeErr != nil {
 		targetFile.Close()
-		return fmt.Errorf("failed to write to the file directly: %w", writeErr)
+		return fmt.Errorf("failed to write to the file directly: %w", writeErr /*non-nil here*/)
 	}
 	syncErr := targetFile.Sync()
 	closeErr := targetFile.Close()
 	if syncErr != nil {
-		return fmt.Errorf("failed to sync the file that was directly written: %w", syncErr)
+		return fmt.Errorf("failed to sync the file that was directly written: %w", syncErr /*non-nil here*/)
 	}
-	return fmt.Errorf("failed to close the file that was directly written&sync'd successfully, err: %w", closeErr)
+	if closeErr == nil {
+		return nil
+	} else {
+		return fmt.Errorf("failed to close the file that was directly written&sync'd successfully, err: %w", closeErr /*non-nil here*/)
+	}
 }
 
 // AdminUI handles all the web control panel routes.
@@ -7471,6 +7491,7 @@ type AdminUI struct {
 	OnSaveHosts           func() error
 	OnInvalidatePattern   func(pattern string)
 	OnInvalidateBlacklist func()
+	OnApplyConfig         func(data []byte) error
 
 	//UI calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
@@ -7922,7 +7943,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 				log.Debug("opening new TCP socket for upstream DoH", slog.String("dialAddr", dialAddr))
 				conn, err := d.DialContext(ctx, network, dialAddr)
 				if err != nil {
-					return nil, fmt.Errorf("failed to dial new TCP socket for upstream DoH, addr:%s err: %w", dialAddr, err)
+					return nil, fmt.Errorf("failed to dial new TCP socket for upstream DoH, addr:%s err: %w", dialAddr, err /*non-nil here*/)
 				}
 
 				//return d.DialContext(ctx, network, dialAddr)
@@ -8007,7 +8028,11 @@ func (w *writeTimeoutConn) Write(b []byte) (int, error) {
 		_ = w.Conn.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	n, err := w.Conn.Write(b)
-	return n, fmt.Errorf("failed to write to the net connection: %w", err)
+	if err == nil {
+		return n, nil
+	} else {
+		return n, fmt.Errorf("failed to write to the net connection: %w", err)
+	}
 }
 
 // type httpListenerInstance struct {
@@ -8399,6 +8424,13 @@ func (s *Server) initAdminUI() {
 	ui.OnSaveHosts = s.saveLocalHosts
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
+	ui.OnApplyConfig = func(dataAlreadyMarshalled []byte) error {
+		if err := s.fileWriter.SafeWriteFile(configFileName, dataAlreadyMarshalled, 0600); err != nil {
+			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
+		}
+		s.Reload()
+		return nil
+	}
 	//Pass the server's shutdown method directly
 	ui.OnShutdown = s.shutdown
 	// ui.getExpectedHost = s.currentUIExpectedHost // used by hostValidation
@@ -8653,7 +8685,11 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 
 	n, err = w.file.Write(p)
 	w.size += int64(n)
-	return n, fmt.Errorf("failed to write to the rotating logger file: %w", err)
+	if err == nil {
+		return n, nil
+	} else {
+		return n, fmt.Errorf("failed to write to the rotating logger file: %w", err)
+	}
 }
 
 // must be done under lock!
@@ -8721,5 +8757,163 @@ func (w *rotatingLogWriter) reopenOriginal() {
 		w.logger.Error("CRITICAL: Failed to reopen original log file after rotation failure", slog.String("path", w.path), SafeErr(err))
 	} else {
 		w.file = f
+	}
+}
+
+type ConfigFieldView struct {
+	Key   string
+	Value string
+	Type  string
+}
+
+func (ui *AdminUI) getConfigFields() []ConfigFieldView {
+	cfg := ui.getConfig()
+	v := reflect.ValueOf(*cfg)
+	t := v.Type()
+	var fields []ConfigFieldView
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		tagKey := strings.Split(jsonTag, ",")[0]
+
+		val := v.Field(i)
+		var strVal string
+		var typ string
+
+		switch val.Kind() {
+		case reflect.String:
+			strVal = val.String()
+			typ = "string"
+		case reflect.Int, reflect.Int64, reflect.Int32:
+			strVal = fmt.Sprintf("%d", val.Int())
+			typ = "int"
+		case reflect.Uint, reflect.Uint64, reflect.Uint32:
+			strVal = fmt.Sprintf("%d", val.Uint())
+			typ = "int"
+		case reflect.Bool:
+			strVal = fmt.Sprintf("%t", val.Bool())
+			typ = "bool"
+		case reflect.Slice:
+			if val.Type().Elem().Kind() == reflect.String {
+				var sl []string
+				for j := 0; j < val.Len(); j++ {
+					sl = append(sl, val.Index(j).String())
+				}
+				strVal = strings.Join(sl, ", ")
+				typ = "[]string"
+			} else {
+				continue
+			}
+		default:
+			continue
+		}
+
+		fields = append(fields, ConfigFieldView{
+			Key:   tagKey,
+			Value: strVal,
+			Type:  typ,
+		})
+	}
+
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].Key < fields[j].Key
+	})
+
+	return fields
+}
+
+func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
+	if r.Method == http.MethodGet {
+		data := map[string]any{
+			"Fields": ui.getConfigFields(),
+		}
+		ui.renderTemplate(w, r, "config", data)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		action := r.FormValue("action")
+		if action == "apply" {
+			payload := r.FormValue("payload")
+			if payload == "" {
+				http.Error(w, "empty payload", http.StatusBadRequest)
+				return
+			}
+
+			var changes map[string]any
+			if err := json.Unmarshal([]byte(payload), &changes); err != nil {
+				log.Warn("Invalid JSON in config apply", SafeErr(err))
+				http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+				return
+			}
+
+			// Parse existing file to preserve unknown keys and overall structure
+			data, err := os.ReadFile(configFileName)
+			if err != nil {
+				log.Error("Failed to read config file for update", SafeErr(err))
+				http.Error(w, "failed to read existing config", http.StatusInternalServerError)
+				return
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				log.Error("Failed to parse existing config file", SafeErr(err))
+				http.Error(w, "failed to parse existing config", http.StatusInternalServerError)
+				return
+			}
+
+			// Overlay the staged changes
+			for k, v := range changes {
+				raw[k] = v
+			}
+
+			newData, err := json.MarshalIndent(raw, "", "  ")
+			if err != nil {
+				log.Error("Failed to marshal updated config", SafeErr(err))
+				http.Error(w, "failed to marshal updated config", http.StatusInternalServerError)
+				return
+			}
+
+			// DRY-RUN VALIDATION: Prevent a bad config from causing a fatal panic on Reload()
+			testCfg := defaultConfig()
+			dec := json.NewDecoder(bytes.NewReader(newData))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&testCfg); err != nil {
+				log.Warn("Validation failed for new config", SafeErr(err))
+				http.Error(w, "Validation failed (check format/types): "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Hard-check URLs to prevent loadMainConfig panics
+			for i, rawURL := range testCfg.UpstreamURLs {
+				if _, err := url.Parse(rawURL); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid upstream URL at index %d: %v", i, err), http.StatusBadRequest)
+					return
+				}
+				if _, err := hostFromURL(rawURL); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid upstream host at index %d: %v", i, err), http.StatusBadRequest)
+					return
+				}
+			}
+
+			// Commit to disk and trigger hot-reload
+			if ui.OnApplyConfig != nil {
+				if err := ui.OnApplyConfig(newData); err != nil {
+					log.Error("Failed to apply config", SafeErr(err))
+					http.Error(w, "Failed to save/reload config: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+
+			log.Info("Config updated&saved via WebUI successfully")
+			http.Redirect(w, r, "/config", http.StatusSeeOther)
+			return
+		}
 	}
 }

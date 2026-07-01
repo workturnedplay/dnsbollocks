@@ -143,6 +143,7 @@
     <a href="/logs" {{if eq .Path "/logs" }} class="active" {{end}}>System Logs(incl.queries)</a>
     <a href="/logs_queries" {{if eq .Path "/logs_queries" }} class="active" {{end}}>Query(only) Logs</a>
     <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
+    <a href="/config" {{if eq .Page "config" }} class="active" {{end}}>Config</a>
     <a href="/debug/vars">Debug Vars</a>
 </nav>
     <hr>
@@ -160,6 +161,8 @@
         {{template "logs" .}}
     {{else if eq .Page "stats" }}
         {{template "stats" .}}
+    {{else if eq .Page "config" }}
+        {{template "config" .}}
     {{end}}
 
     </div>
@@ -518,6 +521,7 @@
         setupTableSorting('rulesTable', 'rulesTable', window.applyRulesFilter);
         setupTableSorting('hostsTable', 'hostsTable', null);
         setupTableSorting('blacklistTable', 'blacklistTable', window.applyBlacklistFilter);
+        setupTableSorting('configTable', 'configTable', null);
 
     }); // end of domcontentloaded
     
@@ -1074,4 +1078,214 @@
     <div class="stats-container">
         {{.RawBody}}
     </div>
+{{end}}
+
+{{define "config"}}
+<h2>Engine Configuration</h2>
+<p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic;">
+    Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload" button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
+</p>
+
+<div id="stagedChangesBanner" style="display: none; background: #0078d4; color: white; padding: 15px; border-radius: 4px; margin-bottom: 20px; position: sticky; top: 10px; z-index: 100; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+    <strong>Unsaved Changes!</strong> You have staged <span id="stagedCount">0</span> modification(s).
+    <div style="float: right; margin-top: -6px;">
+        <button class="btn-save" onclick="applyConfigChanges()" style="padding: 8px 16px;">Apply & Reload</button>
+        <button class="btn-cancel" onclick="location.reload()" style="padding: 8px 16px; background: #666 !important;">Discard All</button>
+    </div>
+</div>
+
+<div style="margin-bottom: 20px;">
+    <input type="text" id="configFilter" placeholder="Filter settings... (e.g., 'timeout')" style="width: 100%;">
+</div>
+
+<table id="configTable">
+    <colgroup>
+        <col style="width: 35%;">
+        <col style="width: 50%;">
+        <col style="width: 15%;">
+    </colgroup>
+    <thead>
+        <tr>
+            <th class="sortable" data-col="0">Setting (Key) <span class="sort-icon"></span></th>
+            <th class="sortable" data-col="1">Current Value <span class="sort-icon"></span></th>
+            <th style="text-align: center;">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .Fields}}
+        <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}">
+            <td style="font-family: monospace; color: #4ec9b0;">{{.Key}}</td>
+            <td class="display-value" title="{{.Value}}">{{.Value}}</td>
+            <td class="actions" style="text-align: center;">
+                <button class="btn-edit" onclick="editConfig('{{.Key}}')">Edit</button>
+            </td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>
+
+<template id="editConfigTemplate">
+    <tr class="edit-row" style="background: #1a1a1a;">
+        <td style="font-family: monospace; color: #4ec9b0;" class="edit-key-display"></td>
+        <td>
+            <div class="edit-input-container" style="width:100%"></div>
+            <small class="edit-type-hint" style="color: #888; display: block; margin-top: 4px;"></small>
+        </td>
+        <td class="actions" style="text-align: center;">
+            <button type="button" class="btn-save config-stage-btn">Stage</button>
+            <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>
+        </td>
+    </tr>
+</template>
+
+<style>
+    /* Subtle highlight for modified rows before saving */
+    tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
+</style>
+
+<script>
+    const stagedChanges = {};
+    const csrfToken = "{{.CSRFToken}}";
+
+    function editConfig(key) {
+        // Find existing items
+        const row = document.getElementById('configRow_' + key);
+        if (!row) return;
+
+        // Cancel any existing inline edits to prevent duplicate row injection
+        document.querySelectorAll('.config-cancel-btn').forEach(btn => btn.click());
+
+        const type = row.dataset.type;
+        const currentDisplay = row.querySelector('.display-value').innerText;
+        row.style.display = 'none';
+
+        // Setup Template
+        const tmpl = document.getElementById('editConfigTemplate');
+        const clone = tmpl.content.cloneNode(true);
+        const editRow = clone.querySelector('tr');
+        editRow.id = 'editConfigRow_' + key;
+        editRow.querySelector('.edit-key-display').innerText = key;
+
+        const container = editRow.querySelector('.edit-input-container');
+        const hint = editRow.querySelector('.edit-type-hint');
+
+        // Dynamically type the input control
+        if (type === 'bool') {
+            const isTrue = currentDisplay === 'true';
+            container.innerHTML = `<select class="config-input" style="width: 100%;">
+                                    <option value="true" ${isTrue ? 'selected' : ''}>true</option>
+                                    <option value="false" ${!isTrue ? 'selected' : ''}>false</option>
+                                   </select>`;
+            hint.innerText = "Boolean (true/false)";
+        } else if (type === '[]string') {
+            container.innerHTML = `<input type="text" class="config-input" style="width: 100%;" value="${currentDisplay}">`;
+            hint.innerText = "Comma-separated string list";
+        } else if (type === 'int') {
+            container.innerHTML = `<input type="number" class="config-input" style="width: 100%;" value="${currentDisplay}">`;
+            hint.innerText = "Integer value";
+        } else {
+            container.innerHTML = `<input type="text" class="config-input" style="width: 100%;" value="${currentDisplay}">`;
+            hint.innerText = "String value";
+        }
+
+        // Handle Cansel
+        clone.querySelector('.config-cancel-btn').onclick = () => {
+            editRow.remove();
+            row.style.display = '';
+        };
+
+        // Handle Staging the change
+        clone.querySelector('.config-stage-btn').onclick = () => {
+            const rawVal = editRow.querySelector('.config-input').value;
+            let parsedVal = rawVal;
+            let displayVal = rawVal;
+
+            if (type === 'int') {
+                parsedVal = parseInt(rawVal, 10);
+                if (isNaN(parsedVal)) { alert('Value must be a valid integer.'); return; }
+                displayVal = parsedVal.toString();
+            } else if (type === 'bool') {
+                parsedVal = rawVal === 'true';
+                displayVal = parsedVal.toString();
+            } else if (type === '[]string') {
+                parsedVal = rawVal.split(',').map(s => s.trim()).filter(s => s !== '');
+                displayVal = parsedVal.join(', ');
+            }
+
+            // Save to object, modify UI, flag it
+            stagedChanges[key] = parsedVal;
+            row.querySelector('.display-value').innerText = displayVal;
+            row.classList.add('staged');
+
+            editRow.remove();
+            row.style.display = '';
+            
+            // Pop the banner
+            updateBanner();
+        };
+
+        row.after(clone);
+        editRow.querySelector('.config-input').focus();
+    }
+
+    function updateBanner() {
+        const count = Object.keys(stagedChanges).length;
+        const banner = document.getElementById('stagedChangesBanner');
+        if (count > 0) {
+            banner.style.display = 'block';
+            document.getElementById('stagedCount').innerText = count;
+        } else {
+            banner.style.display = 'none';
+        }
+    }
+
+    async function applyConfigChanges() {
+        if (Object.keys(stagedChanges).length === 0) return;
+
+        if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners. Proceed?')) return;
+
+        const formData = new FormData();
+        formData.append('csrf_token', csrfToken);
+        formData.append('action', 'apply');
+        formData.append('payload', JSON.stringify(stagedChanges));
+
+        try {
+            const res = await fetch('/config', {
+                method: 'POST',
+                body: formData,
+                redirect: 'manual'
+            });
+            
+            const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
+            if (!res.ok && !isSuccessRedirect) {
+                const err = await res.text();
+                alert("Failed to apply configuration:\\n" + err);
+                return;
+            }
+            
+            location.reload();
+        } catch (err) {
+            console.error('Apply config failed:', err);
+            alert('A network error occurred while saving the configuration.');
+        }
+    }
+
+    // Config Table Filter
+    document.getElementById('configFilter')?.addEventListener('input', function(e) {
+        const raw = e.target.value.trim().toLowerCase();
+        const terms = raw.split(/\s+/).filter(t => t.length > 0);
+        const tbody = document.querySelector('#configTable tbody');
+        if (!tbody) return;
+
+        Array.from(tbody.rows).forEach(row => {
+            if (row.classList.contains('edit-row')) return;
+            const key = (row.dataset.key || "").toLowerCase();
+            const val = (row.dataset.original || "").toLowerCase();
+            const searchTarget = key + " " + val;
+            
+            const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
+            row.style.display = isMatch ? '' : 'none';
+        });
+    });
+</script>
 {{end}}
