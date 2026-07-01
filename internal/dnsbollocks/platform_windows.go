@@ -4856,7 +4856,8 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 
 		// Never send the page URL in the Referer header when navigating away.
-		h.Set("Referrer-Policy", "no-referrer")
+		//h.Set("Referrer-Policy", "no-referrer")//bad, Origin: null for own POSTs won't send any referrer
+		h.Set("Referrer-Policy", "same-origin")
 
 		next.ServeHTTP(w, r)
 	})
