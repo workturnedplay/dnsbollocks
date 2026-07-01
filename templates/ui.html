@@ -1330,8 +1330,30 @@
     }
 
     // Config Table Filter
-    document.getElementById('configFilter')?.addEventListener('input', function(e) {
-        const raw = e.target.value.trim().toLowerCase();
+    // document.getElementById('configFilter')?.addEventListener('input', function(e) {
+    //     const raw = e.target.value.trim().toLowerCase();
+    //     const terms = raw.split(/\s+/).filter(t => t.length > 0);
+    //     const tbody = document.querySelector('#configTable tbody');
+    //     if (!tbody) return;
+
+    //     Array.from(tbody.rows).forEach(row => {
+    //         if (row.classList.contains('edit-row')) return;
+    //         const key = (row.dataset.key || "").toLowerCase();
+    //         const val = (row.dataset.original || "").toLowerCase();
+    //         const searchTarget = key + " " + val;
+            
+    //         const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
+    //         row.style.display = isMatch ? '' : 'none';
+    //     });
+    // });
+    // --- Client-side Config Filter Logic (with persistent storage) ---
+    window.applyConfigFilter = function() {
+        const filterInput = document.getElementById('configFilter');
+        if (!filterInput) return;
+
+        const raw = filterInput.value.trim().toLowerCase();
+        sessionStorage.setItem('configTable_filter', raw);
+
         const terms = raw.split(/\s+/).filter(t => t.length > 0);
         const tbody = document.querySelector('#configTable tbody');
         if (!tbody) return;
@@ -1345,6 +1367,18 @@
             const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
             row.style.display = isMatch ? '' : 'none';
         });
-    });
+    };
+
+    // Bind event listener and restore saved state on page load
+    const configFilterInput = document.getElementById('configFilter');
+    if (configFilterInput) {
+        const savedFilter = sessionStorage.getItem('configTable_filter') || '';
+        configFilterInput.value = savedFilter;
+
+        configFilterInput.addEventListener('input', window.applyConfigFilter);
+
+        // Run immediately on page boot to apply the active filter
+        window.applyConfigFilter();
+    }
 </script>
 {{end}}
