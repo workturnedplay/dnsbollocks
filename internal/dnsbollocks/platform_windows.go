@@ -2400,24 +2400,6 @@ func (s *Server) loadMainConfig() error {
 
 	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
-	// // Validate Web UI Timeouts
-	// if newCfg.WebUIReadHeaderTimeoutSec <= 0 {
-	// 	newCfg.WebUIReadHeaderTimeoutSec = 5
-	// 	log.Warn("webui_read_header_timeout_sec clamped to 5 (was <= 0)")
-	// }
-	// if newCfg.WebUIReadTimeoutSec <= 0 {
-	// 	newCfg.WebUIReadTimeoutSec = 15
-	// 	log.Warn("webui_read_timeout_sec clamped to 15 (was <= 0)")
-	// }
-	// if newCfg.WebUIWriteTimeoutSec <= 0 {
-	// 	newCfg.WebUIWriteTimeoutSec = 15
-	// 	log.Warn("webui_write_timeout_sec clamped to 15 (was <= 0)")
-	// }
-	// if newCfg.WebUIIdleTimeoutSec <= newCfg.WebUIReadTimeoutSec {
-	// 	newCfg.WebUIIdleTimeoutSec = newCfg.WebUIReadTimeoutSec * 2
-	// 	log.Warn("webui_idle_timeout_sec was <= read timeout, clamping to double the read timeout to prevent aggressive keep-alive disconnects",
-	// 		slog.Int("new_idle_timeout", newCfg.WebUIIdleTimeoutSec))
-	// }
 	// =========================================================================
 	// Group 1: WebUI Server Timeouts & Rate Limits (Refactor-safe)
 	// =========================================================================
@@ -2463,106 +2445,296 @@ func (s *Server) loadMainConfig() error {
 		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	// // Validate DoH Missing Timeouts
-	// if newCfg.UpstreamServerReadHeaderTimeoutSec <= 0 {
-	// 	newCfg.UpstreamServerReadHeaderTimeoutSec = 3
-	// 	log.Warn("upstreamserver_read_header_timeout_sec clamped to 3 (was <= 0)")
-	// }
-	// if newCfg.UpstreamServerIdleTimeoutSec <= newCfg.UpstreamServerReadTimeoutSec {
-	// 	newCfg.UpstreamServerIdleTimeoutSec = newCfg.UpstreamServerReadTimeoutSec * 2
-	// 	log.Warn("upstreamserver_idle_timeout_sec was <= read timeout, clamping to double the read timeout",
-	// 		slog.Int("new_idle_timeout", newCfg.UpstreamServerIdleTimeoutSec))
-	// }
-
 	// =========================================================================
-	// Validate Local DoH Server Timeouts (Refactor-safe & Linter-optimized)
+	// Group 2: Local DoH Server Timeouts
 	// =========================================================================
 	tagDoHHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec))
-	if newCfg.LocalDoHReadHeaderTimeoutSec <= 0 {
-		newCfg.LocalDoHReadHeaderTimeoutSec = 3
-		log.Warn(tagDoHHeader + " clamped to 3 (was <= 0)")
+	if was := newCfg.LocalDoHReadHeaderTimeoutSec; was <= 0 {
+		const fallback = 3
+		newCfg.LocalDoHReadHeaderTimeoutSec = fallback
+		log.Warn(tagDoHHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec))
-	if newCfg.LocalDoHReadTimeoutSec <= 0 {
-		newCfg.LocalDoHReadTimeoutSec = 30
-		log.Warn(tagDoHRead + " clamped to 30 (was <= 0)")
+	if was := newCfg.LocalDoHReadTimeoutSec; was <= 0 {
+		const fallback = 30
+		newCfg.LocalDoHReadTimeoutSec = fallback
+		log.Warn(tagDoHRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec))
-	if newCfg.LocalDoHWriteTimeoutSec <= 0 {
-		newCfg.LocalDoHWriteTimeoutSec = 30
-		log.Warn(tagDoHWrite + " clamped to 30 (was <= 0)")
+	if was := newCfg.LocalDoHWriteTimeoutSec; was <= 0 {
+		const fallback = 30
+		newCfg.LocalDoHWriteTimeoutSec = fallback
+		log.Warn(tagDoHWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec))
-	if newCfg.LocalDoHIdleTimeoutSec <= newCfg.LocalDoHReadTimeoutSec {
-		newCfg.LocalDoHIdleTimeoutSec = newCfg.LocalDoHReadTimeoutSec * 2
-		log.Warn(tagDoHIdle+" was <= read timeout, clamping to double the read timeout to prevent premature keep-alive drops",
-			slog.Int("new_idle_timeout", newCfg.LocalDoHIdleTimeoutSec))
+	if was := newCfg.LocalDoHIdleTimeoutSec; was <= newCfg.LocalDoHReadTimeoutSec {
+		fallback := newCfg.LocalDoHReadTimeoutSec * 2
+		newCfg.LocalDoHIdleTimeoutSec = fallback
+		log.Warn(tagDoHIdle+" clamped(to double the read timeout) to prevent premature keep-alive drops", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-
-	// if newCfg.UpstreamClientTimeoutSec <= 0 {
-	// 	const fallback = 5 // seconds
-	// 	log.Warn("upstream_client_timeout_sec is 0 or negative (means no timeout in Go's http.Client), clamping",
-	// 		slog.Int("given", newCfg.UpstreamClientTimeoutSec),
-	// 		slog.Int("using", fallback))
-	// 	newCfg.UpstreamClientTimeoutSec = fallback
-	// }
-
-	// if newCfg.UpstreamDialTimeoutSec <= 0 {
-	// 	const fallback = 3 // seconds
-	// 	log.Warn("upstream_dial_timeout_sec is 0 or negative, clamping",
-	// 		slog.Int("given", newCfg.UpstreamDialTimeoutSec),
-	// 		slog.Int("using", fallback))
-	// 	newCfg.UpstreamDialTimeoutSec = fallback
-	// }
-
-	// if newCfg.UpstreamRetryBackoffMs <= 0 {
-	// 	const fallback = 100 // ms
-	// 	log.Warn("upstream_retry_backoff_ms is 0 or negative (means no timeout in Go's http.Client and hung situations), clamping",
-	// 		slog.Int("given", newCfg.UpstreamRetryBackoffMs),
-	// 		slog.Int("using", fallback))
-	// 	newCfg.UpstreamRetryBackoffMs = fallback
-	// }
 
 	// =========================================================================
 	// Validate Upstream HTTP Client Idle Connection Pools (Refactor-safe)
 	// =========================================================================
+	// =========================================================================
+	// Group 3: Upstream Client & Connection Pools
+	// =========================================================================
+	tagUpstreamDialTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamDialTimeoutSec))
+	if was := newCfg.UpstreamDialTimeoutSec; was <= 0 {
+		const fallback = 3
+		newCfg.UpstreamDialTimeoutSec = fallback
+		log.Warn(tagUpstreamDialTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagUpstreamClientTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamClientTimeoutSec))
+	// Constraint A: Absolute lower bound check
+	if was := newCfg.UpstreamClientTimeoutSec; was <= 0 {
+		const fallback = 5
+		newCfg.UpstreamClientTimeoutSec = fallback
+		log.Warn(tagUpstreamClientTimeoutSec+" clamped (prevents infinite hanging client connections)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+	// Constraint B: Relational validation check (Sequential, never an 'else if')
+	if was := newCfg.UpstreamClientTimeoutSec; was < newCfg.UpstreamDialTimeoutSec {
+		fallback := newCfg.UpstreamDialTimeoutSec
+		newCfg.UpstreamClientTimeoutSec = fallback
+		log.Warn(tagUpstreamClientTimeoutSec+" clamped (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")",
+			slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagCertLogTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec))
+	if was := newCfg.CertLogTimeoutSec; was <= 0 {
+		const fallback = 5
+		newCfg.CertLogTimeoutSec = fallback
+		log.Warn(tagCertLogTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagUpstreamRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetryBackoffMs))
+	if was := newCfg.UpstreamRetryBackoffMs; was <= 0 {
+		const fallback = 100
+		newCfg.UpstreamRetryBackoffMs = fallback
+		log.Warn(tagUpstreamRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagUpstreamRetriesPerQuery := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery))
+	if was := newCfg.UpstreamRetriesPerQuery; was < 0 {
+		const fallback = 1
+		newCfg.UpstreamRetriesPerQuery = fallback
+		log.Warn(tagUpstreamRetriesPerQuery+" clamped (cannot be negative)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
 
 	tagUpstreamIdleConnTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))
-	if newCfg.UpstreamIdleConnTimeoutSec <= 0 {
+	if was := newCfg.UpstreamIdleConnTimeoutSec; was <= 0 {
 		const fallback = 90
-		log.Warn(tagUpstreamIdleConnTimeout+" is 0 or negative (means connections stay open indefinitely or drop unpredictably), clamping",
-			slog.Int("given", newCfg.UpstreamIdleConnTimeoutSec),
-			slog.Int("using", fallback))
 		newCfg.UpstreamIdleConnTimeoutSec = fallback
+		log.Warn(tagUpstreamIdleConnTimeout+" clamped (connections stay open indefinitely or drop unpredictably)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConns))
-	if newCfg.UpstreamMaxIdleConns <= 0 {
+	if was := newCfg.UpstreamMaxIdleConns; was <= 0 {
 		const fallback = 100
-		log.Warn(tagUpstreamMaxIdleConns+" is 0 or negative (disables global keep-alive reuse), clamping",
-			slog.Int("given", newCfg.UpstreamMaxIdleConns),
-			slog.Int("using", fallback))
 		newCfg.UpstreamMaxIdleConns = fallback
+		log.Warn(tagUpstreamMaxIdleConns+" clamped (disables global keep-alive reuse)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConnsPerHost := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConnsPerHost))
-	if newCfg.UpstreamMaxIdleConnsPerHost <= 0 {
+	// Constraint A: Absolute lower bound check
+	if was := newCfg.UpstreamMaxIdleConnsPerHost; was <= 0 {
 		const fallback = 10
-		log.Warn(tagUpstreamMaxIdleConnsPerHost+" is 0 or negative (Go's default of 2 will severely throttle parallel DoH queries), clamping",
-			slog.Int("given", newCfg.UpstreamMaxIdleConnsPerHost),
-			slog.Int("using", fallback))
 		newCfg.UpstreamMaxIdleConnsPerHost = fallback
-	} else if newCfg.UpstreamMaxIdleConnsPerHost > newCfg.UpstreamMaxIdleConns {
+		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (Go default of 2 severely throttles throughput)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+	// Constraint B: Relational validation check (Sequential, never an 'else if')
+	if was := newCfg.UpstreamMaxIdleConnsPerHost; was > newCfg.UpstreamMaxIdleConns {
 		// Defensive check: Per-host pool limit can't realistically exceed global pool limit
-		log.Warn(tagUpstreamMaxIdleConnsPerHost+" cannot exceed "+tagUpstreamMaxIdleConns+", clamping to global max pool size",
-			slog.Int("given", newCfg.UpstreamMaxIdleConnsPerHost),
-			slog.Int("using", newCfg.UpstreamMaxIdleConns))
-		newCfg.UpstreamMaxIdleConnsPerHost = newCfg.UpstreamMaxIdleConns
+		fallback := newCfg.UpstreamMaxIdleConns
+		newCfg.UpstreamMaxIdleConnsPerHost = fallback
+		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (cannot exceed "+tagUpstreamMaxIdleConns+")",
+			slog.Int("was", was),
+			slog.Int("clamp", fallback),
+			slog.Int(tagUpstreamMaxIdleConns, newCfg.UpstreamMaxIdleConns),
+		)
 	}
 
+	// // 2. Prevent Missing Validation: Check Janitor Intervals
+	// if newCfg.CacheJanitorIntervalMinutes <= 0 {
+	// 	const whenBad = 5 //minutes
+	// 	log.Warn("bad janitor interval in config", slog.Int("given", newCfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
+	// 	newCfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
+	// }
+
+	// if newCfg.GlobalBurstQPS < newCfg.GlobalRateQPS {
+	// 	s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", newCfg.GlobalBurstQPS, newCfg.GlobalRateQPS, configFileName))
+	// }
+
+	// if newCfg.ClientBurstQPS < newCfg.ClientRateQPS {
+	// 	s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", newCfg.ClientBurstQPS, newCfg.ClientRateQPS, configFileName))
+	// }
+
+	// const CacheMinTTLClamp = 60 // seconds
+	// // Validate loaded config
+	// if newCfg.CacheMinTTL < CacheMinTTLClamp {
+	// 	newCfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
+	// 	log.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
+	// }
+
+	// if newCfg.WebUIMaxLoginFailures <= 0 {
+	// 	newCfg.WebUIMaxLoginFailures = 5 //TODO: const?
+	// 	log.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
+	// }
+	// if newCfg.WebUILoginLockoutSec <= 0 {
+	// 	newCfg.WebUILoginLockoutSec = 300 //TODO: const?
+	// 	log.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
+	// }
+	// if newCfg.MaxConcurrentDNSTCPConns <= 0 {
+	// 	newCfg.MaxConcurrentDNSTCPConns = 50 //TODO: const?
+	// 	log.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
+	// }
+
+	// =========================================================================
+	// Group 4: Local Client & Server Buffer Safeguards
+	// =========================================================================
+	tagMaxConcurrentDNSTCPConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSTCPConns))
+	if was := newCfg.MaxConcurrentDNSTCPConns; was <= 0 {
+		const fallback = 50
+		newCfg.MaxConcurrentDNSTCPConns = fallback
+		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagClientTCPTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec))
+	if was := newCfg.ClientTCPTimeoutSec; was <= 0 {
+		const fallback = 5
+		newCfg.ClientTCPTimeoutSec = fallback
+		log.Warn(tagClientTCPTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagDoHMaxRequestBodyBytes := getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes))
+	if was := newCfg.DoHMaxRequestBodyBytes; was <= 0 {
+		const fallback = 65536
+		newCfg.DoHMaxRequestBodyBytes = fallback
+		log.Warn(tagDoHMaxRequestBodyBytes+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagDNSUDPBufferSize := getJSONTagByOffset(unsafe.Offsetof(Config{}.DNSUDPBufferSize))
+	if was := newCfg.DNSUDPBufferSize; was < 512 || was > 65535 {
+		const fallback = 4096
+		newCfg.DNSUDPBufferSize = fallback
+		log.Warn(tagDNSUDPBufferSize+" clamped (must be within standard Ethernet bounds 512-65535)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// =========================================================================
+	// Group 5: Core Engine Limits & Cache Operations
+	// =========================================================================
+	tagGlobalRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
+	if was := newCfg.GlobalRateQPS; was <= 0 {
+		const fallback = 100
+		newCfg.GlobalRateQPS = fallback
+		log.Warn(tagGlobalRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagGlobalBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
+	// Constraint A: Absolute lower bound check
+	if was := newCfg.GlobalBurstQPS; was <= 0 {
+		const fallback = 100
+		newCfg.GlobalBurstQPS = fallback
+		log.Warn(tagGlobalBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
+	} // else if was < newCfg.GlobalRateQPS {
+	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
+	if was := newCfg.GlobalBurstQPS; was < newCfg.GlobalRateQPS {
+		fallback := newCfg.GlobalRateQPS
+		newCfg.GlobalBurstQPS = fallback
+		log.Warn(tagGlobalBurstQPS+" clamped (cannot be less than "+tagGlobalRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagClientRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
+	if was := newCfg.ClientRateQPS; was <= 0 {
+		const fallback = 20
+		newCfg.ClientRateQPS = fallback
+		log.Warn(tagClientRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagClientBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
+	// Constraint A: Absolute lower bound check
+	if was := newCfg.ClientBurstQPS; was <= 0 {
+		const fallback = 50
+		newCfg.ClientBurstQPS = fallback
+		log.Warn(tagClientBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
+	} //else if was < newCfg.ClientRateQPS {
+	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
+	if was := newCfg.ClientBurstQPS; was < newCfg.ClientRateQPS {
+		fallback := newCfg.ClientRateQPS
+		newCfg.ClientBurstQPS = fallback
+		log.Warn(tagClientBurstQPS+" clamped (cannot be less than "+tagClientRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagCacheMinTTL := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL))
+	const cacheMinTTLClamp = 60 // seconds
+	if was := newCfg.CacheMinTTL; was < cacheMinTTLClamp {
+		newCfg.CacheMinTTL = cacheMinTTLClamp
+		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
+	}
+
+	tagCacheMaxEntries := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries))
+	if was := newCfg.CacheMaxEntries; was <= 0 {
+		const fallback = 10000
+		newCfg.CacheMaxEntries = fallback
+		log.Warn(tagCacheMaxEntries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagCacheJanitorIntervalMinutes := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheJanitorIntervalMinutes))
+	if was := newCfg.CacheJanitorIntervalMinutes; was <= 0 {
+		const fallback = 5
+		newCfg.CacheJanitorIntervalMinutes = fallback
+		log.Warn(tagCacheJanitorIntervalMinutes+" clamped to safe minimum interval", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagCacheNegativeTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec))
+	if was := newCfg.CacheNegativeTTLSec; was < 0 {
+		const fallback = 2
+		newCfg.CacheNegativeTTLSec = fallback
+		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))
+	if was := newCfg.BlockedResponseTTLSec; was < 0 {
+		const fallback = 300
+		newCfg.BlockedResponseTTLSec = fallback
+		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagLocalHostsOverrideTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec))
+	if was := newCfg.LocalHostsOverrideTTLSec; was == 0 {
+		const fallback = 300
+		newCfg.LocalHostsOverrideTTLSec = fallback
+		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", fallback))
+	}
+
+	tagMaxRecentBlocks := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks))
+	if was := newCfg.MaxRecentBlocks; was <= 0 {
+		const fallback = 100
+		newCfg.MaxRecentBlocks = fallback
+		log.Warn(tagMaxRecentBlocks+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagUILogMaxLines := getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines))
+	if was := newCfg.UILogMaxLines; was <= 0 {
+		const fallback = 5000
+		newCfg.UILogMaxLines = fallback
+		log.Warn(tagUILogMaxLines+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagLogMaxSizeMB := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB))
+	if was := newCfg.LogMaxSizeMB; was <= 0 {
+		const fallback = 4095
+		newCfg.LogMaxSizeMB = fallback
+		log.Warn(tagLogMaxSizeMB+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// =========================================================================
+	// IP Strings Parsing & Post-Processing Operations
+	// =========================================================================
 	// Clean up and pre-parse IPv4
 	if ip := net.ParseIP(newCfg.BlockIP); ip != nil && ip.To4() != nil {
 		newCfg.BlockIPv4Parsed = ip.To4()
@@ -2579,43 +2751,8 @@ func (s *Server) loadMainConfig() error {
 		newCfg.BlockIPv6Parsed = net.ParseIP("::").To16() //TODO: const?
 	}
 
-	// 2. Prevent Missing Validation: Check Janitor Intervals
-	if newCfg.CacheJanitorIntervalMinutes <= 0 {
-		const whenBad = 5 //minutes
-		log.Warn("bad janitor interval in config", slog.Int("given", newCfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
-		newCfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
-	}
-
-	if newCfg.GlobalBurstQPS < newCfg.GlobalRateQPS {
-		s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", newCfg.GlobalBurstQPS, newCfg.GlobalRateQPS, configFileName))
-	}
-
-	if newCfg.ClientBurstQPS < newCfg.ClientRateQPS {
-		s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", newCfg.ClientBurstQPS, newCfg.ClientRateQPS, configFileName))
-	}
-
 	newCfg.BlockMode = strings.ToLower(newCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
-
-	const CacheMinTTLClamp = 60 // seconds
-	// Validate loaded config
-	if newCfg.CacheMinTTL < CacheMinTTLClamp {
-		newCfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
-		log.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
-	}
-
-	if newCfg.WebUIMaxLoginFailures <= 0 {
-		newCfg.WebUIMaxLoginFailures = 5 //TODO: const?
-		log.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
-	}
-	if newCfg.WebUILoginLockoutSec <= 0 {
-		newCfg.WebUILoginLockoutSec = 300 //TODO: const?
-		log.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
-	}
-	if newCfg.MaxConcurrentDNSTCPConns <= 0 {
-		newCfg.MaxConcurrentDNSTCPConns = 50 //TODO: const?
-		log.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
-	}
 
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
 	for i := len(newCfg.SNIHostnames); i < len(newCfg.UpstreamURLs); i++ {
