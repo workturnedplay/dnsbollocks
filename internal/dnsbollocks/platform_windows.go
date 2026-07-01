@@ -34,6 +34,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"expvar"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -8860,16 +8861,17 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			var raw map[string]any
-			if err := json.Unmarshal(data, &raw); err != nil {
-				log.Error("Failed to parse existing config file", SafeErr(err))
+			if err2 := json.Unmarshal(data, &raw); err2 != nil {
+				log.Error("Failed to parse existing config file", SafeErr(err2))
 				http.Error(w, "failed to parse existing config", http.StatusInternalServerError)
 				return
 			}
 
 			// Overlay the staged changes
-			for k, v := range changes {
-				raw[k] = v
-			}
+			maps.Copy(raw, changes)
+			// for k, v := range changes {
+			// 	raw[k] = v
+			// }
 
 			newData, err := json.MarshalIndent(raw, "", "  ")
 			if err != nil {
