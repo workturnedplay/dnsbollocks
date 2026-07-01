@@ -1271,10 +1271,9 @@ func (s *Server) loadQueryWhitelist() error {
 // defaultConfig Every call produces a new map and slice backing array.
 // must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
 func defaultConfig() Config {
-	return Config{
-		ListenDNS: "127.0.0.1:53",
-		ListenDoH: "127.0.0.1:443",
-		//UIPort:                  8080,
+	cfg := Config{
+		ListenDNS:               "127.0.0.1:53",
+		ListenDoH:               "127.0.0.1:443",
 		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
@@ -1283,12 +1282,14 @@ func defaultConfig() Config {
 		BlockMode:               "nxdomain",
 		BlockIP:                 "0.0.0.0",
 		BlockIPv6:               "::", // Default unspecified IPv6
-		GlobalRateQPS:           100,
-		GlobalBurstQPS:          100,
-		ClientRateQPS:           20,
-		ClientBurstQPS:          50,
-		CacheMinTTL:             300,
-		CacheMaxEntries:         10000,
+
+		GlobalRateQPS:  100,
+		GlobalBurstQPS: 200, //100 worked for me, but heck, let's 2x it
+		ClientRateQPS:  20,
+		ClientBurstQPS: 50,
+
+		CacheMinTTL:     300,
+		CacheMaxEntries: 10000,
 
 		WhitelistFile: "query_whitelist.json",
 		BlacklistFile: "response_blacklist.json",
@@ -1322,7 +1323,7 @@ func defaultConfig() Config {
 		LocalDoHReadHeaderTimeoutSec: 3, // Snaps shut on slowloris quickly
 		LocalDoHReadTimeoutSec:       30,
 		LocalDoHWriteTimeoutSec:      30,
-		LocalDoHIdleTimeoutSec:       60, // Sane keep-alive for DoH
+		//LocalDoHIdleTimeoutSec:       2 * LocalDoHReadTimeoutSec, //60, // Sane keep-alive for DoH
 
 		//High-latency satellite, VPN, or cellular links will drop upstream queries and trigger premature failovers under a strict 3 or 5-second limit. Conversely, high-availability setups might require an aggressive sub-second timeout to switch nodes rapidly.
 		UpstreamDialTimeoutSec:   3,
@@ -1331,8 +1332,8 @@ func defaultConfig() Config {
 		CertLogTimeoutSec: 5,
 
 		//Resource allocations vary heavily between environments. A low-powered embedded home router running this binary shouldn't maintain 100 idle network connections. On the other hand, heavy enterprise or multi-user environments will exhaust MaxIdleConnsPerHost: 10 instantly, resulting in severe socket thrashing and latency spikes.
-		UpstreamIdleConnTimeoutSec:  90,
-		UpstreamMaxIdleConns:        100,
+		UpstreamIdleConnTimeoutSec: 90,
+		//UpstreamMaxIdleConns:        100,
 		UpstreamMaxIdleConnsPerHost: 10,
 		//A 100ms backoff before retrying a transient network error is standard, but on highly congested networks, a longer backoff might be necessary to let the router breathe.
 		UpstreamRetryBackoffMs: 100,
@@ -1362,6 +1363,10 @@ func defaultConfig() Config {
 
 		ExtraSafety: true,
 	}
+	//compute based on others
+	cfg.LocalDoHIdleTimeoutSec = 2 * cfg.LocalDoHReadTimeoutSec
+	cfg.UpstreamMaxIdleConns = 10 * cfg.UpstreamMaxIdleConnsPerHost
+	return cfg
 }
 
 // initBootstrapLogging sets up a colored console-only logger for the earliest messages.
@@ -2405,21 +2410,21 @@ func (s *Server) loadMainConfig() error {
 	// =========================================================================
 	tagWebUIReadHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadHeaderTimeoutSec))
 	if was := newCfg.WebUIReadHeaderTimeoutSec; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.WebUIReadHeaderTimeoutSec
 		newCfg.WebUIReadHeaderTimeoutSec = fallback
 		log.Warn(tagWebUIReadHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadTimeoutSec))
 	if was := newCfg.WebUIReadTimeoutSec; was <= 0 {
-		const fallback = 15
+		fallback := defaultConfig.WebUIReadTimeoutSec
 		newCfg.WebUIReadTimeoutSec = fallback
 		log.Warn(tagWebUIRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIWriteTimeoutSec))
 	if was := newCfg.WebUIWriteTimeoutSec; was <= 0 {
-		const fallback = 15
+		fallback := defaultConfig.WebUIWriteTimeoutSec
 		newCfg.WebUIWriteTimeoutSec = fallback
 		log.Warn(tagWebUIWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2433,14 +2438,14 @@ func (s *Server) loadMainConfig() error {
 
 	tagWebUIMaxLoginFailures := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIMaxLoginFailures))
 	if was := newCfg.WebUIMaxLoginFailures; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.WebUIMaxLoginFailures
 		newCfg.WebUIMaxLoginFailures = fallback
 		log.Warn(tagWebUIMaxLoginFailures+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUILoginLockoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUILoginLockoutSec))
 	if was := newCfg.WebUILoginLockoutSec; was <= 0 {
-		const fallback = 300
+		fallback := defaultConfig.WebUILoginLockoutSec
 		newCfg.WebUILoginLockoutSec = fallback
 		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2450,21 +2455,21 @@ func (s *Server) loadMainConfig() error {
 	// =========================================================================
 	tagDoHHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec))
 	if was := newCfg.LocalDoHReadHeaderTimeoutSec; was <= 0 {
-		const fallback = 3
+		fallback := defaultConfig.LocalDoHReadHeaderTimeoutSec
 		newCfg.LocalDoHReadHeaderTimeoutSec = fallback
 		log.Warn(tagDoHHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec))
 	if was := newCfg.LocalDoHReadTimeoutSec; was <= 0 {
-		const fallback = 30
+		fallback := defaultConfig.LocalDoHReadTimeoutSec
 		newCfg.LocalDoHReadTimeoutSec = fallback
 		log.Warn(tagDoHRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec))
 	if was := newCfg.LocalDoHWriteTimeoutSec; was <= 0 {
-		const fallback = 30
+		fallback := defaultConfig.LocalDoHWriteTimeoutSec
 		newCfg.LocalDoHWriteTimeoutSec = fallback
 		log.Warn(tagDoHWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2484,7 +2489,7 @@ func (s *Server) loadMainConfig() error {
 	// =========================================================================
 	tagUpstreamDialTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamDialTimeoutSec))
 	if was := newCfg.UpstreamDialTimeoutSec; was <= 0 {
-		const fallback = 3
+		fallback := defaultConfig.UpstreamDialTimeoutSec
 		newCfg.UpstreamDialTimeoutSec = fallback
 		log.Warn(tagUpstreamDialTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2492,7 +2497,7 @@ func (s *Server) loadMainConfig() error {
 	tagUpstreamClientTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamClientTimeoutSec))
 	// Constraint A: Absolute lower bound check
 	if was := newCfg.UpstreamClientTimeoutSec; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.UpstreamClientTimeoutSec
 		newCfg.UpstreamClientTimeoutSec = fallback
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (prevents infinite hanging client connections)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2506,35 +2511,35 @@ func (s *Server) loadMainConfig() error {
 
 	tagCertLogTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec))
 	if was := newCfg.CertLogTimeoutSec; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.CertLogTimeoutSec
 		newCfg.CertLogTimeoutSec = fallback
 		log.Warn(tagCertLogTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetryBackoffMs))
 	if was := newCfg.UpstreamRetryBackoffMs; was <= 0 {
-		const fallback = 100
+		fallback := defaultConfig.UpstreamRetryBackoffMs
 		newCfg.UpstreamRetryBackoffMs = fallback
 		log.Warn(tagUpstreamRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamRetriesPerQuery := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery))
 	if was := newCfg.UpstreamRetriesPerQuery; was < 0 {
-		const fallback = 1
+		fallback := defaultConfig.UpstreamRetriesPerQuery
 		newCfg.UpstreamRetriesPerQuery = fallback
 		log.Warn(tagUpstreamRetriesPerQuery+" clamped (cannot be negative)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamIdleConnTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))
 	if was := newCfg.UpstreamIdleConnTimeoutSec; was <= 0 {
-		const fallback = 90
+		fallback := defaultConfig.UpstreamIdleConnTimeoutSec
 		newCfg.UpstreamIdleConnTimeoutSec = fallback
 		log.Warn(tagUpstreamIdleConnTimeout+" clamped (connections stay open indefinitely or drop unpredictably)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConns))
 	if was := newCfg.UpstreamMaxIdleConns; was <= 0 {
-		const fallback = 100
+		fallback := defaultConfig.UpstreamMaxIdleConns
 		newCfg.UpstreamMaxIdleConns = fallback
 		log.Warn(tagUpstreamMaxIdleConns+" clamped (disables global keep-alive reuse)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2542,7 +2547,7 @@ func (s *Server) loadMainConfig() error {
 	tagUpstreamMaxIdleConnsPerHost := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConnsPerHost))
 	// Constraint A: Absolute lower bound check
 	if was := newCfg.UpstreamMaxIdleConnsPerHost; was <= 0 {
-		const fallback = 10
+		fallback := defaultConfig.UpstreamMaxIdleConnsPerHost
 		newCfg.UpstreamMaxIdleConnsPerHost = fallback
 		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (Go default of 2 severely throttles throughput)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2558,68 +2563,33 @@ func (s *Server) loadMainConfig() error {
 		)
 	}
 
-	// // 2. Prevent Missing Validation: Check Janitor Intervals
-	// if newCfg.CacheJanitorIntervalMinutes <= 0 {
-	// 	const whenBad = 5 //minutes
-	// 	log.Warn("bad janitor interval in config", slog.Int("given", newCfg.CacheJanitorIntervalMinutes), slog.Int("using_this", whenBad))
-	// 	newCfg.CacheJanitorIntervalMinutes = whenBad // Avoid zero/negative time intervals
-	// }
-
-	// if newCfg.GlobalBurstQPS < newCfg.GlobalRateQPS {
-	// 	s.logFatal2(fmt.Sprintf("global QPS burst(%d) must be >= than rate(%d) in %s", newCfg.GlobalBurstQPS, newCfg.GlobalRateQPS, configFileName))
-	// }
-
-	// if newCfg.ClientBurstQPS < newCfg.ClientRateQPS {
-	// 	s.logFatal2(fmt.Sprintf("client QPS burst(%d) must be >= than rate(%d) in %s", newCfg.ClientBurstQPS, newCfg.ClientRateQPS, configFileName))
-	// }
-
-	// const CacheMinTTLClamp = 60 // seconds
-	// // Validate loaded config
-	// if newCfg.CacheMinTTL < CacheMinTTLClamp {
-	// 	newCfg.CacheMinTTL = CacheMinTTLClamp // Min reasonable
-	// 	log.Warn("cache_min_ttl clamped", slog.Int("to_seconds", CacheMinTTLClamp))
-	// }
-
-	// if newCfg.WebUIMaxLoginFailures <= 0 {
-	// 	newCfg.WebUIMaxLoginFailures = 5 //TODO: const?
-	// 	log.Warn("webui_max_login_failures clamped to 5 (was <= 0)")
-	// }
-	// if newCfg.WebUILoginLockoutSec <= 0 {
-	// 	newCfg.WebUILoginLockoutSec = 300 //TODO: const?
-	// 	log.Warn("webui_login_lockout_sec clamped to 300 (was <= 0)")
-	// }
-	// if newCfg.MaxConcurrentDNSTCPConns <= 0 {
-	// 	newCfg.MaxConcurrentDNSTCPConns = 50 //TODO: const?
-	// 	log.Warn("max_concurrent_dns_tcp_conns clamped to 50 (was <= 0)")
-	// }
-
 	// =========================================================================
 	// Group 4: Local Client & Server Buffer Safeguards
 	// =========================================================================
 	tagMaxConcurrentDNSTCPConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSTCPConns))
 	if was := newCfg.MaxConcurrentDNSTCPConns; was <= 0 {
-		const fallback = 50
+		fallback := defaultConfig.MaxConcurrentDNSTCPConns
 		newCfg.MaxConcurrentDNSTCPConns = fallback
 		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientTCPTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec))
 	if was := newCfg.ClientTCPTimeoutSec; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.ClientTCPTimeoutSec
 		newCfg.ClientTCPTimeoutSec = fallback
 		log.Warn(tagClientTCPTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHMaxRequestBodyBytes := getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes))
 	if was := newCfg.DoHMaxRequestBodyBytes; was <= 0 {
-		const fallback = 65536
+		fallback := defaultConfig.DoHMaxRequestBodyBytes
 		newCfg.DoHMaxRequestBodyBytes = fallback
 		log.Warn(tagDoHMaxRequestBodyBytes+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDNSUDPBufferSize := getJSONTagByOffset(unsafe.Offsetof(Config{}.DNSUDPBufferSize))
 	if was := newCfg.DNSUDPBufferSize; was < 512 || was > 65535 {
-		const fallback = 4096
+		fallback := defaultConfig.DNSUDPBufferSize
 		newCfg.DNSUDPBufferSize = fallback
 		log.Warn(tagDNSUDPBufferSize+" clamped (must be within standard Ethernet bounds 512-65535)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2629,7 +2599,7 @@ func (s *Server) loadMainConfig() error {
 	// =========================================================================
 	tagGlobalRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
 	if was := newCfg.GlobalRateQPS; was <= 0 {
-		const fallback = 100
+		fallback := defaultConfig.GlobalRateQPS
 		newCfg.GlobalRateQPS = fallback
 		log.Warn(tagGlobalRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2637,7 +2607,7 @@ func (s *Server) loadMainConfig() error {
 	tagGlobalBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
 	// Constraint A: Absolute lower bound check
 	if was := newCfg.GlobalBurstQPS; was <= 0 {
-		const fallback = 100
+		fallback := defaultConfig.GlobalBurstQPS
 		newCfg.GlobalBurstQPS = fallback
 		log.Warn(tagGlobalBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	} // else if was < newCfg.GlobalRateQPS {
@@ -2650,7 +2620,7 @@ func (s *Server) loadMainConfig() error {
 
 	tagClientRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
 	if was := newCfg.ClientRateQPS; was <= 0 {
-		const fallback = 20
+		fallback := defaultConfig.ClientRateQPS
 		newCfg.ClientRateQPS = fallback
 		log.Warn(tagClientRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -2658,7 +2628,7 @@ func (s *Server) loadMainConfig() error {
 	tagClientBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
 	// Constraint A: Absolute lower bound check
 	if was := newCfg.ClientBurstQPS; was <= 0 {
-		const fallback = 50
+		fallback := defaultConfig.ClientBurstQPS
 		newCfg.ClientBurstQPS = fallback
 		log.Warn(tagClientBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	} //else if was < newCfg.ClientRateQPS {
@@ -2670,7 +2640,7 @@ func (s *Server) loadMainConfig() error {
 	}
 
 	tagCacheMinTTL := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL))
-	const cacheMinTTLClamp = 60 // seconds
+	const cacheMinTTLClamp = 2 // seconds
 	if was := newCfg.CacheMinTTL; was < cacheMinTTLClamp {
 		newCfg.CacheMinTTL = cacheMinTTLClamp
 		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
@@ -2678,56 +2648,56 @@ func (s *Server) loadMainConfig() error {
 
 	tagCacheMaxEntries := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries))
 	if was := newCfg.CacheMaxEntries; was <= 0 {
-		const fallback = 10000
+		fallback := defaultConfig.CacheMaxEntries
 		newCfg.CacheMaxEntries = fallback
 		log.Warn(tagCacheMaxEntries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCacheJanitorIntervalMinutes := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheJanitorIntervalMinutes))
 	if was := newCfg.CacheJanitorIntervalMinutes; was <= 0 {
-		const fallback = 5
+		fallback := defaultConfig.CacheJanitorIntervalMinutes
 		newCfg.CacheJanitorIntervalMinutes = fallback
 		log.Warn(tagCacheJanitorIntervalMinutes+" clamped to safe minimum interval", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCacheNegativeTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec))
 	if was := newCfg.CacheNegativeTTLSec; was < 0 {
-		const fallback = 2
+		fallback := defaultConfig.CacheNegativeTTLSec
 		newCfg.CacheNegativeTTLSec = fallback
 		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))
 	if was := newCfg.BlockedResponseTTLSec; was < 0 {
-		const fallback = 300
+		fallback := defaultConfig.BlockedResponseTTLSec
 		newCfg.BlockedResponseTTLSec = fallback
 		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagLocalHostsOverrideTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec))
 	if was := newCfg.LocalHostsOverrideTTLSec; was == 0 {
-		const fallback = 300
+		fallback := defaultConfig.LocalHostsOverrideTTLSec
 		newCfg.LocalHostsOverrideTTLSec = fallback
-		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", fallback))
+		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
 	tagMaxRecentBlocks := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks))
 	if was := newCfg.MaxRecentBlocks; was <= 0 {
-		const fallback = 100
+		fallback := defaultConfig.MaxRecentBlocks
 		newCfg.MaxRecentBlocks = fallback
 		log.Warn(tagMaxRecentBlocks+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUILogMaxLines := getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines))
 	if was := newCfg.UILogMaxLines; was <= 0 {
-		const fallback = 5000
+		fallback := defaultConfig.UILogMaxLines
 		newCfg.UILogMaxLines = fallback
 		log.Warn(tagUILogMaxLines+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagLogMaxSizeMB := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB))
 	if was := newCfg.LogMaxSizeMB; was <= 0 {
-		const fallback = 4095
+		fallback := defaultConfig.LogMaxSizeMB
 		newCfg.LogMaxSizeMB = fallback
 		log.Warn(tagLogMaxSizeMB+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
