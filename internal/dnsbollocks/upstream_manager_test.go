@@ -2,10 +2,12 @@ package dnsbollocks
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
+	//"os"
+
 	//"strings"
 	"sync/atomic"
 	"testing"
@@ -17,7 +19,8 @@ func setupTestContext(cfg *Config) *UpstreamManager {
 	liveConfig.Store(cfg)
 
 	var liveLogger atomic.Pointer[slog.Logger]
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	//logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
 
 	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, nil)
@@ -224,7 +227,8 @@ func TestUpstreamManager_ValidationShutdownCallbackOnInvalidScheme(t *testing.T)
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
 	var liveLogger atomic.Pointer[slog.Logger]
-	liveLogger.Store(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	//logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	var capturedExitCode int
 	callbackInvoked := false
@@ -277,7 +281,10 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 	liveConfig := &atomic.Pointer[Config]{}
 	liveConfig.Store(&cfg)
 	liveLogger := &atomic.Pointer[slog.Logger]{}
-	liveLogger.Store(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	liveLogger.Store(slog.New(slog.NewTextHandler(
+		//os.Stdout,
+		io.Discard,
+		nil)))
 
 	// Wire up the panic sentinel directly into the manager
 	um := NewUpstreamManager(context.Background(), liveConfig, liveLogger, func(exitCode int) {

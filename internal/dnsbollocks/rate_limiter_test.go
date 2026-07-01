@@ -3,13 +3,17 @@ package dnsbollocks
 import (
 	//"context"
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
+	//"os"
 	"testing"
 )
 
 func TestClientRateLimiter_Allow(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := slog.New(slog.NewTextHandler(
+		//os.Stderr,
+		io.Discard,
+		nil))
 
 	cfg := RateLimitConfig{
 		GlobalQPS:   10,

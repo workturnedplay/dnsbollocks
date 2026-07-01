@@ -19,7 +19,10 @@ func TestSafeFileWriter(t *testing.T) {
 	targetFile := filepath.Join(dir, "config.json")
 
 	// Discard logs during tests to keep console clean, or use Stderr to debug
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewTextHandler(
+		//os.Stderr,
+		io.Discard,
+		&slog.HandlerOptions{Level: slog.LevelError}))
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
@@ -110,7 +113,10 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 	dir := t.TempDir()
 	targetFile := filepath.Join(dir, "config.json")
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewTextHandler(
+		//os.Stderr,
+		io.Discard,
+		&slog.HandlerOptions{Level: slog.LevelError}))
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
 	fw := newSafeFileWriter(true, &liveLogger)
