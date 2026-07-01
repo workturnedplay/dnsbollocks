@@ -2183,8 +2183,6 @@ func (s *Server) Run() error {
 		s.shutdown(4) // some error happened
 		panic("unreachable")
 	}
-
-	return nil //unreachable tho
 }
 
 func OldMain() {
