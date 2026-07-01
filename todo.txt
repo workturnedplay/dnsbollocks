@@ -5,7 +5,6 @@ todo:
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
-* handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
 * hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
   * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
   * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
@@ -20,6 +19,7 @@ no:
 
 
 done:
+//* handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!
 //* add column sort to the webUI page for Response Blacklist IPs and for Hosts2IP
 //* make the webUI page for response blacklist IPs be similar to /rules so that it has search and Edit buttons and added IPs are shown-added at the top of the list.
 //* fix inconsistencies in v0.8.1 (intended: 2,6 done: 1,3,4,5): https://gemini.google.com/app/a782dd82602c19aa

@@ -38,6 +38,7 @@ import (
 	"slices"
 	"sort"
 	"sync/atomic"
+	"unsafe"
 
 	"fmt"
 	"html/template"
@@ -129,26 +130,41 @@ type Config struct {
 	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
 	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
 
-	WebUIPasswordHash        string `json:"webui_password_hash"`
-	WebUIUseTLS              bool   `json:"webui_use_tls"`
-	WebUIMaxLoginFailures    int    `json:"webui_max_login_failures"`
-	WebUILoginLockoutSec     int    `json:"webui_login_lockout_sec"`
-	MaxConcurrentDNSTCPConns int    `json:"max_concurrent_dns_tcp_conns"`
+	WebUIPasswordHash         string `json:"webui_password_hash"`
+	WebUIUseTLS               bool   `json:"webui_use_tls"`
+	WebUIMaxLoginFailures     int    `json:"webui_max_login_failures"`
+	WebUILoginLockoutSec      int    `json:"webui_login_lockout_sec"`
+	WebUIReadHeaderTimeoutSec int    `json:"webui_read_header_timeout_sec"`
+	WebUIReadTimeoutSec       int    `json:"webui_read_timeout_sec"`
+	WebUIWriteTimeoutSec      int    `json:"webui_write_timeout_sec"`
+	WebUIIdleTimeoutSec       int    `json:"webui_idle_timeout_sec"`
+
+	MaxConcurrentDNSTCPConns int `json:"max_concurrent_dns_tcp_conns"`
 
 	// Network & Connection Limits
-	ClientTCPTimeoutSec           int `json:"client_tcp_timeout_sec"`
-	MaxRecentBlocks               int `json:"max_recent_blocks"`
-	UpstreamServerReadTimeoutSec  int `json:"upstreamserver_read_timeout_sec"`
-	UpstreamServerWriteTimeoutSec int `json:"upstreamserver_write_timeout_sec"`
+	ClientTCPTimeoutSec int `json:"client_tcp_timeout_sec"`
+	MaxRecentBlocks     int `json:"max_recent_blocks"`
+	//doneFIXME: UpstreamServer is actually the local DoH server we host, not the upstream DoH we forward to
+	// Local DoH Listener Timeouts (Us as a server)
+	LocalDoHReadHeaderTimeoutSec int `json:"local_doh_read_header_timeout_sec"`
+	LocalDoHReadTimeoutSec       int `json:"local_doh_read_timeout_sec"`
+	LocalDoHWriteTimeoutSec      int `json:"local_doh_write_timeout_sec"`
+	LocalDoHIdleTimeoutSec       int `json:"local_doh_idle_timeout_sec"`
+	// UpstreamServerReadTimeoutSec       int `json:"upstreamserver_read_timeout_sec"`
+	// UpstreamServerWriteTimeoutSec      int `json:"upstreamserver_write_timeout_sec"`
+	// UpstreamServerReadHeaderTimeoutSec int `json:"upstreamserver_read_header_timeout_sec"`
+	// UpstreamServerIdleTimeoutSec       int `json:"upstreamserver_idle_timeout_sec"`
 
+	//these apply to the upstream DoH server where we forward our DNS requests to:
+	// Outbound Upstream Client Settings (Us talking to upstreams)
+	CertLogTimeoutSec        int `json:"cert_log_timeout_sec"`
 	UpstreamDialTimeoutSec   int `json:"upstream_dial_timeout_sec"`
 	UpstreamClientTimeoutSec int `json:"upstream_client_timeout_sec"`
-	CertLogTimeoutSec        int `json:"cert_log_timeout_sec"`
+	UpstreamRetryBackoffMs   int `json:"upstream_retry_backoff_ms"`
 
 	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"`
 	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"`
 	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host"`
-	UpstreamRetryBackoffMs      int `json:"upstream_retry_backoff_ms"`
 
 	// Buffer & Sizing Limits
 	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes"`
@@ -1278,17 +1294,23 @@ func defaultConfig() Config {
 		BlacklistFile: "response_blacklist.json",
 		HostsFile:     "hosts2ip.json",
 
-		LogQueriesFile:           "queries.log",
-		LogErrorsFile:            "dnsbollocks.log",
-		ConsoleLogLevel:          "info",
-		LogMaxSizeMB:             4095, // Rotation threshold
-		AllowRunAsAdmin:          false,
-		BlockAAAAasEmptyNoError:  true,
-		AllowHTTPSIfAAllowed:     true,
-		RemoveHTTPSIPv4Hints:     true,
-		WebUIUseTLS:              true,
-		WebUIMaxLoginFailures:    5,
-		WebUILoginLockoutSec:     5 * 60, // 5 minutes, in seconds
+		LogQueriesFile:          "queries.log",
+		LogErrorsFile:           "dnsbollocks.log",
+		ConsoleLogLevel:         "info",
+		LogMaxSizeMB:            4095, // Rotation threshold
+		AllowRunAsAdmin:         false,
+		BlockAAAAasEmptyNoError: true,
+		AllowHTTPSIfAAllowed:    true,
+		RemoveHTTPSIPv4Hints:    true,
+		WebUIUseTLS:             true,
+		WebUIMaxLoginFailures:   5,
+		WebUILoginLockoutSec:    5 * 60, // 5 minutes, in seconds
+
+		WebUIReadHeaderTimeoutSec: 5,
+		WebUIReadTimeoutSec:       15,
+		WebUIWriteTimeoutSec:      15,
+		WebUIIdleTimeoutSec:       60,
+
 		MaxConcurrentDNSTCPConns: 50,
 
 		// Centralized Network Parameter Defaults
@@ -1296,9 +1318,11 @@ func defaultConfig() Config {
 		//this is per operation: o1) read 2 bytes, o2) read the body, o3) write the response; so each 3 operations get this timeout!
 		ClientTCPTimeoutSec: 5,
 
-		MaxRecentBlocks:               100,
-		UpstreamServerReadTimeoutSec:  30,
-		UpstreamServerWriteTimeoutSec: 30,
+		MaxRecentBlocks:              100,
+		LocalDoHReadHeaderTimeoutSec: 3, // Snaps shut on slowloris quickly
+		LocalDoHReadTimeoutSec:       30,
+		LocalDoHWriteTimeoutSec:      30,
+		LocalDoHIdleTimeoutSec:       60, // Sane keep-alive for DoH
 
 		//High-latency satellite, VPN, or cellular links will drop upstream queries and trigger premature failovers under a strict 3 or 5-second limit. Conversely, high-availability setups might require an aggressive sub-second timeout to switch nodes rapidly.
 		UpstreamDialTimeoutSec:   3,
@@ -1920,18 +1944,55 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 	}
 }
 
-func getWebUIPasswordHashJSONTag() string {
-	var cfg Config
-	t := reflect.TypeOf(cfg)
-	if field, found := t.FieldByName("WebUIPasswordHash"); found {
-		tag := field.Tag.Get("json")
-		// Strip away options like ,omitempty if present
-		if idx := strings.Index(tag, ","); idx != -1 {
-			return tag[:idx]
+// func getWebUIPasswordHashJSONTag() string {
+// 	return getJSONTag("WebUIPasswordHash")
+// }
+
+// // getJSONTag looks up a Config struct field by name and extracts its JSON key.
+// // It panics if the field name doesn't exist, preventing silent code drift.
+// func getJSONTag(fieldName string) string {
+// 	field, found := reflect.TypeOf(Config{}).FieldByName(fieldName)
+// 	if !found {
+// 		panic(fmt.Sprintf("DEVELOPER BUG: Field %q does not exist in Config struct", fieldName))
+// 	}
+
+// 	tag := field.Tag.Get("json")
+// 	if tag == "" || tag == "-" {
+// 		panic(fmt.Sprintf("DEVELOPER BUG: Field %q isn't one that's used in the config file %q and shouldn't be attempted...", fieldName, configFileName))
+// 	}
+
+// 	// Handle cases like `json:"my_field,omitempty"` by truncating at the comma
+// 	if idx := strings.Index(tag, ","); idx != -1 {
+// 		return tag[:idx]
+// 	}
+// 	return tag
+// }
+
+// getJSONTagByOffset finds a Config field by its memory offset and extracts its JSON key.
+// Because it uses real field selectors, it is 100% safe for VS Code automated refactoring.
+func getJSONTagByOffset(offset uintptr) string {
+	// Fix 1: Using reflect.TypeFor[T]() instead of reflect.TypeOf(T{})
+	typ := reflect.TypeFor[Config]()
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.Offset == offset {
+			tag := field.Tag.Get("json")
+			if tag == "" || tag == "-" {
+				//no fallback
+				panic(fmt.Sprintf("DEVELOPER BUG: Field %q isn't one that's used in the config file %q and shouldn't be attempted...", field.Name, configFileName))
+				// return strings.ToLower(field.Name) //fallback
+			}
+
+			// Fix 2: Using strings.Cut instead of strings.Index and slicing
+			// If a comma exists (e.g. "my_field,omitempty"), 'before' gets everything before it.
+			// If no comma exists, 'before' gets the entire string.
+			before, _, _ := strings.Cut(tag, ",")
+			return before
 		}
-		return tag
 	}
-	return "webui_password_hash" // Fallback safety
+
+	panic(fmt.Sprintf("DEVELOPER BUG: No field found at offset %d in Config struct", offset))
 }
 
 // OnReload registers an anonymous action to execute when a reload event is triggered
@@ -2209,7 +2270,7 @@ func OldMain() {
 		}
 		//fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for \"webui_password_hash\":\n%s\n", configFileName, hash)
 		// Dynamic tag extraction
-		var jsonTag string = getWebUIPasswordHashJSONTag()
+		var jsonTag string = getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 		fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for %q:\n%s\n", configFileName, jsonTag, hash)
 		mainLogger.Debug("Generated new hash password(not logging it) via cmd line arg, not saved in config.", slog.String("config", configFileName))
 		finalShutdownSequence(mainLogger, 0)
@@ -2339,28 +2400,167 @@ func (s *Server) loadMainConfig() error {
 
 	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
-	if newCfg.UpstreamClientTimeoutSec <= 0 {
-		const fallback = 5 // seconds
-		log.Warn("upstream_client_timeout_sec is 0 or negative (means no timeout in Go's http.Client), clamping",
-			slog.Int("given", newCfg.UpstreamClientTimeoutSec),
-			slog.Int("using", fallback))
-		newCfg.UpstreamClientTimeoutSec = fallback
+	// // Validate Web UI Timeouts
+	// if newCfg.WebUIReadHeaderTimeoutSec <= 0 {
+	// 	newCfg.WebUIReadHeaderTimeoutSec = 5
+	// 	log.Warn("webui_read_header_timeout_sec clamped to 5 (was <= 0)")
+	// }
+	// if newCfg.WebUIReadTimeoutSec <= 0 {
+	// 	newCfg.WebUIReadTimeoutSec = 15
+	// 	log.Warn("webui_read_timeout_sec clamped to 15 (was <= 0)")
+	// }
+	// if newCfg.WebUIWriteTimeoutSec <= 0 {
+	// 	newCfg.WebUIWriteTimeoutSec = 15
+	// 	log.Warn("webui_write_timeout_sec clamped to 15 (was <= 0)")
+	// }
+	// if newCfg.WebUIIdleTimeoutSec <= newCfg.WebUIReadTimeoutSec {
+	// 	newCfg.WebUIIdleTimeoutSec = newCfg.WebUIReadTimeoutSec * 2
+	// 	log.Warn("webui_idle_timeout_sec was <= read timeout, clamping to double the read timeout to prevent aggressive keep-alive disconnects",
+	// 		slog.Int("new_idle_timeout", newCfg.WebUIIdleTimeoutSec))
+	// }
+	// =========================================================================
+	// Group 1: WebUI Server Timeouts & Rate Limits (Refactor-safe)
+	// =========================================================================
+	tagWebUIReadHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadHeaderTimeoutSec))
+	if was := newCfg.WebUIReadHeaderTimeoutSec; was <= 0 {
+		const fallback = 5
+		newCfg.WebUIReadHeaderTimeoutSec = fallback
+		log.Warn(tagWebUIReadHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	if newCfg.UpstreamDialTimeoutSec <= 0 {
-		const fallback = 3 // seconds
-		log.Warn("upstream_dial_timeout_sec is 0 or negative, clamping",
-			slog.Int("given", newCfg.UpstreamDialTimeoutSec),
-			slog.Int("using", fallback))
-		newCfg.UpstreamDialTimeoutSec = fallback
+	tagWebUIRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadTimeoutSec))
+	if was := newCfg.WebUIReadTimeoutSec; was <= 0 {
+		const fallback = 15
+		newCfg.WebUIReadTimeoutSec = fallback
+		log.Warn(tagWebUIRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	if newCfg.UpstreamRetryBackoffMs <= 0 {
-		const fallback = 100 // ms
-		log.Warn("upstream_retry_backoff_ms is 0 or negative (means no timeout in Go's http.Client and hung situations), clamping",
-			slog.Int("given", newCfg.UpstreamRetryBackoffMs),
+	tagWebUIWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIWriteTimeoutSec))
+	if was := newCfg.WebUIWriteTimeoutSec; was <= 0 {
+		const fallback = 15
+		newCfg.WebUIWriteTimeoutSec = fallback
+		log.Warn(tagWebUIWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagWebUIIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec))
+	if was := newCfg.WebUIIdleTimeoutSec; was <= newCfg.WebUIReadTimeoutSec {
+		fallback := newCfg.WebUIReadTimeoutSec * 2
+		newCfg.WebUIIdleTimeoutSec = fallback
+		log.Warn(tagWebUIIdle+" clamped(to double the read timeout) to prevent aggressive keep-alive disconnects", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagWebUIMaxLoginFailures := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIMaxLoginFailures))
+	if was := newCfg.WebUIMaxLoginFailures; was <= 0 {
+		const fallback = 5
+		newCfg.WebUIMaxLoginFailures = fallback
+		log.Warn(tagWebUIMaxLoginFailures+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagWebUILoginLockoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUILoginLockoutSec))
+	if was := newCfg.WebUILoginLockoutSec; was <= 0 {
+		const fallback = 300
+		newCfg.WebUILoginLockoutSec = fallback
+		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// // Validate DoH Missing Timeouts
+	// if newCfg.UpstreamServerReadHeaderTimeoutSec <= 0 {
+	// 	newCfg.UpstreamServerReadHeaderTimeoutSec = 3
+	// 	log.Warn("upstreamserver_read_header_timeout_sec clamped to 3 (was <= 0)")
+	// }
+	// if newCfg.UpstreamServerIdleTimeoutSec <= newCfg.UpstreamServerReadTimeoutSec {
+	// 	newCfg.UpstreamServerIdleTimeoutSec = newCfg.UpstreamServerReadTimeoutSec * 2
+	// 	log.Warn("upstreamserver_idle_timeout_sec was <= read timeout, clamping to double the read timeout",
+	// 		slog.Int("new_idle_timeout", newCfg.UpstreamServerIdleTimeoutSec))
+	// }
+
+	// =========================================================================
+	// Validate Local DoH Server Timeouts (Refactor-safe & Linter-optimized)
+	// =========================================================================
+	tagDoHHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec))
+	if newCfg.LocalDoHReadHeaderTimeoutSec <= 0 {
+		newCfg.LocalDoHReadHeaderTimeoutSec = 3
+		log.Warn(tagDoHHeader + " clamped to 3 (was <= 0)")
+	}
+
+	tagDoHRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec))
+	if newCfg.LocalDoHReadTimeoutSec <= 0 {
+		newCfg.LocalDoHReadTimeoutSec = 30
+		log.Warn(tagDoHRead + " clamped to 30 (was <= 0)")
+	}
+
+	tagDoHWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec))
+	if newCfg.LocalDoHWriteTimeoutSec <= 0 {
+		newCfg.LocalDoHWriteTimeoutSec = 30
+		log.Warn(tagDoHWrite + " clamped to 30 (was <= 0)")
+	}
+
+	tagDoHIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec))
+	if newCfg.LocalDoHIdleTimeoutSec <= newCfg.LocalDoHReadTimeoutSec {
+		newCfg.LocalDoHIdleTimeoutSec = newCfg.LocalDoHReadTimeoutSec * 2
+		log.Warn(tagDoHIdle+" was <= read timeout, clamping to double the read timeout to prevent premature keep-alive drops",
+			slog.Int("new_idle_timeout", newCfg.LocalDoHIdleTimeoutSec))
+	}
+
+	// if newCfg.UpstreamClientTimeoutSec <= 0 {
+	// 	const fallback = 5 // seconds
+	// 	log.Warn("upstream_client_timeout_sec is 0 or negative (means no timeout in Go's http.Client), clamping",
+	// 		slog.Int("given", newCfg.UpstreamClientTimeoutSec),
+	// 		slog.Int("using", fallback))
+	// 	newCfg.UpstreamClientTimeoutSec = fallback
+	// }
+
+	// if newCfg.UpstreamDialTimeoutSec <= 0 {
+	// 	const fallback = 3 // seconds
+	// 	log.Warn("upstream_dial_timeout_sec is 0 or negative, clamping",
+	// 		slog.Int("given", newCfg.UpstreamDialTimeoutSec),
+	// 		slog.Int("using", fallback))
+	// 	newCfg.UpstreamDialTimeoutSec = fallback
+	// }
+
+	// if newCfg.UpstreamRetryBackoffMs <= 0 {
+	// 	const fallback = 100 // ms
+	// 	log.Warn("upstream_retry_backoff_ms is 0 or negative (means no timeout in Go's http.Client and hung situations), clamping",
+	// 		slog.Int("given", newCfg.UpstreamRetryBackoffMs),
+	// 		slog.Int("using", fallback))
+	// 	newCfg.UpstreamRetryBackoffMs = fallback
+	// }
+
+	// =========================================================================
+	// Validate Upstream HTTP Client Idle Connection Pools (Refactor-safe)
+	// =========================================================================
+
+	tagUpstreamIdleConnTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))
+	if newCfg.UpstreamIdleConnTimeoutSec <= 0 {
+		const fallback = 90
+		log.Warn(tagUpstreamIdleConnTimeout+" is 0 or negative (means connections stay open indefinitely or drop unpredictably), clamping",
+			slog.Int("given", newCfg.UpstreamIdleConnTimeoutSec),
 			slog.Int("using", fallback))
-		newCfg.UpstreamRetryBackoffMs = fallback
+		newCfg.UpstreamIdleConnTimeoutSec = fallback
+	}
+
+	tagUpstreamMaxIdleConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConns))
+	if newCfg.UpstreamMaxIdleConns <= 0 {
+		const fallback = 100
+		log.Warn(tagUpstreamMaxIdleConns+" is 0 or negative (disables global keep-alive reuse), clamping",
+			slog.Int("given", newCfg.UpstreamMaxIdleConns),
+			slog.Int("using", fallback))
+		newCfg.UpstreamMaxIdleConns = fallback
+	}
+
+	tagUpstreamMaxIdleConnsPerHost := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConnsPerHost))
+	if newCfg.UpstreamMaxIdleConnsPerHost <= 0 {
+		const fallback = 10
+		log.Warn(tagUpstreamMaxIdleConnsPerHost+" is 0 or negative (Go's default of 2 will severely throttle parallel DoH queries), clamping",
+			slog.Int("given", newCfg.UpstreamMaxIdleConnsPerHost),
+			slog.Int("using", fallback))
+		newCfg.UpstreamMaxIdleConnsPerHost = fallback
+	} else if newCfg.UpstreamMaxIdleConnsPerHost > newCfg.UpstreamMaxIdleConns {
+		// Defensive check: Per-host pool limit can't realistically exceed global pool limit
+		log.Warn(tagUpstreamMaxIdleConnsPerHost+" cannot exceed "+tagUpstreamMaxIdleConns+", clamping to global max pool size",
+			slog.Int("given", newCfg.UpstreamMaxIdleConnsPerHost),
+			slog.Int("using", newCfg.UpstreamMaxIdleConns))
+		newCfg.UpstreamMaxIdleConnsPerHost = newCfg.UpstreamMaxIdleConns
 	}
 
 	// Clean up and pre-parse IPv4
@@ -2453,11 +2653,11 @@ func (s *Server) loadMainConfig() error {
 		}
 	}
 
-	checkAndClean(&newCfg.BlacklistFile, "blacklist_file", defaultConfig.BlacklistFile)
-	checkAndClean(&newCfg.WhitelistFile, "whitelist_file", defaultConfig.WhitelistFile)
-	checkAndClean(&newCfg.LogQueriesFile, "log_queries", defaultConfig.LogQueriesFile)
-	checkAndClean(&newCfg.LogErrorsFile, "log_errors", defaultConfig.LogErrorsFile)
-	checkAndClean(&newCfg.HostsFile, "hosts_file", defaultConfig.HostsFile)
+	checkAndClean(&newCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultConfig.BlacklistFile)
+	checkAndClean(&newCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultConfig.WhitelistFile)
+	checkAndClean(&newCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultConfig.LogQueriesFile)
+	checkAndClean(&newCfg.LogErrorsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogErrorsFile)), defaultConfig.LogErrorsFile)
+	checkAndClean(&newCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultConfig.HostsFile)
 
 	// NEW: Enforce password setup if it's missing from the config
 	if newCfg.WebUIPasswordHash == "" {
@@ -8027,9 +8227,15 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	//FIXME: XXX: in the future(so now lol) if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart). ok, we're already doing the relisten, but make sure we do it even when only these cfg values change! or do it unconditionally!
 
 	srv := &http.Server{
-		Handler:      mux,
-		ReadTimeout:  time.Duration(params.ReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
-		WriteTimeout: time.Duration(params.WriteTimeoutSec) * time.Second, // Optional, for responses
+		Handler: mux,
+		// ReadHeaderTimeout: 3 * time.Second,                                     // Specifically kills slowloris
+		// ReadTimeout:       time.Duration(params.ReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
+		// WriteTimeout:      time.Duration(params.WriteTimeoutSec) * time.Second, // Optional, for responses
+		// IdleTimeout:       time.Duration(params.ReadTimeoutSec) * 2 * time.Second,
+		ReadHeaderTimeout: time.Duration(params.ReadHeaderTimeoutSec) * time.Second,
+		ReadTimeout:       time.Duration(params.ReadTimeoutSec) * time.Second,
+		WriteTimeout:      time.Duration(params.WriteTimeoutSec) * time.Second,
+		IdleTimeout:       time.Duration(params.IdleTimeoutSec) * time.Second,
 	}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
@@ -8163,7 +8369,18 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
 	boundAddr := baseListener.Addr().String() //TODO: save this and use it for hostValidation middleware
-	srv := &http.Server{Handler: s.adminUI.SetupRoutes(boundAddr, params.UseTLS)}
+	srv := &http.Server{
+		Handler: s.adminUI.SetupRoutes(boundAddr, params.UseTLS),
+		//doneTODO: make this configurable?
+		// ReadHeaderTimeout: 5 * time.Second,
+		// ReadTimeout:       15 * time.Second,
+		// WriteTimeout:      15 * time.Second,
+		// IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: time.Duration(params.ReadHeaderTimeoutSec) * time.Second,
+		ReadTimeout:       time.Duration(params.ReadTimeoutSec) * time.Second,
+		WriteTimeout:      time.Duration(params.WriteTimeoutSec) * time.Second,
+		IdleTimeout:       time.Duration(params.IdleTimeoutSec) * time.Second,
+	}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
 
@@ -8246,32 +8463,44 @@ func dnsListenerParamsFrom(cfg *Config) dnsListenerParams {
 }
 
 type dohListenerParams struct {
-	Addr            string
-	ReadTimeoutSec  int
-	WriteTimeoutSec int
-	CertGeneration  uint64
+	Addr                 string
+	ReadHeaderTimeoutSec int
+	ReadTimeoutSec       int
+	WriteTimeoutSec      int
+	IdleTimeoutSec       int
+	CertGeneration       uint64
 }
 
 func (s *Server) dohListenerParamsFrom(cfg *Config) dohListenerParams {
 	return dohListenerParams{
-		Addr:            cfg.ListenDoH,
-		ReadTimeoutSec:  cfg.UpstreamServerReadTimeoutSec,
-		WriteTimeoutSec: cfg.UpstreamServerWriteTimeoutSec,
-		CertGeneration:  s.certGeneration.Load(),
+		Addr:                 cfg.ListenDoH,
+		ReadHeaderTimeoutSec: cfg.LocalDoHReadHeaderTimeoutSec,
+		ReadTimeoutSec:       cfg.LocalDoHReadTimeoutSec,
+		WriteTimeoutSec:      cfg.LocalDoHWriteTimeoutSec,
+		IdleTimeoutSec:       cfg.LocalDoHIdleTimeoutSec,
+		CertGeneration:       s.certGeneration.Load(),
 	}
 }
 
 type uiListenerParams struct {
-	Addr           string
-	UseTLS         bool
-	CertGeneration uint64
+	Addr                 string
+	UseTLS               bool
+	ReadHeaderTimeoutSec int
+	ReadTimeoutSec       int
+	WriteTimeoutSec      int
+	IdleTimeoutSec       int
+	CertGeneration       uint64
 }
 
 func (s *Server) uiListenerParamsFrom(cfg *Config) uiListenerParams {
 	return uiListenerParams{
-		Addr:           cfg.ListenUI,
-		UseTLS:         cfg.WebUIUseTLS,
-		CertGeneration: s.certGeneration.Load(),
+		Addr:                 cfg.ListenUI,
+		UseTLS:               cfg.WebUIUseTLS,
+		ReadHeaderTimeoutSec: cfg.WebUIReadHeaderTimeoutSec,
+		ReadTimeoutSec:       cfg.WebUIReadTimeoutSec,
+		WriteTimeoutSec:      cfg.WebUIWriteTimeoutSec,
+		IdleTimeoutSec:       cfg.WebUIIdleTimeoutSec,
+		CertGeneration:       s.certGeneration.Load(),
 	}
 }
 
