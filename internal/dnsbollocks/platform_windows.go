@@ -8852,6 +8852,22 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// --- NEW HASHING INTERCEPTOR ---
+			if plainPwd, ok := changes["webui_password_hash"].(string); ok {
+				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
+				if !strings.HasPrefix(plainPwd, "$2") && plainPwd != "" {
+					log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already")
+					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), bcrypt.DefaultCost)
+					if hashErr != nil {
+						log.Error("Failed to hash new webui password", SafeErr(hashErr))
+						http.Error(w, "failed to hash new password", http.StatusInternalServerError)
+						return
+					}
+					changes["webui_password_hash"] = string(hashBytes)
+				}
+			}
+			// --- END INTERCEPTOR ---
+
 			// Parse existing file to preserve unknown keys and overall structure
 			data, err := os.ReadFile(configFileName)
 			if err != nil {
@@ -8885,6 +8901,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			dec := json.NewDecoder(bytes.NewReader(newData))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&testCfg); err != nil {
+				//TODO: needs better validation here! but I guess Reload() is doing the proper validation!
 				log.Warn("Validation failed for new config", SafeErr(err))
 				http.Error(w, "Validation failed (check format/types): "+err.Error(), http.StatusBadRequest)
 				return
@@ -8905,7 +8922,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// Commit to disk and trigger hot-reload
 			if ui.OnApplyConfig != nil {
 				if err := ui.OnApplyConfig(newData); err != nil {
-					log.Error("Failed to apply config", SafeErr(err))
+					log.Error("Failed to apply config (that is: save&reload)", SafeErr(err))
 					http.Error(w, "Failed to save/reload config: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
