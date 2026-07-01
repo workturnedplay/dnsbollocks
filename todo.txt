@@ -1,4 +1,5 @@
 todo:
+* make sure to check the return errors for like SetWriteDeadline
 * find more places where I need to be Replacing Type Assertions with errors.As
 * find more places where I should be using errors.Is (no warnings about it currently tho)
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.

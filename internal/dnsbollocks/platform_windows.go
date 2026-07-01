@@ -490,7 +490,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// Caller gave up. Abandoned in-flight goroutines (including any
 			// probe) still run to completion and still apply their healing
 			// side-effect; we just stop waiting on their results here.
-			return nil, "", failedUpstreams, ctx.Err()
+			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err())
 		} //select
 	}
 
@@ -499,7 +499,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	for i := currentIdx + 1; i < len(upstreams); i++ {
 		// FIX 2: Prevent the instant fallback loop spam during a Ctrl+C shutdown
 		if ctx.Err() != nil {
-			return nil, "", failedUpstreams, ctx.Err()
+			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err())
 		}
 		target := upstreams[i]
 		resp, err := target.doSingleDoHRequest(ctx, reqBytes)
@@ -540,7 +540,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			SafeErr(err),
 		)
 		failedUpstreams = append(failedUpstreams, target.URL.String())
-	}
+	} //for
 	// If execution gets here, every single configured upstream failed
 	fs.mu.Lock()
 	fs.allFailed = true
@@ -1574,7 +1574,7 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	//buf.WriteString("\x1b[0m\n") // Full reset at End Of Line
 
 	_, err := h.Out.Write(buf.Bytes())
-	return err
+	return fmt.Errorf("failed to buffer of the colored console handler: %w", err)
 }
 
 func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -1623,7 +1623,8 @@ func (h queryFilterHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !isQuery {
 		return nil // silently dropped — this is the magic
 	}
-	return h.Handler.Handle(ctx, r)
+	err := h.Handler.Handle(ctx, r)
+	return fmt.Errorf("handle query filter in webUI backend: %w", err)
 }
 
 // -----------------------------------------------------------------------------
@@ -2831,7 +2832,7 @@ func (s *Server) cleanFileName(original, description, fallback string) (string, 
 func hostFromURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse rawurl %q err: %w", raw, err)
 	}
 	host := u.Hostname() // Built-in method strips the port safely
 	if strings.TrimSpace(host) == "" {
@@ -3950,8 +3951,8 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			var e error
 			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, u.URL.String(), bytes.NewReader(reqBytes))
 			if e != nil {
-				//log.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
-				return true, e
+				// Wrap the error to give it context and satisfy wrapcheck
+				return true, fmt.Errorf("failed to create DoH HTTP request: %w", e)
 			}
 
 			req.Header.Set("Content-Type", "application/dns-message")
@@ -4007,7 +4008,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 🔴 FIX #1: If this was the last attempt, return the REAL error immediately!
 			// This prevents falling through to the bottom of the function.
 			if attempt >= maxTries {
-				return nil, err4ClientDo
+				return nil, fmt.Errorf("exhausted %d/%d tries to upstream DoH, last request's err: %w", attempt, maxTries, err4ClientDo)
 			}
 			if u.RetryBackoffDuration <= 0 {
 				u.RetryBackoffDuration = time.Duration(100) * time.Millisecond
@@ -4022,10 +4023,10 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				//exits select
 			case <-ctx.Done():
 				log.Debug("doh sensed client quit during retry backoff...")
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err())
 			case <-u.BackgroundCtx.Done():
 				log.Debug("doh sensed quit during retry backoff...")
-				return nil, u.BackgroundCtx.Err()
+				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err())
 			}
 			continue //next try
 		}
@@ -4046,7 +4047,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
-		return nil, err4ClientDo
+		return nil, fmt.Errorf("failed to send the HTTP request to the upstream DoH server %q, err: %w", u.URL.String(), err4ClientDo /*non-nil here*/)
 	} //for retries
 
 	// --- THE CODE BELOW ONLY EXECUTES ON SUCCESSFUL BREAK ---
@@ -4067,7 +4068,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	body, err4ReadAll := io.ReadAll(resp.Body)
 	if err4ReadAll != nil {
 		log.Error("doh_readbody_failed", SafeErr(err4ReadAll))
-		return nil, err4ReadAll
+		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll)
 	}
 
 	// debug/log non-200 or unexpected content-type
@@ -4090,7 +4091,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
-		return nil, err4Unpack
+		return nil, fmt.Errorf("failed to unpack response body for upstream DoH %q, err: %w", u.URL.String(), err4Unpack)
 	}
 	return upMsg, nil
 }
@@ -6843,7 +6844,7 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	}
 	fmt.Println()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read password from the terminal: %w", err)
 	}
 	if len(pwd1) == 0 {
 		return "", errors.New("password cannot be empty")
@@ -6859,17 +6860,18 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	}
 	fmt.Println()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to re-read password from the terminal: %w", err)
 	}
 
-	if string(pwd1) != string(pwd2) {
+	//if string(pwd1) != string(pwd2) {
+	if !bytes.Equal(pwd1, pwd2) {
 		return "", fmt.Errorf("passwords do not match, len1:%d vs len2:%d", len(pwd1), len(pwd2))
 	}
 
 	// DefaultCost is 10, which is perfectly balanced for modern hardware
 	hash, err := bcrypt.GenerateFromPassword(pwd1, bcrypt.DefaultCost)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to generate bcrypt from password: %w", err)
 	}
 
 	return string(hash), nil
@@ -7431,19 +7433,19 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	// 2. Overwrite the target file directly (Retains Windows ACLs)
 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open the file directly: %w", err)
 	}
 	_, writeErr := targetFile.Write(data)
 	if writeErr != nil {
 		targetFile.Close()
-		return writeErr
+		return fmt.Errorf("failed to write to the file directly: %w", writeErr)
 	}
 	syncErr := targetFile.Sync()
 	closeErr := targetFile.Close()
 	if syncErr != nil {
-		return syncErr
+		return fmt.Errorf("failed to sync the file that was directly written: %w", syncErr)
 	}
-	return closeErr
+	return fmt.Errorf("failed to close the file that was directly written&sync'd successfully, err: %w", closeErr)
 }
 
 // AdminUI handles all the web control panel routes.
@@ -7920,7 +7922,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 				log.Debug("opening new TCP socket for upstream DoH", slog.String("dialAddr", dialAddr))
 				conn, err := d.DialContext(ctx, network, dialAddr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to dial new TCP socket for upstream DoH, addr:%s err: %w", dialAddr, err)
 				}
 
 				//return d.DialContext(ctx, network, dialAddr)
@@ -8004,7 +8006,8 @@ func (w *writeTimeoutConn) Write(b []byte) (int, error) {
 	if w.timeout > 0 {
 		_ = w.Conn.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
-	return w.Conn.Write(b)
+	n, err := w.Conn.Write(b)
+	return n, fmt.Errorf("failed to write to the net connection: %w", err)
 }
 
 // type httpListenerInstance struct {
@@ -8650,7 +8653,7 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 
 	n, err = w.file.Write(p)
 	w.size += int64(n)
-	return n, err
+	return n, fmt.Errorf("failed to write to the rotating logger file: %w", err)
 }
 
 // must be done under lock!
