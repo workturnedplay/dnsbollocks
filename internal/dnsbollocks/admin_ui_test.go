@@ -1,7 +1,6 @@
 package dnsbollocks
 
 import (
-	//"context"
 	"errors"
 	"expvar"
 	"html/template"
@@ -34,7 +33,6 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	lt := newLoginTracker()
 	rb := newRecentBlocksTracker()
 	stats := new(expvar.Int)
-	//upstreamIPs := []string{"1.1.1.1"}
 
 	// Provide a dummy template context so rendering handlers don't panic
 	// Customize template names here to match what your handlers look for (e.g., "rules.html")
@@ -63,21 +61,10 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 // 1. Test that the routing layer wraps everything and serves requests correctly
 func TestAdminUI_RoutingAndMux(t *testing.T) {
 	_, rec := setupTestAdminUI(t)
-	//handler := ui.SetupRoutes()
 
 	// Create a fake HTTP request to an unprotected/built-in route
 	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
-	// handler.ServeHTTP(rec, req)
-	// Supplying a valid authentication state. If your authMiddleware checks for
-	// active session states, we bypass it by testing the underlying global handler context directly.
-	// if ui.authMiddleware != nil {
-	// 	t.Log("Bypassing middleware layer checking; invoking inner expvar context directly.")
-	// 	expvar.Handler().ServeHTTP(rec, req)
-	// } else {
-	// 	handler.ServeHTTP(rec, req)
-	// }
-	// We call expvar.Handler() directly here to assert that internal metrics routing is reachable
-	// independently from our cryptographic session storage middleware checks.
+
 	expvar.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -131,10 +118,6 @@ func TestAdminUI_RulesHandlerSaveCallback(t *testing.T) {
 			t.Error("Expected OnSaveWhitelist callback to fire after adding a rule, but it didn't")
 		}
 	}
-	// // Assert the callback was invoked because the handler processed a save operation
-	// if !callbackFired {
-	// 	t.Error("Expected OnSaveWhitelist callback to fire after adding a rule, but it didn't")
-	// }
 }
 
 // 3. Test that catastrophic failures gracefully trigger the application shutdown sequence
@@ -145,14 +128,6 @@ func TestAdminUI_FatalCrashIsolation(t *testing.T) {
 	var shutdownCalled bool
 	var capturedExitCode int
 
-	// ui := &AdminUI{
-	// 	// 2. Design the mock to panic immediately, halting downstream execution
-	// 	OnShutdown: func(exitCode int) {
-	// 		shutdownCalled = true
-	// 		capturedExitCode = exitCode
-	// 		panic(shutdownSentinel)
-	// 	},
-	// }
 	ui, _ := setupTestAdminUI(t)
 	// 2. Design the mock to panic immediately, halting downstream execution
 	ui.OnShutdown = func(exitCode int) {

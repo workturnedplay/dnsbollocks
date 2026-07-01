@@ -98,7 +98,6 @@ func runLookupBenchmark(b *testing.B, rules []benchRule) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		//name := names[i%len(names)]
 		name := strings.ToLower(names[i%len(names)]) //XXX: it's assumed that the name to lookup is already lowercased before checking it.
 		benchResult = benchLookup(name, qtype, rules)
 	}
