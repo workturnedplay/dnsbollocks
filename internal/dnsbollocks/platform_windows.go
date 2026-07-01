@@ -140,7 +140,8 @@ type Config struct {
 	WebUIWriteTimeoutSec      int    `json:"webui_write_timeout_sec"`
 	WebUIIdleTimeoutSec       int    `json:"webui_idle_timeout_sec"`
 
-	MaxConcurrentDNSTCPConns int `json:"max_concurrent_dns_tcp_conns"`
+	MaxConcurrentDNSTCPConns   int `json:"max_concurrent_dns_tcp_conns"`
+	MaxConcurrentDNSUDPQueries int `json:"max_concurrent_dns_udp_queries"`
 
 	// Network & Connection Limits
 	ClientTCPTimeoutSec int `json:"client_tcp_timeout_sec"`
@@ -243,6 +244,7 @@ type Server struct {
 
 	//dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
 	dnsTCPSem atomic.Pointer[chan struct{}]
+	dnsUDPSem atomic.Pointer[chan struct{}]
 
 	dnsListener atomic.Pointer[dnsListenerInstance]
 	dohListener atomic.Pointer[dohListenerInstance] // Changed type
@@ -1289,7 +1291,8 @@ func defaultConfig() Config {
 		WebUIWriteTimeoutSec:      15,
 		WebUIIdleTimeoutSec:       60,
 
-		MaxConcurrentDNSTCPConns: 50,
+		MaxConcurrentDNSTCPConns:   50,
+		MaxConcurrentDNSUDPQueries: 1000,
 
 		// Centralized Network Parameter Defaults
 
@@ -2086,6 +2089,14 @@ func (s *Server) Reload() {
 			slog.Int("old_max", oldCfg.MaxConcurrentDNSTCPConns),
 			slog.Int("new_max", cfgNew.MaxConcurrentDNSTCPConns))
 	}
+
+	if oldCfg.MaxConcurrentDNSUDPQueries != cfgNew.MaxConcurrentDNSUDPQueries {
+		s.swapDNSUDPSemaphore(cfgNew.MaxConcurrentDNSUDPQueries)
+		log.Debug("DNS UDP concurrent-query limit updated",
+			slog.Int("old_max", oldCfg.MaxConcurrentDNSUDPQueries),
+			slog.Int("new_max", cfgNew.MaxConcurrentDNSUDPQueries))
+	}
+
 	// The magic happens here: entirely data-driven rebinds.
 	s.rebindDNSListener(dnsListenerParamsFrom(cfgNew))
 	s.rebindDoHListener(s.dohListenerParamsFrom(cfgNew))
@@ -2131,6 +2142,8 @@ func (s *Server) Run() error {
 
 	s.swapDNSTCPSemaphore(cfg.MaxConcurrentDNSTCPConns)
 	log.Debug("DNS TCP concurrent-connection limit initialised", slog.Int("max_concurrent", cfg.MaxConcurrentDNSTCPConns))
+	s.swapDNSUDPSemaphore(cfg.MaxConcurrentDNSUDPQueries)
+	log.Debug("DNS UDP concurrent-connection limit initialised", slog.Int("max_concurrent", cfg.MaxConcurrentDNSUDPQueries))
 
 	s.generateCertIfNeeded() // For DoH and webUI!
 
@@ -2543,6 +2556,13 @@ func (s *Server) loadMainConfig() error {
 		fallback := defaultConfig.MaxConcurrentDNSTCPConns
 		newCfg.MaxConcurrentDNSTCPConns = fallback
 		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagMaxConcurrentDNSUDPQueries := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSUDPQueries))
+	if was := newCfg.MaxConcurrentDNSUDPQueries; was <= 0 {
+		fallback := defaultConfig.MaxConcurrentDNSUDPQueries
+		newCfg.MaxConcurrentDNSUDPQueries = fallback
+		log.Warn(tagMaxConcurrentDNSUDPQueries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientTCPTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec))
@@ -8092,6 +8112,22 @@ func (s *Server) acquireDNSTCPSlot() (release func(), ok bool) {
 	}
 }
 
+func (s *Server) swapDNSUDPSemaphore(maxConns int) {
+	sem := make(chan struct{}, maxConns)
+	s.dnsUDPSem.Store(&sem)
+}
+
+func (s *Server) acquireDNSUDPSlot() (release func(), ok bool) {
+	sem := *s.dnsUDPSem.Load()
+	select {
+	case sem <- struct{}{}:
+		// Slot acquired
+		return func() { <-sem }, true
+	default:
+		return nil, false
+	}
+}
+
 func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 	log2 := s.getLogger()
 	log2.Info("UDP DNS listening success", slog.String("addr", udpLn.LocalAddr().String()))
@@ -8151,13 +8187,27 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		// by this specific listener instance being torn down during a hot rebind.
 		udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
 
+		// --- ADD SEMAPHORE CHECK HERE ---
+		release, ok := s.acquireDNSUDPSlot()
+		if !ok {
+			udpPool.Put(bufPtr) // Don't forget to recycle the buffer!
+			sem := *s.dnsUDPSem.Load()
+			log3.Warn("DNS UDP concurrent query limit reached; dropping packet",
+				slog.Int("max_concurrent", cap(sem)),
+				SafeAddr("rejected_client", clientAddr),
+			)
+			continue
+		}
+		// --------------------------------
+
 		// TRACK INDIVIDUAL REQUESTS:
 		s.shutdownWG.Add(1)
-		go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn) {
+		go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn, rel func()) {
 			defer s.shutdownWG.Done()
 			defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
+			defer rel()                  // Release the slot when the goroutine exits
 			s.handleUDP(pCtx, data, addr, ln)
-		}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn)
+		}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn, release)
 	} //infinite 'for'
 }
 
