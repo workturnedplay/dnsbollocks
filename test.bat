@@ -1,6 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: Check for verbose flag
+set "VERBOSE_GO_FLAG="
+set "VERBOSE_BIN_FLAG="
+if "%TEST_VERBOSE%"=="1" (
+    set "VERBOSE_GO_FLAG=-v"
+    set "VERBOSE_BIN_FLAG=-test.v"
+    echo Verbose logging enabled.
+)
+
 :: 0. Capture Workspace State
 :: Run this BEFORE you 'set GOWORK=off' if you want to know the original state
 set "WS_PATH="
@@ -33,13 +42,13 @@ cd /d "%~dp0"
 ::go.exe vet -mod=vendor ./...
 ::if errorlevel 1 goto :fail
 
-echo Running go test 
+echo Running standard tests...
 rem :: go test runs a limited 'go vet' only on reachable code paths relevant to the package ...
 rem :: so a full 'go vet' might fail even if 'go test' 's internal run of 'go vet' does not!
 rem -v will show all tests even the PASS ones
 rem go.exe test -v !MOD_FLAG! ./...
 rem not using -v below so only fails are seen(thus less spam):
-go.exe test !MOD_FLAG! ./...
+go.exe test !VERBOSE_GO_FLAG! !MOD_FLAG! ./...
 :: ./... means “Walk the directory tree from here, find every Go package, and apply vet to each.”
 if errorlevel 1 goto :fail
 echo Those tests succeeded.
@@ -49,7 +58,10 @@ rem :: We add "-tags portmaster" here so Go includes the hidden test file
 go.exe test -c !MOD_FLAG! -tags portmasterFirewalled -o dev_dns_test.exe .\internal\dnsbollocks\
 if %ERRORLEVEL% equ 0 (
     echo Running only the firewall-requiring^(localhost talk^) tests...
-    .\dev_dns_test.exe -test.v -test.run "^TestFWNeeded"
+    rem -test.v will show PASS tests and any output
+    rem .\dev_dns_test.exe -test.v -test.run "^TestFWNeeded"
+    rem not using -test.v:
+    .\dev_dns_test.exe !VERBOSE_BIN_FLAG! -test.run "^TestFWNeeded"
     if errorlevel 1 (
       echo You will have to allow "127.0.0.1 tcp/49152-65535" and "127.0.0.1 udp/49152-65535" in firewall^(eg. portmaster^) both IN and OUT for these tests to pass
       goto :fail
