@@ -1975,6 +1975,7 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 
 // getJSONTagByOffset finds a Config field by its memory offset and extracts its JSON key.
 // Because it uses real field selectors, it is 100% safe for VS Code automated refactoring.
+// example usage: getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 func getJSONTagByOffset(offset uintptr) string {
 	// Fix 1: Using reflect.TypeFor[T]() instead of reflect.TypeOf(T{})
 	typ := reflect.TypeFor[Config]()
@@ -3769,7 +3770,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	originalCopy := resp.Copy()
 	originalIPs := extractIPs(originalCopy)
 	// Filter
-	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, s.blacklist) // XXX: resp gets mutated here!
+	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPv4Hints)), s.blacklist) // XXX: resp gets mutated here!
 	if filtered == nil {
 		// filterReason now holds exact info like "blockedByUpstream_ZeroIP" or "dns_rebinding_protection"
 
@@ -4359,7 +4360,7 @@ const StrippedRRSIG string = "stripped_rrsig"
 const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
 // mutates the passed arg
-func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, blacklist IPChecker) (*dns.Msg, string) {
+func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, configKeyName string, blacklist IPChecker) (*dns.Msg, string) {
 	//log := s.getLogger()
 
 	if msg == nil {
@@ -4383,7 +4384,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
 		var good []dns.RR
 		for _, rr := range records {
-			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, blacklist); keep {
+			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, configKeyName, blacklist); keep {
 				good = append(good, modifiedRR)
 			} else {
 				// Captures and mutates 'dropReasons' from the outer scope automatically
@@ -4435,7 +4436,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist IPChecker) (bool, dns.RR, string) {
+func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKeyName string, blacklist IPChecker) (bool, dns.RR, string) {
 	// cfg := s.getConfig()
 	// log := s.getLogger()
 
@@ -4473,7 +4474,11 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 				if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
 					newParams = append(newParams, param)
 				} else {
-					log.Warn("Dropping IP hint from the HTTPS reply", slog.String("param", param.String() /*non nil*/))
+					log.Warn("Dropping IP hint from the HTTPS reply",
+						slog.String("param", param.String() /*non nil*/),
+						slog.String("config_filename", configFileName),
+						slog.String("config_key_name", configKeyName),
+					)
 				}
 			}
 			r.Value = newParams

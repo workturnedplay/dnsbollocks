@@ -103,7 +103,7 @@ func TestProcessRR(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPv4Hints, blacklist)
+			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPv4Hints, "no matter", blacklist)
 
 			if keep != tc.wantKeep {
 				t.Errorf("expected keep=%v, got %v", tc.wantKeep, keep)
@@ -141,7 +141,7 @@ func TestFilterResponse(t *testing.T) {
 			},
 		}
 
-		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
+		filtered, reason := filterResponse(dummyLog, msg, true, "no matter", blacklist)
 
 		if filtered != nil {
 			t.Errorf("expected filtered message to be nil, got %v", filtered)
@@ -167,7 +167,7 @@ func TestFilterResponse(t *testing.T) {
 			},
 		}
 
-		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
+		filtered, reason := filterResponse(dummyLog, msg, true, "no matter", blacklist)
 
 		if filtered == nil {
 			t.Fatalf("expected filtered message to NOT be nil")
