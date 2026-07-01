@@ -3281,13 +3281,13 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		//TODO: see if we can trigger this! and/or think of what happens if it happens!
 	}
 
-	if r.Method != "POST" && r.Method != "GET" {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet { //"POST" "GET"
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body []byte
 
-	if r.Method == "POST" {
+	if r.Method == http.MethodPost { //"POST" {
 		// Limit incoming DoH payload to 64KB to prevent memory exhaustion attacks
 		r.Body = http.MaxBytesReader(w, r.Body, int64(cfg.DoHMaxRequestBodyBytes))
 		body, err = io.ReadAll(r.Body)
@@ -3684,7 +3684,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 
 			// create request with supplied context so caller controls deadline/cancel
 			var e error
-			req, e = http.NewRequestWithContext(reqCtx, "POST", u.URL.String(), bytes.NewReader(reqBytes))
+			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, u.URL.String(), bytes.NewReader(reqBytes))
 			if e != nil {
 				//log.Error("doh_newrequest_failed", slog.Any("err", e)) // not here!
 				return true, e
@@ -4434,7 +4434,7 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet { //"GET" {
 		cidrs := ui.getResponseBlacklist()
 		views := make([]BlacklistView, len(cidrs))
 		for i, c := range cidrs {
@@ -4447,7 +4447,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if r.Method == "POST" {
+	if r.Method == http.MethodPost { //"POST" {
 		action := r.FormValue("action")
 
 		switch action { //doneFIXME: could use tagged switch on action QF1003 default
@@ -4644,30 +4644,94 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	outerMux.Handle(
 		"/favicon.ico",
 		ui.securityHeadersMiddleware(
-			ui.hostValidation(boundAddr, http.HandlerFunc(faviconHandler)),
+			ui.fetchMetadataWhitelistMiddleware(
+				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(faviconHandler))),
 		),
 	)
 
 	outerMux.Handle(
 		"/robots.txt",
 		ui.securityHeadersMiddleware(
-			ui.hostValidation(boundAddr, http.HandlerFunc(robotsTxtHandler)),
+			ui.fetchMetadataWhitelistMiddleware(
+				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(robotsTxtHandler))),
 		),
 	)
 
 	// Everything else goes through sechead->hostvalid->auth → CSRF → inner mux.
 	var h http.Handler = innerMux
 	h = ui.csrfMiddleware(h)
-	h = ui.originValidation(boundAddr, usedTLS, h)
+	h = ui.originValidationMiddleware(boundAddr, usedTLS, h)
 	h = ui.authMiddleware(h)
-	h = ui.hostValidation(boundAddr, h)
+	h = ui.hostValidationMiddleware(boundAddr, h)
+	h = ui.fetchMetadataWhitelistMiddleware(h)
 	h = ui.securityHeadersMiddleware(h)
 	outerMux.Handle("/", h)
 	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
 	return outerMux
 }
+func (ui *AdminUI) fetchMetadataWhitelistMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		site := r.Header.Get("Sec-Fetch-Site")
+		mode := r.Header.Get("Sec-Fetch-Mode")
 
-func (ui *AdminUI) originValidation(expectedHost string, useTLS bool, next http.Handler) http.Handler {
+		// 1. If the browser is old and doesn't support Fetch Metadata,
+		// let it pass through to your regular CSRF / Origin defenses.
+		if site == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. WHITELIST: Internal requests & direct user actions
+		// - "same-origin": Clicking a button/link inside your own app
+		// - "none": User typed the URL in the address bar, clicked a bookmark,
+		//   or launched it from a terminal/script.
+		/*
+			Sec-Fetch-Site
+			same-origin: The request was made from the exact same origin (same protocol, domain, and port).
+			same-site: The request was made from a same-site origin (e.g., a subdomain like api.example.com fetching from example.com).
+			cross-site: The request was made from an entirely different site (e.g., evil.com fetching from your localhost app).
+			none: The request was initiated by the user explicitly (e.g., typing the URL into the address bar, clicking a bookmark, or loading a local file).
+		*/
+		if site == "same-origin" || site == "none" || site == "same-site" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 3. WHITELIST: Cross-site top-level navigation
+		// If another site links to your WebUI, we want to allow the user to
+		// actually click that link and land on your page.
+		// BUT we ONLY allow it for safe, state-less read methods (GET/HEAD).
+		/*
+			Sec-Fetch-Mode
+			Maps: Used for HTML document navigation requests (e.g., when you click a link to a new page, submit a standard form, or type a URL).
+			cors: Used for standard cross-origin requests, like a JavaScript fetch() or Axios call that expects CORS headers.
+			no-cors: Used for limited requests that don't require CORS validation, such as loading an image via an <img> tag, a script via <script>, or CSS via <link>.
+			same-origin: Used when a request is strictly internal and doesn't need cross-origin logic.
+			websocket: Used when establishing a WebSocket connection.
+		*/
+		if mode == "navigate" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if mode == "no-cors" /*favicon.ico*/ && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		log := ui.getLogger()
+		// 4. DENY EVERYTHING ELSE BY DEFAULT
+		// This instantly destroys cross-site malicious API calls (fetch/xhr),
+		// cross-site form POSTs, iframes, and sneaky <img> tags.
+		log.Warn("Blocked unauthorized cross-site request via Fetch Metadata",
+			slog.String("path", r.URL.Path),
+			slog.String("method", r.Method),
+			slog.String("site", site),
+			slog.String("mode", mode),
+		)
+		http.Error(w, "403 Forbidden - Cross-Site Request Blocked", http.StatusForbidden)
+	})
+}
+func (ui *AdminUI) originValidationMiddleware(expectedHost string, useTLS bool, next http.Handler) http.Handler {
 	expectedScheme := "http"
 	if useTLS {
 		expectedScheme = "https"
@@ -4741,6 +4805,24 @@ func (ui *AdminUI) originValidation(expectedHost string, useTLS bool, next http.
 		// http.Error(w, "Missing or invalid Origin/Referer", http.StatusForbidden)
 
 		log := ui.getLogger()
+
+		//this part is obsolete now
+		secFetchSite := r.Header.Get("Sec-Fetch-Site")
+		secFetchMode := r.Header.Get("Sec-Fetch-Mode")
+
+		// If the request explicitly comes from a different site (not your UI)...
+		if secFetchSite == "cross-site" || secFetchSite == "cross-origin" {
+			// ...and it is not a normal top-level page navigation (like typing the URL or clicking a bookmark)
+			if secFetchMode != "navigate" {
+				log.Warn("Blocked cross-site request via Fetch Metadata",
+					slog.String("path", r.URL.Path),
+					slog.String("sec_fetch_site", secFetchSite),
+				)
+				http.Error(w, "403 Forbidden - Cross-Site Request Blocked", http.StatusForbidden)
+				return
+			}
+		}
+
 		origin := r.Header.Get("Origin")
 
 		switch {
@@ -4863,7 +4945,7 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (ui *AdminUI) hostValidation(expectedHost string, next http.Handler) http.Handler {
+func (ui *AdminUI) hostValidationMiddleware(expectedHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Host, expectedHost) {
 			http.Error(w, "Invalid Host header", http.StatusForbidden)
@@ -4923,7 +5005,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		r = r.WithContext(ctx)
 
 		// 3. Validate the token on all state-changing POST requests
-		if r.Method == "POST" {
+		if r.Method == http.MethodPost { //"POST" {
 			formToken := r.FormValue("csrf_token")
 			if formToken == "" || formToken != token {
 				// Capture everything safely in local variables immediately (optional, but clean)
@@ -5519,7 +5601,7 @@ type RuleView struct {
 func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet { //"GET" {
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
 
@@ -5553,7 +5635,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == "POST" {
+	if r.Method == http.MethodPost { //"POST"
 		// Handle delete requests
 		if r.FormValue("delete") == "1" {
 			id := r.FormValue("id")
@@ -5829,7 +5911,7 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet { //"GET" {
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			//"Page":  "hosts",
@@ -5840,7 +5922,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == "POST" {
+	if r.Method == http.MethodPost { //"POST" {
 		// --- DELETE ---
 		if r.FormValue("delete") == "1" {
 			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
@@ -6004,7 +6086,7 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet { //"GET" {
 		data := map[string]any{
 			//"Page":           "blocks",
 			"Blocks":         ui.getRecentBlocksCopy(),
@@ -6016,7 +6098,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		ui.renderTemplate(w, r, "blocks", data)
 		return
 	}
-	if r.Method == "POST" {
+	if r.Method == http.MethodPost { //"POST" {
 		raw := r.FormValue("domain")
 
 		sanitized, modified := sanitizeDomainInput(raw)
