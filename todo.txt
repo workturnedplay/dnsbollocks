@@ -1,4 +1,5 @@
 todo:
+* in the Config webUI page, the hash password Edit should be prompting for new password or something and compute the hash on the backend maybe.
 * see what happens if logged into webUI but u change pwd in config.json and Ctrl+R from console, what happens in webUI when nagvigating? should prompt for pwd after 1 fail
 * make sure to check the return errors for like SetWriteDeadline
 * find more places where I need to be Replacing Type Assertions with errors.As

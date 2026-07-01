@@ -116,6 +116,11 @@
         border-bottom: 2px solid #0078d4;
         padding-bottom: 2px;
     }
+    /* Fix row height expansion during inline edits
+    .edit-row td, .edit-host-row td {
+        padding-top: 6px !important;
+        padding-bottom: 6px !important;
+    } */
 </style></head><body>
 <noscript>
   <div style="
@@ -922,11 +927,11 @@
                             onclick="editBlacklist(this)">
                         Edit
                     </button>
-                    <form method="POST" action="/response-blacklist" style="display:inline; margin-left:6px;">
+                    <form method="POST" action="/response-blacklist" style="display:inline; margin-left:6px;" onsubmit="if(sessionStorage.getItem('blacklistTable_lastInteracted') === '{{.CIDR}}'.toLowerCase()) sessionStorage.removeItem('blacklistTable_lastInteracted'); return confirm('Remove {{.CIDR}} from blacklist?');">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="cidr" value="{{.CIDR}}">
-                        <button type="submit" class="btn-del" onclick="return confirm('Remove {{.CIDR}} from blacklist?');">Delete</button>
+                        <button type="submit" class="btn-del">Delete</button>
                     </form>
                 </td>
             </tr>
@@ -983,6 +988,12 @@
         cidrInput.value = cidr;
         cidrInput.setAttribute('form', formId);
 
+        // Save target CIDR signature as last interacted when submitting edits
+        form.addEventListener('submit', function() {
+            const newCidr = cidrInput.value.trim().toLowerCase();
+            sessionStorage.setItem('blacklistTable_lastInteracted', newCidr);
+        });
+
         clone.querySelector('.btn-cancel').onclick = () => cancelBlacklistEdit(index);
 
         row.after(clone);
@@ -993,6 +1004,9 @@
         if (editRow) editRow.remove();
         const row = document.getElementById('blacklistRow_' + index);
         if (row) row.style.display = '';
+
+        // Discarding active inline changes cleanly respects and updates current active layout filter state
+        window.applyBlacklistFilter();
     }
 
     // --- Client-side ordered-substring filter, mirrors /rules' filter ---
@@ -1001,9 +1015,13 @@
         if (!filterInput) return;
 
         const raw = filterInput.value.trim().toLowerCase();
+        sessionStorage.setItem('blacklistTable_filter', raw);
+
         const terms = raw.split(/\s+/).filter(t => t.length > 0);
         const tbody = document.querySelector('#blacklistTable tbody');
         if (!tbody) return;
+
+        const lastInteracted = sessionStorage.getItem('blacklistTable_lastInteracted');
 
         function matchesOrderedTerms(text, searchTerms) {
             let pos = 0;
@@ -1018,12 +1036,31 @@
         Array.from(tbody.rows).forEach(row => {
             if (row.classList.contains('edit-row')) return;
             const cidr = (row.dataset.cidr || "").toLowerCase();
-            const isMatch = terms.length === 0 || matchesOrderedTerms(cidr, terms);
+           
+            let isMatch = terms.length === 0 || matchesOrderedTerms(cidr, terms);
+
+            // Free Pass logic: ensures added/updated item remains fully visible
+            if (lastInteracted && cidr === lastInteracted) {
+                isMatch = true;
+            }
+
             row.style.display = isMatch ? '' : 'none';
         });
     };
 
-    document.getElementById('blacklistFilter')?.addEventListener('input', window.applyBlacklistFilter);
+    // Load filter values from persistent sessionStorage on load tracking configuration
+    const blacklistFilterInput = document.getElementById('blacklistFilter');
+    if (blacklistFilterInput) {
+        const savedFilter = sessionStorage.getItem('blacklistTable_filter') || '';
+        blacklistFilterInput.value = savedFilter;
+
+        blacklistFilterInput.addEventListener('input', () => {
+            sessionStorage.removeItem('blacklistTable_lastInteracted');
+            window.applyBlacklistFilter();
+        });
+
+        window.applyBlacklistFilter();
+    }
 
     // --- Existing "check for overlapping filters before add" validation ---
     document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
@@ -1031,10 +1068,12 @@
 
         const form = this;
         const cidrInput = form.querySelector('input[name="cidr"]');
-        const cidrValue = cidrInput.value.trim();
+        const cidrValue = cidrInput.value.trim().toLowerCase();
 
         if (!cidrValue) return;
 
+        // Force persistent layout memory tracking hook prior to redirect submission triggers
+        sessionStorage.setItem('blacklistTable_lastInteracted', cidrValue);
         try {
             const response = await fetch(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
             if (response.ok) {
@@ -1133,7 +1172,8 @@
         </td>
         <td class="actions" style="text-align: center;">
             <button type="button" class="btn-save config-stage-btn">Stage</button>
-            <button type="button" class="btn-cancel config-cancel-btn" style="background-color: #dc3545 !important; color: white !important;">Cancel</button>
+            <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>
+            <!-- works too: <button type="button" class="btn-cancel config-cancel-btn" style="background-color: #dc3545 !important; color: white !important;">Cancel</button> -->
         </td>
     </tr>
 </template>
@@ -1141,13 +1181,24 @@
 <style>
     /* Subtle highlight for modified rows before saving */
     tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
-    /* Add this to your style block */
+
+    /* Strict row-height lock to match active table rows perfectly */
     tr.edit-row, tr.edit-host-row {
-        height: auto !important; /* Let the form dictate the height safely */
+        height: 64px !important; 
     }
+
+    /* Shave off vertical padding so the inner elements never force an expansion */
     tr.edit-row td, tr.edit-host-row td {
-        overflow: visible !important; /* Prevent cutting off dropdown elements */
-        padding: 6px 15px;           /* Slightly tighter padding for input rows */
+        overflow: visible !important; 
+        padding-top: 3px !important;  
+        padding-bottom: 3px !important;
+        vertical-align: middle;
+    }
+
+    /* Compress the config type-hint so it fits cleanly into the 64px box constraint */
+    .edit-type-hint {
+        margin-top: 1px !important;
+        line-height: 1 !important;
     }
 </style>
 
