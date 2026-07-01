@@ -1090,7 +1090,7 @@
     <strong>Unsaved Changes!</strong> You have staged <span id="stagedCount">0</span> modification(s).
     <div style="float: right; margin-top: -6px;">
         <button class="btn-save" onclick="applyConfigChanges()" style="padding: 8px 16px;">Apply & Reload</button>
-        <button class="btn-cancel" onclick="location.reload()" style="padding: 8px 16px; background: #666 !important;">Discard All</button>
+        <button onclick="location.reload()" style="padding: 8px 16px; background: #666 !important; color: white !important; border: none !important; border-radius: 4px; cursor: pointer; font-weight: 600;">Discard All</button>
     </div>
 </div>
 
@@ -1133,7 +1133,7 @@
         </td>
         <td class="actions" style="text-align: center;">
             <button type="button" class="btn-save config-stage-btn">Stage</button>
-            <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>
+            <button type="button" class="btn-cancel config-cancel-btn" style="background-color: #dc3545 !important; color: white !important;">Cancel</button>
         </td>
     </tr>
 </template>
