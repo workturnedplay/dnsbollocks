@@ -1141,6 +1141,14 @@
 <style>
     /* Subtle highlight for modified rows before saving */
     tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
+    /* Add this to your style block */
+    tr.edit-row, tr.edit-host-row {
+        height: auto !important; /* Let the form dictate the height safely */
+    }
+    tr.edit-row td, tr.edit-host-row td {
+        overflow: visible !important; /* Prevent cutting off dropdown elements */
+        padding: 6px 15px;           /* Slightly tighter padding for input rows */
+    }
 </style>
 
 <script>
