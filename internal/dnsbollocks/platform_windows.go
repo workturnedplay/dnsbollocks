@@ -4017,12 +4017,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			break
 		}
 
-		//so we're here because the request error-ed, we cancel it first, to be sure it doesn't hang(possibly? tho the bug wasn't here it was with u.RetryBackoffDuration).
-		// ✅ Ensure the active context gets cancelled
-		if cancelCurrentReq != nil {
-			cancelCurrentReq()
-			cancelCurrentReq = nil
-		}
+		//so we're here because the request error-ed
 
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
