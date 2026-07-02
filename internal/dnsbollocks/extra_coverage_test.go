@@ -467,7 +467,7 @@ func TestGenerateUniqueRuleID2_AvoidsCollisions(t *testing.T) {
 
 	seen := make(map[string]struct{})
 	for range 20 {
-		id := generateUniqueRuleID2(existing, log)
+		id := generateUniqueRuleID(existing, log)
 		if id == "" {
 			t.Fatal("expected non-empty generated ID")
 		}

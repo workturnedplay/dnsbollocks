@@ -1157,11 +1157,11 @@ func (s *Server) loadQueryWhitelist() error {
 			r := &rules[i]
 			// XXX: it may not have an ID set at this point
 			if r.ID == "" {
-				nid := generateUniqueRuleID2(rulesByType, log) // still guards against rulesByType collisions
+				nid := generateUniqueRuleID(rulesByType, log) // still guards against rulesByType collisions
 				// Also guard against IDs already assigned in this same load pass
 				for _, alreadySeen := seenIDs[nid]; alreadySeen; _, alreadySeen = seenIDs[nid] {
 					log.Warn("Generated ID collided with already-seen ID in this load pass, regenerating", slog.String("id", nid))
-					nid = generateUniqueRuleID2(rulesByType, log)
+					nid = generateUniqueRuleID(rulesByType, log)
 				}
 				log.Warn("Making new not-already-existing ID for rule that had none", slog.String("id", nid))
 				r.ID = nid
@@ -5482,7 +5482,7 @@ func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Log
 			return "", fmt.Errorf("rule with pattern %q already exists for type %s", pattern, typ)
 		}
 	}
-	id = generateUniqueRuleID2(rs.rules, logger)
+	id = generateUniqueRuleID(rs.rules, logger)
 	newRule := RuleEntry{ID: id, Pattern: pattern, Enabled: enabled}
 	rs.rules[typ] = withRulePrepended(rs.rules[typ], newRule, logger)
 	logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
@@ -6136,7 +6136,7 @@ func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
 // generateUniqueRuleID generates a UUID not already present in an arbitrary rule map.
 // Used by loadQueryWhitelist (which works on a local copy) and by RuleStore methods
 // (which call this while holding the write lock).
-func generateUniqueRuleID2(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
+func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
 	existing := make(map[string]struct{})
 	for _, rules := range existingRules {
 		for _, r := range rules {
@@ -6145,7 +6145,7 @@ func generateUniqueRuleID2(existingRules map[string][]RuleEntry, logger *slog.Lo
 	}
 	const triesOnCollision = 10
 	for try := 1; try <= triesOnCollision; try++ {
-		id := uuid.New().String()
+		id := uuid.New().String()[:8] // Grab only the first 8 characters of the UUID
 		if _, collision := existing[id]; !collision {
 			return id
 		}

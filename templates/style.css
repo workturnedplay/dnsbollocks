@@ -74,6 +74,7 @@ select {
 .col-26 { width: 26%; }
 .col-30 { width: 30%; }
 .col-35 { width: 35%; }
+.col-43 { width: 43%; }
 .col-45 { width: 45%; }
 .col-50 { width: 50%; }
 .col-70 { width: 70%; }
@@ -313,10 +314,14 @@ tr.edit-row td, tr.edit-host-row td {
     line-height: 1 !important;
 }
 
-/*force table-context inputs back to match cell text size explicitly, rather than fighting the global rule:*/
+/* Force table-context inputs back to match cell text typography explicitly */
 .edit-row .config-input,
 .edit-row input,
+.edit-row textarea,
 .edit-row select,
-.edit-host-row input {
+.edit-host-row input,
+.edit-host-row textarea {
     font-size: 1em !important;
+    font-family: inherit !important;
+    font-weight: inherit !important;
 }
