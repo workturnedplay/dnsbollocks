@@ -6,11 +6,11 @@
     "https://9.9.9.9/dns-query",
     "https://1.1.1.1/dns-query"
   ],
-  "upstream_retries_per_query": 1,
-  "sni_hostnames": [
+  "upstream_sni_hostnames": [
     "dns.quad9.net",
     "cloudflare-dns.com"
   ],
+  "upstream_retries_per_query": 1,
   "upstream_selection_mode": "failover",
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
@@ -35,6 +35,7 @@
   "use_ede_in_blocked_reply": true,
   "webui_password_hash": "$2a$10$Nll0qnxtOwMYPW30QDgl2.u3hD2CQywRPIcNwIrVKx.EhOaxliqku",
   "webui_use_tls": true,
+  "webui_force_tls_on_non_localhost": true,
   "webui_max_login_failures": 5,
   "webui_login_lockout_sec": 300,
   "webui_read_header_timeout_sec": 5,
@@ -42,6 +43,7 @@
   "webui_write_timeout_sec": 15,
   "webui_idle_timeout_sec": 60,
   "max_concurrent_dns_tcp_conns": 50,
+  "max_concurrent_dns_udp_queries": 1000,
   "client_tcp_timeout_sec": 5,
   "max_recent_blocks": 100,
   "local_doh_read_header_timeout_sec": 3,

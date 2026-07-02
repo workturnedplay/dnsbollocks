@@ -58,7 +58,7 @@ func TestFWNeededForwardToDoH_Failover(t *testing.T) {
 	// 2. Configure UpstreamManager
 	cfg := Config{
 		UpstreamURLs:             []string{srvPrimary.URL, srvSecondary.URL},
-		SNIHostnames:             []string{"primary.test", "secondary.test"},
+		UpstreamSNIHostnames:     []string{"primary.test", "secondary.test"},
 		UpstreamClientTimeoutSec: 5,
 		UpstreamRetriesPerQuery:  0,          // Set to 0 to speed up the test
 		UpstreamSelectionMode:    "failover", // Corrected field name
@@ -107,7 +107,7 @@ func TestFWNeededForwardToDoH_FastestWins(t *testing.T) {
 	// 2. Configure UpstreamManager
 	cfg := Config{
 		UpstreamURLs:             []string{srvSlow.URL, srvFast.URL},
-		SNIHostnames:             []string{"slow.test", "fast.test"},
+		UpstreamSNIHostnames:     []string{"slow.test", "fast.test"},
 		UpstreamClientTimeoutSec: 5,
 		UpstreamSelectionMode:    "fastest", // Corrected field name
 	}
@@ -159,7 +159,7 @@ func TestFWNeededForwardToDoH_Strict_MatchSuccess(t *testing.T) {
 	// 2. Configure UpstreamManager
 	cfg := Config{
 		UpstreamURLs:             []string{srv1.URL, srv2.URL},
-		SNIHostnames:             []string{"strict1.test", "strict2.test"},
+		UpstreamSNIHostnames:     []string{"strict1.test", "strict2.test"},
 		UpstreamClientTimeoutSec: 5,
 		UpstreamSelectionMode:    "strict",
 	}
@@ -196,7 +196,7 @@ func TestFWNeededForwardToDoH_Strict_RefuseOnSingleOutage(t *testing.T) {
 
 	cfg := Config{
 		UpstreamURLs:             []string{srvHealthy.URL, srvBroken.URL},
-		SNIHostnames:             []string{"healthy.test", "broken.test"},
+		UpstreamSNIHostnames:     []string{"healthy.test", "broken.test"},
 		UpstreamClientTimeoutSec: 5,
 		UpstreamSelectionMode:    "strict",
 	}
@@ -235,7 +235,7 @@ func TestFWNeededForwardToDoH_Strict_DropOnMismatch(t *testing.T) {
 
 	cfg := Config{
 		UpstreamURLs:             []string{srvAlpha.URL, srvBeta.URL},
-		SNIHostnames:             []string{"alpha.test", "beta.test"},
+		UpstreamSNIHostnames:     []string{"alpha.test", "beta.test"},
 		UpstreamClientTimeoutSec: 5,
 		UpstreamSelectionMode:    "strict",
 	}

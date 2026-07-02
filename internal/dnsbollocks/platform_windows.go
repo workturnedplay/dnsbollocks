@@ -81,14 +81,14 @@ type Config struct {
 	ListenUI     string   `json:"listen_ui"`     //ip:port
 	UpstreamURLs []string `json:"upstream_urls"` // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	//TODO: rename this:
-	SNIHostnames            []string `json:"upstream_sni_hostnames"`     // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
-	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
+	UpstreamSNIHostnames []string `json:"upstream_sni_hostnames"` // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
 	//"strict" (or "priority"): The existing strict rule matching behavior.
 	//"failover": The new intelligent, stateful sticky failover behavior.
-	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "fastest", "strict", or "failover"
-	BlockMode             string `json:"block_mode"`              // "nxdomain", "drop", "ip_block"
-	BlockIP               string `json:"block_ip"`                // "0.0.0.0" used by "ip_block"
-	BlockIPv6             string `json:"block_ipv6"`              // "::" used by "ip_block"
+	UpstreamSelectionMode   string `json:"upstream_selection_mode"`    // "fastest", "strict", or "failover"
+	UpstreamRetriesPerQuery int    `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
+	BlockMode               string `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
+	BlockIP                 string `json:"block_ip"`                   // "0.0.0.0" used by "ip_block"
+	BlockIPv6               string `json:"block_ipv6"`                 // "::" used by "ip_block"
 
 	// Pre-parsed IPs for blazing fast performance and thread-safety
 	BlockIPv4Parsed net.IP `json:"-"` // this isn't persisted to disk
@@ -569,9 +569,9 @@ func (c Config) Clone() Config {
 		copy(dst.UpstreamURLs, c.UpstreamURLs)
 	}
 
-	if c.SNIHostnames != nil {
-		dst.SNIHostnames = make([]string, len(c.SNIHostnames))
-		copy(dst.SNIHostnames, c.SNIHostnames)
+	if c.UpstreamSNIHostnames != nil {
+		dst.UpstreamSNIHostnames = make([]string, len(c.UpstreamSNIHostnames))
+		copy(dst.UpstreamSNIHostnames, c.UpstreamSNIHostnames)
 	}
 
 	//Deep-copy the newly added parsed triplets
@@ -1255,7 +1255,7 @@ func defaultConfig() Config {
 		ListenDoH:               "127.0.0.1:443",
 		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
-		SNIHostnames:            []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
+		UpstreamSNIHostnames:    []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
 		UpstreamSelectionMode:   "failover",
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               "nxdomain",
@@ -2745,29 +2745,29 @@ func (s *Server) loadMainConfig() error {
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
-	for i := len(newCfg.SNIHostnames); i < len(newCfg.UpstreamURLs); i++ {
+	for i := len(newCfg.UpstreamSNIHostnames); i < len(newCfg.UpstreamURLs); i++ {
 		host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
 		if err2 != nil {
 			log.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
 			return fmt.Errorf("invalid1 upstream URL at index %d: %w", i, err2)
 		}
-		newCfg.SNIHostnames = append(newCfg.SNIHostnames, host)
+		newCfg.UpstreamSNIHostnames = append(newCfg.UpstreamSNIHostnames, host)
 		shouldSaveConfig = true
 	}
 	for i := range newCfg.UpstreamURLs {
-		if newCfg.SNIHostnames[i] == "" {
+		if newCfg.UpstreamSNIHostnames[i] == "" {
 			host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
 			if err2 != nil {
 				log.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
 				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
 			}
-			newCfg.SNIHostnames[i] = host
+			newCfg.UpstreamSNIHostnames[i] = host
 			shouldSaveConfig = true
 		}
 	}
 	log.Debug("Using upstream SNI hostnames:",
 		//slog.Any("SNI_hostnames", config.SNIHostnames),
-		SafeStringSlice("SNI_hostnames", newCfg.SNIHostnames),
+		SafeStringSlice("SNI_hostnames", newCfg.UpstreamSNIHostnames),
 	)
 
 	// Helper closure to apply the cleaning and track if a save is needed
@@ -5439,7 +5439,7 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 		//ui.dnsCache.ItemCount(), //FIXME: add this back
 		//	ui.upstreamIPs
 		cfg.UpstreamURLsParsed,
-		cfg.SNIHostnames,
+		cfg.UpstreamSNIHostnames,
 		cfg.UpstreamIPs,
 	)
 	data := map[string]any{
@@ -7714,7 +7714,7 @@ func (um *UpstreamManager) getConfig() *Config {
 func (um *UpstreamManager) updateInnerState() error {
 	cfg := um.getConfig()
 	//FIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window
-	snapSNI := cfg.SNIHostnames
+	snapSNI := cfg.UpstreamSNIHostnames
 	snapURL := cfg.UpstreamURLs
 
 	cfg.UpstreamURLsParsed = nil
@@ -7981,7 +7981,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 	}
 	log.Debug("Upstreams (re)validated",
 		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs), //FIXME: use the one from um.
-		SafeStringSlice("upstreamSNIs", cfg.SNIHostnames),
+		SafeStringSlice("upstreamSNIs", cfg.UpstreamSNIHostnames),
 		SafeStringSlice("upstreamIPs", cfg.UpstreamIPs),
 	)
 

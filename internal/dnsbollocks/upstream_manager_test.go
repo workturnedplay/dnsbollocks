@@ -39,16 +39,16 @@ func TestValidateUpstream(t *testing.T) {
 		{
 			name: "Valid IPs and SNIs with default port",
 			config: Config{
-				UpstreamURLs: []string{"https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"},
-				SNIHostnames: []string{"cloudflare-dns.com", "dns.quad9.net"},
+				UpstreamURLs:         []string{"https://1.1.1.1/dns-query", "https://9.9.9.9/dns-query"},
+				UpstreamSNIHostnames: []string{"cloudflare-dns.com", "dns.quad9.net"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "Valid IPs with explicit ports",
 			config: Config{
-				UpstreamURLs: []string{"https://1.1.1.1:443/dns-query"},
-				SNIHostnames: []string{"cloudflare-dns.com"},
+				UpstreamURLs:         []string{"https://1.1.1.1:443/dns-query"},
+				UpstreamSNIHostnames: []string{"cloudflare-dns.com"},
 			},
 			wantErr: false,
 		},
@@ -63,8 +63,8 @@ func TestValidateUpstream(t *testing.T) {
 		{
 			name: "Invalid Scheme (HTTP instead of HTTPS)",
 			config: Config{
-				UpstreamURLs: []string{"http://1.1.1.1/dns-query"},
-				SNIHostnames: []string{"cloudflare-dns.com"},
+				UpstreamURLs:         []string{"http://1.1.1.1/dns-query"},
+				UpstreamSNIHostnames: []string{"cloudflare-dns.com"},
 			},
 			wantErr:     true,
 			errContains: "invalid upstream URL (must be https)",
@@ -72,8 +72,8 @@ func TestValidateUpstream(t *testing.T) {
 		{
 			name: "Hostname instead of IP Literal",
 			config: Config{
-				UpstreamURLs: []string{"https://dns.google/dns-query"},
-				SNIHostnames: []string{"dns.google"},
+				UpstreamURLs:         []string{"https://dns.google/dns-query"},
+				UpstreamSNIHostnames: []string{"dns.google"},
 			},
 			wantErr:     true,
 			errContains: "upstream host must be IP literal",
@@ -144,7 +144,7 @@ func containsErr(full, sub string) bool {
 func TestLifecycleManagement(t *testing.T) {
 	cfg := Config{
 		UpstreamURLs:               []string{"https://1.1.1.1/dns-query"},
-		SNIHostnames:               []string{"cloudflare-dns.com"},
+		UpstreamSNIHostnames:       []string{"cloudflare-dns.com"},
 		UpstreamIdleConnTimeoutSec: 10,
 	}
 	um := setupTestContext(&cfg)

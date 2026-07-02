@@ -13,7 +13,7 @@ import (
 func TestConfigClone(t *testing.T) {
 	original := defaultConfig()
 	original.UpstreamURLs = []string{"https://1.1.1.1/dns-query"}
-	original.SNIHostnames = []string{"cloudflare-dns.com"}
+	original.UpstreamSNIHostnames = []string{"cloudflare-dns.com"}
 
 	clone := original.Clone()
 
@@ -24,13 +24,13 @@ func TestConfigClone(t *testing.T) {
 
 	// 2. Modify the clone's slices to ensure they are decoupled from the original
 	clone.UpstreamURLs[0] = "https://8.8.8.8/dns-query"
-	clone.SNIHostnames[0] = "dns.google"
+	clone.UpstreamSNIHostnames[0] = "dns.google"
 
 	if original.UpstreamURLs[0] == clone.UpstreamURLs[0] {
 		t.Errorf("Config.Clone() did not deep copy UpstreamURLs! Both share: %s", original.UpstreamURLs[0])
 	}
-	if original.SNIHostnames[0] == clone.SNIHostnames[0] {
-		t.Errorf("Config.Clone() did not deep copy SNIHostnames! Both share: %s", original.SNIHostnames[0])
+	if original.UpstreamSNIHostnames[0] == clone.UpstreamSNIHostnames[0] {
+		t.Errorf("Config.Clone() did not deep copy SNIHostnames! Both share: %s", original.UpstreamSNIHostnames[0])
 	}
 }
 
