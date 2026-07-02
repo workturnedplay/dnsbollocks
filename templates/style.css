@@ -1,0 +1,144 @@
+    /* 1. LAYOUT & TEXT */
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
+    .container { max-width: 1100px; margin: auto; }
+    h1 { color: #0078d4; margin-bottom: 20px; }
+    h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
+    
+    nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
+    nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
+    nav a:hover { text-decoration: underline; }
+    
+    /* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
+    input[type="text"], input[type="number"], select, button { 
+        background-color: #2d2d2d !important; /* Forced Dark */
+        color: #ffffff !important;           /* Forced White Text */
+        border: 1px solid #444 !important; 
+        padding: 8px 12px; 
+        border-radius: 4px; 
+        outline: none;
+        font-size: 0.9em;
+        vertical-align: middle;
+        box-sizing: border-box;
+    }
+    
+    /* Specialized Select/Dropdown logic */
+    select {
+        appearance: none; 
+        -webkit-appearance: none;
+        background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') !important;
+        background-repeat: no-repeat !important;
+        background-position: right 10px center !important;
+        background-size: 14px !important;
+        padding-right: 35px !important;
+    }
+    
+    /* Ensure dropdown options are also dark */
+    select option { background: #2d2d2d; color: white; }
+    
+    input[type="text"]:focus, input[type="number"]:focus, select:focus { border-color: #0078d4 !important; }
+    
+    button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
+    button:hover { background: #3d3d3d !important; }
+    
+    /* 3. TABLES (Anti-Jump Fixes) */
+    table { width: 100%; table-layout: fixed; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
+    tr { height: 64px; } /* Locks row height to prevent vertical jumping */
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* 4. BUTTON VARIANTS */
+    .btn-edit { background-color: #0078d4 !important; color: white !important; border: none !important; }
+    .btn-edit:hover { background-color: #005a9e !important; }
+    .btn-add { background-color: #0078d4 !important; color: white !important; border: none !important; }
+    .btn-add:hover { background-color: #005a9e !important; }
+    .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
+    .btn-del:hover { background-color: #a82a01 !important; }
+    
+    /* New Save/Cancel Buttons */
+    .btn-save { background-color: #28a745 !important; color: white !important; border: none !important; }
+    .btn-save:hover { background-color: #218838 !important; }
+    .btn-cancel { background-color: #dc3545 !important; color: white !important; border: none !important; }
+    .btn-cancel:hover { background-color: #c82333 !important; }
+    
+    /* 5. UTILITIES */
+    .actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
+    .actions button { font-size: 0.9rem; }
+    .tag-enabled { color: #4ec9b0; font-weight: bold; }
+    .tag-disabled { color: #f44747; font-weight: bold; }
+    pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
+    
+    /* 6. ERROR ALERTS */
+    .alert-error {
+        background-color: #2a1818;
+        color: #f44747;
+        border: 1px solid #5a2424;
+        border-left: 4px solid #dc3545;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        box-sizing: border-box;
+    }
+    .alert-error code {
+        background-color: #1a1111;
+        color: #ffffff;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: Consolas, Monaco, monospace;
+        font-size: 0.95em;
+    }
+    .alert-error small {
+        color: #aaaaaa;
+        display: block;
+        margin-top: 5px;
+    }
+    
+    /* 7. SUCCESS ALERTS */
+    .alert-success {
+        background-color: #162419;
+        color: #4ec9b0;
+        border: 1px solid #1e3a24;
+        border-left: 4px solid #28a745;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        box-sizing: border-box;
+    }
+    
+    /* Sorting Styles */
+    th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
+    th.sortable:hover { background: #333; color: #fff; }
+    .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
+    
+    nav a.active {
+        color: #ffffff;
+        border-bottom: 2px solid #0078d4;
+        padding-bottom: 2px;
+    }
+    /* Fix row height expansion during inline edits
+    .edit-row td, .edit-host-row td {
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    } */
+    
+    
+    /* Subtle highlight for modified rows before saving */
+    tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
+    
+    /* Strict row-height lock to match active table rows perfectly */
+    tr.edit-row, tr.edit-host-row {
+        height: 64px !important; 
+    }
+    
+    /* Shave off vertical padding so the inner elements never force an expansion */
+    tr.edit-row td, tr.edit-host-row td {
+        overflow: visible !important; 
+        padding-top: 3px !important;  
+        padding-bottom: 3px !important;
+        vertical-align: middle;
+    }
+    
+    /* Compress the config type-hint so it fits cleanly into the 64px box constraint */
+    .edit-type-hint {
+        margin-top: 1px !important;
+        line-height: 1 !important;
+    }

@@ -4965,6 +4965,19 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
+	innerMux.Handle("/static/app.js", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		//immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.ServeFileFS(w, r, templates.StaticFS, "app.js")
+	}))
+	innerMux.Handle("/static/style.css", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		//immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.ServeFileFS(w, r, templates.StaticFS, "style.css")
+	}))
+
 	// ── Outer mux: browser-automatic routes that must bypass auth ────────
 	// These are requests browsers fire silently before the user has had a
 	// chance to enter credentials.  Letting them hit authMiddleware would
@@ -5261,7 +5274,10 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 		//base-uri 'none' — prevents an injected <base> tag from rewriting relative URLs.
 		h.Set("Content-Security-Policy",
 			//"default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",//fails loading CSS and js stuff
-			"object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+			//(connect-src 'self' covers the fetch('/response-blacklist/check?...') call you already do client-side.)
+			"default-src 'none'; script-src 'self'; style-src 'self'; "+
+				"img-src 'self'; connect-src 'self'; form-action 'self'; "+
+				"object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
 		)
 		h.Set("X-Frame-Options", "DENY")
 
@@ -6378,6 +6394,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	log := ui.getLogger()
 	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
 	data["Path"] = r.URL.Path
+	data["Version"] = GetVersion() //cache-busting
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
