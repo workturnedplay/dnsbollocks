@@ -1,9 +1,6 @@
 todo:
-* fix this: statsHandler builds RawBody with fmt.Sprintf and wraps it as template.HTML(body.String()). Right now the interpolated values (cfg.UpstreamURLsParsed, cfg.SNIHostnames, cfg.UpstreamIPs) are admin-set config, not attacker-controlled, so it's low risk — but it's the one spot in the codebase where "trust me, this is safe HTML" is asserted rather than enforced by the type system
 * replace panics except unreachables with something else like logFatal. Maybe even the unreachables so that they're logged first.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, todo:  4_1, 4_2 dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
-* in the Config webUI page, the hash password Edit should be prompting for new password or something and compute the hash on the backend maybe.
-* see what happens if logged into webUI but u change pwd in config.json and Ctrl+R from console, what happens in webUI when nagvigating? should prompt for pwd after 1 fail
 * make sure to check the return errors for like SetWriteDeadline
 * find more places where I need to be Replacing Type Assertions with errors.As
 * find more places where I should be using errors.Is (no warnings about it currently tho)
@@ -24,6 +21,9 @@ no:
 
 
 done:
+//* fix this: statsHandler builds RawBody with fmt.Sprintf and wraps it as template.HTML(body.String()). Right now the interpolated values (cfg.UpstreamURLsParsed, cfg.SNIHostnames, cfg.UpstreamIPs) are admin-set config, not attacker-controlled, so it's low risk — but it's the one spot in the codebase where "trust me, this is safe HTML" is asserted rather than enforced by the type system
+//* see what happens if logged into webUI but u change pwd in config.json and Ctrl+R from console, what happens in webUI when nagvigating? should prompt for pwd after 1 fail, yes this happens
+//* in the Config webUI page, the hash password Edit should be prompting for new password or something and compute the hash on the backend maybe.
 //* ensure all files have //go:build windows  as the logic changes considerably if wanting to do it on non-Windows (eg. listening on same port twice, then tearing down the old one, is allowed on win11, not on Linux), but I never want to port this on Linux.
 //* put a "return //unreachable" after every s.shutdown(x) so it's more obvious it doesn't return (funny)
 //* handle the case when client(s) connect but don't do any DNS queries, maybe limit how many concurrents too!

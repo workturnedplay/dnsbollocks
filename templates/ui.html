@@ -366,7 +366,10 @@
 {{define "stats"}}
 <h2>Engine Statistics</h2>
 <div class="stats-container">
-    {{.RawBody}}
+    <p>Blocks: "{{.Blocks}}"</p>
+    <p>Upstream URLs: {{.UpstreamURLs}}</p>
+    <p>Upstream SNIs: {{.UpstreamSNIs}}</p>
+    <p>Upstream IPs: {{.UpstreamIPs}}</p>
 </div>
 {{end}}
 
