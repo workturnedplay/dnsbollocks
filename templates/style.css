@@ -310,3 +310,11 @@
         margin-top: 1px !important;
         line-height: 1 !important;
     }
+    
+    /*force table-context inputs back to match cell text size explicitly, rather than fighting the global rule:*/
+    .edit-row .config-input,
+    .edit-row input,
+    .edit-row select,
+    .edit-host-row input {
+        font-size: 1em !important;
+    }

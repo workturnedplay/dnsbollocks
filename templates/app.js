@@ -279,79 +279,86 @@ document.addEventListener('DOMContentLoaded', function() {
         const originalRows = Array.from(tbody.rows);
         originalRows.forEach((row, i) => row.dataset.origIndex = i);
         
+        function applySort(th, newDir) {
+            const colIndex = parseInt(th.dataset.col);
+            
+            // 2. Save the new sorting state to sessionStorage so it survives page reloads
+            sessionStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
+            sessionStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
+            
+            // Reset all headers
+            headers.forEach(h => {
+                h.dataset.sortDir = 'none';
+                const icon = h.querySelector('.sort-icon');
+                if (icon) icon.textContent = '';
+            });
+            
+            // Update clicked header
+            th.dataset.sortDir = newDir;
+            const icon = th.querySelector('.sort-icon');
+            if (icon) {
+                if (newDir === 'asc') icon.textContent = '▲';
+                if (newDir === 'desc') icon.textContent = '▼';
+            }
+            
+            let rowsArray = Array.from(tbody.rows);
+            
+            // Filter out custom inline edit rows and empty placeholder colspan messages
+            rowsArray = rowsArray.filter(row => row.cells.length > colIndex && !row.querySelector('td[colspan]') && !row.classList.contains('edit-row') && !row.classList.contains('edit-host-row'));
+            
+            if (newDir === 'none') {
+                // Revert to original order
+                rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
+            } else {
+                // Sort ascending or descending
+                rowsArray.sort((a, b) => {
+                    let valA = a.cells[colIndex].innerText.trim().toLowerCase();
+                    let valB = b.cells[colIndex].innerText.trim().toLowerCase();
+                    
+                    if (valA < valB) return newDir === 'asc' ? -1 : 1;
+                    if (valA > valB) return newDir === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+            
+            // Append rows back to tbody in sorted order
+            rowsArray.forEach(row => tbody.appendChild(row));
+            
+            // Re-apply filter immediately after sorting array structure changes
+            // Re-apply filter immediately if applicable
+            if (typeof postSortCallback === 'function') {
+                postSortCallback();
+            }
+        }
         headers.forEach(th => {
             th.dataset.sortDir = 'none'; // none, asc, desc
-            
             th.addEventListener('click', () => {
                 // 1. Cancel any active inline edits so they don't break during sort
                 document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
-                
-                const colIndex = parseInt(th.dataset.col);
                 const currentDir = th.dataset.sortDir;
-                let newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
+                const newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
+                applySort(th, newDir);
                 
-                // 2. Save the new sorting state to sessionStorage so it survives page reloads
-                sessionStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
-                sessionStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
                 
-                // Reset all headers
-                headers.forEach(h => {
-                    h.dataset.sortDir = 'none';
-                    const icon = h.querySelector('.sort-icon');
-                    if (icon) icon.textContent = '';
-                });
-                
-                // Update clicked header
-                th.dataset.sortDir = newDir;
-                const icon = th.querySelector('.sort-icon');
-                if (icon) {
-                    if (newDir === 'asc') icon.textContent = '▲';
-                    if (newDir === 'desc') icon.textContent = '▼';
-                }
-                
-                let rowsArray = Array.from(tbody.rows);
-                
-                // Filter out custom inline edit rows and empty placeholder colspan messages
-                rowsArray = rowsArray.filter(row => row.cells.length > colIndex && !row.querySelector('td[colspan]') && !row.classList.contains('edit-row') && !row.classList.contains('edit-host-row'));
-                
-                if (newDir === 'none') {
-                    // Revert to original order
-                    rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
-                } else {
-                    // Sort ascending or descending
-                    rowsArray.sort((a, b) => {
-                        let valA = a.cells[colIndex].innerText.trim().toLowerCase();
-                        let valB = b.cells[colIndex].innerText.trim().toLowerCase();
-                        
-                        if (valA < valB) return newDir === 'asc' ? -1 : 1;
-                        if (valA > valB) return newDir === 'asc' ? 1 : -1;
-                        return 0;
-                    });
-                }
-                
-                // Append rows back to tbody in sorted order
-                rowsArray.forEach(row => tbody.appendChild(row));
-                
-                // Re-apply filter immediately after sorting array structure changes
-                // Re-apply filter immediately if applicable
-                if (typeof postSortCallback === 'function') {
-                    postSortCallback();
-                }
             });
         });
         
-        // --- Restore sort state on page load ---
+        // Restore sort state on load WITHOUT a synthetic click / forced layout
         const savedCol = sessionStorage.getItem(storageKeyPrefix + '_sortCol');
         const savedDir = sessionStorage.getItem(storageKeyPrefix + '_sortDir');
         
         if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
             const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+            // if (targetHeader) {
+            //     // Set the current direction to the logical "previous" state, 
+            //     // so that calling .click() toggles it to our desired saved state.
+            //     targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
+            //     targetHeader.click();
+            // }
             if (targetHeader) {
-                // Set the current direction to the logical "previous" state, 
-                // so that calling .click() toggles it to our desired saved state.
-                targetHeader.dataset.sortDir = savedDir === 'asc' ? 'none' : 'asc';
-                targetHeader.click();
+                applySort(targetHeader, savedDir);
             }
+            
         }
     }
     
