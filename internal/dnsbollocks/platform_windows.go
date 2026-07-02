@@ -7499,25 +7499,12 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
 	// do a direct write but enforce a hardware sync to minimize the corruption window.
 	// 2. Overwrite the target file directly (Retains Windows ACLs)
-	targetFile, openErr := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if openErr != nil {
-		return fmt.Errorf("failed to open the file directly: %w", openErr /*non-nil here*/)
-	}
-	_, writeErr := targetFile.Write(data)
-	if writeErr != nil {
-		//don't sync, it's incomplete anyway
-		_ = targetFile.Close()
-		return fmt.Errorf("failed to write to the file directly: %w", writeErr /*non-nil here*/)
-	}
-	syncErr := targetFile.Sync()
-	closeErr := targetFile.Close()
-	if syncErr != nil {
-		return fmt.Errorf("failed to sync the file that was directly written: %w", syncErr /*non-nil here*/)
-	}
-	if closeErr == nil {
+	if err := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
+		return writeSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	}); err == nil {
 		return nil
 	} else {
-		return fmt.Errorf("failed to close the file that was directly written&sync'd successfully, err: %w", closeErr /*non-nil here*/)
+		return fmt.Errorf("failed to open/write/sync/close the file %q, err: %w", filename, err /*non-nil here*/)
 	}
 }
 
