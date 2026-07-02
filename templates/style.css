@@ -1,315 +1,322 @@
-    /* 1. LAYOUT & TEXT */
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
-    .container { max-width: 1100px; margin: auto; }
-    h1 { color: #0078d4; margin-bottom: 20px; }
-    h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
-    
-    nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
-    nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
-    nav a:hover { text-decoration: underline; }
-    
-    /* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
-    input[type="text"], input[type="number"], select, button { 
-        background-color: #2d2d2d !important; /* Forced Dark */
-        color: #ffffff !important;           /* Forced White Text */
-        border: 1px solid #444 !important; 
-        padding: 8px 12px; 
-        border-radius: 4px; 
-        outline: none;
-        font-size: 0.9em;
-        vertical-align: middle;
-        box-sizing: border-box;
-    }
-    
-    /* Specialized Select/Dropdown logic - Now CSP Compliant */
-    select {
-        appearance: none; 
-        -webkit-appearance: none;
-        background-image: url('/static/arrow-down.svg') !important;
-        background-repeat: no-repeat !important;
-        background-position: right 10px center !important;
-        background-size: 14px !important;
-        padding-right: 35px !important;
-    }
-    
-    /* --- DRY CSP Utility & Component Tokens --- */
-    /* Strict CSP Alignment & Layout Utilities */
-    .w-100 { width: 100% !important; }
-    .v-align-middle { vertical-align: middle !important; }
-    .d-inline { display: inline !important; }
-    /* Config Table Stylings */
-    .monospace-code2  { font-family: monospace !important; width: 100% !important; }
-    .config-key-code { font-family: monospace; color: #4ec9b0; }
-    .config-edit-row { background: #1a1a1a; }
-    .edit-row-bg     { background: #1a1a1a !important; }
-    .config-type-hint { color: #888; display: block; margin-top: 4px; }
-    
-    /* Common Spacers */
-    .lbl-spaced { margin: 0 10px; }
-    .filter-spacer { margin-top: 25px; }
-    .form-inline-action { display: inline; margin-left: 6px; }
-    .form-inline-action2 { display: inline; margin-left: 0px; }
-    
-    /* Reusable column tokens to replace hardcoded style widths */
-    .col-12 { width: 12%; }
-    .col-14 { width: 14%; }
-    .col-18 { width: 18%; }
-    .col-26 { width: 26%; }
-    .col-30 { width: 30%; }
-    
-    /* Table Column Width Layouts (Replaces inline <col style="width: X%">) */
-    #rulesTable col:nth-child(1) { width: 14%; }
-    #rulesTable col:nth-child(2) { width: 30%; }
-    #rulesTable col:nth-child(3) { width: 26%; }
-    #rulesTable col:nth-child(4) { width: 12%; }
-    #rulesTable col:nth-child(5) { width: 18%; }
-    
-    #hostsTable col:nth-child(1) { width: 35%; }
-    #hostsTable col:nth-child(2) { width: 45%; }
-    #hostsTable col:nth-child(3) { width: 20%; }
-    
-    #blacklistTable col:nth-child(1) { width: 70%; }
-    #blacklistTable col:nth-child(2) { width: 30%; }
-    
-    #configTable col:nth-child(1) { width: 35%; }
-    #configTable col:nth-child(2) { width: 50%; }
-    #configTable col:nth-child(3) { width: 15%; }
-    
-    /* --- Strict CSP UI Elements --- */
-    .info-banner {
-        padding: 10px;
-        margin-bottom: 15px;
-        border-left: 4px solid #0078d4;
-        background: #1e1e1e;
-    }
-    
-    .section-header-row {
-        margin-top: 40px;
-        border-bottom: 2px solid #333;
-        padding-bottom: 10px;
-    }
-    
-    .header-inline {
-        display: inline-block;
-        margin: 0;
-        border: none;
-        padding: 0;
-        vertical-align: middle;
-    }
-    
-    .btn-inline-refresh {
-        display: inline-block;
-        margin-left: 15px;
-        vertical-align: middle;
-    }
-    
-    /* Configuration Textarea Control - Strict CSP Compliant */
-    textarea.config-textarea {
-        width: 100% !important;
-        height: 85px !important;
-        padding: 6px !important;
-        box-sizing: border-box !important;
-        resize: vertical !important;
-        font-family: monospace !important;
-    }
-    
-    
-    /* Layout & Spacing Utilities */
-    .mb-20 { margin-bottom: 20px; }
-    .w-280 { width: 280px; }
-    .w-300 { width: 300px; }
-    .maxw-600 { max-width: 600px; }
-    .text-center { text-align: center; }
-    .text-muted { color: #888; }
-    
-    /* Flexbox Utilities */
-    .d-flex { display: flex; }
-    .gap-10 { gap: 10px; }
-    .flex-1 { flex: 1; }
-    
-    /* Section Sub-header Descriptions */
-    .section-desc {
-        font-size: 0.85em;
-        color: #777;
-        margin-top: -5px;
-        margin-bottom: 15px;
-        font-style: italic;
-        line-height: 1.4;
-    }
-    
-    /* System Log Components */
-    .log-output-container {
-        background: #1e1e1e;
-        padding: 15px;
-        border-radius: 4px;
-        border: 1px solid #333;
-    }
-    .log-output-pre {
-        max-height: 600px;
-        overflow: auto;
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-all;
-        font-family: 'Consolas', monospace;
-        font-size: 0.9em;
-        color: #dcdcdc;
-    }
-    
-    /* Config Sub-view Specifics */
-    .staged-changes-banner {
-        display: none; 
-        background: #0078d4; 
-        color: white; 
-        padding: 15px; 
-        border-radius: 4px; 
-        margin-bottom: 20px; 
-        position: sticky; 
-        top: 10px; 
-        z-index: 100; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-    .config-banner-actions {
-        float: right;
-        margin-top: -6px;
-    }
-    .btn-padded {
-        padding: 8px 16px;
-    }
-    .btn-discard-all {
-        padding: 8px 16px;
-        background: #666 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 4px;
-        cursor: pointer;
-        font-weight: 600;
-    }
-    
-    /* Noscript block replacement styling */
-    .noscript-banner {
-        padding: 10px;
-        margin-bottom: 12px;
-        border: 1px solid #cc0000;
-        background: #ffeeee;
-        color: #660000;
-        font-weight: bold;
-    }
-    
-    /* Ensure dropdown options are also dark */
-    select option { background: #2d2d2d; color: white; }
-    
-    input[type="text"]:focus, input[type="number"]:focus, select:focus { border-color: #0078d4 !important; }
-    
-    button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
-    button:hover { background: #3d3d3d !important; }
-    
-    /* 3. TABLES (Anti-Jump Fixes) */
-    table { width: 100%; table-layout: fixed; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
-    tr { height: 64px; } /* Locks row height to prevent vertical jumping */
-    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
-    
-    /* 4. BUTTON VARIANTS */
-    .btn-edit { background-color: #0078d4 !important; color: white !important; border: none !important; }
-    .btn-edit:hover { background-color: #005a9e !important; }
-    .btn-add { background-color: #0078d4 !important; color: white !important; border: none !important; }
-    .btn-add:hover { background-color: #005a9e !important; }
-    .btn-del { background-color: #d83b01 !important; color: white !important; border: none !important; }
-    .btn-del:hover { background-color: #a82a01 !important; }
-    
-    /* New Save/Cancel Buttons */
-    .btn-save { background-color: #28a745 !important; color: white !important; border: none !important; }
-    .btn-save:hover { background-color: #218838 !important; }
-    .btn-cancel { background-color: #dc3545 !important; color: white !important; border: none !important; }
-    .btn-cancel:hover { background-color: #c82333 !important; }
-    
-    /* 5. UTILITIES */
-    .actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
-    .actions button { font-size: 0.9rem; }
-    .tag-enabled { color: #4ec9b0; font-weight: bold; }
-    .tag-disabled { color: #f44747; font-weight: bold; }
-    pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
-    
-    /* 6. ERROR ALERTS */
-    .alert-error {
-        background-color: #2a1818;
-        color: #f44747;
-        border: 1px solid #5a2424;
-        border-left: 4px solid #dc3545;
-        padding: 15px;
-        margin-bottom: 20px;
-        border-radius: 4px;
-        box-sizing: border-box;
-    }
-    .alert-error code {
-        background-color: #1a1111;
-        color: #ffffff;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-family: Consolas, Monaco, monospace;
-        font-size: 0.95em;
-    }
-    .alert-error small {
-        color: #aaaaaa;
-        display: block;
-        margin-top: 5px;
-    }
-    
-    /* 7. SUCCESS ALERTS */
-    .alert-success {
-        background-color: #162419;
-        color: #4ec9b0;
-        border: 1px solid #1e3a24;
-        border-left: 4px solid #28a745;
-        padding: 15px;
-        margin-bottom: 20px;
-        border-radius: 4px;
-        box-sizing: border-box;
-    }
-    
-    /* Sorting Styles */
-    th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
-    th.sortable:hover { background: #333; color: #fff; }
-    .sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
-    
-    nav a.active {
-        color: #ffffff;
-        border-bottom: 2px solid #0078d4;
-        padding-bottom: 2px;
-    }
-    /* Fix row height expansion during inline edits
-    .edit-row td, .edit-host-row td {
-    padding-top: 6px !important;
-    padding-bottom: 6px !important;
-    } */
-    
-    
-    /* Subtle highlight for modified rows before saving */
-    tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
-    
-    /* Strict row-height lock to match active table rows perfectly */
-    tr.edit-row, tr.edit-host-row {
-        height: 64px !important; 
-    }
-    
-    /* Shave off vertical padding so the inner elements never force an expansion */
-    tr.edit-row td, tr.edit-host-row td {
-        overflow: visible !important; 
-        padding-top: 3px !important;  
-        padding-bottom: 3px !important;
-        vertical-align: middle;
-    }
-    
-    /* Compress the config type-hint so it fits cleanly into the 64px box constraint */
-    .edit-type-hint {
-        margin-top: 1px !important;
-        line-height: 1 !important;
-    }
-    
-    /*force table-context inputs back to match cell text size explicitly, rather than fighting the global rule:*/
-    .edit-row .config-input,
-    .edit-row input,
-    .edit-row select,
-    .edit-host-row input {
-        font-size: 1em !important;
-    }
+:root {
+    --bg-page: #121212;
+    --bg-panel: #1e1e1e;
+    --bg-input: #2d2d2d;
+    --border-subtle: #333;
+    --accent: #0078d4;
+    --accent-hover: #005a9e;
+    --danger: #d83b01;
+    --danger-hover: #a82a01;
+    --success: #28a745;
+    --success-hover: #218838;
+    --cancel: #dc3545;
+    --cancel-hover: #c82333;
+}
+
+/* 1. LAYOUT & TEXT */
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; padding: 40px; line-height: 1.6; }
+.container { max-width: 1100px; margin: auto; }
+h1 { color: #0078d4; margin-bottom: 20px; }
+h2 { color: #0078d4; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 40px; }
+
+nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid #333; }
+nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: bold; }
+nav a:hover { text-decoration: underline; }
+
+/* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
+input[type="text"], input[type="number"], select, button { 
+    background-color: #2d2d2d !important; /* Forced Dark */
+    color: #ffffff !important;           /* Forced White Text */
+    border: 1px solid #444 !important; 
+    padding: 8px 12px; 
+    border-radius: 4px; 
+    outline: none;
+    font-size: 0.9em;
+    vertical-align: middle;
+    box-sizing: border-box;
+}
+
+/* Specialized Select/Dropdown logic - Now CSP Compliant */
+select {
+    appearance: none; 
+    -webkit-appearance: none;
+    background-image: url('/static/arrow-down.svg') !important;
+    background-repeat: no-repeat !important;
+    background-position: right 10px center !important;
+    background-size: 14px !important;
+    padding-right: 35px !important;
+}
+
+/* --- DRY CSP Utility & Component Tokens --- */
+/* Strict CSP Alignment & Layout Utilities */
+.w-100 { width: 100% !important; }
+.v-align-middle { vertical-align: middle !important; }
+.d-inline { display: inline !important; }
+/* Config Table Stylings */
+.monospace-code2  { font-family: monospace !important; width: 100% !important; }
+.config-key-code { font-family: monospace; color: #4ec9b0; }
+.config-edit-row { background: #1a1a1a; }
+.edit-row-bg     { background: #1a1a1a !important; }
+.config-type-hint { color: #888; display: block; margin-top: 4px; }
+
+/* Common Spacers */
+.lbl-spaced { margin: 0 10px; }
+.filter-spacer { margin-top: 25px; }
+.form-inline-action { display: inline; margin-left: 6px; }
+.form-inline-action2 { display: inline; margin-left: 0px; }
+
+/* Reusable column tokens */
+.col-12 { width: 12%; }
+.col-14 { width: 14%; }
+.col-15 { width: 15%; }
+.col-18 { width: 18%; }
+.col-20 { width: 20%; }
+.col-26 { width: 26%; }
+.col-30 { width: 30%; }
+.col-35 { width: 35%; }
+.col-45 { width: 45%; }
+.col-50 { width: 50%; }
+.col-70 { width: 70%; }
+
+/* --- Strict CSP UI Elements --- */
+.info-banner {
+    padding: 10px;
+    margin-bottom: 15px;
+    border-left: 4px solid #0078d4;
+    background: #1e1e1e;
+}
+
+.section-header-row {
+    margin-top: 40px;
+    border-bottom: 2px solid #333;
+    padding-bottom: 10px;
+}
+
+.header-inline {
+    display: inline-block;
+    margin: 0;
+    border: none;
+    padding: 0;
+    vertical-align: middle;
+}
+
+.btn-inline-refresh {
+    display: inline-block;
+    margin-left: 15px;
+    vertical-align: middle;
+}
+
+/* Configuration Textarea Control - Strict CSP Compliant */
+textarea.config-textarea {
+    width: 100% !important;
+    height: 85px !important;
+    padding: 6px !important;
+    box-sizing: border-box !important;
+    resize: vertical !important;
+    font-family: monospace !important;
+}
+
+
+/* Layout & Spacing Utilities */
+.mb-20 { margin-bottom: 20px; }
+.w-280 { width: 280px; }
+.w-300 { width: 300px; }
+.maxw-600 { max-width: 600px; }
+.text-center { text-align: center; }
+.text-muted { color: #888; }
+
+/* Flexbox Utilities */
+.d-flex { display: flex; }
+.gap-10 { gap: 10px; }
+.flex-1 { flex: 1; }
+
+/* Section Sub-header Descriptions */
+.section-desc {
+    font-size: 0.85em;
+    color: #777;
+    margin-top: -5px;
+    margin-bottom: 15px;
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* System Log Components */
+.log-output-container {
+    background: #1e1e1e;
+    padding: 15px;
+    border-radius: 4px;
+    border: 1px solid #333;
+}
+.log-output-pre {
+    max-height: 600px;
+    overflow: auto;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9em;
+    color: #dcdcdc;
+}
+
+/* Config Sub-view Specifics */
+.staged-changes-banner {
+    display: none; 
+    background: #0078d4; 
+    color: white; 
+    padding: 15px; 
+    border-radius: 4px; 
+    margin-bottom: 20px; 
+    position: sticky; 
+    top: 10px; 
+    z-index: 100; 
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+.config-banner-actions {
+    float: right;
+    margin-top: -6px;
+}
+.btn-padded {
+    padding: 8px 16px;
+}
+.btn-discard-all {
+    padding: 8px 16px;
+    background: #666 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* Noscript block replacement styling */
+.noscript-banner {
+    padding: 10px;
+    margin-bottom: 12px;
+    border: 1px solid #cc0000;
+    background: #ffeeee;
+    color: #660000;
+    font-weight: bold;
+}
+
+/* Ensure dropdown options are also dark */
+select option { background: #2d2d2d; color: white; }
+
+input[type="text"]:focus, input[type="number"]:focus, select:focus { border-color: #0078d4 !important; }
+
+button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
+button:hover { background: #3d3d3d !important; }
+
+/* 3. TABLES (Anti-Jump Fixes) */
+table { width: 100%; table-layout: fixed; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; margin-top: 20px; overflow: hidden;}
+tr { height: 64px; } /* Locks row height to prevent vertical jumping */
+th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+th { background: #252525; color: #888; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+
+/* 4. BUTTON VARIANTS */
+.btn-edit, .btn-add, .btn-del, .btn-save, .btn-cancel {
+    color: white !important;
+    border: none !important;
+}
+
+.btn-edit, .btn-add { background-color: var(--accent) !important; }
+.btn-edit:hover, .btn-add:hover { background-color: var(--accent-hover) !important; }
+
+.btn-del { background-color: var(--danger) !important; }
+.btn-del:hover { background-color: var(--danger-hover) !important; }
+
+.btn-save { background-color: var(--success) !important; }
+.btn-save:hover { background-color: var(--success-hover) !important; }
+
+.btn-cancel { background-color: var(--cancel) !important; }
+.btn-cancel:hover { background-color: var(--cancel-hover) !important; }
+
+/* 5. UTILITIES */
+.actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
+.actions button { font-size: 0.9rem; }
+.tag-enabled { color: #4ec9b0; font-weight: bold; }
+.tag-disabled { color: #f44747; font-weight: bold; }
+pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }
+
+/* 6. ERROR ALERTS */
+.alert-error {
+    background-color: #2a1818;
+    color: #f44747;
+    border: 1px solid #5a2424;
+    border-left: 4px solid #dc3545;
+    padding: 15px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+.alert-error code {
+    background-color: #1a1111;
+    color: #ffffff;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: Consolas, Monaco, monospace;
+    font-size: 0.95em;
+}
+.alert-error small {
+    color: #aaaaaa;
+    display: block;
+    margin-top: 5px;
+}
+
+/* 7. SUCCESS ALERTS */
+.alert-success {
+    background-color: #162419;
+    color: #4ec9b0;
+    border: 1px solid #1e3a24;
+    border-left: 4px solid #28a745;
+    padding: 15px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+/* Sorting Styles */
+th.sortable { cursor: pointer; user-select: none; transition: background 0.2s; }
+th.sortable:hover { background: #333; color: #fff; }
+.sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
+
+nav a.active {
+    color: #ffffff;
+    border-bottom: 2px solid #0078d4;
+    padding-bottom: 2px;
+}
+/* Fix row height expansion during inline edits
+.edit-row td, .edit-host-row td {
+padding-top: 6px !important;
+padding-bottom: 6px !important;
+} */
+
+
+/* Subtle highlight for modified rows before saving */
+tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
+
+/* Strict row-height lock to match active table rows perfectly */
+tr.edit-row, tr.edit-host-row {
+    height: 64px !important; 
+}
+
+/* Shave off vertical padding so the inner elements never force an expansion */
+tr.edit-row td, tr.edit-host-row td {
+    overflow: visible !important; 
+    padding-top: 3px !important;  
+    padding-bottom: 3px !important;
+    vertical-align: middle;
+}
+
+/* Compress the config type-hint so it fits cleanly into the 64px box constraint */
+.edit-type-hint {
+    margin-top: 1px !important;
+    line-height: 1 !important;
+}
+
+/*force table-context inputs back to match cell text size explicitly, rather than fighting the global rule:*/
+.edit-row .config-input,
+.edit-row input,
+.edit-row select,
+.edit-host-row input {
+    font-size: 1em !important;
+}
