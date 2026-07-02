@@ -587,7 +587,7 @@ function editHost(btn) {
     ipsInput.value = ips;
     ipsInput.setAttribute('form', formId);
     
-   // 4. Save the new pattern and submit via AJAX
+    // 4. Save the new pattern and submit via AJAX
     form.addEventListener('submit', async function(eSubmit) {
         eSubmit.preventDefault();
         
@@ -600,7 +600,7 @@ function editHost(btn) {
         
         // Add the 'edit' flag that your backend expects
         fields.edit = '1';
-
+        
         const success = await postAdminForm('/hosts', fields, 'Failed to save host edits');
         if (success) {
             location.reload();
@@ -729,7 +729,7 @@ function editBlacklist(btn) {
         
         // Add the 'action' flag that your backend expects
         fields.action = 'edit';
-
+        
         const success = await postAdminForm('/response-blacklist', fields, 'Failed to save blacklist edits');
         if (success) {
             location.reload();
