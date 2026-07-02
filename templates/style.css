@@ -35,14 +35,9 @@
     /* --- DRY CSP Utility & Component Tokens --- */
     /* Strict CSP Alignment & Layout Utilities */
     .w-100 { width: 100% !important; }
-    .text-center     { text-align: center !important; }
-    .m-x-sm          { margin: 0 10px !important; }
-    .m-t-lg          { margin-top: 25px !important; }
     .v-align-middle { vertical-align: middle !important; }
     .d-inline { display: inline !important; }
-    .type-hint       { color: #888 !important; display: block !important; margin-top: 4px !important; }
     /* Config Table Stylings */
-    .monospace-code  { font-family: monospace !important; color: #4ec9b0 !important; }
     .monospace-code2  { font-family: monospace !important; width: 100% !important; }
     .config-key-code { font-family: monospace; color: #4ec9b0; }
     .config-edit-row { background: #1a1a1a; }
@@ -54,7 +49,6 @@
     .filter-spacer { margin-top: 25px; }
     .form-inline-action { display: inline; margin-left: 6px; }
     .form-inline-action2 { display: inline; margin-left: 0px; }
-    .inline-space    { display: inline !important; margin-left: 6px !important; }
     
     /* Reusable column tokens to replace hardcoded style widths */
     .col-12 { width: 12%; }
@@ -62,6 +56,7 @@
     .col-18 { width: 18%; }
     .col-26 { width: 26%; }
     .col-30 { width: 30%; }
+    
     /* Table Column Width Layouts (Replaces inline <col style="width: X%">) */
     #rulesTable col:nth-child(1) { width: 14%; }
     #rulesTable col:nth-child(2) { width: 30%; }
