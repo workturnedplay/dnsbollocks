@@ -2,6 +2,36 @@ const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || 
 if (!csrfToken) {
     console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
 }
+
+// postAdminForm sends a POST with fields, injecting csrf_token automatically,
+// and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
+async function postAdminForm(action, fields, errorPrefix) {
+    const formData = new FormData();
+    formData.append('csrf_token', csrfToken);
+    
+    for (const [key, value] of Object.entries(fields)) {
+        formData.append(key, value);
+    }
+    
+    let res;
+    try {
+        res = await fetch(action, { method: 'POST', body: formData, redirect: 'manual' });
+    } catch (err) {
+        console.error(errorPrefix + ' network error:', err);
+        alert('A network error occurred: ' + errorPrefix);
+        return false;
+    }
+    
+    const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
+    if (!res.ok && !isSuccessRedirect) {
+        const errMsg = await res.text();
+        alert(errorPrefix + ':\n' + errMsg);
+        return false;
+    }
+    
+    return true;
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Intercept refresh keys to prevent Firefox's "Resend/Cancel" prompt
     document.addEventListener('keydown', function(e) {
@@ -86,9 +116,8 @@ document.addEventListener('DOMContentLoaded', function() {
             // 4. Setup Cancel action
             cancelBtn.onclick = () => cancelEdit(id);
             
-            // 5. Handle form submission (using closures to grab current input state)
-            form.addEventListener('submit', function(eSubmit) {
-                // Note: renamed the event variable to 'eSubmit' to avoid shadowing the click 'e'
+            // 5. Handle form submission
+            form.addEventListener('submit', async function(eSubmit) {
                 eSubmit.preventDefault();
                 
                 const newPattern = patternInput.value.trim();
@@ -97,41 +126,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 if (newPattern === '') { alert('newPattern cannot be empty'); return; }
                 
-                const formData = new FormData();
-                // Grab the token from the form's hidden input
-                formData.append('csrf_token', csrfToken);
-                formData.append('id', id);
-                formData.append('pattern', newPattern);
-                formData.append('type', newType);
-                formData.append('enabled', enabledChecked ? 'true' : 'false');
-                
                 // --- SAVE THE NEW PATTERN AS LAST INTERACTED BEFORE RELOAD ---
-                // Construct the EXACT same text signature format the filter checks against
-                // Using array join to keep it completely safe from Go raw string literal backticks!
                 const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
-                // Save the unique signature instead of just the pattern
                 sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
                 
-                fetch('/rules', {
-                    method: 'POST',
-                    body: formData,
-                    redirect: 'manual' // Stops fetch from following the redirect in the background
-                })
-                .then(async (res) => {
-                    // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
-                    const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
-                    
-                    if (!res.ok && !isSuccessRedirect) {
-                        const errMsg = await res.text();
-                        alert("Failed to save edits:\n" + errMsg);
-                        return; // Halt here, do NOT reload
-                    }
+                // --- DRY FETCH ---
+                const success = await postAdminForm('/rules', {
+                    'id': id,
+                    'pattern': newPattern,
+                    'type': newType,
+                    'enabled': enabledChecked ? 'true' : 'false'
+                }, 'Failed to save edits');
+                
+                if (success) {
                     location.reload();
-                })
-                .catch(err => {
-                    console.error('Save failed:', err);
-                    alert('A network error occurred while saving the rule.');
-                });
+                }
             });
             
             // 6. Insert cleanly next to the original row
@@ -227,7 +236,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // --- ADD RULE INTERCEPTOR ---
     const addForm = document.getElementById('addRuleForm');
     if (addForm) {
-        addForm.addEventListener('submit', function(e) {
+        addForm.addEventListener('submit', async function(e) {
             e.preventDefault(); // Stop native browser submission
             
             const patternInput = addForm.querySelector('[name="pattern"]');
@@ -242,28 +251,18 @@ document.addEventListener('DOMContentLoaded', function() {
             const ruleSignature = ["", type, pattern].join(" ").toLowerCase();
             sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
             
-            // Submit in the background and reload cleanly
-            fetch(addForm.action, {
-                method: 'POST',
-                body: new FormData(addForm),
-                redirect: 'manual'
-            })
-            .then(async (res) => {
-                // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
-                const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
-                
-                if (!res.ok && !isSuccessRedirect) {
-                    // Extract the error string sent by Go's http.Error()
-                    const errMsg = await res.text();
-                    alert("Failed to add rule:\n" + errMsg);
-                    return; // Halt here, do NOT reload
-                }
+            // 1. Gather all inputs from the HTML form cleanly into an object
+            const fields = Object.fromEntries(new FormData(addForm));
+            
+            // 2. Remove csrf_token from the object so postAdminForm doesn't duplicate it
+            delete fields.csrf_token;
+            
+            // 3. Submit via our DRY helper function
+            const success = await postAdminForm(addForm.action, fields, 'Failed to add rule');
+            
+            if (success) {
                 location.reload();
-            })
-            .catch(err => {
-                console.error('Add failed:', err);
-                alert('A network error occurred while adding the rule.');
-            });
+            }
         });
     }
     
@@ -588,11 +587,24 @@ function editHost(btn) {
     ipsInput.value = ips;
     ipsInput.setAttribute('form', formId);
     
-    // 4. Save the new pattern as the "free pass" signature before submitting,
-    // so the edited row stays visible after reload even if it no longer
-    // matches the active filter text (mirrors rules/blacklist behavior).
-    form.addEventListener('submit', function() {
-        sessionStorage.setItem('hostsTable_lastInteracted', patternInput.value.trim().toLowerCase());
+   // 4. Save the new pattern and submit via AJAX
+    form.addEventListener('submit', async function(eSubmit) {
+        eSubmit.preventDefault();
+        
+        const newPattern = patternInput.value.trim().toLowerCase();
+        sessionStorage.setItem('hostsTable_lastInteracted', newPattern);
+        
+        // Let the browser gather all form-linked inputs automatically!
+        const fields = Object.fromEntries(new FormData(form));
+        delete fields.csrf_token; // Our helper injects this automatically
+        
+        // Add the 'edit' flag that your backend expects
+        fields.edit = '1';
+
+        const success = await postAdminForm('/hosts', fields, 'Failed to save host edits');
+        if (success) {
+            location.reload();
+        }
     });
     
     // 5. Setup cancel button
@@ -704,10 +716,24 @@ function editBlacklist(btn) {
     cidrInput.value = cidr;
     cidrInput.setAttribute('form', formId);
     
-    // Save target CIDR signature as last interacted when submitting edits
-    form.addEventListener('submit', function() {
+    // Save target CIDR signature and submit via AJAX
+    form.addEventListener('submit', async function(eSubmit) {
+        eSubmit.preventDefault();
+        
         const newCidr = cidrInput.value.trim().toLowerCase();
         sessionStorage.setItem('blacklistTable_lastInteracted', newCidr);
+        
+        // Let the browser gather all form-linked inputs automatically!
+        const fields = Object.fromEntries(new FormData(form));
+        delete fields.csrf_token; // Our helper injects this automatically
+        
+        // Add the 'action' flag that your backend expects
+        fields.action = 'edit';
+
+        const success = await postAdminForm('/response-blacklist', fields, 'Failed to save blacklist edits');
+        if (success) {
+            location.reload();
+        }
     });
     
     clone.querySelector('.btn-cancel').onclick = () => cancelBlacklistEdit(index);
@@ -971,29 +997,13 @@ async function applyConfigChanges() {
     
     if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners. Proceed?')) return;
     
-    const formData = new FormData();
-    formData.append('csrf_token', csrfToken);
-    formData.append('action', 'apply');
-    formData.append('payload', JSON.stringify(stagedChanges));
+    const success = await postAdminForm('/config', {
+        'action': 'apply',
+        'payload': JSON.stringify(stagedChanges)
+    }, 'Failed to apply configuration');
     
-    try {
-        const res = await fetch('/config', {
-            method: 'POST',
-            body: formData,
-            redirect: 'manual'
-        });
-        
-        const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
-        if (!res.ok && !isSuccessRedirect) {
-            const err = await res.text();
-            alert("Failed to apply configuration:\\n" + err);
-            return;
-        }
-        
+    if (success) {
         location.reload();
-    } catch (err) {
-        console.error('Apply config failed:', err);
-        alert('A network error occurred while saving the configuration.');
     }
 }
 
