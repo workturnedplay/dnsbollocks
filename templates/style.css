@@ -308,6 +308,14 @@ tr.edit-row td, tr.edit-host-row td {
     vertical-align: middle;
 }
 
+/* Bulletproof fix: Override the edit-row overflow restriction for the ID cell */
+tr.edit-row td.edit-id-display {
+    overflow: hidden !important;
+    /* Restore ellipsis specifically for the ID cell during edit */
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+}
+
 /* Compress the config type-hint so it fits cleanly into the 64px box constraint */
 .edit-type-hint {
     margin-top: 1px !important;
@@ -325,3 +333,4 @@ tr.edit-row td, tr.edit-host-row td {
     font-family: inherit !important;
     font-weight: inherit !important;
 }
+
