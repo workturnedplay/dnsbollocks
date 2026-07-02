@@ -131,14 +131,15 @@ type Config struct {
 	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
 	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
 
-	WebUIPasswordHash         string `json:"webui_password_hash"`
-	WebUIUseTLS               bool   `json:"webui_use_tls"`
-	WebUIMaxLoginFailures     int    `json:"webui_max_login_failures"`
-	WebUILoginLockoutSec      int    `json:"webui_login_lockout_sec"`
-	WebUIReadHeaderTimeoutSec int    `json:"webui_read_header_timeout_sec"`
-	WebUIReadTimeoutSec       int    `json:"webui_read_timeout_sec"`
-	WebUIWriteTimeoutSec      int    `json:"webui_write_timeout_sec"`
-	WebUIIdleTimeoutSec       int    `json:"webui_idle_timeout_sec"`
+	WebUIPasswordHash           string `json:"webui_password_hash"`
+	WebUIUseTLS                 bool   `json:"webui_use_tls"` //ie. https:// not http://
+	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"`
+	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"`
+	WebUILoginLockoutSec        int    `json:"webui_login_lockout_sec"`
+	WebUIReadHeaderTimeoutSec   int    `json:"webui_read_header_timeout_sec"`
+	WebUIReadTimeoutSec         int    `json:"webui_read_timeout_sec"`
+	WebUIWriteTimeoutSec        int    `json:"webui_write_timeout_sec"`
+	WebUIIdleTimeoutSec         int    `json:"webui_idle_timeout_sec"`
 
 	MaxConcurrentDNSTCPConns   int `json:"max_concurrent_dns_tcp_conns"`
 	MaxConcurrentDNSUDPQueries int `json:"max_concurrent_dns_udp_queries"`
@@ -1274,17 +1275,18 @@ func defaultConfig() Config {
 		BlacklistFile: "response_blacklist.json",
 		HostsFile:     "hosts2ip.json",
 
-		LogQueriesFile:          "queries.log",
-		LogErrorsFile:           "dnsbollocks.log",
-		ConsoleLogLevel:         "info",
-		LogMaxSizeMB:            4095, // Rotation threshold
-		AllowRunAsAdmin:         false,
-		BlockAAAAasEmptyNoError: true,
-		AllowHTTPSIfAAllowed:    true,
-		RemoveHTTPSIPv4Hints:    true,
-		WebUIUseTLS:             true,
-		WebUIMaxLoginFailures:   5,
-		WebUILoginLockoutSec:    5 * 60, // 5 minutes, in seconds
+		LogQueriesFile:              "queries.log",
+		LogErrorsFile:               "dnsbollocks.log",
+		ConsoleLogLevel:             "info",
+		LogMaxSizeMB:                4095, // Rotation threshold
+		AllowRunAsAdmin:             false,
+		BlockAAAAasEmptyNoError:     true,
+		AllowHTTPSIfAAllowed:        true,
+		RemoveHTTPSIPv4Hints:        true,
+		WebUIUseTLS:                 true,
+		WebUIForceTLSOnNonLocalhost: true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
+		WebUIMaxLoginFailures:       5,
+		WebUILoginLockoutSec:        5 * 60, // 5 minutes, in seconds
 
 		WebUIReadHeaderTimeoutSec: 5,
 		WebUIReadTimeoutSec:       15,
@@ -2389,6 +2391,33 @@ func (s *Server) loadMainConfig() error {
 	}
 
 	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+
+	tagWebUIUseTLS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIUseTLS))
+	tagWebUIForceTLS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIForceTLSOnNonLocalhost))
+	tagListenUI := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenUI))
+
+	boundToLoopback := isLoopbackBindHost(newCfg.ListenUI)
+
+	switch {
+	case !newCfg.WebUIUseTLS && !boundToLoopback && newCfg.WebUIForceTLSOnNonLocalhost:
+		log.Warn(tagWebUIUseTLS+" was false while "+tagListenUI+" is bound off-loopback; "+
+			"auto-promoting to TLS so the bcrypt-checked WebUI password isn't sent as plaintext(thus sniffable) "+
+			"Basic-Auth over the network. Set "+tagWebUIForceTLS+" to false to override.",
+			slog.String("listen_ui", newCfg.ListenUI))
+		newCfg.WebUIUseTLS = true
+		shouldSaveConfig = true //hmm, self-heals?!
+
+	case !newCfg.WebUIUseTLS && !boundToLoopback:
+		log.Error(tagWebUIUseTLS+" and "+tagWebUIForceTLS+" are both false while bound off-loopback; "+
+			"the WebUI password will be sent in PLAINTEXT (Basic-Auth is base64, not encryption) "+
+			"to anyone who can observe this network segment.",
+			slog.String("listen_ui", newCfg.ListenUI))
+
+	case !newCfg.WebUIUseTLS && boundToLoopback:
+		log.Warn(tagWebUIUseTLS+" is false. Even on loopback, Basic-Auth sends the password as base64 "+
+			"(not encrypted) to any other local process/user that can observe loopback traffic.",
+			slog.String("listen_ui", newCfg.ListenUI))
+	}
 
 	// =========================================================================
 	// Group 1: WebUI Server Timeouts & Rate Limits (Refactor-safe)
@@ -8978,4 +9007,20 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// isLoopbackBindHost reports whether the host portion of a "host:port" listen
+// address is loopback. Deliberately conservative: 0.0.0.0/:: are NOT loopback
+// (they bind every interface, public ones included) and an unparseable host
+// (bare hostname other than "localhost") is treated as NOT loopback, so that
+// ambiguous cases fall on the side of requiring TLS.
+func isLoopbackBindHost(listenAddr string) bool {
+	host, _, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		host = listenAddr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
