@@ -4936,6 +4936,15 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 // aggressively, whereas they treat 204 as "acknowledged, nothing to
 // cache" and back off quickly.
 func faviconHandler(w http.ResponseWriter, _ *http.Request) {
+	// Root-level assets have no ?v= query parameter.
+	// Use a 1-day max-age for prod, but bypass completely in local dev.
+	cacheCtrl := "public, max-age=86400"
+	if v := GetVersion(); strings.Contains(v, "+dirty") || strings.Contains(v, "dev") {
+		cacheCtrl = "no-cache, no-store, must-revalidate"
+	}
+
+	w.Header().Set("Cache-Control", cacheCtrl)
+
 	//[ ] 404 Not Found Browser retries every ~few minutes across sessions
 	//[x] 204 No Content aka http.StatusNoContent Browser backs off quickly; effectively treats it as "I hear you, there's nothing here", but still retries on each page (re)load
 	//[ ] 200 + actual .icoBrowser caches per Cache-Control; ideal but requires embedding an icon
@@ -4946,6 +4955,12 @@ func faviconHandler(w http.ResponseWriter, _ *http.Request) {
 // Like favicon.ico, browsers and crawlers may request this automatically.
 // Serving it outside auth prevents spurious failure-counter hits.
 func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
+	cacheCtrl := "public, max-age=86400" // 1-day cache for production crawlers
+	if v := GetVersion(); strings.Contains(v, "+dirty") || strings.Contains(v, "dev") {
+		cacheCtrl = "no-cache, no-store, must-revalidate"
+	}
+
+	w.Header().Set("Cache-Control", cacheCtrl)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
@@ -4965,22 +4980,28 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
+	// Determine cache strategy based on build state
+	//immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
+	cacheCtrl := "public, max-age=31536000, immutable"
+	if v := GetVersion(); strings.Contains(v, "+dirty") || strings.Contains(v, "dev") {
+		// Local development mode: force browser to always request the latest file changes
+		cacheCtrl = "no-cache, no-store, must-revalidate"
+	}
+
 	innerMux.Handle("/static/app.js", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		//immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", cacheCtrl)
 		http.ServeFileFS(w, r, templates.StaticFS, "app.js")
 	}))
 	innerMux.Handle("/static/style.css", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		//immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", cacheCtrl)
 		http.ServeFileFS(w, r, templates.StaticFS, "style.css")
 	}))
 	innerMux.Handle("/static/arrow-down.svg", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
 		// immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", cacheCtrl)
 		http.ServeFileFS(w, r, templates.StaticFS, "arrow-down.svg")
 	}))
 
