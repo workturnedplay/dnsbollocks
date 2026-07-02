@@ -7385,7 +7385,7 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 		tmpName := filename + powerlossFileExtension
 
 		// 1. Try to write to a temp file first to ensure disk space and data integrity.
-		tmpFile, createErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+		tmpFile, createErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm) //TODO: make this file-operation retryable too? but then i lose the first errors that happen, will only have the last ones.
 		if createErr == nil {
 			_, writeErr := tmpFile.Write(data)
 			syncErr := tmpFile.Sync()
