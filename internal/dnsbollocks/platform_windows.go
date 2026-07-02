@@ -4977,6 +4977,12 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		http.ServeFileFS(w, r, templates.StaticFS, "style.css")
 	}))
+	innerMux.Handle("/static/arrow-down.svg", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		// immutable is safe here specifically because the content is compile-time embedded — a new binary means a new ?v= value means a fresh fetch regardless of what the browser has cached.
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.ServeFileFS(w, r, templates.StaticFS, "arrow-down.svg")
+	}))
 
 	// ── Outer mux: browser-automatic routes that must bypass auth ────────
 	// These are requests browsers fire silently before the user has had a
@@ -5275,9 +5281,18 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy",
 			//"default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",//fails loading CSS and js stuff
 			//(connect-src 'self' covers the fetch('/response-blacklist/check?...') call you already do client-side.)
-			"default-src 'none'; script-src 'self'; style-src 'self'; "+
-				"img-src 'self'; connect-src 'self'; form-action 'self'; "+
-				"object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+			// "default-src 'none'; script-src 'self'; style-src 'self'; "+
+			// 	"img-src 'self'; connect-src 'self'; form-action 'self'; "+
+			// 	"object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+			"default-src 'none'; "+
+				"script-src 'self'; "+
+				"style-src 'self'; "+
+				"img-src 'self'; "+
+				"connect-src 'self'; "+
+				"frame-ancestors 'none'; "+
+				"form-action 'self'; "+
+				"object-src 'none'; "+
+				"base-uri 'none'; ",
 		)
 		h.Set("X-Frame-Options", "DENY")
 

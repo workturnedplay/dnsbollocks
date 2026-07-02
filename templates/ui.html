@@ -3,56 +3,49 @@
     <link rel="stylesheet" href="/static/style.css?v={{.Version}}">
 </head><body>
     <noscript>
-        <div style="
-        padding: 10px;
-        margin-bottom: 12px;
-        border: 1px solid #cc0000;
-        background: #ffeeee;
-        color: #660000;
-        font-weight: bold;
-        ">
-        JavaScript is disabled.
-        <br>
-        which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
-        <br>
-        also the Edit button won't work!
+        <div class="noscript-banner">
+            JavaScript is disabled.
+            <br>
+            which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
+            <br>
+            also the Edit button won't work!
+        </div>
+    </noscript>
+    <div class="container">
+        <h1>DNSbollocks</h1>
+        <nav>
+            <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
+            <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Hosts</a>
+            <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Blocks</a>
+            <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Response Blacklist IPs</a>
+            <a href="/logs" {{if eq .Path "/logs" }} class="active" {{end}}>System Logs(incl.queries)</a>
+            <a href="/logs_queries" {{if eq .Path "/logs_queries" }} class="active" {{end}}>Query(only) Logs</a>
+            <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
+            <a href="/config" {{if eq .Page "config" }} class="active" {{end}}>Config</a>
+            <a href="/debug/vars">Debug Vars</a>
+        </nav>
+        <hr>
+        
+        {{/* This acts as a router inside the template */}}
+        {{if eq .Page "rules"}}
+        {{template "rules" .}}
+        {{else if eq .Page "hosts"}}
+        {{template "hosts" .}}
+        {{else if eq .Page "blocks"}}
+        {{template "blocks" .}}
+        {{else if eq .Page "response-blacklist"}}
+        {{template "response-blacklist" .}}
+        {{else if eq .Page "logs"}}
+        {{template "logs" .}}
+        {{else if eq .Page "stats" }}
+        {{template "stats" .}}
+        {{else if eq .Page "config" }}
+        {{template "config" .}}
+        {{end}}
+        
     </div>
-</noscript>
-<div class="container">
-    <h1>DNSbollocks</h1>
-    <nav>
-        <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
-        <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Hosts</a>
-        <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Blocks</a>
-        <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Response Blacklist IPs</a>
-        <a href="/logs" {{if eq .Path "/logs" }} class="active" {{end}}>System Logs(incl.queries)</a>
-        <a href="/logs_queries" {{if eq .Path "/logs_queries" }} class="active" {{end}}>Query(only) Logs</a>
-        <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
-        <a href="/config" {{if eq .Page "config" }} class="active" {{end}}>Config</a>
-        <a href="/debug/vars">Debug Vars</a>
-    </nav>
-    <hr>
     
-    {{/* This acts as a router inside the template */}}
-    {{if eq .Page "rules"}}
-    {{template "rules" .}}
-    {{else if eq .Page "hosts"}}
-    {{template "hosts" .}}
-    {{else if eq .Page "blocks"}}
-    {{template "blocks" .}}
-    {{else if eq .Page "response-blacklist"}}
-    {{template "response-blacklist" .}}
-    {{else if eq .Page "logs"}}
-    {{template "logs" .}}
-    {{else if eq .Page "stats" }}
-    {{template "stats" .}}
-    {{else if eq .Page "config" }}
-    {{template "config" .}}
-    {{end}}
-    
-</div>
-
-<script src="/static/app.js?v={{.Version}}" defer></script>
+    <script src="/static/app.js?v={{.Version}}" defer></script>
 </body></html>
 
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
@@ -66,28 +59,27 @@
     </select>
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="text" name="pattern" placeholder="pattern" required> 
-    <label style="margin: 0 10px;"><input type="checkbox" name="enabled" checked> Enabled</label> 
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" checked> Enabled</label>
     <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
-<div style="margin-top: 25px;">
+<div class="filter-spacer">
     <input
     type="text"
     id="rulesFilter"
-    class="table-filter-input"
+    class="table-filter-input w-100"
     placeholder="Filter rules ... (Press '/' to focus) (ordered match, e.g., 'en dia org')"
-    style="width: 100%;"
     >
 </div>
 
 <h2>Whitelist Rules</h2>
 <table id="rulesTable">
     <colgroup>
-        <col style="width: 14%;">
-        <col style="width: 30%;">
-        <col style="width: 26%;">
-        <col style="width: 12%;">
-        <col style="width: 18%;">
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
     </colgroup>
     <thead>
         <tr>
@@ -107,7 +99,7 @@
             <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
             <td class="actions">
                 <button class="btn-edit">Edit</button> 
-                <form method="post" action="/rules" style="display:inline;margin-left:6px">
+                <form method="post" action="/rules" class="form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <input type="hidden" name="delete" value="1">
                     <input type="hidden" name="id" value="{{.ID}}">
@@ -123,17 +115,17 @@
 <template id="editRuleTemplate">
     <tr class="edit-row">
         <td>
-            <select name="type" class="edit-type" style="width: 100%;">
+            <select name="type" class="edit-type w-100">
                 {{range .DNSTypes}}
                 <option value="{{.}}">{{.}}</option>
                 {{end}}
             </select>
         </td>
         <td class="edit-id-display"></td>
-        <td><input type="text" class="edit-pattern" style="width: 100%;"></td>
-        <td><label><input type="checkbox" class="edit-enabled" style="vertical-align: middle;"></label></td>
+        <td><input type="text" class="edit-pattern w-100"></td>
+        <td><label><input type="checkbox" class="edit-enabled v-align-middle"></label></td>
         <td class="actions">
-            <form method="post" action="/rules" class="edit-form" style="display:inline; margin:0;">
+            <form method="post" action="/rules" class="edit-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="id" class="edit-id-input">
                 <button type="submit" class="btn-save">Save</button>
@@ -146,7 +138,7 @@
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
 
-<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">
+<div class="info-banner">
     <strong>Note:</strong> Only queries blocked by the whitelist rules are shown here. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
 </div>
 
@@ -161,9 +153,9 @@
     <strong>Success:</strong> {{.SuccessMessage}}
 </div>
 {{end}}
-<div style="margin-top: 40px; border-bottom: 2px solid #333; padding-bottom: 10px;">
-    <h2 style="display: inline-block; margin: 0; border: none; padding: 0; vertical-align: middle;">Recent Blocks (Quick Unblock)</h2>
-    <button type="button" class="btn-edit js-blocks-refresh-btn" style="display: inline-block; margin-left: 15px; vertical-align: middle;">🔄 Refresh Page (Ctrl+R or F5)</button>
+<div class="section-header-row">
+    <h2 class="header-inline">Recent Blocks (Quick Unblock)</h2>
+    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
 </div>
 
 <ul>
@@ -172,7 +164,7 @@
         <code>{{.Domain}}</code> <span class="tag-disabled">({{.Type}})</span>
         
         {{if .IsUnblocked}}
-        <form method="post" action="/blocks" style="display:inline;">
+        <form method="post" action="/blocks" class="d-inline">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -180,7 +172,7 @@
             <button type="submit" class="btn-cancel">Re-block (Pause)</button>
         </form>
         {{else}}
-        <form method="post" action="/blocks" style="display:inline;">
+        <form method="post" action="/blocks" class="d-inline">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -194,7 +186,7 @@
 {{end}}
 
 {{define "hosts"}}
-<div style="padding: 10px; margin-bottom: 15px; border-left: 4px solid #0078d4; background: #1e1e1e;">
+<div class="info-banner">
     <strong>Note:</strong> A pattern/host must match the whitelist rules first for these local host overrides to take any effect.
 </div>
 
@@ -202,26 +194,25 @@
 <form id="addHostForm" method="post" action="/hosts">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> 
-    <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" style="width: 280px;" required> 
+    <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" class="w-280" required> 
     <button type="submit">Add Host</button>
 </form>
 
-<div style="margin-top: 25px;">
+<div class="filter-spacer">
     <input
     type="text"
     id="hostsFilter"
-    class="table-filter-input"
+    class="table-filter-input w-100"
     placeholder="Filter hosts ... (Press '/' to focus) (ordered match, e.g., 'router 192')"
-    style="width: 100%;"
     >
 </div>
 
 <h2>Local Hosts</h2>
 <table id="hostsTable">
     <colgroup>
-        <col style="width: 35%;">
-        <col style="width: 45%;">
-        <col style="width: 20%;">
+        <col>
+        <col>
+        <col>
     </colgroup>
     <thead>
         <tr>
@@ -242,7 +233,7 @@
                 data-ips="{{.IPsDisplay}}">
                 Edit
             </button>
-            <form method="post" action="/hosts" style="display:inline;margin-left:6px" class="js-host-delete-form">
+            <form method="post" action="/hosts" class="js-host-delete-form form-inline-action">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="delete" value="1">
                 <input type="hidden" name="pattern" value="{{.Pattern}}">
@@ -260,11 +251,11 @@
     <tr class="edit-host-row">
         <td>
             <input type="hidden" name="old_pattern" class="edit-host-old-pattern" form="">
-            <input type="text" name="pattern" class="edit-host-pattern" form="" style="width:100%" required>
+            <input type="text" name="pattern" class="edit-host-pattern w-100" form="" required>
         </td>
-        <td><input type="text" name="ips" class="edit-host-ips" form="" style="width:100%" required></td>
+        <td><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
         <td class="actions">
-            <form method="post" action="/hosts" class="edit-host-form" style="display:inline; margin:0;">
+            <form method="post" action="/hosts" class="edit-host-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
                 <button type="submit" class="btn-save">Save</button>
@@ -279,64 +270,63 @@
 {{define "logs"}}
 <h2>{{.Title}}</h2>
 
-<form method="get" style="margin-bottom: 20px;">
-    <input type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." style="width: 300px;">
+<form method="get" class="mb-20">
+    <input type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." class="w-300">
     <button type="submit">Filter</button>
     <button type="button" class="btn-cancel js-logs-clear-btn">Clear</button>
 </form>
 
-<div style="background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333;">
-    <pre style="max-height: 600px; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all; font-family: 'Consolas', monospace; font-size: 0.9em; color: #dcdcdc;">{{if .Content}}{{.Content}}{{else}}No log entries found.{{end}}</pre>
+<div class="log-output-container">
+    <pre class="log-output-pre">{{if .Content}}{{.Content}}{{else}}No log entries found.{{end}}</pre>
 </div>
 {{end}}
 
 {{define "response-blacklist"}}
 <h2>Response Blacklist IPs</h2>
-<p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic; max-width: 600px; line-height: 1.4;">
+<p class="section-desc maxw-600">
     The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
 </p>
 
-<div style="margin-bottom: 20px;">
-    <form id="add-blacklist-form" method="POST" action="/response-blacklist" style="display: flex; gap: 10px;">
+<div class="mb-20">
+    <form id="add-blacklist-form" method="POST" action="/response-blacklist" class="d-flex gap-10">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="add">
-        <input type="text" name="cidr" placeholder="e.g. 192.168.1.5 or 10.0.0.0/8" required style="flex: 1; max-width: 300px;">
+        <input type="text" name="cidr" placeholder="e.g. 192.168.1.5 or 10.0.0.0/8" required class="flex-1 w-300">
         <button type="submit">Add IP / CIDR</button>
     </form>
 </div>
 
-<div style="margin-top: 25px;">
+<div class="filter-spacer">
     <input
     type="text"
     id="blacklistFilter"
-    class="table-filter-input"
+    class="table-filter-input w-100"
     placeholder="Filter entries ... (ordered match, e.g., '10.0 8')"
-    style="width: 100%;"
     >
 </div>
 
 <table id="blacklistTable">
     <colgroup>
-        <col style="width: 70%;">
-        <col style="width: 30%;">
+        <col>
+        <col>
     </colgroup>
     <thead>
         <tr>
             <th class="sortable" data-col="0">IP / CIDR Block <span class="sort-icon"></span></th>
-            <th style="text-align: center;">Actions</th>
+            <th class="text-center">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .ResponseBlacklist}}
         <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}">
             <td title="{{.CIDR}}">{{.CIDR}}</td>
-            <td class="actions" style="text-align: center;">
+            <td class="actions text-center">
                 <button type="button" class="btn-edit js-blacklist-edit"
                 data-index="{{.Index}}"
                 data-cidr="{{.CIDR}}">
                 Edit
             </button>
-            <form method="post" action="/response-blacklist" style="display:inline; margin-left:6px;" class="js-blacklist-delete-form">
+            <form method="post" action="/response-blacklist" class="js-blacklist-delete-form form-inline-action">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="action" value="delete">
                 <input type="hidden" name="cidr" value="{{.CIDR}}">
@@ -346,7 +336,7 @@
     </tr>
     {{else}}
     <tr>
-        <td colspan="2" style="text-align: center; color: #888;">No blacklisted response IPs configured.</td>
+        <td colspan="2" class="text-center text-muted">No blacklisted response IPs configured.</td>
     </tr>
     {{end}}
 </tbody>
@@ -356,10 +346,10 @@
     <tr class="edit-row">
         <td>
             <input type="hidden" name="old_cidr" class="edit-blacklist-old-cidr" form="">
-            <input type="text" name="cidr" class="edit-blacklist-cidr" form="" style="width:100%" required>
+            <input type="text" name="cidr" class="edit-blacklist-cidr w-100" form="" required>
         </td>
-        <td class="actions" style="text-align: center;">
-            <form method="POST" action="/response-blacklist" class="edit-blacklist-form" style="display:inline; margin:0;">
+        <td class="actions text-center">
+            <form method="POST" action="/response-blacklist" class="edit-blacklist-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="action" value="edit">
                 <button type="submit" class="btn-save">Save</button>
@@ -380,41 +370,41 @@
 
 {{define "config"}}
 <h2>Engine Configuration</h2>
-<p style="font-size: 0.85em; color: #777; margin-top: -5px; margin-bottom: 15px; font-style: italic;">
+<p class="section-desc">
     Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload" button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
 </p>
 
-<div id="stagedChangesBanner" style="display: none; background: #0078d4; color: white; padding: 15px; border-radius: 4px; margin-bottom: 20px; position: sticky; top: 10px; z-index: 100; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+<div id="stagedChangesBanner" class="staged-changes-banner">
     <strong>Unsaved Changes!</strong> You have staged <span id="stagedCount">0</span> modification(s).
-    <div style="float: right; margin-top: -6px;">
-        <button class="btn-save" id="js-apply-config-btn" style="padding: 8px 16px;">Apply &amp; Reload</button>
-        <button id="js-discard-config-btn" style="padding: 8px 16px; background: #666 !important; color: white !important; border: none !important; border-radius: 4px; cursor: pointer; font-weight: 600;">Discard All</button>
+    <div class="config-banner-actions">
+        <button class="btn-save btn-padded" id="js-apply-config-btn">Apply &amp; Reload</button>
+        <button id="js-discard-config-btn" class="btn-discard-all">Discard All</button>
     </div>
 </div>
 
-<div style="margin-bottom: 20px;">
-    <input type="text" id="configFilter" class="table-filter-input" placeholder="Filter settings... (e.g., 'timeout')" style="width: 100%;">
+<div class="mb-20">
+    <input type="text" id="configFilter" class="table-filter-input w-100" placeholder="Filter settings... (e.g., 'timeout')">
 </div>
 
 <table id="configTable">
     <colgroup>
-        <col style="width: 35%;">
-        <col style="width: 50%;">
-        <col style="width: 15%;">
+        <col>
+        <col>
+        <col>
     </colgroup>
     <thead>
         <tr>
             <th class="sortable" data-col="0">Setting (Key) <span class="sort-icon"></span></th>
             <th class="sortable" data-col="1">Current Value <span class="sort-icon"></span></th>
-            <th style="text-align: center;">Actions</th>
+            <th class="text-center">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Fields}}
         <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}">
-            <td style="font-family: monospace; color: #4ec9b0;">{{.Key}}</td>
+            <td class="config-key-code">{{.Key}}</td>
             <td class="display-value" title="{{.Value}}">{{.Value}}</td>
-            <td class="actions" style="text-align: center;">
+            <td class="actions text-center">
                 <button class="btn-edit js-config-edit">Edit</button>
             </td>
         </tr>
@@ -423,16 +413,15 @@
 </table>
 
 <template id="editConfigTemplate">
-    <tr class="edit-row" style="background: #1a1a1a;">
-        <td style="font-family: monospace; color: #4ec9b0;" class="edit-key-display"></td>
+    <tr class="edit-row edit-row-bg">
+        <td class="edit-key-display config-key-code"></td>
         <td>
-            <div class="edit-input-container" style="width:100%"></div>
-            <small class="edit-type-hint" style="color: #888; display: block; margin-top: 4px;"></small>
+            <div class="edit-input-container w-100"></div>
+            <small class="edit-type-hint config-type-hint"></small>
         </td>
-        <td class="actions" style="text-align: center;">
+        <td class="actions text-center">
             <button type="button" class="btn-save config-stage-btn">Stage</button>
             <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>
-            <!-- works too: <button type="button" class="btn-cancel config-cancel-btn" style="background-color: #dc3545 !important; color: white !important;">Cancel</button> -->
         </td>
     </tr>
 </template>

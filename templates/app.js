@@ -881,18 +881,18 @@ function editConfig(key) {
     const hint = editRow.querySelector('.edit-type-hint');
     
     // Remove strict row height lock temporarily so textareas can expand
-    editRow.style.height = 'auto';
+    editRow.style.height = 'auto';// Safe CSSOM assignment
     
-    // Dynamically type the input control
+    // Dynamically type the input control cleanly without inline strings styles
     if (key === 'upstream_selection_mode') {
-        container.innerHTML = `<select class="config-input" style="width: 100%;">
+        container.innerHTML = `<select class="config-input w-100">
                                     <option value="fastest" ${currentDisplay === 'fastest' ? 'selected' : ''}>fastest</option>
                                     <option value="failover" ${currentDisplay === 'failover' ? 'selected' : ''}>failover</option>
                                     <option value="strict" ${currentDisplay === 'strict' ? 'selected' : ''}>strict</option>
                                    </select>`;
         hint.innerText = "Strategy for querying upstreams";
     } else if (key === 'console_log_level') {
-        container.innerHTML = `<select class="config-input" style="width: 100%;">
+        container.innerHTML = `<select class="config-input w-100">
                                     <option value="debug" ${currentDisplay === 'debug' ? 'selected' : ''}>debug</option>
                                     <option value="info" ${currentDisplay === 'info' ? 'selected' : ''}>info</option>
                                     <option value="warn" ${currentDisplay === 'warn' ? 'selected' : ''}>warn</option>
@@ -900,18 +900,18 @@ function editConfig(key) {
                                    </select>`;
         hint.innerText = "Console output verbosity";
     } else if (key === 'block_mode') {
-        container.innerHTML = `<select class="config-input" style="width: 100%;">
+        container.innerHTML = `<select class="config-input w-100">
                                     <option value="nxdomain" ${currentDisplay === 'nxdomain' ? 'selected' : ''}>nxdomain</option>
                                     <option value="ip_block" ${currentDisplay === 'ip_block' ? 'selected' : ''}>ip_block</option>
                                     <option value="drop" ${currentDisplay === 'drop' ? 'selected' : ''}>drop</option>
                                    </select>`;
         hint.innerText = "Action taken when blocking queries";
     } else if (key === 'webui_password_hash') {
-        container.innerHTML = `<input type="text" class="config-input" style="width: 100%; font-family: monospace;" placeholder="Enter NEW password here...">`;
+        container.innerHTML = `<input type="text" class="config-input monospace-code2" placeholder="Enter NEW password here...">`;
         hint.innerText = "Type a plaintext password (it will be hashed on save), don't prefix it with $2";
     } else if (type === 'bool') {
         const isTrue = currentDisplay === 'true';
-        container.innerHTML = `<select class="config-input" style="width: 100%;">
+        container.innerHTML = `<select class="config-input w-100">
                                     <option value="true" ${isTrue ? 'selected' : ''}>true</option>
                                     <option value="false" ${!isTrue ? 'selected' : ''}>false</option>
                                    </select>`;
@@ -919,13 +919,13 @@ function editConfig(key) {
     } else if (type === '[]string') {
         // Swap to textarea and format the current comma-string into newlines for easier editing
         const formattedDisplay = currentDisplay.split(',').map(s => s.trim()).join('\n');
-        container.innerHTML = `<textarea class="config-input" style="width: 100%; height: 85px; background: #2d2d2d; color: #fff; border: 1px solid #444; padding: 6px; box-sizing: border-box; resize: vertical; font-family: monospace;">${formattedDisplay}</textarea>`;
+        container.innerHTML = `<textarea class="config-input config-textarea">${formattedDisplay}</textarea>`;
         hint.innerText = "List (separate with newlines or commas)";
     } else if (type === 'int') {
-        container.innerHTML = `<input type="number" class="config-input" style="width: 100%;" value="${currentDisplay}">`;
+        container.innerHTML = `<input type="number" class="config-input w-100" value="${currentDisplay}">`;
         hint.innerText = "Integer value";
     } else {
-        container.innerHTML = `<input type="text" class="config-input" style="width: 100%;" value="${currentDisplay}">`;
+        container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
         hint.innerText = "String value";
     }
     

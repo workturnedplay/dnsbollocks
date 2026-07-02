@@ -23,6 +23,5 @@ import "embed"
 //go:embed ui.html
 var FS embed.FS
 
-//go:embed style.css
-//go:embed app.js
+//go:embed style.css app.js arrow-down.svg
 var StaticFS embed.FS

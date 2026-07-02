@@ -21,15 +21,183 @@
         box-sizing: border-box;
     }
     
-    /* Specialized Select/Dropdown logic */
+    /* Specialized Select/Dropdown logic - Now CSP Compliant */
     select {
         appearance: none; 
         -webkit-appearance: none;
-        background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') !important;
+        background-image: url('/static/arrow-down.svg') !important;
         background-repeat: no-repeat !important;
         background-position: right 10px center !important;
         background-size: 14px !important;
         padding-right: 35px !important;
+    }
+    
+    /* --- DRY CSP Utility & Component Tokens --- */
+    /* Strict CSP Alignment & Layout Utilities */
+    .w-100 { width: 100% !important; }
+    .text-center     { text-align: center !important; }
+    .m-x-sm          { margin: 0 10px !important; }
+    .m-t-lg          { margin-top: 25px !important; }
+    .v-align-middle { vertical-align: middle !important; }
+    .d-inline { display: inline !important; }
+    .type-hint       { color: #888 !important; display: block !important; margin-top: 4px !important; }
+    /* Config Table Stylings */
+    .monospace-code  { font-family: monospace !important; color: #4ec9b0 !important; }
+    .monospace-code2  { font-family: monospace !important; width: 100% !important; }
+    .config-key-code { font-family: monospace; color: #4ec9b0; }
+    .config-edit-row { background: #1a1a1a; }
+    .edit-row-bg     { background: #1a1a1a !important; }
+    .config-type-hint { color: #888; display: block; margin-top: 4px; }
+    
+    /* Common Spacers */
+    .lbl-spaced { margin: 0 10px; }
+    .filter-spacer { margin-top: 25px; }
+    .form-inline-action { display: inline; margin-left: 6px; }
+    .form-inline-action2 { display: inline; margin-left: 0px; }
+    .inline-space    { display: inline !important; margin-left: 6px !important; }
+    
+    /* Reusable column tokens to replace hardcoded style widths */
+    .col-12 { width: 12%; }
+    .col-14 { width: 14%; }
+    .col-18 { width: 18%; }
+    .col-26 { width: 26%; }
+    .col-30 { width: 30%; }
+    /* Table Column Width Layouts (Replaces inline <col style="width: X%">) */
+    #rulesTable col:nth-child(1) { width: 14%; }
+    #rulesTable col:nth-child(2) { width: 30%; }
+    #rulesTable col:nth-child(3) { width: 26%; }
+    #rulesTable col:nth-child(4) { width: 12%; }
+    #rulesTable col:nth-child(5) { width: 18%; }
+    
+    #hostsTable col:nth-child(1) { width: 35%; }
+    #hostsTable col:nth-child(2) { width: 45%; }
+    #hostsTable col:nth-child(3) { width: 20%; }
+    
+    #blacklistTable col:nth-child(1) { width: 70%; }
+    #blacklistTable col:nth-child(2) { width: 30%; }
+    
+    #configTable col:nth-child(1) { width: 35%; }
+    #configTable col:nth-child(2) { width: 50%; }
+    #configTable col:nth-child(3) { width: 15%; }
+    
+    /* --- Strict CSP UI Elements --- */
+    .info-banner {
+        padding: 10px;
+        margin-bottom: 15px;
+        border-left: 4px solid #0078d4;
+        background: #1e1e1e;
+    }
+    
+    .section-header-row {
+        margin-top: 40px;
+        border-bottom: 2px solid #333;
+        padding-bottom: 10px;
+    }
+    
+    .header-inline {
+        display: inline-block;
+        margin: 0;
+        border: none;
+        padding: 0;
+        vertical-align: middle;
+    }
+    
+    .btn-inline-refresh {
+        display: inline-block;
+        margin-left: 15px;
+        vertical-align: middle;
+    }
+    
+    /* Configuration Textarea Control - Strict CSP Compliant */
+    textarea.config-textarea {
+        width: 100% !important;
+        height: 85px !important;
+        padding: 6px !important;
+        box-sizing: border-box !important;
+        resize: vertical !important;
+        font-family: monospace !important;
+    }
+    
+    
+    /* Layout & Spacing Utilities */
+    .mb-20 { margin-bottom: 20px; }
+    .w-280 { width: 280px; }
+    .w-300 { width: 300px; }
+    .maxw-600 { max-width: 600px; }
+    .text-center { text-align: center; }
+    .text-muted { color: #888; }
+    
+    /* Flexbox Utilities */
+    .d-flex { display: flex; }
+    .gap-10 { gap: 10px; }
+    .flex-1 { flex: 1; }
+    
+    /* Section Sub-header Descriptions */
+    .section-desc {
+        font-size: 0.85em;
+        color: #777;
+        margin-top: -5px;
+        margin-bottom: 15px;
+        font-style: italic;
+        line-height: 1.4;
+    }
+    
+    /* System Log Components */
+    .log-output-container {
+        background: #1e1e1e;
+        padding: 15px;
+        border-radius: 4px;
+        border: 1px solid #333;
+    }
+    .log-output-pre {
+        max-height: 600px;
+        overflow: auto;
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-family: 'Consolas', monospace;
+        font-size: 0.9em;
+        color: #dcdcdc;
+    }
+    
+    /* Config Sub-view Specifics */
+    .staged-changes-banner {
+        display: none; 
+        background: #0078d4; 
+        color: white; 
+        padding: 15px; 
+        border-radius: 4px; 
+        margin-bottom: 20px; 
+        position: sticky; 
+        top: 10px; 
+        z-index: 100; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .config-banner-actions {
+        float: right;
+        margin-top: -6px;
+    }
+    .btn-padded {
+        padding: 8px 16px;
+    }
+    .btn-discard-all {
+        padding: 8px 16px;
+        background: #666 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 600;
+    }
+    
+    /* Noscript block replacement styling */
+    .noscript-banner {
+        padding: 10px;
+        margin-bottom: 12px;
+        border: 1px solid #cc0000;
+        background: #ffeeee;
+        color: #660000;
+        font-weight: bold;
     }
     
     /* Ensure dropdown options are also dark */
