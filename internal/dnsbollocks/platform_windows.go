@@ -3989,23 +3989,29 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			reqCtx, cancelReq := context.WithTimeout(ctx, u.UpstreamClientTimeoutDuration)
 			// Crucial: always defer cancel to prevent context leaks!
 			// defer cancel() NO
+
+			// If the server shuts down while this request is in-flight, cancel it.
+			// stopWatch() frees the AfterFunc's internal resources once we no longer need it.
+			stopWatch := context.AfterFunc(u.BackgroundCtx, cancelReq)
+
 			// Use a flag to track if responsibility for calling cancelReq() has been handed off
 			var handedOver bool
 			defer func() {
 				if !handedOver {
+					stopWatch() // prevent AfterFunc from firing; safe no-op if already fired
 					cancelReq() // Clean up immediately on panic or retryable error
 				}
 			}()
 
-			// 2. Spin up a quick monitor to cancel the request if the application shuts down
-			go func() {
-				select {
-				case <-u.BackgroundCtx.Done(): //this must be Server.ctx or s.ctx former backgroundCtx
-					cancelReq() // Aborts the HTTP request immediately on Ctrl+C
-				case <-reqCtx.Done():
-					// Normal exit when the request finishes or client disconnects
-				}
-			}()
+			// // 2. Spin up a quick monitor to cancel the request if the application shuts down
+			// go func() {
+			// 	select {
+			// 	case <-u.BackgroundCtx.Done(): //this must be Server.ctx or s.ctx former backgroundCtx
+			// 		cancelReq() // Aborts the HTTP request immediately on Ctrl+C
+			// 	case <-reqCtx.Done():
+			// 		// Normal exit when the request finishes or client disconnects
+			// 	}
+			// }()
 
 			// 3. Pass the merged context to the HTTP request
 
@@ -4028,8 +4034,14 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			resp, err4ClientDo = u.Client.Do(req) // this is concurrency safe
 			if err4ClientDo == nil {
 				//success
-				cancelCurrentReq = cancelReq // Hand off the cancellation function to the outer scope
-				handedOver = true            // Detach this iteration's deferred cleanup
+				//cancelCurrentReq = cancelReq // Hand off the cancellation function to the outer scope
+				// Hand ownership to outer scope. stopWatch must also be called there
+				// to free AfterFunc resources once the response body is consumed.
+				cancelCurrentReq = func() {
+					stopWatch()
+					cancelReq()
+				}
+				handedOver = true // Detach this iteration's deferred cleanup
 			}
 			return false, nil
 		}()
