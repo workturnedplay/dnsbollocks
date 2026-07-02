@@ -5310,6 +5310,14 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 				"style-src 'self'; "+
 				"img-src 'self'; "+
 				"connect-src 'self'; "+
+
+				/*
+					Content-Security-Policy: The page’s settings blocked the loading of a resource (media-src) at data: because it violates the following directive: “default-src 'none'”
+					Content-Security-Policy: The page’s settings blocked the loading of a resource (media-src) at data: because it violates the following directive: “media-src http: file:”
+				*/
+				//"media-src 'self' data:; "+ //(untested) <--- Restores peace with NoScript placeholders XXX: Adding "media-src 'self' data:;" tells the browser: "It's completely fine to execute audio/video tags coming from our own domain or from local data-blobs loaded inside the browser." This satisfies NoScript's safety checks completely, and your console logs will be perfectly quiet again.
+				"media-src 'none'; "+ // <--- Explicitly locked down, NoScript will complain like:
+
 				"frame-ancestors 'none'; "+
 				"form-action 'self'; "+
 				"object-src 'none'; "+

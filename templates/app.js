@@ -1,3 +1,12 @@
+// --- Security & Extension Notices ---
+console.log(
+            "%cⓘ [DNSbollocks Info]: The media block error directly above is harmless. " +
+            "It occurs because extensions like NoScript inject layout placeholders into the page, " +
+            "which our strict security policy safely rejects. No action is needed! Though if you want to change the source "+
+            "replace \"media-src 'none'; \"+ with \"media-src 'self' data:; \"+ in the platform_windows.go file in function securityHeadersMiddleware.",
+            "color: #0078d4; font-weight: bold; font-family: sans-serif; font-size: 11px;"
+        );
+
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
 if (!csrfToken) {
     console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
