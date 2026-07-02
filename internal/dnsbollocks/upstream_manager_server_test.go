@@ -1,5 +1,5 @@
-//go:build portmasterFirewalled
-// +build portmasterFirewalled
+//go:build windows && portmasterFirewalled
+// +build windows,portmasterFirewalled
 
 //XXX: all test that will be run also need to be prefixed with TestFWNeeded
 

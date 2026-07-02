@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package dnsbollocks
 
 // This file adds test coverage for areas not yet exercised by the existing

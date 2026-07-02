@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package dnsbollocks
 
 import (
@@ -115,7 +118,7 @@ func TestRecentBlocksTracker(t *testing.T) {
 	// Sending test.com again should push it to the front of the list without changing length
 	time.Sleep(1 * time.Millisecond) // Ensure time diff
 	tracker.Record("test.com", "AAAA", maxBlocks)
-	
+
 	snap = tracker.Snapshot(func(d, q string) bool { return false })
 	if len(snap) != 2 || snap[0].Domain != "test.com" {
 		t.Errorf("Expected test.com to move to the front, got %s at index 0", snap[0].Domain)
