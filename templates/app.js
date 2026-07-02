@@ -362,6 +362,113 @@ document.addEventListener('DOMContentLoaded', function() {
     setupTableSorting('blacklistTable', 'blacklistTable', window.applyBlacklistFilter);
     setupTableSorting('configTable', 'configTable', window.applyConfigFilter);
     
+    // ── Blocks page ───────────────────────────────────────────────────────────────
+    // Refresh button navigates to /blocks via GET, bypassing any cached POST state.
+    const blocksRefreshBtn = document.querySelector('.js-blocks-refresh-btn');
+    if (blocksRefreshBtn) {
+        blocksRefreshBtn.addEventListener('click', () => {
+            window.location.href = '/blocks';
+        });
+    }
+    
+    // ── Hosts page ────────────────────────────────────────────────────────────────
+    // Edit buttons: pass the button element to editHost() exactly as onclick="editHost(this)" did.
+    // Direct binding is safe here because rows are server-rendered; none are added dynamically
+    // without a full page reload, so every .js-host-edit button exists at DOMContentLoaded time.
+    document.querySelectorAll('.js-host-edit').forEach(btn => {
+        btn.addEventListener('click', () => editHost(btn));
+    });
+    
+    // Delete forms: confirm, then conditionally clean the free-pass sessionStorage key.
+    // Reading pattern from the hidden <input name="pattern"> already inside the form
+    // avoids adding any new data attributes to the HTML.
+    document.querySelectorAll('.js-host-delete-form').forEach(form => {
+        form.addEventListener('submit', function(e) {
+            if (!confirm('Delete local host override?')) {
+                e.preventDefault();
+                return;
+            }
+            const patternInput = form.querySelector('[name="pattern"]');
+            if (!patternInput) {
+                // Defensive: form structure invariant violated; block submission rather
+                // than silently deleting without the sessionStorage cleanup.
+                console.error('js-host-delete-form: missing [name="pattern"] input');
+                e.preventDefault();
+                return;
+            }
+            const pattern = patternInput.value.toLowerCase();
+            if (sessionStorage.getItem('hostsTable_lastInteracted') === pattern) {
+                sessionStorage.removeItem('hostsTable_lastInteracted');
+            }
+            // Fall through: browser performs the native POST submission.
+        });
+    });
+    
+    // ── Response-blacklist page ───────────────────────────────────────────────────
+    document.querySelectorAll('.js-blacklist-edit').forEach(btn => {
+        btn.addEventListener('click', () => editBlacklist(btn));
+    });
+    
+    // Note: the original onsubmit removed from sessionStorage *before* confirming,
+    // meaning a cancel would still clear it. Fixed here: confirm first, clean after.
+    document.querySelectorAll('.js-blacklist-delete-form').forEach(form => {
+        form.addEventListener('submit', function(e) {
+            const cidrInput = form.querySelector('[name="cidr"]');
+            if (!cidrInput) {
+                console.error('js-blacklist-delete-form: missing [name="cidr"] input');
+                e.preventDefault();
+                return;
+            }
+            const cidr = cidrInput.value;
+            if (!confirm('Remove ' + cidr + ' from blacklist?')) {
+                e.preventDefault();
+                return;
+            }
+            if (sessionStorage.getItem('blacklistTable_lastInteracted') === cidr.toLowerCase()) {
+                sessionStorage.removeItem('blacklistTable_lastInteracted');
+            }
+        });
+    });
+    
+    // ── Config page ───────────────────────────────────────────────────────────────
+    // Edit buttons: key lives on the row's data-key, not repeated on the button.
+    document.querySelectorAll('.js-config-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const row = btn.closest('tr[data-key]');
+            if (!row) {
+                console.error('js-config-edit: could not find ancestor tr[data-key]');
+                return;
+            }
+            editConfig(row.dataset.key);
+        });
+    });
+    
+    const applyConfigBtn = document.getElementById('js-apply-config-btn');
+    if (applyConfigBtn) {
+        applyConfigBtn.addEventListener('click', applyConfigChanges);
+    }
+    
+    const discardConfigBtn = document.getElementById('js-discard-config-btn');
+    if (discardConfigBtn) {
+        discardConfigBtn.addEventListener('click', () => location.reload());
+    }
+    
+    // ── Logs page ─────────────────────────────────────────────────────────────────
+    // Clear button resets the q field and submits, matching the original
+    // onclick="this.form.q.value=''; this.form.submit();" behavior exactly.
+    const logsClearBtn = document.querySelector('.js-logs-clear-btn');
+    if (logsClearBtn) {
+        logsClearBtn.addEventListener('click', function() {
+            const form = logsClearBtn.closest('form');
+            if (!form) {
+                console.error('js-logs-clear-btn: not inside a <form>');
+                return;
+            }
+            const qInput = form.querySelector('[name="q"]');
+            if (qInput) qInput.value = '';
+            form.submit();
+        });
+    }
 }); // end of domcontentloaded
 
 // --- Client-Side Table Ordered-Substring Filter Logic ---
