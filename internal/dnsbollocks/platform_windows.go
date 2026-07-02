@@ -3454,6 +3454,7 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	}
 }
 
+// is for Incoming Client Connections ie. send us a DNS Query via TCP port 53
 func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	cfg := s.getConfig()
 	log := s.getLogger()
@@ -8125,7 +8126,10 @@ type writeTimeoutConn struct {
 
 func (w *writeTimeoutConn) Write(b []byte) (int, error) {
 	if w.timeout > 0 {
-		_ = w.Conn.SetWriteDeadline(time.Now().Add(w.timeout))
+		if err := w.Conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
+			// Return 0 bytes written and wrap the error so the caller knows exactly what failed
+			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", w.timeout, err)
+		}
 	}
 	n, err := w.Conn.Write(b)
 	if err == nil {
