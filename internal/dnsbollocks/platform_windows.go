@@ -76,17 +76,16 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS               string   `json:"listen_dns"`                 // e.g., "127.0.0.1:53"
-	ListenDoH               string   `json:"listen_doh"`                 // e.g., "127.0.0.1:443"
-	ListenUI                string   `json:"listen_ui"`                  //ip:port
-	UpstreamURLs            []string `json:"upstream_urls"`              // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
-	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
+	ListenDNS    string   `json:"listen_dns"`    // e.g., "127.0.0.1:53"
+	ListenDoH    string   `json:"listen_doh"`    // e.g., "127.0.0.1:443"
+	ListenUI     string   `json:"listen_ui"`     //ip:port
+	UpstreamURLs []string `json:"upstream_urls"` // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
 	//TODO: rename this:
-	SNIHostnames []string `json:"sni_hostnames"` // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
-	//"parallel" (or "all"): The old default behavior where everything is queried simultaneously.
+	SNIHostnames            []string `json:"upstream_sni_hostnames"`     // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
+	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
 	//"strict" (or "priority"): The existing strict rule matching behavior.
 	//"failover": The new intelligent, stateful sticky failover behavior.
-	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "parallel", "strict", or "failover"
+	UpstreamSelectionMode string `json:"upstream_selection_mode"` // "fastest", "strict", or "failover"
 	BlockMode             string `json:"block_mode"`              // "nxdomain", "drop", "ip_block"
 	BlockIP               string `json:"block_ip"`                // "0.0.0.0" used by "ip_block"
 	BlockIPv6             string `json:"block_ipv6"`              // "::" used by "ip_block"
