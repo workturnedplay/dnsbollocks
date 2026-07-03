@@ -1,4 +1,5 @@
 todo:
+* in v0.11.3, do 3 from this: https://claude.ai/chat/e991c86f-3c0b-4d3e-8ea8-295c7defd419
 * replace panics except unreachables with something else like logFatal. Maybe even the unreachables so that they're logged first.
 * make sure to check the return errors for things i don't check for, filter Problems(in vscode) by: errcheck
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, todo:  4_1, 4_2 dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
