@@ -7520,68 +7520,95 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	if fw.extraSafety {
 		tmpName := filename + powerlossFileExtension
 
-		// 1. Try to write to a temp file first to ensure disk space and data integrity.
-		tmpFile, createErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm) //TODO: make this file-operation retryable too? but then i lose the first errors that happen, will only have the last ones.
-		if createErr == nil {
-			_, writeErr := tmpFile.Write(data)
-			syncErr := tmpFile.Sync()
-			closeErr := tmpFile.Close()
+		// 1. Declare the granular error variables outside the closure
+		var createErr, writeErr, syncErr, closeErr error
 
-			if writeErr == nil && closeErr == nil && syncErr == nil {
-				// Temp file is safely on disk. Overwrite the target file directly
-				// so we don't alter its existing Windows permissions/ACLs.
-				//XXX: which means we fallthru here
+		// step1. Try to write to a temp file first to ensure disk space and data integrity.
+		// 2. Wrap the entire atomic file operation in the retry loop
+		stagingErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
+			// Reset errors on each try so they accurately reflect the *final* attempt
+			createErr, writeErr, syncErr, closeErr = nil, nil, nil, nil
 
-				log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
-				// and after the below fallthru (from step 2) then Clean up the temp file
+			var tmpFile *os.File
+			tmpFile, createErr = os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+			if createErr != nil {
+				return fmt.Errorf("create failed: %w", createErr)
+			}
 
-				// Queue cleanup. If we crash/lose power after this point,
-				// this defer never runs, leaving the safe copy intact.
-				defer func() {
-					//ondeleteErr := os.Remove(tmpName)
-					ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
-					if ondeleteErr == nil {
-						log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-						// Successful deletion, nothing more to do
-						return
-					}
-					//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-					log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback",
-						SafeErr(ondeleteErr))
-					// Fallback: If we can't delete it, truncate it to 0 bytes.
-					// Since we already have write handle permissions to this file, this is highly likely to succeed.
-					// truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
-					if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-						return truncateStagingFileToZero(tmpName, perm)
-					}); truncErr == nil {
-						log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
-							slog.String("tempfilename", tmpName))
-					} else {
-						// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
+			_, writeErr = tmpFile.Write(data)
+			syncErr = tmpFile.Sync()
+			closeErr = tmpFile.Close()
 
-						// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
-						// The file is stuck on disk with data, making a future boot panic inevitable.
-						// Crash immediately while the administrator is interacting with the system.
-						logmsg := fmt.Sprintf(
-							"\n========================================================================\n"+
-								"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
-								"The temporary staging file %q cannot be deleted or truncated.\n\n"+
-								"Delete error: %v\n"+
-								"Truncation error: %v\n\n"+
-								"Because the file contains non-zero bytes, the next server boot will panic.\n"+
-								"Halting execution immediately to prevent corrupted filesystem operation.\n"+
-								"========================================================================\n",
-							tmpName, ondeleteErr, truncErr,
-						)
-						log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
-						panic(logmsg)
-					}
-				}()
+			// If any of these fail, we return an error to trigger the next retry attempt
+			if writeErr != nil || syncErr != nil || closeErr != nil {
+				return fmt.Errorf("write/sync/close failed (write=%w sync=%w close=%w)", writeErr, syncErr, closeErr)
+			}
+			return nil
+		})
+
+		if stagingErr == nil {
+			// Temp file is safely on disk. Overwrite the target file directly
+			// so we don't alter its existing Windows permissions/ACLs.
+			//XXX: which means we fallthru here
+			// --- SUCCESS BRANCH ---
+			log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
+			// and after the below fallthru (from step2) then Clean up the temp file
+
+			// Queue cleanup. If we crash/lose power after this point,
+			// this defer never runs, leaving the safe copy intact.
+			defer func() {
+				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
+				if ondeleteErr == nil {
+					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
+					// Successful deletion, nothing more to do
+					return
+				}
+				//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
+				log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback",
+					SafeErr(ondeleteErr))
+
+				// Fallback: If we can't delete it, truncate it to 0 bytes.
+				// Since we already have write handle permissions to this file, this is highly likely to succeed.
+				// truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
+				if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
+					return truncateStagingFileToZero(tmpName, perm)
+				}); truncErr == nil {
+					log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
+						slog.String("tempfilename", tmpName))
+				} else {
+					// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
+
+					// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
+					// The file is stuck on disk with data, making a future boot panic inevitable.
+					// Crash immediately while the administrator is interacting with the system.
+					logmsg := fmt.Sprintf(
+						"\n========================================================================\n"+
+							"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
+							"The temporary staging file %q cannot be deleted or truncated.\n\n"+
+							"Delete error: %v\n"+
+							"Truncation error: %v\n\n"+
+							"Because the file contains non-zero bytes, the next server boot will panic.\n"+
+							"Halting execution immediately to prevent corrupted filesystem operation.\n"+
+							"========================================================================\n",
+						tmpName, ondeleteErr, truncErr,
+					)
+					log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
+					panic(logmsg)
+				}
+			}()
+		} else {
+			// --- FAILURE BRANCH ---
+
+			// We check the captured errors from the final retry attempt to determine exactly what to log
+			if createErr != nil {
+				log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
+					SafeErr(createErr),
+					slog.String("filename", filename),
+					slog.String("wanted_tempfilename", tmpName))
 			} else {
 				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
 				// to neutralize any partial garbage data that would trip up the next boot.
-				//ondeleteErr := os.Remove(tmpName)
 				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
 				log.Warn("ExtraSafety: Failed to fully write or/and sync or/and close staging file",
 					slog.String("tempfilename", tmpName),
@@ -7589,9 +7616,9 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 					SafeErr2("syncErr", syncErr),
 					SafeErr2("closeErr", closeErr),
 					SafeErr2("ondelete_err", ondeleteErr))
+
 				if ondeleteErr != nil {
 					//failed to delete
-					//truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
 					if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
 						return truncateStagingFileToZero(tmpName, perm)
 					}); truncErr == nil {
@@ -7624,17 +7651,12 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 					//continue
 				}
 			}
-		} else {
-			log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
-				SafeErr(createErr),
-				slog.String("filename", filename),
-				slog.String("wanted_tempfilename", tmpName))
 		}
 	} //end 'if' extraSafety
 
 	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
 	// do a direct write but enforce a hardware sync to minimize the corruption window.
-	// 2. Overwrite the target file directly (Retains Windows ACLs)
+	// step2. Overwrite the target file directly (Retains Windows ACLs)
 	if err := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
 		return writeSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	}); err == nil {
