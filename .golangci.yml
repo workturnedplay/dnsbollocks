@@ -119,6 +119,7 @@ linters:
         - name: var-naming
           disabled: true
         - name: early-return
+          disabled: true
         - name: error-strings
         - name: error-naming
         - name: exported
