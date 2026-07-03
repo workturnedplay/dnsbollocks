@@ -1853,7 +1853,7 @@ What this enforces:
 	ASCII-only DNS reality
 */
 var dnsNameRE = regexp.MustCompile(
-	`^(?i)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[_a-z0-9])?$`,
+	`^(?i)([a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?$`,
 )
 
 func isValidDNSName(s string) bool {
@@ -1861,6 +1861,62 @@ func isValidDNSName(s string) bool {
 		return false
 	}
 	return dnsNameRE.MatchString(s)
+}
+
+// Helper for the fast-path parser
+func isLetterOrDigit(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// New helper to allow underscores on label boundaries
+func isLetterDigitOrUnderscore(c byte) bool {
+	return isLetterOrDigit(c) || c == '_'
+}
+
+func isValidDNSName2(s string) bool {
+	l := len(s)
+	if l == 0 || l > 253 {
+		return false
+	}
+
+	lastDot := -1
+	for i := 0; i <= l; i++ {
+		isEnd := i == l
+		var c byte
+		if !isEnd {
+			c = s[i]
+		}
+
+		if isEnd || c == '.' {
+			partLen := i - lastDot - 1
+			if partLen == 0 || partLen > 63 {
+				return false // Labels must be 1-63 characters
+			}
+
+			// First character of the label (allows alphanumeric or underscore)
+			first := s[lastDot+1]
+			if !isLetterDigitOrUnderscore(first) {
+				return false
+			}
+
+			// Last character of the label (allows alphanumeric or underscore)
+			last := s[i-1]
+			if !isLetterDigitOrUnderscore(last) {
+				return false
+			}
+
+			// Middle characters can only be alphanumeric or hyphens
+			for j := lastDot + 2; j < i-1; j++ {
+				mid := s[j]
+				if !isLetterOrDigit(mid) && mid != '-' {
+					return false
+				}
+			}
+
+			lastDot = i
+		}
+	}
+	return true
 }
 
 // sanitizeDomainInput removes any characters not explicitly allowed.
@@ -1881,6 +1937,37 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	modified = sanitized != input
 	// Uses named returns — do not return explicit values. like: return "something", modified
 	return
+}
+
+func sanitizeDomainInput2(input string) (sanitized string, modified bool) {
+	// 1. Fast Path: Check if any invalid characters exist first.
+	// We iterate over bytes instead of runes since valid DNS chars are entirely ASCII.
+	validCount := 0
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '.' || c == '-' || c == '{' || c == '}' || c == '*' || c == '!' || c == '?' || c == '_' {
+			validCount++
+		}
+	}
+
+	// If everything is valid, return the original string (Zero Allocation!)
+	if validCount == len(input) {
+		return input, false
+	}
+
+	// 2. Slow Path: Allocation is required to strip bad characters.
+	var b strings.Builder
+	b.Grow(validCount)
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '.' || c == '-' || c == '{' || c == '}' || c == '*' || c == '!' || c == '?' || c == '_' {
+			b.WriteByte(c)
+		}
+	}
+
+	return b.String(), true
 }
 
 // validateRulePattern returns a non-nil error if the pattern contains characters

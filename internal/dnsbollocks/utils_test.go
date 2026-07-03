@@ -65,6 +65,65 @@ func TestSanitizeDomainInput(t *testing.T) {
 	}
 }
 
+func TestSanitizeDomainInput2(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantSanitized string
+		wantModified  bool
+	}{
+		{"Valid domain", "example.com", "example.com", false},
+		{"Valid with wildcard", "*.example.com", "*.example.com", false},
+		{"Contains invalid characters", "bad|domain$.com", "baddomain.com", true},
+		{"Contains spaces", " my domain .com ", "mydomain.com", true},
+		{"Already clean complex", "{**}.test-123.org", "{**}.test-123.org", false},
+		{"Only bad chars", "@#%^&()", "", true},
+		{"Empty string", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSanitized, gotModified := sanitizeDomainInput(tt.input)
+			if gotSanitized != tt.wantSanitized {
+				t.Errorf("sanitizeDomainInput() gotSanitized = %v, want %v", gotSanitized, tt.wantSanitized)
+			}
+			if gotModified != tt.wantModified {
+				t.Errorf("sanitizeDomainInput() gotModified = %v, want %v", gotModified, tt.wantModified)
+			}
+		})
+	}
+}
+
+func TestIsValidDNSName2(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"Standard domain", "google.com", true},
+		{"Single label", "localhost", true},
+		{"Max length label", "a12345678901234567890123456789012345678901234567890123456789012.com", true},
+		{"Over max length label", "a123456789012345678901234567890123456789012345678901234567890123.com", false},
+		{"Hyphen in middle", "my-test-domain.org", true},
+		{"Hyphen at start", "-bad.com", false},
+		{"Hyphen at end", "bad-.com", false},
+		{"Invalid character", "bad$domain.com", false},
+		{"Trailing underscore allowed per regex", "test._service", true},
+		{"Underscore in middle", "bad_domain.com", false},
+		{"Empty string", "", false},
+		{"Starts with dot", ".bad.com", false},
+		{"Consecutive dots", "bad..com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidDNSName(tt.input); got != tt.want {
+				t.Errorf("isValidDNSName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsLowerASCII(t *testing.T) {
 	tests := []struct {
 		name     string
