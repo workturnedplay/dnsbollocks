@@ -10,8 +10,8 @@
     "dns.quad9.net",
     "cloudflare-dns.com"
   ],
-  "upstream_retries_per_query": 1,
   "upstream_selection_mode": "failover",
+  "upstream_retries_per_query": 1,
   "block_mode": "nxdomain",
   "block_ip": "0.0.0.0",
   "block_ipv6": "::",
@@ -25,7 +25,7 @@
   "blacklist_file": "response_blacklist.json",
   "hosts_file": "hosts2ip.json",
   "log_queries": "queries.log",
-  "log_errors": "errors.log",
+  "log_file": "dnsbollocks.log",
   "console_log_level": "debug",
   "log_max_size_mb": 4095,
   "allow_run_as_admin": false,

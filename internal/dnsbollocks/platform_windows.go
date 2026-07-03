@@ -117,11 +117,11 @@ type Config struct {
 	// Valid values (case-insensitive): "debug", "info", "warn", "error".
 	// Default: "info". Only >= this level is shown on console.
 	// Full dnsbollocks.log always gets Debug+; queries.log always gets queries.
-	LogQueriesFile  string `json:"log_queries"` // "queries.log"
-	LogErrorsFile   string `json:"log_errors"`  // "errors.log" TODO: rename this key and the field because it's logging everything!
-	ConsoleLogLevel string `json:"console_log_level"`
-	LogMaxSizeMB    int    `json:"log_max_size_mb"`    // 1 for rotation
-	AllowRunAsAdmin bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
+	LogQueriesFile    string `json:"log_queries"` // "queries.log", logs only querry
+	LogEverythingFile string `json:"log_file"`    // "dnsbollocks.log" doneTODO: rename this key and the field because it's logging everything!
+	ConsoleLogLevel   string `json:"console_log_level"`
+	LogMaxSizeMB      int    `json:"log_max_size_mb"`    // 1 for rotation
+	AllowRunAsAdmin   bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
@@ -1277,7 +1277,7 @@ func defaultConfig() Config {
 		HostsFile:     "hosts2ip.json",
 
 		LogQueriesFile:              "queries.log",
-		LogErrorsFile:               "dnsbollocks.log",
+		LogEverythingFile:           "dnsbollocks.log",
 		ConsoleLogLevel:             "info",
 		LogMaxSizeMB:                4095, // Rotation threshold
 		AllowRunAsAdmin:             false,
@@ -2802,7 +2802,7 @@ func (s *Server) loadMainConfig() error {
 	checkAndClean(&newCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultConfig.BlacklistFile)
 	checkAndClean(&newCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultConfig.WhitelistFile)
 	checkAndClean(&newCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultConfig.LogQueriesFile)
-	checkAndClean(&newCfg.LogErrorsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogErrorsFile)), defaultConfig.LogErrorsFile)
+	checkAndClean(&newCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultConfig.LogEverythingFile)
 	checkAndClean(&newCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultConfig.HostsFile)
 
 	// NEW: Enforce password setup if it's missing from the config
@@ -2980,7 +2980,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 		return writer
 	}
 
-	fullHandler := slog.NewJSONHandler(openLog(cfg.LogErrorsFile), &slog.HandlerOptions{
+	fullHandler := slog.NewJSONHandler(openLog(cfg.LogEverythingFile), &slog.HandlerOptions{
 		Level:       slog.LevelDebug, // full log gets EVERYTHING
 		ReplaceAttr: stripColorTags,  // Strips tags safely for files
 	})
@@ -3001,7 +3001,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 	log = s.getLogger()           //to use the new logger on the below log line!
 
 	log.Info("Logging initialized",
-		slog.String("full_log", cfg.LogErrorsFile),
+		slog.String("full_log", cfg.LogEverythingFile),
 		slog.String("queries_log", cfg.LogQueriesFile),
 		slog.String("console_level", cfg.ConsoleLogLevel),
 	)
@@ -6802,7 +6802,7 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "System & Error Logs", cfg.LogErrorsFile, filter)
+	ui.renderLogPage(w, r, "System & Error Logs", cfg.LogEverythingFile, filter)
 }
 
 func (s *Server) shutdown(exitCode int) {
