@@ -2747,6 +2747,19 @@ func (s *Server) loadMainConfig() error {
 		newCfg.BlockIPv6Parsed = net.ParseIP("::").To16() //TODO: const?
 	}
 
+	// Validate ListenDoH host is a literal IP (required for TLS cert SAN)
+	tagListenDoH := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenDoH))
+	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenDoH); splitErr != nil {
+		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenDoH, newCfg.ListenDoH, splitErr)
+	} else if net.ParseIP(doHHost) == nil {
+		return fmt.Errorf("%q host %q must be an IP literal (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenDoH, doHHost)
+	}
+	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenUI); splitErr != nil {
+		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenUI, newCfg.ListenUI, splitErr)
+	} else if net.ParseIP(doHHost) == nil {
+		return fmt.Errorf("%q host %q must be an IP literal (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, doHHost)
+	}
+
 	newCfg.BlockMode = strings.ToLower(newCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
@@ -3175,13 +3188,11 @@ func (s *Server) generateCertIfNeeded() {
 	// STRICT IP ENFORCEMENT: Hostnames are strictly forbidden because
 	// they cannot be resolved before this local DNS proxy actually starts.
 	if net.ParseIP(dohHost) == nil {
-		//panic("BUG: coding error, IP isn't valid in config.ListenDoH") //FIXME: check this at config.json load time! or split the IP and port into two config options!
-		panic("config error: config.ListenDoH host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + dohHost)
+		panic("BUG: config error: config.ListenDoH host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + dohHost)
 	}
 
 	if net.ParseIP(uiHost) == nil {
-		//panic("BUG: coding error, IP isn't valid in config.ListenUI") //FIXME: check this at config.json load time! or split the IP and port into two config options!
-		panic("config error: config.ListenUI host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + uiHost)
+		panic("BUG: config error: config.ListenUI host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + uiHost)
 	}
 
 	// Build the list of hosts/IPs that must be covered by the certificate
@@ -6464,8 +6475,8 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// --- NEW: Cache Invalidation ---
-		// If this was an edit, purge the old pattern's cached entries
-		if isEdit && oldPattern != "" {
+		// If this was an edit, purge the old pattern's cached entries, if different than new pattern
+		if isEdit && oldPattern != "" && oldPattern != pattern {
 			ui.OnInvalidatePattern(oldPattern)
 		}
 		// Always purge the new pattern so the local override takes immediate effect

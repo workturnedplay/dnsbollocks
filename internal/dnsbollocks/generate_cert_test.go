@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	
+
 	// Change working directory to temp dir so "cert.pem" is written safely
 	err = os.Chdir(tempDir)
 	if err != nil {
@@ -31,17 +32,17 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 			ListenUI:  uiAddr,
 		}
 		s.liveConfig.Store(cfg)
-		
+
 		// Use a silent logger for tests to reduce console noise
 		nopLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 		s.liveLogger.Store(nopLogger)
-		
+
 		return s
 	}
 
 	t.Run("Generates New Cert When None Exists", func(t *testing.T) {
 		s := newTestServer("127.0.0.1:443", "192.168.1.50:8080")
-		
+
 		// Run generation
 		s.generateCertIfNeeded()
 
@@ -80,7 +81,7 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 	t.Run("Skips Generation When Valid Cert Exists", func(t *testing.T) {
 		// Relying on the cert generated in the previous subtest
 		s := newTestServer("127.0.0.1:443", "192.168.1.50:8080")
-		
+
 		// Run generation
 		s.generateCertIfNeeded()
 
@@ -93,7 +94,7 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 	t.Run("Regenerates When UI IP Changes", func(t *testing.T) {
 		// Keep DoH the same, but change the UI address
 		s := newTestServer("127.0.0.1:443", "10.0.0.5:8080")
-		
+
 		// Run generation
 		s.generateCertIfNeeded()
 
@@ -120,32 +121,27 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 			t.Errorf("Expected new UI IP 10.0.0.5 in regenerated certificate, but it was missing")
 		}
 	})
-	
-	t.Run("Handles DNS Names (Localhost)", func(t *testing.T) {
+
+	t.Run("Panics On DNS Names (Localhost)", func(t *testing.T) {
 		s := newTestServer("localhost:443", "localhost:8080")
-		
-		// Clear out old files so it's forced to generate fresh
-		os.Remove("cert.pem")
-		os.Remove("key.pem")
-		
-		s.generateCertIfNeeded()
-		
-		if s.certGeneration.Load() != 1 {
-			t.Errorf("Expected generation counter to be 1, got %d", s.certGeneration.Load())
-		}
-		
-		leaf, _ := x509.ParseCertificate(s.dohCert.Certificate[0])
-		
-		found := false
-		for _, name := range leaf.DNSNames {
-			if name == "localhost" {
-				found = true
-				break
+
+		// Catch the expected panic
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("Expected generateCertIfNeeded to panic with hostname 'localhost', but it did not")
 			}
-		}
-		
-		if !found {
-			t.Errorf("Expected DNSName 'localhost' in certificate, but it was missing")
-		}
+
+			// Verify it's the specific panic we expect
+			msg, ok := r.(string)
+			if !ok || !strings.Contains(msg, "host part MUST be an IP literal") {
+				t.Errorf("Expected panic message about IP literal, got: %v", r)
+			}
+		}()
+
+		// This should trigger the panic
+		s.generateCertIfNeeded()
+
+		// Anything below here won't execute if the panic happens as expected.
 	})
 }
