@@ -1247,6 +1247,8 @@ func (s *Server) loadQueryWhitelist() error {
 	}
 }
 
+const defaultCacheMinTTL = 300
+
 // defaultConfig Every call produces a new map and slice backing array.
 // must be func. or else(if configDefaults would be a 'var') the 'make' call/ref. will be shared and the []string{} too.
 func defaultConfig() Config {
@@ -1267,7 +1269,7 @@ func defaultConfig() Config {
 		ClientRateQPS:  20,
 		ClientBurstQPS: 50,
 
-		CacheMinTTL:     300,
+		CacheMinTTL:     defaultCacheMinTTL, //300 sec
 		CacheMaxEntries: 10000,
 
 		WhitelistFile: "query_whitelist.json",
@@ -2279,6 +2281,8 @@ func OldMain() {
 	panic("unreachable")
 }
 
+const cacheMinTTLClamp = 10 // seconds
+
 func (s *Server) loadMainConfig() error {
 	log := s.getLogger()
 	//cfg := s.getConfig()
@@ -2659,7 +2663,6 @@ func (s *Server) loadMainConfig() error {
 	}
 
 	tagCacheMinTTL := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL))
-	const cacheMinTTLClamp = 2 // seconds
 	if was := newCfg.CacheMinTTL; was < cacheMinTTLClamp {
 		newCfg.CacheMinTTL = cacheMinTTLClamp
 		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
@@ -3842,7 +3845,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	}
 
 	// Cache with clamped TTL
-	expiry := max(computeTTL(filtered), time.Duration(cfg.CacheMinTTL)*time.Second)
+	expiry := max(computeTTLForCaching(filtered), time.Duration(cfg.CacheMinTTL)*time.Second)
 
 	// Store a copy in the cache, not the pointer you are about to return
 	//cacheStore.Set(key, filtered.Copy(), expiry)
@@ -3857,7 +3860,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	return filtered
 }
 
-func computeTTL(msg *dns.Msg) time.Duration {
+func computeTTLForCaching(msg *dns.Msg) time.Duration {
 	//To correctly handle upstream negative caching responses (like NXDOMAIN or NODATA), we need to check both the Answer section and the Ns (Authority) section. Additionally, if an SOA (Start of Authority) record is found in the Authority section, RFC 2308 mandates that the negative cache TTL should be capped by the SOA's Minttl value.
 	var minTTL uint32 = 3600 // Default 1 hour,  not: //86400 // 24 hours
 
@@ -3886,10 +3889,10 @@ func computeTTL(msg *dns.Msg) time.Duration {
 	}
 
 	if !found {
-		minTTL = 300 // * time.Second
+		minTTL = defaultCacheMinTTL // * time.Second
 	}
-	if minTTL < 10 { //XXX: hardcoded minimum 10 seconds TTL, FIXME: note about it in config.CacheMinTTL !
-		minTTL = 10
+	if minTTL < cacheMinTTLClamp { //XXX: hardcoded minimum aka floor of 10 seconds TTL
+		minTTL = cacheMinTTLClamp
 	}
 	return time.Duration(minTTL) * time.Second
 }

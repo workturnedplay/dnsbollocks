@@ -64,7 +64,7 @@ func msgWithNs(rrs ...dns.RR) *dns.Msg {
 
 func TestComputeTTL_NoRecords_Returns300s(t *testing.T) {
 	m := new(dns.Msg) // no Answer, no Ns
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 300*time.Second {
 		t.Errorf("expected 300s for empty message, got %v", got)
 	}
@@ -72,7 +72,7 @@ func TestComputeTTL_NoRecords_Returns300s(t *testing.T) {
 
 func TestComputeTTL_SingleAnswerRecord(t *testing.T) {
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 120))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 120*time.Second {
 		t.Errorf("expected 120s, got %v", got)
 	}
@@ -84,7 +84,7 @@ func TestComputeTTL_MinOfMultipleAnswerRecords(t *testing.T) {
 		makeA("example.com.", "5.6.7.8", 200),
 		makeA("example.com.", "9.0.1.2", 900),
 	)
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 200*time.Second {
 		t.Errorf("expected 200s (min of 600,200,900), got %v", got)
 	}
@@ -93,7 +93,7 @@ func TestComputeTTL_MinOfMultipleAnswerRecords(t *testing.T) {
 func TestComputeTTL_FloorOf10s(t *testing.T) {
 	// TTL of 5 is below the 10s floor.
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 5))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 10*time.Second {
 		t.Errorf("expected floor of 10s, got %v", got)
 	}
@@ -101,7 +101,7 @@ func TestComputeTTL_FloorOf10s(t *testing.T) {
 
 func TestComputeTTL_ZeroTTL_ClampsTo10s(t *testing.T) {
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 0))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 10*time.Second {
 		t.Errorf("expected 10s for TTL=0, got %v", got)
 	}
@@ -113,7 +113,7 @@ func TestComputeTTL_NsSection_Participates(t *testing.T) {
 	m.Answer = []dns.RR{makeA("example.com.", "1.2.3.4", 500)}
 	m.Ns = []dns.RR{makeNS("example.com.", "ns1.example.com.", 100)}
 
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 100*time.Second {
 		t.Errorf("expected 100s (Ns section should participate), got %v", got)
 	}
@@ -122,7 +122,7 @@ func TestComputeTTL_NsSection_Participates(t *testing.T) {
 func TestComputeTTL_SOA_MinttlBeatsHeaderTTL(t *testing.T) {
 	// SOA header TTL = 3600, but Minttl = 60 — Minttl should win.
 	m := msgWithNs(makeSOA("example.com.", 3600, 60))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 60*time.Second {
 		t.Errorf("expected 60s from SOA Minttl, got %v", got)
 	}
@@ -131,7 +131,7 @@ func TestComputeTTL_SOA_MinttlBeatsHeaderTTL(t *testing.T) {
 func TestComputeTTL_SOA_HeaderTTLBeatsMinttlWhenSmaller(t *testing.T) {
 	// Header TTL = 30, Minttl = 120 — header wins because it's checked first.
 	m := msgWithNs(makeSOA("example.com.", 30, 120))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 30*time.Second {
 		t.Errorf("expected 30s from SOA header TTL, got %v", got)
 	}
@@ -139,7 +139,7 @@ func TestComputeTTL_SOA_HeaderTTLBeatsMinttlWhenSmaller(t *testing.T) {
 
 func TestComputeTTL_SOA_MinttlBelowFloor(t *testing.T) {
 	m := msgWithNs(makeSOA("example.com.", 3600, 3))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 10*time.Second {
 		t.Errorf("expected 10s floor even from SOA Minttl=3, got %v", got)
 	}
@@ -150,7 +150,7 @@ func TestComputeTTL_AnswerWinsOverNsWhenLower(t *testing.T) {
 	m.Answer = []dns.RR{makeA("example.com.", "1.2.3.4", 50)}
 	m.Ns = []dns.RR{makeNS("example.com.", "ns1.example.com.", 200)}
 
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 50*time.Second {
 		t.Errorf("expected 50s (Answer lower than Ns), got %v", got)
 	}
@@ -158,7 +158,7 @@ func TestComputeTTL_AnswerWinsOverNsWhenLower(t *testing.T) {
 
 func TestComputeTTL_OnlyNsNoAnswer(t *testing.T) {
 	m := msgWithNs(makeNS("example.com.", "ns1.example.com.", 450))
-	got := computeTTL(m)
+	got := computeTTLForCaching(m)
 	if got != 450*time.Second {
 		t.Errorf("expected 450s from Ns-only message, got %v", got)
 	}
