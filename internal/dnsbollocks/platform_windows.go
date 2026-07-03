@@ -146,7 +146,7 @@ type Config struct {
 	// Network & Connection Limits
 	ClientTCPTimeoutSec int `json:"client_tcp_timeout_sec"`
 	MaxRecentBlocks     int `json:"max_recent_blocks"`
-	//doneFIXME: UpstreamServer is actually the local DoH server we host, not the upstream DoH we forward to
+	// UpstreamServer is actually the local DoH server we host, not the upstream DoH we forward to
 	// Local DoH Listener Timeouts (Us as a server)
 	LocalDoHReadHeaderTimeoutSec int `json:"local_doh_read_header_timeout_sec"`
 	LocalDoHReadTimeoutSec       int `json:"local_doh_read_timeout_sec"`
@@ -2133,7 +2133,7 @@ func (s *Server) Run() error {
 	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
-	log = s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) TODO: Ctrl+R would have to run this too!
+	log = s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) doneTODO: Ctrl+R would have to run this too!
 
 	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
 	log.Debug("Cache initialized")
@@ -2292,16 +2292,15 @@ func (s *Server) loadMainConfig() error {
 	defaultConfig := defaultConfig()
 	// //config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
 	// //cfg = defaultConfig.Clone() // deep copy
-	//XXX: config is already set to defaultConfig() is already set from the NewServer() call! the only issue is do we want defaults if loadConfig is called again during Server's lifetime ie. Ctrl+R aka reload (but it's not yet implemented there)
+	//XXX: config is already set to defaultConfig() is already set from the NewServer() call! TODO: the only issue is do we want defaults if loadMainConfig is called again during Server's lifetime ie. Ctrl+R aka reload
 	//s.applyConfig(defaultConfig.Clone()) //deep copy
 
 	// Create a local copy to decode into and validate.
 	// This prevents live queries from reading a half-baked config.
 	tempCfg := defaultConfig.Clone()
-	newCfg := &tempCfg
+	newCfg := &tempCfg // Use a local pointer for all setup and decoding
 	//defaultCfgClone := defaultConfig.Clone()
-	//newCfg := &defaultCfgClone // Use a local pointer for all setup and decoding
-	//cfg := s.getConfig()                 //XXX: must be done after applyConfig
+	//newCfg := &defaultCfgClone
 
 	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //using default cfg.ExtraSafety
 
@@ -2343,7 +2342,7 @@ func (s *Server) loadMainConfig() error {
 		dec.DisallowUnknownFields() // This is why we use NewDecoder
 		//var theReadConfig Config = DefaultConfig()
 
-		//FIXME: any reload into existing config would race with other readers of config.* values, in theory, as this isn't mutex protected. But we don't reload config anyway, only the whitelist/blacklist which are mutexed.
+		//nottrueanymoreFIXME: any reload into existing config would race with other readers of config.* values, in theory, as this isn't mutex protected.
 
 		// dec.Decode will now overwrite ONLY the fields present in the JSON.
 		// Missing fields will retain the values from DefaultConfig().
@@ -3141,6 +3140,7 @@ func recursiveMatch(pattern, name string) bool {
 	return len(name) == 0
 }
 
+// generate a cert that's valid for both local DoH listener and for webUI
 func (s *Server) generateCertIfNeeded() {
 	log := s.getLogger()
 	cfg := s.getConfig()
@@ -3151,16 +3151,38 @@ func (s *Server) generateCertIfNeeded() {
 	needsRegen := false
 
 	var err error
-	// Extract the host/IP from the config to put it in the cert
-	host, _, err := net.SplitHostPort(cfg.ListenDoH)
+	// Extract the host/IP from the DoH listener address
+	dohHost, _, err := net.SplitHostPort(cfg.ListenDoH)
 	if err != nil {
-		host = cfg.ListenDoH // Fallback if no port present
+		dohHost = cfg.ListenDoH
 	}
+
+	// Extract the host/IP from the Web UI listener address
+	uiHost, _, err := net.SplitHostPort(cfg.ListenUI)
+	if err != nil {
+		uiHost = cfg.ListenUI
+	}
+
 	//In Go, net.ParseIP is a strict parser. It does not perform DNS lookups; it only checks if the string is a valid IPv4 or IPv6 literal. If you pass it "localhost", it returns nil.
-	currentIP := net.ParseIP(host)
-	if nil == currentIP {
-		panic("coding error, IP isn't valid in config.ListenDoH") //FIXME: check this at config.json load time! or split the IP and port into two config options!
+
+	//if dohIP := net.ParseIP(dohHost); dohIP == nil {
+	if net.ParseIP(dohHost) == nil && !isValidDNSName(dohHost) {
+		//panic("BUG: coding error, IP isn't valid in config.ListenDoH") //FIXME: check this at config.json load time! or split the IP and port into two config options!
+		panic("coding error: config.ListenDoH host part is neither a valid IP literal nor a valid DNS hostname, it's: " + dohHost)
 	}
+	//uiIP := net.ParseIP(uiHost) //used in a log below
+	//if uiIP == nil {
+	if net.ParseIP(uiHost) == nil && !isValidDNSName(uiHost) {
+		//panic("BUG: coding error, IP isn't valid in config.ListenUI") //FIXME: check this at config.json load time! or split the IP and port into two config options!
+		panic("coding error: config.ListenUI host part is neither a valid IP literal nor a valid DNS hostname, it's: " + uiHost)
+	}
+
+	// Build the list of hosts/IPs that must be covered by the certificate
+	hosts := []string{dohHost}
+	if uiHost != dohHost {
+		hosts = append(hosts, uiHost)
+	}
+
 	// 2. Check if cert exists and is still valid for this IP
 	certBytes, err := os.ReadFile(certFile)
 	if err != nil {
@@ -3179,32 +3201,32 @@ func (s *Server) generateCertIfNeeded() {
 				log.Warn("Cert file failed parsing", slog.String("file", certFile), SafeErr(err2)) // no \n
 				needsRegen = true
 			} else {
-				// Check if the current IP is in the cert's SAN list
-
-				found := false
-				parsedIP := net.ParseIP(host)
-
-				if parsedIP != nil {
-					// Check IP list
-					for _, ip := range cert.IPAddresses {
-						if ip.Equal(parsedIP) {
-							found = true
-							break
+				// Verify that ALL required hosts are present in the existing certificate's SAN list
+				for _, h := range hosts {
+					found := false
+					parsedIP := net.ParseIP(h)
+					if parsedIP != nil {
+						// Check IP list
+						for _, ip := range cert.IPAddresses {
+							if ip.Equal(parsedIP) {
+								found = true
+								break
+							}
+						}
+					} else {
+						// Check DNS list
+						for _, name := range cert.DNSNames {
+							if name == h {
+								found = true
+								break
+							}
 						}
 					}
-				} else {
-					// Check DNS list
-					for _, name := range cert.DNSNames {
-						if name == host {
-							found = true
-							break
-						}
+					if !found {
+						log.Warn("Cert identity mismatch", slog.String("want", h), slog.Any("haveIPs", cert.IPAddresses), slog.Any("haveDNSNames", cert.DNSNames))
+						needsRegen = true
+						break
 					}
-				}
-
-				if !found {
-					log.Warn("Cert identity mismatch", slog.String("want", host)) // no \n
-					needsRegen = true
 				}
 			}
 		}
@@ -3212,23 +3234,33 @@ func (s *Server) generateCertIfNeeded() {
 
 	// 3. Regen if necessary
 	if needsRegen {
-		log.Warn("Due to above, regenerating self-signed cert files for DoH ...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
-			slog.String("sni_hostname", host))
-		if err = generateCert(certFile, keyFile, host); err != nil {
+		log.Warn("Due to above, regenerating self-signed cert ...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
+			slog.Any("hosts", hosts))
+		if err = generateCert(certFile, keyFile, hosts); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
-			s.logFatal("cert generation failed", err) //SafeErr(err))
+			s.logFatal("cert generation failed", err)
 			panic("unreachable")
 		}
 		s.certGeneration.Add(1) // <-- Increment here instead of returning true
-		log.Warn("Cert generated: make sure you trust it in clients eg. in Firefox load the IP as url and add a cert exception, "+
-			"or about:preferences#privacy scroll to Security click Manage Certificates and in Certificate Manager window select Servers click [Add Exception...] "+
-			"button and use this IP with that https:// scheme or use full listen_address", slog.String("IP", currentIP.String() /*non nil here*/), slog.String("listen_address", cfg.ListenDoH))
+		// Build proper guidance message based on whether Web UI TLS is enabled
+		var msg strings.Builder
+		msg.WriteString("Cert generated: make sure you trust it in clients. ")
+		if cfg.WebUIUseTLS {
+			msg.WriteString(fmt.Sprintf("For browsers, load the Web UI HTTPS URL: https://%s/ and add a certificate exception, or manually trust this endpoint via your browser's Certificate Manager. ", cfg.ListenUI))
+
+		} else {
+			msg.WriteString(fmt.Sprintf("Web UI is configured with unencrypted HTTP: http://%s/ . ", cfg.ListenUI))
+		}
+		msg.WriteString(fmt.Sprintf("For DoH clients, specify the server URL: https://%s/dns-query", cfg.ListenDoH))
+		log.Warn(msg.String(),
+			slog.String("doh_url", fmt.Sprintf("https://%s/dns-query", cfg.ListenDoH)),
+			slog.String(getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenUI)), cfg.ListenUI))
 	} else {
-		log.Debug("Existing cert is valid for host. Skipping generation.", slog.String("sni_hostname", host))
+		log.Debug("Existing cert is valid for host. Skipping generation.", slog.Any("hosts", hosts))
 	}
 
 	// Load cert/key into global for reuse
-	log.Info("Loading cert/key for DoH...")
+	log.Info("Loading cert/key for DoH and Web UI...")
 
 	s.dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -3239,7 +3271,7 @@ func (s *Server) generateCertIfNeeded() {
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
-func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
+func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) error {
 	if certFileNameNoPath == "" || keyFileNameNoPath == "" {
 		panic("unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
 	}
@@ -3259,19 +3291,21 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 		Subject: pkix.Name{
 			Organization: []string{"DNSbollocks ie. Local DNS Proxy"},
 		},
-		NotBefore:   time.Now(),
-		NotAfter:    time.Now().Add(365 * 24 * time.Hour * 10),
-		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		//IPAddresses: []net.IP{net.ParseIP(host)},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour * 10),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,  //"Explicitly write the Basic Constraints extension into the certificate metadata, and mark IsCA as false(or as it's set below)."
+		IsCA:                  false, // Defaults to false if not specified
 	}
 
-	// Try parsing as IP first (no network lookup)
-	if ip := net.ParseIP(host); ip != nil {
-		certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
-	} else {
-		// If not an IP, treat it as a DNS hostname (e.g., "localhost")
-		certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+	// Populate IPAddresses and DNSNames dynamically for all requested hosts
+	for _, host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
+		} else {
+			certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+		}
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &priv.PublicKey, priv)
@@ -3283,8 +3317,9 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 	certOut, err := os.Create(certFileNameNoPath)
 	if err != nil {
 		return fmt.Errorf("cert write failed: %w", err)
+	} else {
+		defer certOut.Close()
 	}
-	defer certOut.Close()
 	if err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
 		return fmt.Errorf("pem encode cert failed: %w", err)
 	}
@@ -3295,8 +3330,9 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath, host string) error {
 	keyOut, err := os.OpenFile(keyFileNameNoPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("key write failed: %w", err)
+	} else {
+		defer keyOut.Close()
 	}
-	defer keyOut.Close()
 	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}); err != nil {
 		return fmt.Errorf("pem encode key failed: %w", err)
 	}
@@ -3462,7 +3498,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	var timeoutDuration time.Duration = time.Duration(cfg.ClientTCPTimeoutSec) * time.Second
-	const maxDNSTCPPacketSize = 65535 //TODO: make this configurable in config.json
+	const maxDNSTCPPacketSize = 65535 //nopeTODO: make this configurable in config.json ; It's the RFC 1035 hard limit (65535); not a tunable
 
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
@@ -3637,7 +3673,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := s.handleDNSQuery(ctx, msg, r.RemoteAddr /*field not method*/)
-	if resp == nil { //can happen when BlockMode is "drop" so FIXME?
+	if resp == nil { //can happen when BlockMode is "drop" so nvmFIXME? "For DoH the HTTP connection is already accepted; 503 is the only correct response for drop mode"
 		log.Warn("empty DNS response, replying to client with service unavailable", slog.String("client", r.RemoteAddr))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -7714,7 +7750,7 @@ func (um *UpstreamManager) getConfig() *Config {
 // due to presumed config changes ie. UpstreamManager.liveConfig, update the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs
 func (um *UpstreamManager) updateInnerState() error {
 	cfg := um.getConfig()
-	//FIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window
+	//hmmokFIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window; "Wrong — cfg is an atomically-loaded *Config; Config is immutable once stored; snapshots are safe" -  Claude Sonnet 4.6 Low Thinking
 	snapSNI := cfg.UpstreamSNIHostnames
 	snapURL := cfg.UpstreamURLs
 
@@ -8341,8 +8377,8 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 			SafeAddr("clientAddr", conn.RemoteAddr()),
 		)
 		if !ok2 {
-			//FIXME: when can this happen?!
-			log3.Warn("could not cast remote addr to TCPAddr", SafeAddr("addr", conn.RemoteAddr()))
+			//doneFIXME: when can this happen?! "With a plain net.TCPListener, conn.RemoteAddr() is always *net.TCPAddr; effectively unreachable" - Claude Sonnet 4.6 Low Thinking
+			log3.Error("BUG: could not cast remote addr to TCPAddr", SafeAddr("addr", conn.RemoteAddr()))
 			// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
 		} else {
 			//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
@@ -8445,7 +8481,6 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 
 // non-blocking!
 func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListenerInstance, error) {
-	//cfg := s.getConfig()
 	log := s.getLogger()
 	addr := params.Addr
 	log.Debug("Starting DoH listener", slog.String("address", addr))
@@ -8453,15 +8488,16 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", s.dohHandler)
 
-	listener, err := tls.Listen("tcp", addr, &tls.Config{
+	tlsCfg := tls.Config{
 		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{s.dohCert}, // Use loaded cert, FIXME: ensure it was loaded or fail-fast here!
-	})
+		Certificates: []tls.Certificate{s.getCert()}, // Use loaded cert, doneFIXME: ensure it was loaded or fail-fast here before tls.Listen(which would have to be torn down if this fails)
+	}
+	listener, err := tls.Listen("tcp", addr, &tlsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("DoH listener failed to bind/listen on %q: %w", addr, err)
 	}
 
-	//FIXME: XXX: in the future(so now lol) if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart). ok, we're already doing the relisten, but make sure we do it even when only these cfg values change! or do it unconditionally!
+	//doneFIXME: XXX: in the future(so now lol) if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart). ok, we're already doing the relisten, but make sure we do it even when only these cfg values change! or do it unconditionally!
 
 	srv := &http.Server{
 		Handler: mux,
@@ -8587,6 +8623,56 @@ func (s *Server) initAdminUI() {
 // 	return inst.expectedHost
 // }
 
+// isCertLoaded reports whether cert was successfully populated by
+// tls.LoadX509KeyPair (or equivalent). A zero-value tls.Certificate{}
+// has a nil Certificate chain and nil PrivateKey; feeding it to
+// tls.Config.Certificates produces SSL_ERROR_NO_CYPHER_OVERLAP on clients
+// with zero server-side error output — the worst silent failure mode.
+func isCertLoaded(cert *tls.Certificate) bool {
+	return len(cert.Certificate) > 0 && cert.PrivateKey != nil
+}
+
+// ensureCert is a defence-in-depth guard that must be called at the top of
+// every TLS listener start function. It guarantees s.dohCert is valid before
+// any tls.Config is constructed.
+//
+// Normal path: generateCertIfNeeded was already called during Run(); this
+// check passes immediately at zero cost.
+//
+// Recovery path (startup-order bug or future refactor forgets the call):
+// we call generateCertIfNeeded now, log a warning so the bug is visible,
+// and then re-check. If the cert is STILL zero after generation — which
+// would mean tls.LoadX509KeyPair returned a zero struct without erroring,
+// a condition that should be impossible — we panic with a clear diagnosis
+// rather than proceeding into a silent SSL handshake failure.
+func (s *Server) ensureCert() {
+	if isCertLoaded(&s.dohCert) {
+		return // normal fast path
+	}
+
+	log := s.getLogger()
+	log.Warn("BUG: TLS cert not loaded before listener start (generateCertIfNeeded was never called or ran out of order); attempting emergency generation now")
+	s.generateCertIfNeeded()
+
+	if !isCertLoaded(&s.dohCert) {
+		// generateCertIfNeeded calls logFatal (→ s.shutdown + os.Exit) on any
+		// load/generation failure, so reaching here means tls.LoadX509KeyPair
+		// returned without error but produced an empty struct — impossible in
+		// practice but guard it anyway.
+		panic("BUG: s.dohCert is still zero after generateCertIfNeeded(); " +
+			"tls.LoadX509KeyPair succeeded but returned no certificate chain — " +
+			"cannot start TLS listeners")
+	}
+
+	log.Info("Emergency cert generation succeeded; TLS listener can now start")
+}
+
+// returns a copy of the cert
+func (s *Server) getCert() tls.Certificate {
+	s.ensureCert()
+	return s.dohCert
+}
+
 func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListenerInstance, error) {
 	if s.adminUI == nil {
 		panic("BUG: startWebUIListenerInstance called before initAdminUI")
@@ -8600,19 +8686,20 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	var finalListener net.Listener = baseListener
 	scheme := "http"
 	if params.UseTLS {
-		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
-		finalListener = tls.NewListener(baseListener, &tls.Config{
+		tlsCfg := tls.Config{
 			//In Go, a tls.Certificate struct is entirely read-only once it has been loaded into memory. When you pass it to tls.Config, the underlying crypto libraries only read its public certificate chains and private key blocks to perform cryptographic handshakes with incoming clients.
-			Certificates: []tls.Certificate{s.dohCert}, // Reuse the keypair directly!
+			Certificates: []tls.Certificate{s.getCert()}, // Reuse the keypair directly! well it's a copy now
 			MinVersion:   tls.VersionTLS12,
-		})
+		}
+		// Wrap the basic TCP listener inside Go's built-in TLS protocol filter
+		finalListener = tls.NewListener(baseListener, &tlsCfg)
 		scheme = "https"
 	}
 
 	// BETTER APPROACH: Query the active listener for its real bound address.
 	// This is guaranteed to be split-safe, and correctly exposes the port
 	// if the user passes ":0" for a dynamically allocated port.
-	boundAddr := baseListener.Addr().String() //TODO: save this and use it for hostValidation middleware
+	boundAddr := baseListener.Addr().String() //doneTODO: save this and use it for hostValidation middleware
 	srv := &http.Server{
 		Handler: s.adminUI.SetupRoutes(boundAddr, params.UseTLS),
 		//doneTODO: make this configurable?
