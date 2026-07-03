@@ -2752,12 +2752,12 @@ func (s *Server) loadMainConfig() error {
 	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenDoH); splitErr != nil {
 		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenDoH, newCfg.ListenDoH, splitErr)
 	} else if net.ParseIP(doHHost) == nil {
-		return fmt.Errorf("%q host %q must be an IP literal (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenDoH, doHHost)
+		return fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenDoH, doHHost)
 	}
 	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenUI); splitErr != nil {
 		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenUI, newCfg.ListenUI, splitErr)
 	} else if net.ParseIP(doHHost) == nil {
-		return fmt.Errorf("%q host %q must be an IP literal (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, doHHost)
+		return fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, doHHost)
 	}
 
 	newCfg.BlockMode = strings.ToLower(newCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
@@ -3166,8 +3166,9 @@ func (s *Server) generateCertIfNeeded() {
 	cfg := s.getConfig()
 
 	log.Debug("check if cert is valid or needs regen")
-	certFile := "cert.pem"
-	keyFile := "key.pem"
+	const certFile = "cert.pem"
+	const keyFile = "key.pem"
+
 	needsRegen := false
 
 	var err error
@@ -3195,10 +3196,14 @@ func (s *Server) generateCertIfNeeded() {
 		panic("BUG: config error: config.ListenUI host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + uiHost)
 	}
 
-	// Build the list of hosts/IPs that must be covered by the certificate
-	hosts := []string{dohHost}
-	if uiHost != dohHost {
-		hosts = append(hosts, uiHost)
+	// Build the list of requiredHosts/IPs that must be covered by the certificate
+	// Build the deduplicated required-hosts slice.
+	requiredHosts := []string{dohHost}
+	if cfg.WebUIUseTLS && uiHost != dohHost {
+		// WebUI host is only relevant when TLS is enabled for the WebUI.
+		// When WebUI runs plain HTTP, it never uses s.dohCert, so no SAN needed.
+		//also dedup
+		requiredHosts = append(requiredHosts, uiHost)
 	}
 
 	// 2. Check if cert exists and is still valid for this IP
@@ -3220,7 +3225,7 @@ func (s *Server) generateCertIfNeeded() {
 				needsRegen = true
 			} else {
 				// Verify that ALL required hosts are present in the existing certificate's SAN list
-				for _, h := range hosts {
+				for _, h := range requiredHosts {
 					found := false
 					parsedIP := net.ParseIP(h)
 					if parsedIP != nil {
@@ -3253,8 +3258,8 @@ func (s *Server) generateCertIfNeeded() {
 	// 3. Regen if necessary
 	if needsRegen {
 		log.Warn("Due to above, regenerating self-signed cert ...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
-			slog.Any("hosts", hosts))
-		if err = generateCert(certFile, keyFile, hosts); err != nil {
+			slog.Any("hosts", requiredHosts))
+		if err = generateCert(certFile, keyFile, requiredHosts); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
 			s.logFatal("cert generation failed", err)
 			panic("unreachable")
@@ -3264,17 +3269,16 @@ func (s *Server) generateCertIfNeeded() {
 		var msg strings.Builder
 		msg.WriteString("Cert generated: make sure you trust it in clients. ")
 		if cfg.WebUIUseTLS {
-			msg.WriteString(fmt.Sprintf("For browsers, load the Web UI HTTPS URL: https://%s/ and add a certificate exception, or manually trust this endpoint via your browser's Certificate Manager. ", cfg.ListenUI))
-
+			fmt.Fprintf(&msg, "For browsers, load the Web UI HTTPS URL: https://%s/ and add a certificate exception, or manually trust this endpoint via your browser's Certificate Manager. ", cfg.ListenUI)
 		} else {
-			msg.WriteString(fmt.Sprintf("Web UI is configured with unencrypted HTTP: http://%s/ . ", cfg.ListenUI))
+			fmt.Fprintf(&msg, "Web UI is configured with unencrypted HTTP: http://%s/ . ", cfg.ListenUI)
 		}
-		msg.WriteString(fmt.Sprintf("For DoH clients, specify the server URL: https://%s/dns-query", cfg.ListenDoH))
+		fmt.Fprintf(&msg, "For DoH clients, specify the server URL: https://%s/dns-query", cfg.ListenDoH)
 		log.Warn(msg.String(),
 			slog.String("doh_url", fmt.Sprintf("https://%s/dns-query", cfg.ListenDoH)),
 			slog.String(getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenUI)), cfg.ListenUI))
 	} else {
-		log.Debug("Existing cert is valid for host. Skipping generation.", slog.Any("hosts", hosts))
+		log.Debug("Existing cert is valid for host. Skipping generation.", slog.Any("hosts", requiredHosts))
 	}
 
 	// Load cert/key into global for reuse
@@ -3292,6 +3296,9 @@ func (s *Server) generateCertIfNeeded() {
 func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) error {
 	if certFileNameNoPath == "" || keyFileNameNoPath == "" {
 		panic("unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
+	}
+	if len(hosts) == 0 {
+		panic("BUG: generateCert: hosts slice is empty — nothing to put in the SAN")
 	}
 	certFileNameNoPath = filepath.Clean(certFileNameNoPath)
 	keyFileNameNoPath = filepath.Clean(keyFileNameNoPath)
@@ -3318,12 +3325,31 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) 
 	}
 
 	// Populate IPAddresses and DNSNames dynamically for all requested hosts
+	// Deduplicate hosts before adding to SAN to avoid malformed certs.
+	seenIPs := make(map[string]struct{})
+	seenDNS := make(map[string]struct{})
 	for _, host := range hosts {
-		if ip := net.ParseIP(host); ip != nil {
-			certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
-		} else {
-			certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
 		}
+		if ip := net.ParseIP(host); ip != nil {
+			key := ip.String() // normalise e.g. "::1" vs "0:0:0:0:0:0:0:1"
+			if _, dup := seenIPs[key]; !dup {
+				seenIPs[key] = struct{}{}
+				certTemplate.IPAddresses = append(certTemplate.IPAddresses, ip)
+			}
+		} else {
+			if _, dup := seenDNS[host]; !dup {
+				seenDNS[host] = struct{}{}
+				certTemplate.DNSNames = append(certTemplate.DNSNames, host)
+			}
+		}
+
+	}
+	if len(certTemplate.IPAddresses) == 0 && len(certTemplate.DNSNames) == 0 {
+		// All hosts were empty or whitespace after trimming — programmer error.
+		panic(fmt.Sprintf("BUG: generateCert: no valid SANs could be built from hosts %v", hosts))
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &priv.PublicKey, priv)
