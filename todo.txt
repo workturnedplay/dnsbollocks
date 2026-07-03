@@ -2,7 +2,7 @@ todo:
 * ensure all defer happen in their own 'else' blocks, it's about code-correctness being enforced by code not by the coder when reading it with the intent of modifying it.
 * replace panics except unreachables with something else like logFatal. Maybe even the unreachables so that they're logged first.
 * make sure to check the return errors for things i don't check for, filter Problems(in vscode) by: errcheck
-* fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, todo:  4_1, 4_2 dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
+* fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * find more places where I need to be Replacing Type Assertions with errors.As
 * find more places where I should be using errors.Is (no warnings about it currently tho)
 * ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
