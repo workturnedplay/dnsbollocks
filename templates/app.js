@@ -978,8 +978,9 @@
                 } else {
                     // Sort ascending or descending
                     rowsArray.sort((a, b) => {
-                        let valA = a.cells[colIndex].innerText.trim().toLowerCase();
-                        let valB = b.cells[colIndex].innerText.trim().toLowerCase();
+                        // FIX: Changed from innerText to textContent
+                        let valA = a.cells[colIndex].textContent.trim().toLowerCase();
+                        let valB = b.cells[colIndex].textContent.trim().toLowerCase();
                         
                         if (valA < valB) return newDir === 'asc' ? -1 : 1;
                         if (valA > valB) return newDir === 'asc' ? 1 : -1;
