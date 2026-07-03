@@ -7681,7 +7681,6 @@ type AdminUI struct {
 	stats        *expvar.Int
 
 	uiTemplates *template.Template
-	//upstreamIPs []string // For the stats page
 
 	// Callbacks for side-effects
 	OnSaveWhitelist       func() error
