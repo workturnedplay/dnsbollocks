@@ -3168,16 +3168,16 @@ func (s *Server) generateCertIfNeeded() {
 
 	//In Go, net.ParseIP is a strict parser. It does not perform DNS lookups; it only checks if the string is a valid IPv4 or IPv6 literal. If you pass it "localhost", it returns nil.
 
-	//if dohIP := net.ParseIP(dohHost); dohIP == nil {
-	if net.ParseIP(dohHost) == nil && !isValidDNSName(dohHost) {
+	// STRICT IP ENFORCEMENT: Hostnames are strictly forbidden because
+	// they cannot be resolved before this local DNS proxy actually starts.
+	if net.ParseIP(dohHost) == nil {
 		//panic("BUG: coding error, IP isn't valid in config.ListenDoH") //FIXME: check this at config.json load time! or split the IP and port into two config options!
-		panic("coding error: config.ListenDoH host part is neither a valid IP literal nor a valid DNS hostname, it's: " + dohHost)
+		panic("config error: config.ListenDoH host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + dohHost)
 	}
-	//uiIP := net.ParseIP(uiHost) //used in a log below
-	//if uiIP == nil {
-	if net.ParseIP(uiHost) == nil && !isValidDNSName(uiHost) {
+
+	if net.ParseIP(uiHost) == nil {
 		//panic("BUG: coding error, IP isn't valid in config.ListenUI") //FIXME: check this at config.json load time! or split the IP and port into two config options!
-		panic("coding error: config.ListenUI host part is neither a valid IP literal nor a valid DNS hostname, it's: " + uiHost)
+		panic("config error: config.ListenUI host part MUST be an IP literal. Hostnames are forbidden. Invalid value: " + uiHost)
 	}
 
 	// Build the list of hosts/IPs that must be covered by the certificate
@@ -3628,6 +3628,15 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context() // Get the request context
 
 	var err error
+	// IP verification before resolving
+	remoteHost, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr != nil {
+		remoteHost = r.RemoteAddr
+	}
+	if net.ParseIP(remoteHost) == nil {
+		panic("dohHandler: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
+	}
+
 	// 1. Identify the client immediately, before replying.
 	//Since you are performing the PID lookup inside the handler (before sending the response), the TCP connection is guaranteed to be in the ESTABLISHED state.
 	// Firefox is sitting there waiting for its DNS-over-HTTPS answer, so it's the perfect time to "catch" it in the Windows TCP table.
@@ -3960,7 +3969,7 @@ var memoizedVersion = func() string {
 	suffix := ""
 	//like this/(via `go version -m dnsbollocks.exe`):         dep     github.com/miekg/dns    v1.1.73-0.20260402044838-d1539a788a12
 	if vcsTime != "" {
-		suffix += "-0." + vcsTime // FIXME: Hardcodes the '0' generation counter before the timestamp (can't read/get it apparently)
+		suffix += "-0." + vcsTime // cantFIXME: Hardcodes the '0' generation counter before the timestamp (can't read/get it apparently) "Go's debug.ReadBuildInfo doesn't expose it; nothing to do" - Claude Sonnet 4.6 Low Thinking
 	}
 	// Avoid duplicating the hash if the base version string already includes it
 	if vcsRevision != "" && !strings.Contains(baseVersion, vcsRevision) {
@@ -7135,6 +7144,15 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 			var pid uint32
 			var exe string
 			var pidExeLookupErr error
+			// IP verification before resolving
+			remoteHostAuth, _, splitErrAuth := net.SplitHostPort(r.RemoteAddr)
+			if splitErrAuth != nil {
+				remoteHostAuth = r.RemoteAddr
+			}
+			if net.ParseIP(remoteHostAuth) == nil {
+				panic("authMiddleware: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
+			}
+
 			if remoteTCP, tcpErr := net.ResolveTCPAddr("tcp", r.RemoteAddr); tcpErr == nil {
 				pid, exe, pidExeLookupErr = wincoe.PidAndExeForTCP(remoteTCP)
 			}
@@ -8303,7 +8321,8 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 			)
 			continue
 		}
-		//FIXME: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
+		//XXX: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
+		//^ "Valid tradeoff — PID lookup must happen before the goroutine or you lose the connection from the OS table; intentional" -Claude
 
 		pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
 		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
@@ -8412,6 +8431,14 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 	log.Debug("Starting DNS listener", slog.String("addr", addr))
 
 	log.Debug("Attempting UDP bind for DNS listener...")
+	// Verify it's an IP before UDP/TCP resolution
+	addrHost, _, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil {
+		addrHost = addr
+	}
+	if net.ParseIP(addrHost) == nil {
+		panic("startDNSListenerInstance: listener bind address must be a valid IP literal: " + addr)
+	}
 	// Assuming addr is a string like "127.0.0.1:53"
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
