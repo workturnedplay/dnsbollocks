@@ -1856,7 +1856,7 @@ var dnsNameRE = regexp.MustCompile(
 	`^(?i)([a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?$`,
 )
 
-func isValidDNSName(s string) bool {
+func isValidDNSName1(s string) bool {
 	if len(s) == 0 || len(s) > 253 {
 		return false
 	}
@@ -1873,7 +1873,7 @@ func isLetterDigitOrUnderscore(c byte) bool {
 	return isLetterOrDigit(c) || c == '_'
 }
 
-func isValidDNSName2(s string) bool {
+func isValidDNSName(s string) bool {
 	l := len(s)
 	if l == 0 || l > 253 {
 		return false
@@ -1921,7 +1921,7 @@ func isValidDNSName2(s string) bool {
 
 // sanitizeDomainInput removes any characters not explicitly allowed.
 // Safe for logs and DNS-related handling.
-func sanitizeDomainInput(input string) (sanitized string, modified bool) {
+func sanitizeDomainInput1(input string) (sanitized string, modified bool) {
 	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
 
 	var b strings.Builder
@@ -1939,7 +1939,7 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	return
 }
 
-func sanitizeDomainInput2(input string) (sanitized string, modified bool) {
+func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	// 1. Fast Path: Check if any invalid characters exist first.
 	// We iterate over bytes instead of runes since valid DNS chars are entirely ASCII.
 	validCount := 0
