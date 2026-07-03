@@ -522,7 +522,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			shouldLogFailover := !wasBlackout && (fs.activeIndex == currentIdx)
 			fs.activeIndex = i
 			fs.mu.Unlock()
-			if wasBlackout { //TODO: DRY(see the above copy)
+			if wasBlackout { //nvmTODO: DRY(see the above copy)
 				log.Warn("💚 Global blackout resolved; fallback upstream responding",
 					slog.String("url", target.URL.String()),
 					slog.String("sni", target.SNI),
@@ -2311,14 +2311,18 @@ func (s *Server) loadMainConfig() error {
 	s.fileWriter.CheckPowerLossFile(cfgFname)
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			// Permission denied, locked, or other I/O error — never auto-create
+			return fmt.Errorf("config file %q exists but cannot be read: %w", cfgFname, err)
+		}
+		// True "not found"
 		if isAdmin {
 			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
 				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
-		} else {
-			// not admin, auto create config file with defaults
-			//FIXME: make sure it's not found not just don't have read permission (but could have write!)
-			log.Warn("Config file not found or unreadable; using defaults and creating new file", slog.String("config_file", cfgFname))
 		}
+		// not admin, auto create config file with defaults
+		//doneFIXME: make sure it's not found not just don't have read permission (but could have write!)
+		log.Warn("Config file not found; using defaults and creating new file", slog.String("config_file", cfgFname))
 		// Defaults
 		// REMOVED: config = DefaultConfig() because it is already set above
 		//config = DefaultConfig()
@@ -7171,15 +7175,18 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 				SafeErr2("pid_exe_lookup_err", pidExeLookupErr),
 			}
 			if lockedOut {
+				retryAfterSecs := int(time.Until(newLockedUntil).Seconds()) + 1
 				logAttrs = append(logAttrs,
 					slog.Bool("now_locked_out", true),
 					slog.Time("locked_until", newLockedUntil),
 					slog.Int("lockout_duration_sec", cfg.WebUILoginLockoutSec),
+					slog.Int("retry_after_this_many_seconds", retryAfterSecs),
 				)
 				log.Warn("WebUI login failed — IP is now locked out", logAttrs...)
 				//http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 
-				//FIXME: technically I'd have to dup some code from above here to include the Retry-After
+				//doneFIXME: technically I'd have to dup some code from above here to include the Retry-After
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSecs))
 				http.Error(w, "429 Too Many Requests — Too many failed login attempts. Try again later.", http.StatusTooManyRequests)
 				return
 			} else {
