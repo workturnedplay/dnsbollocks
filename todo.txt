@@ -1,4 +1,5 @@
 todo:
+* fixes for v0.12.6 (todo: 3,4,5 done: 1,2, ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
 * ensure all defer happen in their own 'else' blocks, it's about code-correctness being enforced by code not by the coder when reading it with the intent of modifying it.
 * replace panics except unreachables with something else like logFatal. Maybe even the unreachables so that they're logged first.
 * make sure to check the return errors for things that i don't check for, filter Problems(in vscode) by: errcheck

@@ -1349,6 +1349,8 @@ func defaultConfig() Config {
 		UseEDEInBlockedReply: true,
 
 		ExtraSafety: true,
+
+		WebUIPasswordHash: "", // empty because it will be set at startup or loaded from disk, we don't want to have an already set up "dnsbollocks" pwd here, then it won't get asked at startup
 	}
 	//compute based on others
 	cfg.LocalDoHIdleTimeoutSec = 2 * cfg.LocalDoHReadTimeoutSec

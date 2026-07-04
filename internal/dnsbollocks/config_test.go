@@ -4,7 +4,13 @@
 package dnsbollocks
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -258,5 +264,271 @@ func TestDetectDuplicateJSONObjectKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDefaultConfig_AllJSONFieldsHaveExplicitDefaults(t *testing.T) { //XXX: this test is obsoleted by the next one which is better as it doesn't need a whitelist!
+	t.Parallel()
+
+	/*
+		The whitelist intentionalZeroDefaults is needed because the following are are see as value.IsZero()
+		0
+		false
+		""
+		nil
+		time.Duration(0)
+		[]string(nil)
+		map[string]int(nil)
+		struct{}{}
+	*/
+	intentionalZeroDefaults := map[string]struct{}{
+
+		"AllowRunAsAdmin":   {},
+		"WebUIPasswordHash": {},
+	}
+
+	cfg := defaultConfig()
+
+	cfgValue := reflect.ValueOf(cfg)
+	cfgType := cfgValue.Type()
+
+	seenJSONTags := make(map[string]string, cfgType.NumField())
+
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+
+		jsonTag, _, _ := strings.Cut(field.Tag.Get("json"), ",") // handle things like `json:"listen_dns,omitempty"`
+		//jsonTag := field.Tag.Get("json")
+		if jsonTag == "" {
+			t.Fatalf("Config.%s is missing a json tag", field.Name)
+		}
+		if jsonTag == "-" {
+			continue
+		}
+
+		if previousField, exists := seenJSONTags[jsonTag]; exists {
+			t.Fatalf(
+				"duplicate json tag %q used by both Config.%s and Config.%s",
+				jsonTag,
+				previousField,
+				field.Name,
+			)
+		}
+		seenJSONTags[jsonTag] = field.Name
+
+		value := cfgValue.Field(i)
+
+		if value.IsZero() {
+			if _, ok := intentionalZeroDefaults[field.Name]; !ok {
+				t.Errorf(
+					"defaultConfig() left Config.%s (%q) at its zero value (%#v); every persisted config field must have an explicit default",
+					field.Name,
+					jsonTag,
+					value.Interface(),
+				)
+			}
+		}
+	}
+
+	if t.Failed() {
+		t.Fatal("defaultConfig() is missing one or more explicit defaults")
+	}
+}
+
+func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
+	t.Parallel()
+	/*
+		// Reflection cannot distinguish an intentionally written zero value (false, "", 0)
+		// from an omitted field.
+		// That's why here we: Parse the AST instead, and verify that every persisted
+		// Config field is explicitly present in the Config{...} literal returned by
+		// defaultConfig().
+
+					The nice properties are:
+
+				AllowRunAsAdmin: false passes.
+				WebUIPasswordHash: "" passes.
+				Omitting either one fails.
+				Adding a new Config field but forgetting to initialize it fails.
+				Removing a Config field but leaving it in defaultConfig() also fails.
+				Reordering fields doesn't matter.
+				The actual values don't matter.
+	*/
+	var literalsFound int
+	// var configVarName string
+
+	fset := token.NewFileSet()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+
+	pkg, err := parser.ParseDir(fset, filepath.Dir(thisFile), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every exported Config field that should be initialized.
+	expected := make(map[string]struct{})
+
+	cfgType := reflect.TypeOf(Config{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		f := cfgType.Field(i)
+
+		tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if tag == "-" {
+			continue
+		}
+
+		expected[f.Name] = struct{}{}
+	}
+
+	initialized := make(map[string]struct{})
+	foundDefaultConfig := false
+	for _, p := range pkg {
+		for _, file := range p.Files {
+			if foundDefaultConfig {
+				break
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				fn, ok := n.(*ast.FuncDecl)
+				if !ok || fn.Name.Name != "defaultConfig" {
+					return true
+				}
+				foundDefaultConfig = true
+
+				var configVarName string
+
+				for _, stmt := range fn.Body.List {
+
+					switch s := stmt.(type) {
+
+					case *ast.AssignStmt:
+						// cfg := Config{...}
+						if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+							lhs, lok := s.Lhs[0].(*ast.Ident)
+							cl, rok := s.Rhs[0].(*ast.CompositeLit)
+
+							if lok && rok {
+								switch typ := cl.Type.(type) {
+								case *ast.Ident:
+									if typ.Name != "Config" {
+										break
+									}
+								case *ast.SelectorExpr:
+									if typ.Sel.Name != "Config" {
+										break
+									}
+								default:
+									break
+								}
+
+								literalsFound++
+								configVarName = lhs.Name
+
+								for _, elt := range cl.Elts {
+									kv, ok := elt.(*ast.KeyValueExpr)
+									if !ok {
+										t.Fatalf("unexpected non-keyed element in Config literal")
+									}
+
+									key, ok := kv.Key.(*ast.Ident)
+									if !ok {
+										t.Fatalf("unexpected key type %T", kv.Key)
+									}
+
+									initialized[key.Name] = struct{}{}
+								}
+
+								continue
+							}
+						}
+
+						// cfg.SomeField = ...
+						if configVarName != "" {
+							for _, lhs := range s.Lhs {
+								sel, ok := lhs.(*ast.SelectorExpr)
+								if !ok {
+									continue
+								}
+
+								obj, ok := sel.X.(*ast.Ident)
+								if !ok || obj.Name != configVarName {
+									continue
+								}
+
+								initialized[sel.Sel.Name] = struct{}{}
+							}
+						}
+
+					case *ast.DeclStmt:
+						// var cfg = Config{...}
+						gen, ok := s.Decl.(*ast.GenDecl)
+						if !ok || gen.Tok != token.VAR {
+							continue
+						}
+
+						for _, spec := range gen.Specs {
+							vs, ok := spec.(*ast.ValueSpec)
+							if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+								continue
+							}
+
+							cl, ok := vs.Values[0].(*ast.CompositeLit)
+							if !ok {
+								continue
+							}
+
+							switch typ := cl.Type.(type) {
+							case *ast.Ident:
+								if typ.Name != "Config" {
+									continue
+								}
+							case *ast.SelectorExpr:
+								if typ.Sel.Name != "Config" {
+									continue
+								}
+							default:
+								continue
+							}
+
+							literalsFound++
+							configVarName = vs.Names[0].Name
+
+							for _, elt := range cl.Elts {
+								kv, ok := elt.(*ast.KeyValueExpr)
+								if !ok {
+									t.Fatalf("unexpected non-keyed element in Config literal")
+								}
+
+								key, ok := kv.Key.(*ast.Ident)
+								if !ok {
+									t.Fatalf("unexpected key type %T", kv.Key)
+								}
+
+								initialized[key.Name] = struct{}{}
+							}
+						}
+					}
+				}
+
+				return false // no need to inspect any other functions
+			})
+
+		}
+	}
+	if literalsFound != 1 {
+		t.Fatalf("expected exactly one Config composite literal in defaultConfig(), found %d", literalsFound)
+	}
+	for field := range expected {
+		if _, ok := initialized[field]; !ok {
+			t.Errorf("defaultConfig() does not explicitly initialize Config.%s", field)
+		}
+	}
+
+	for field := range initialized {
+		if _, ok := expected[field]; !ok {
+			t.Errorf("defaultConfig() initializes unknown Config field %q", field)
+		}
 	}
 }
