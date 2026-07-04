@@ -3,7 +3,6 @@ package dnsbollocks
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -135,117 +134,76 @@ func TestResolveTag(t *testing.T) {
 	}
 }
 
-func TestResolveAndRestoreConfigTags(t *testing.T) {
-	// 1. Setup mock environment
+func TestResolveConfigTags(t *testing.T) {
 	const testFileName2 = "test_upstream_123.txt"
 	configDir := filepath.Dir(configFileName)
 	path := filepath.Join(configDir, testFileName2)
-	err := os.WriteFile(path, []byte("https://8.8.8.8/dns-query\n"), 0600)
-	if err != nil {
+	if err := os.WriteFile(path, []byte("https://8.8.8.8/dns-query\n"), 0600); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
-	defer os.Remove(path) //nolint:errcheck //don't case
+	defer os.Remove(path) //nolint:errcheck
 
 	t.Setenv("TEST_WEBUI_PWD", "hashed_pwd_xyz")
 
-	// 2. Setup a dummy Config with a mix of literals and tags
-	cfg := &Config{
-		ListenDNS:         "127.0.0.1:53",         // Literal string
-		WebUIPasswordHash: "{env:TEST_WEBUI_PWD}", // Env tag
+	raw := &Config{
+		ListenDNS:         "127.0.0.1:53",
+		WebUIPasswordHash: "{env:TEST_WEBUI_PWD}",
 		UpstreamURLs: []string{
-			"https://9.9.9.9/dns-query",    // Literal slice item
-			"{file:test_upstream_123.txt}", // File slice item
+			"https://9.9.9.9/dns-query",
+			"{file:test_upstream_123.txt}",
 		},
 	}
 
-	// ==========================================
-	// Phase 1: Test Resolution
-	// ==========================================
-	err = resolveConfigTags(cfg)
+	resolved, err := resolveConfigTags(raw)
 	if err != nil {
 		t.Fatalf("resolveConfigTags failed unexpectedly: %v", err)
 	}
 
-	// Verify the values were swapped into memory correctly
-	if cfg.WebUIPasswordHash != "hashed_pwd_xyz" {
-		t.Errorf("expected WebUIPasswordHash to be resolved, got %q", cfg.WebUIPasswordHash)
+	// raw must be completely untouched.
+	if raw.WebUIPasswordHash != "{env:TEST_WEBUI_PWD}" {
+		t.Errorf("raw.WebUIPasswordHash was mutated: got %q", raw.WebUIPasswordHash)
 	}
-	if len(cfg.UpstreamURLs) != 2 || cfg.UpstreamURLs[1] != "https://8.8.8.8/dns-query" {
-		t.Errorf("expected UpstreamURLs[1] to be resolved, got %q", cfg.UpstreamURLs[1])
+	if raw.UpstreamURLs[1] != "{file:test_upstream_123.txt}" {
+		t.Errorf("raw.UpstreamURLs[1] was mutated: got %q", raw.UpstreamURLs[1])
 	}
-	if cfg.ListenDNS != "127.0.0.1:53" {
-		t.Errorf("literal string was altered unexpectedly, got %q", cfg.ListenDNS)
-	}
-
-	// Verify the tracking maps captured the original tags
-	if cfg.RawStrings["webui_password_hash"] != "{env:TEST_WEBUI_PWD}" {
-		t.Errorf("missing/incorrect raw string tracking: %v", cfg.RawStrings)
-	}
-	expectedRawSlice := []string{"https://9.9.9.9/dns-query", "{file:test_upstream_123.txt}"}
-	if !reflect.DeepEqual(cfg.RawStringSlices["upstream_urls"], expectedRawSlice) {
-		t.Errorf("missing/incorrect raw string slice tracking: got %v, want %v", cfg.RawStringSlices["upstream_urls"], expectedRawSlice)
+	if raw.ListenDNS != "127.0.0.1:53" {
+		t.Errorf("raw.ListenDNS was mutated: got %q", raw.ListenDNS)
 	}
 
-	// ==========================================
-	// Phase 2: Test Restoration (Serialization Prep)
-	// ==========================================
-
-	// Simulate an active application making an unrelated configuration change
-	cfg.ListenDNS = "0.0.0.0:53"
-
-	restoreRawValues(cfg)
-
-	// Verify the tags were put back
-	if cfg.WebUIPasswordHash != "{env:TEST_WEBUI_PWD}" {
-		t.Errorf("expected WebUIPasswordHash to be restored to tag, got %q", cfg.WebUIPasswordHash)
+	// resolved has real values.
+	if resolved.WebUIPasswordHash != "hashed_pwd_xyz" {
+		t.Errorf("resolved.WebUIPasswordHash = %q, want %q", resolved.WebUIPasswordHash, "hashed_pwd_xyz")
 	}
-	if len(cfg.UpstreamURLs) != 2 || cfg.UpstreamURLs[1] != "{file:test_upstream_123.txt}" {
-		t.Errorf("expected UpstreamURLs[1] to be restored to tag, got %q", cfg.UpstreamURLs[1])
+	if resolved.UpstreamURLs[1] != "https://8.8.8.8/dns-query" {
+		t.Errorf("resolved.UpstreamURLs[1] = %q, want %q", resolved.UpstreamURLs[1], "https://8.8.8.8/dns-query")
+	}
+	if resolved.ListenDNS != "127.0.0.1:53" {
+		t.Errorf("resolved.ListenDNS = %q, want %q (literal should pass through)", resolved.ListenDNS, "127.0.0.1:53")
 	}
 
-	// Verify unrelated modifications were preserved
-	if cfg.ListenDNS != "0.0.0.0:53" {
-		t.Errorf("expected unmodified fields to retain runtime changes, got %q", cfg.ListenDNS)
+	// resolved is a deep copy; mutating it must not affect raw.
+	resolved.ListenDNS = "0.0.0.0:53"
+	if raw.ListenDNS != "127.0.0.1:53" {
+		t.Errorf("raw.ListenDNS changed after mutating resolved: got %q", raw.ListenDNS)
 	}
 
-	cfg2 := &Config{
-		WebUIPasswordHash: "{env:DOES_NOT_EXIST_123456}",
-		ListenDNS:         "127.0.0.1:53",
+	// Error case: unresolvable token.
+	bad := &Config{WebUIPasswordHash: "{env:DOES_NOT_EXIST_123456}"}
+	if _, err := resolveConfigTags(bad); err == nil {
+		t.Error("expected error for missing env var, got nil")
+	}
+	// bad must still be unmodified after an error.
+	if bad.WebUIPasswordHash != "{env:DOES_NOT_EXIST_123456}" {
+		t.Errorf("bad.WebUIPasswordHash was mutated despite error: got %q", bad.WebUIPasswordHash)
 	}
 
-	err2 := resolveConfigTags(cfg2)
-	if err2 == nil {
-		t.Fatal("expected error")
+	// No tokens → resolved is a clean clone with no mutations.
+	plain := &Config{ListenDNS: "127.0.0.1:53"}
+	resolvedPlain, err := resolveConfigTags(plain)
+	if err != nil {
+		t.Fatalf("unexpected error for plain config: %v", err)
 	}
-
-	cfg3 := &Config{
-		ListenDNS: "127.0.0.1:53",
-	}
-
-	if err3 := resolveConfigTags(cfg3); err3 != nil {
-		t.Fatal(err3)
-	}
-
-	if len(cfg3.RawStrings) != 0 {
-		t.Errorf("RawStrings should be empty")
-	}
-	if len(cfg3.RawStringSlices) != 0 {
-		t.Errorf("RawStringSlices should be empty")
-	}
-
-	cfg4 := &Config{
-		UpstreamURLs: []string{"runtime"},
-		RawStringSlices: map[string][]string{
-			"upstream_urls": {
-				"{file:a.txt}",
-				"{file:b.txt}",
-			},
-		},
-	}
-
-	restoreRawValues(cfg4)
-
-	if len(cfg4.UpstreamURLs) != 1 || cfg4.UpstreamURLs[0] != "runtime" {
-		t.Fatal("slice should not have been modified on length mismatch")
+	if resolvedPlain.ListenDNS != plain.ListenDNS {
+		t.Errorf("resolvedPlain.ListenDNS = %q, want %q", resolvedPlain.ListenDNS, plain.ListenDNS)
 	}
 }

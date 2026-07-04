@@ -184,16 +184,13 @@ type Config struct {
 	UILogMaxLines int `json:"ui_log_max_lines"`
 
 	ExtraSafety bool `json:"extra_safety"`
-
-	// --- NEW: Runtime Substitution Tracking ---
-	RawStrings      map[string]string   `json:"-"` // Tracks {file:...}/{env:...} tags for strings
-	RawStringSlices map[string][]string `json:"-"` // Tracks tags for string slices
 }
 
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
-	liveConfig atomic.Pointer[Config]      // shared with AdminUI, fileWriter, etc.
-	liveLogger atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
+	liveConfig    atomic.Pointer[Config]      // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
+	liveRawConfig atomic.Pointer[Config]      //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
+	liveLogger    atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
 
 	// Upstream state
 	upstreamMgr  *UpstreamManager
@@ -248,8 +245,9 @@ type Server struct {
 type AdminUI struct {
 	// logger       *slog.Logger
 	// config       Config // Pass by value so UI can read it safely
-	liveConfig *atomic.Pointer[Config]
-	liveLogger *atomic.Pointer[slog.Logger]
+	liveConfig    *atomic.Pointer[Config]
+	liveRawConfig *atomic.Pointer[Config]
+	liveLogger    *atomic.Pointer[slog.Logger]
 
 	ruleStore    *RuleStore
 	hostStore    *HostStore
@@ -655,22 +653,6 @@ func (c Config) Clone() Config {
 	if c.BlockIPv6Parsed != nil {
 		dst.BlockIPv6Parsed = make(net.IP, len(c.BlockIPv6Parsed))
 		copy(dst.BlockIPv6Parsed, c.BlockIPv6Parsed)
-	}
-
-	// Deep-copy the substitution tracking maps
-	if c.RawStrings != nil {
-		dst.RawStrings = make(map[string]string, len(c.RawStrings))
-		for k, v := range c.RawStrings {
-			dst.RawStrings[k] = v
-		}
-	}
-	if c.RawStringSlices != nil {
-		dst.RawStringSlices = make(map[string][]string, len(c.RawStringSlices))
-		for k, v := range c.RawStringSlices {
-			cp := make([]string, len(v))
-			copy(cp, v)
-			dst.RawStringSlices[k] = cp
-		}
 	}
 
 	return dst
@@ -2473,14 +2455,20 @@ func (s *Server) loadMainConfig() error {
 
 	// Create a local copy to decode into and validate.
 	// This prevents live queries from reading a half-baked config.
-	tempCfg := defaultConfig.Clone()
-	newCfg := &tempCfg // Use a local pointer for all setup and decoding
+	resolvedTempCfg := defaultConfig.Clone()
+	rawTempCfg := defaultConfig.Clone()
+	//newCfg := &tempCfg // Use a local pointer for all setup and decoding
 	//defaultCfgClone := defaultConfig.Clone()
 	//newCfg := &defaultCfgClone
 
-	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //using default cfg.ExtraSafety
+	// resolvedCfg is the runtime representation; tokens expanded, clamping applied below.
+	var resolvedCfg *Config
+	// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
+	var rawCfg *Config = &rawTempCfg
 
-	s.fileWriter.CheckPowerLossFile(cfgFname)
+	s.fileWriter.SetExtraSafety(defaultConfig.ExtraSafety) //using default cfg.ExtraSafety until read from disk
+
+	s.fileWriter.CheckPowerLossFile(cfgFname) //a default Config was already set at birth(even tho we also set it here, above, this one we set above isn't in effect yet), or kept the previously loaded one, those values are used by any child callers that use Server's Config during loadMainConfig() until the new config is atomically swapped in(at the end tho)
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -2498,7 +2486,8 @@ func (s *Server) loadMainConfig() error {
 		// Defaults
 		// REMOVED: config = DefaultConfig() because it is already set above
 		//config = DefaultConfig()
-
+		resolvedCfg = &resolvedTempCfg // XXX: the default config doesn't get template substitution eg. {file:X} or {env:Y}
+		//rawCfg = &rawTempCfg
 		shouldSaveConfig = true
 	} else {
 		// Duplicate config keys (e.g. "extra_safety" appearing twice) are silently
@@ -2526,14 +2515,19 @@ func (s *Server) loadMainConfig() error {
 
 		// dec.Decode will now overwrite ONLY the fields present in the JSON.
 		// Missing fields will retain the values from DefaultConfig().
-		if err = dec.Decode(newCfg); err != nil {
+		if err = dec.Decode(&rawCfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
 
-		// --- NEW: Resolve {file:...} and {env:...} tags BEFORE validation limits clamp down ---
-		if err3 := resolveConfigTags(newCfg); err3 != nil {
+		// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
+		//rawCfg = &tempCfg //doneTODO: this assignment and the one in the above 'if' branch, this being the 'else' can be DRY-ed into one assignment before the 'if'
+
+		// resolvedCfg is the runtime representation; tokens expanded, clamping applied below.
+		var err3 error
+		resolvedCfg, err3 = resolveConfigTags(rawCfg)
+		if err3 != nil {
 			log.Error("Configuration substitution failed", slog.String("file", cfgFname), SafeErr(err3))
 			return fmt.Errorf("config substitution failed: %w", err3)
 		}
@@ -2552,7 +2546,7 @@ func (s *Server) loadMainConfig() error {
 		missing := []string{}
 		t := reflect.TypeFor[Config]()
 		// reflect.Indirect safely handles both values and pointers (like *Config)
-		v := reflect.Indirect(reflect.ValueOf(newCfg))
+		v := reflect.Indirect(reflect.ValueOf(resolvedCfg))
 		for _, field := range reflect.VisibleFields(t) {
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
@@ -2574,77 +2568,84 @@ func (s *Server) loadMainConfig() error {
 		}
 	}
 
-	s.fileWriter.SetExtraSafety(newCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
 
 	tagWebUIUseTLS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIUseTLS))
 	tagWebUIForceTLS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIForceTLSOnNonLocalhost))
 	tagListenUI := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenUI))
 
-	boundToLoopback := isLoopbackBindHost(newCfg.ListenUI)
+	boundToLoopback := isLoopbackBindHost(resolvedCfg.ListenUI)
 
 	switch {
-	case !newCfg.WebUIUseTLS && !boundToLoopback && newCfg.WebUIForceTLSOnNonLocalhost:
+	case !resolvedCfg.WebUIUseTLS && !boundToLoopback && resolvedCfg.WebUIForceTLSOnNonLocalhost:
 		log.Warn(tagWebUIUseTLS+" was false while "+tagListenUI+" is bound off-loopback; "+
 			"auto-promoting to TLS so the bcrypt-checked WebUI password isn't sent as plaintext(thus sniffable) "+
 			"Basic-Auth over the network. Set "+tagWebUIForceTLS+" to false to override.",
-			slog.String("listen_ui", newCfg.ListenUI))
-		newCfg.WebUIUseTLS = true
+			slog.String("listen_ui", resolvedCfg.ListenUI))
+		resolvedCfg.WebUIUseTLS = true
+		rawCfg.WebUIUseTLS = true
 		shouldSaveConfig = true //hmm, self-heals?!
 
-	case !newCfg.WebUIUseTLS && !boundToLoopback:
+	case !resolvedCfg.WebUIUseTLS && !boundToLoopback:
 		log.Error(tagWebUIUseTLS+" and "+tagWebUIForceTLS+" are both false while bound off-loopback; "+
 			"the WebUI password will be sent in PLAINTEXT (Basic-Auth is base64, not encryption) "+
 			"to anyone who can observe this network segment.",
-			slog.String("listen_ui", newCfg.ListenUI))
+			slog.String("listen_ui", resolvedCfg.ListenUI))
 
-	case !newCfg.WebUIUseTLS && boundToLoopback:
+	case !resolvedCfg.WebUIUseTLS && boundToLoopback:
 		log.Warn(tagWebUIUseTLS+" is false. Even on loopback, Basic-Auth sends the password as base64 "+
 			"(not encrypted) to any other local process/user that can observe loopback traffic.",
-			slog.String("listen_ui", newCfg.ListenUI))
+			slog.String("listen_ui", resolvedCfg.ListenUI))
 	}
 
 	// =========================================================================
 	// Group 1: WebUI Server Timeouts & Rate Limits (Refactor-safe)
 	// =========================================================================
 	tagWebUIReadHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadHeaderTimeoutSec))
-	if was := newCfg.WebUIReadHeaderTimeoutSec; was <= 0 {
+	if was := resolvedCfg.WebUIReadHeaderTimeoutSec; was <= 0 {
 		fallback := defaultConfig.WebUIReadHeaderTimeoutSec
-		newCfg.WebUIReadHeaderTimeoutSec = fallback
+		resolvedCfg.WebUIReadHeaderTimeoutSec = fallback
+		rawCfg.WebUIReadHeaderTimeoutSec = fallback
 		log.Warn(tagWebUIReadHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadTimeoutSec))
-	if was := newCfg.WebUIReadTimeoutSec; was <= 0 {
+	if was := resolvedCfg.WebUIReadTimeoutSec; was <= 0 {
 		fallback := defaultConfig.WebUIReadTimeoutSec
-		newCfg.WebUIReadTimeoutSec = fallback
+		resolvedCfg.WebUIReadTimeoutSec = fallback
+		rawCfg.WebUIReadTimeoutSec = fallback
 		log.Warn(tagWebUIRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIWriteTimeoutSec))
-	if was := newCfg.WebUIWriteTimeoutSec; was <= 0 {
+	if was := resolvedCfg.WebUIWriteTimeoutSec; was <= 0 {
 		fallback := defaultConfig.WebUIWriteTimeoutSec
-		newCfg.WebUIWriteTimeoutSec = fallback
+		resolvedCfg.WebUIWriteTimeoutSec = fallback
+		rawCfg.WebUIWriteTimeoutSec = fallback
 		log.Warn(tagWebUIWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec))
-	if was := newCfg.WebUIIdleTimeoutSec; was <= newCfg.WebUIReadTimeoutSec {
-		fallback := newCfg.WebUIReadTimeoutSec * 2
-		newCfg.WebUIIdleTimeoutSec = fallback
+	if was := resolvedCfg.WebUIIdleTimeoutSec; was <= resolvedCfg.WebUIReadTimeoutSec {
+		fallback := resolvedCfg.WebUIReadTimeoutSec * 2
+		resolvedCfg.WebUIIdleTimeoutSec = fallback
+		rawCfg.WebUIIdleTimeoutSec = fallback
 		log.Warn(tagWebUIIdle+" clamped(to double the read timeout) to prevent aggressive keep-alive disconnects", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUIMaxLoginFailures := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIMaxLoginFailures))
-	if was := newCfg.WebUIMaxLoginFailures; was <= 0 {
+	if was := resolvedCfg.WebUIMaxLoginFailures; was <= 0 {
 		fallback := defaultConfig.WebUIMaxLoginFailures
-		newCfg.WebUIMaxLoginFailures = fallback
+		resolvedCfg.WebUIMaxLoginFailures = fallback
+		rawCfg.WebUIMaxLoginFailures = fallback
 		log.Warn(tagWebUIMaxLoginFailures+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagWebUILoginLockoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUILoginLockoutSec))
-	if was := newCfg.WebUILoginLockoutSec; was <= 0 {
+	if was := resolvedCfg.WebUILoginLockoutSec; was <= 0 {
 		fallback := defaultConfig.WebUILoginLockoutSec
-		newCfg.WebUILoginLockoutSec = fallback
+		resolvedCfg.WebUILoginLockoutSec = fallback
+		rawCfg.WebUILoginLockoutSec = fallback
 		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -2652,30 +2653,34 @@ func (s *Server) loadMainConfig() error {
 	// Group 2: Local DoH Server Timeouts
 	// =========================================================================
 	tagDoHHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec))
-	if was := newCfg.LocalDoHReadHeaderTimeoutSec; was <= 0 {
+	if was := resolvedCfg.LocalDoHReadHeaderTimeoutSec; was <= 0 {
 		fallback := defaultConfig.LocalDoHReadHeaderTimeoutSec
-		newCfg.LocalDoHReadHeaderTimeoutSec = fallback
+		resolvedCfg.LocalDoHReadHeaderTimeoutSec = fallback
+		rawCfg.LocalDoHReadHeaderTimeoutSec = fallback
 		log.Warn(tagDoHHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec))
-	if was := newCfg.LocalDoHReadTimeoutSec; was <= 0 {
+	if was := resolvedCfg.LocalDoHReadTimeoutSec; was <= 0 {
 		fallback := defaultConfig.LocalDoHReadTimeoutSec
-		newCfg.LocalDoHReadTimeoutSec = fallback
+		resolvedCfg.LocalDoHReadTimeoutSec = fallback
+		rawCfg.LocalDoHReadTimeoutSec = fallback
 		log.Warn(tagDoHRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec))
-	if was := newCfg.LocalDoHWriteTimeoutSec; was <= 0 {
+	if was := resolvedCfg.LocalDoHWriteTimeoutSec; was <= 0 {
 		fallback := defaultConfig.LocalDoHWriteTimeoutSec
-		newCfg.LocalDoHWriteTimeoutSec = fallback
+		resolvedCfg.LocalDoHWriteTimeoutSec = fallback
+		rawCfg.LocalDoHWriteTimeoutSec = fallback
 		log.Warn(tagDoHWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec))
-	if was := newCfg.LocalDoHIdleTimeoutSec; was <= newCfg.LocalDoHReadTimeoutSec {
-		fallback := newCfg.LocalDoHReadTimeoutSec * 2
-		newCfg.LocalDoHIdleTimeoutSec = fallback
+	if was := resolvedCfg.LocalDoHIdleTimeoutSec; was <= resolvedCfg.LocalDoHReadTimeoutSec {
+		fallback := resolvedCfg.LocalDoHReadTimeoutSec * 2
+		resolvedCfg.LocalDoHIdleTimeoutSec = fallback
+		rawCfg.LocalDoHIdleTimeoutSec = fallback
 		log.Warn(tagDoHIdle+" clamped(to double the read timeout) to prevent premature keep-alive drops", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -2686,78 +2691,88 @@ func (s *Server) loadMainConfig() error {
 	// Group 3: Upstream Client & Connection Pools
 	// =========================================================================
 	tagUpstreamDialTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamDialTimeoutSec))
-	if was := newCfg.UpstreamDialTimeoutSec; was <= 0 {
+	if was := resolvedCfg.UpstreamDialTimeoutSec; was <= 0 {
 		fallback := defaultConfig.UpstreamDialTimeoutSec
-		newCfg.UpstreamDialTimeoutSec = fallback
+		resolvedCfg.UpstreamDialTimeoutSec = fallback
+		rawCfg.UpstreamDialTimeoutSec = fallback
 		log.Warn(tagUpstreamDialTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamClientTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamClientTimeoutSec))
 	// Constraint A: Absolute lower bound check
-	if was := newCfg.UpstreamClientTimeoutSec; was <= 0 {
+	if was := resolvedCfg.UpstreamClientTimeoutSec; was <= 0 {
 		fallback := defaultConfig.UpstreamClientTimeoutSec
-		newCfg.UpstreamClientTimeoutSec = fallback
+		resolvedCfg.UpstreamClientTimeoutSec = fallback
+		rawCfg.UpstreamClientTimeoutSec = fallback
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (prevents infinite hanging client connections)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational validation check (Sequential, never an 'else if')
-	if was := newCfg.UpstreamClientTimeoutSec; was < newCfg.UpstreamDialTimeoutSec {
-		fallback := newCfg.UpstreamDialTimeoutSec
-		newCfg.UpstreamClientTimeoutSec = fallback
+	if was := resolvedCfg.UpstreamClientTimeoutSec; was < resolvedCfg.UpstreamDialTimeoutSec {
+		fallback := resolvedCfg.UpstreamDialTimeoutSec
+		resolvedCfg.UpstreamClientTimeoutSec = fallback
+		rawCfg.UpstreamClientTimeoutSec = fallback
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")",
 			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCertLogTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec))
-	if was := newCfg.CertLogTimeoutSec; was <= 0 {
+	if was := resolvedCfg.CertLogTimeoutSec; was <= 0 {
 		fallback := defaultConfig.CertLogTimeoutSec
-		newCfg.CertLogTimeoutSec = fallback
+		resolvedCfg.CertLogTimeoutSec = fallback
+		rawCfg.CertLogTimeoutSec = fallback
 		log.Warn(tagCertLogTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetryBackoffMs))
-	if was := newCfg.UpstreamRetryBackoffMs; was <= 0 {
+	if was := resolvedCfg.UpstreamRetryBackoffMs; was <= 0 {
 		fallback := defaultConfig.UpstreamRetryBackoffMs
-		newCfg.UpstreamRetryBackoffMs = fallback
+		resolvedCfg.UpstreamRetryBackoffMs = fallback
+		rawCfg.UpstreamRetryBackoffMs = fallback
 		log.Warn(tagUpstreamRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamRetriesPerQuery := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery))
-	if was := newCfg.UpstreamRetriesPerQuery; was < 0 {
+	if was := resolvedCfg.UpstreamRetriesPerQuery; was < 0 {
 		fallback := defaultConfig.UpstreamRetriesPerQuery
-		newCfg.UpstreamRetriesPerQuery = fallback
+		resolvedCfg.UpstreamRetriesPerQuery = fallback
+		rawCfg.UpstreamRetriesPerQuery = fallback
 		log.Warn(tagUpstreamRetriesPerQuery+" clamped (cannot be negative)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamIdleConnTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))
-	if was := newCfg.UpstreamIdleConnTimeoutSec; was <= 0 {
+	if was := resolvedCfg.UpstreamIdleConnTimeoutSec; was <= 0 {
 		fallback := defaultConfig.UpstreamIdleConnTimeoutSec
-		newCfg.UpstreamIdleConnTimeoutSec = fallback
+		resolvedCfg.UpstreamIdleConnTimeoutSec = fallback
+		rawCfg.UpstreamIdleConnTimeoutSec = fallback
 		log.Warn(tagUpstreamIdleConnTimeout+" clamped (connections stay open indefinitely or drop unpredictably)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConns))
-	if was := newCfg.UpstreamMaxIdleConns; was <= 0 {
+	if was := resolvedCfg.UpstreamMaxIdleConns; was <= 0 {
 		fallback := defaultConfig.UpstreamMaxIdleConns
-		newCfg.UpstreamMaxIdleConns = fallback
+		resolvedCfg.UpstreamMaxIdleConns = fallback
+		rawCfg.UpstreamMaxIdleConns = fallback
 		log.Warn(tagUpstreamMaxIdleConns+" clamped (disables global keep-alive reuse)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConnsPerHost := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConnsPerHost))
 	// Constraint A: Absolute lower bound check
-	if was := newCfg.UpstreamMaxIdleConnsPerHost; was <= 0 {
+	if was := resolvedCfg.UpstreamMaxIdleConnsPerHost; was <= 0 {
 		fallback := defaultConfig.UpstreamMaxIdleConnsPerHost
-		newCfg.UpstreamMaxIdleConnsPerHost = fallback
+		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
+		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
 		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (Go default of 2 severely throttles throughput)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational validation check (Sequential, never an 'else if')
-	if was := newCfg.UpstreamMaxIdleConnsPerHost; was > newCfg.UpstreamMaxIdleConns {
+	if was := resolvedCfg.UpstreamMaxIdleConnsPerHost; was > resolvedCfg.UpstreamMaxIdleConns {
 		// Defensive check: Per-host pool limit can't realistically exceed global pool limit
-		fallback := newCfg.UpstreamMaxIdleConns
-		newCfg.UpstreamMaxIdleConnsPerHost = fallback
+		fallback := resolvedCfg.UpstreamMaxIdleConns
+		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
+		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
 		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (cannot exceed "+tagUpstreamMaxIdleConns+")",
 			slog.Int("was", was),
 			slog.Int("clamp", fallback),
-			slog.Int(tagUpstreamMaxIdleConns, newCfg.UpstreamMaxIdleConns),
+			slog.Int(tagUpstreamMaxIdleConns, resolvedCfg.UpstreamMaxIdleConns),
 		)
 	}
 
@@ -2765,37 +2780,42 @@ func (s *Server) loadMainConfig() error {
 	// Group 4: Local Client & Server Buffer Safeguards
 	// =========================================================================
 	tagMaxConcurrentDNSTCPConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSTCPConns))
-	if was := newCfg.MaxConcurrentDNSTCPConns; was <= 0 {
+	if was := resolvedCfg.MaxConcurrentDNSTCPConns; was <= 0 {
 		fallback := defaultConfig.MaxConcurrentDNSTCPConns
-		newCfg.MaxConcurrentDNSTCPConns = fallback
+		resolvedCfg.MaxConcurrentDNSTCPConns = fallback
+		rawCfg.MaxConcurrentDNSTCPConns = fallback
 		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagMaxConcurrentDNSUDPQueries := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSUDPQueries))
-	if was := newCfg.MaxConcurrentDNSUDPQueries; was <= 0 {
+	if was := resolvedCfg.MaxConcurrentDNSUDPQueries; was <= 0 {
 		fallback := defaultConfig.MaxConcurrentDNSUDPQueries
-		newCfg.MaxConcurrentDNSUDPQueries = fallback
+		resolvedCfg.MaxConcurrentDNSUDPQueries = fallback
+		rawCfg.MaxConcurrentDNSUDPQueries = fallback
 		log.Warn(tagMaxConcurrentDNSUDPQueries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientTCPTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec))
-	if was := newCfg.ClientTCPTimeoutSec; was <= 0 {
+	if was := resolvedCfg.ClientTCPTimeoutSec; was <= 0 {
 		fallback := defaultConfig.ClientTCPTimeoutSec
-		newCfg.ClientTCPTimeoutSec = fallback
+		resolvedCfg.ClientTCPTimeoutSec = fallback
+		rawCfg.ClientTCPTimeoutSec = fallback
 		log.Warn(tagClientTCPTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDoHMaxRequestBodyBytes := getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes))
-	if was := newCfg.DoHMaxRequestBodyBytes; was <= 0 {
+	if was := resolvedCfg.DoHMaxRequestBodyBytes; was <= 0 {
 		fallback := defaultConfig.DoHMaxRequestBodyBytes
-		newCfg.DoHMaxRequestBodyBytes = fallback
+		resolvedCfg.DoHMaxRequestBodyBytes = fallback
+		rawCfg.DoHMaxRequestBodyBytes = fallback
 		log.Warn(tagDoHMaxRequestBodyBytes+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagDNSUDPBufferSize := getJSONTagByOffset(unsafe.Offsetof(Config{}.DNSUDPBufferSize))
-	if was := newCfg.DNSUDPBufferSize; was < 512 || was > 65535 {
+	if was := resolvedCfg.DNSUDPBufferSize; was < 512 || was > 65535 {
 		fallback := defaultConfig.DNSUDPBufferSize
-		newCfg.DNSUDPBufferSize = fallback
+		resolvedCfg.DNSUDPBufferSize = fallback
+		rawCfg.DNSUDPBufferSize = fallback
 		log.Warn(tagDNSUDPBufferSize+" clamped (must be within standard Ethernet bounds 512-65535)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -2803,106 +2823,121 @@ func (s *Server) loadMainConfig() error {
 	// Group 5: Core Engine Limits & Cache Operations
 	// =========================================================================
 	tagGlobalRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
-	if was := newCfg.GlobalRateQPS; was <= 0 {
+	if was := resolvedCfg.GlobalRateQPS; was <= 0 {
 		fallback := defaultConfig.GlobalRateQPS
-		newCfg.GlobalRateQPS = fallback
+		resolvedCfg.GlobalRateQPS = fallback
+		rawCfg.GlobalRateQPS = fallback
 		log.Warn(tagGlobalRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagGlobalBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
 	// Constraint A: Absolute lower bound check
-	if was := newCfg.GlobalBurstQPS; was <= 0 {
+	if was := resolvedCfg.GlobalBurstQPS; was <= 0 {
 		fallback := defaultConfig.GlobalBurstQPS
-		newCfg.GlobalBurstQPS = fallback
+		resolvedCfg.GlobalBurstQPS = fallback
+		rawCfg.GlobalBurstQPS = fallback
 		log.Warn(tagGlobalBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	} // else if was < newCfg.GlobalRateQPS {
 	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
-	if was := newCfg.GlobalBurstQPS; was < newCfg.GlobalRateQPS {
-		fallback := newCfg.GlobalRateQPS
-		newCfg.GlobalBurstQPS = fallback
+	if was := resolvedCfg.GlobalBurstQPS; was < resolvedCfg.GlobalRateQPS {
+		fallback := resolvedCfg.GlobalRateQPS
+		resolvedCfg.GlobalBurstQPS = fallback
+		rawCfg.GlobalBurstQPS = fallback
 		log.Warn(tagGlobalBurstQPS+" clamped (cannot be less than "+tagGlobalRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
-	if was := newCfg.ClientRateQPS; was <= 0 {
+	if was := resolvedCfg.ClientRateQPS; was <= 0 {
 		fallback := defaultConfig.ClientRateQPS
-		newCfg.ClientRateQPS = fallback
+		resolvedCfg.ClientRateQPS = fallback
+		rawCfg.ClientRateQPS = fallback
 		log.Warn(tagClientRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
 	// Constraint A: Absolute lower bound check
-	if was := newCfg.ClientBurstQPS; was <= 0 {
+	if was := resolvedCfg.ClientBurstQPS; was <= 0 {
 		fallback := defaultConfig.ClientBurstQPS
-		newCfg.ClientBurstQPS = fallback
+		resolvedCfg.ClientBurstQPS = fallback
+		rawCfg.ClientBurstQPS = fallback
 		log.Warn(tagClientBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	} //else if was < newCfg.ClientRateQPS {
 	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
-	if was := newCfg.ClientBurstQPS; was < newCfg.ClientRateQPS {
-		fallback := newCfg.ClientRateQPS
-		newCfg.ClientBurstQPS = fallback
+	if was := resolvedCfg.ClientBurstQPS; was < resolvedCfg.ClientRateQPS {
+		fallback := resolvedCfg.ClientRateQPS
+		resolvedCfg.ClientBurstQPS = fallback
+		rawCfg.ClientBurstQPS = fallback
 		log.Warn(tagClientBurstQPS+" clamped (cannot be less than "+tagClientRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCacheMinTTL := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL))
-	if was := newCfg.CacheMinTTL; was < cacheMinTTLClamp {
-		newCfg.CacheMinTTL = cacheMinTTLClamp
+	if was := resolvedCfg.CacheMinTTL; was < cacheMinTTLClamp {
+		resolvedCfg.CacheMinTTL = cacheMinTTLClamp
+		rawCfg.CacheMinTTL = cacheMinTTLClamp
 		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
 	}
 
 	tagCacheMaxEntries := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries))
-	if was := newCfg.CacheMaxEntries; was <= 0 {
+	if was := resolvedCfg.CacheMaxEntries; was <= 0 {
 		fallback := defaultConfig.CacheMaxEntries
-		newCfg.CacheMaxEntries = fallback
+		resolvedCfg.CacheMaxEntries = fallback
+		rawCfg.CacheMaxEntries = fallback
 		log.Warn(tagCacheMaxEntries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCacheJanitorIntervalMinutes := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheJanitorIntervalMinutes))
-	if was := newCfg.CacheJanitorIntervalMinutes; was <= 0 {
+	if was := resolvedCfg.CacheJanitorIntervalMinutes; was <= 0 {
 		fallback := defaultConfig.CacheJanitorIntervalMinutes
-		newCfg.CacheJanitorIntervalMinutes = fallback
+		resolvedCfg.CacheJanitorIntervalMinutes = fallback
+		rawCfg.CacheJanitorIntervalMinutes = fallback
 		log.Warn(tagCacheJanitorIntervalMinutes+" clamped to safe minimum interval", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCacheNegativeTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec))
-	if was := newCfg.CacheNegativeTTLSec; was < 0 {
+	if was := resolvedCfg.CacheNegativeTTLSec; was < 0 {
 		fallback := defaultConfig.CacheNegativeTTLSec
-		newCfg.CacheNegativeTTLSec = fallback
+		resolvedCfg.CacheNegativeTTLSec = fallback
+		rawCfg.CacheNegativeTTLSec = fallback
 		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))
-	if was := newCfg.BlockedResponseTTLSec; was < 0 {
+	if was := resolvedCfg.BlockedResponseTTLSec; was < 0 {
 		fallback := defaultConfig.BlockedResponseTTLSec
-		newCfg.BlockedResponseTTLSec = fallback
+		resolvedCfg.BlockedResponseTTLSec = fallback
+		rawCfg.BlockedResponseTTLSec = fallback
 		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagLocalHostsOverrideTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec))
-	if was := newCfg.LocalHostsOverrideTTLSec; was == 0 {
+	if was := resolvedCfg.LocalHostsOverrideTTLSec; was == 0 {
 		fallback := defaultConfig.LocalHostsOverrideTTLSec
-		newCfg.LocalHostsOverrideTTLSec = fallback
+		resolvedCfg.LocalHostsOverrideTTLSec = fallback
+		rawCfg.LocalHostsOverrideTTLSec = fallback
 		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
 	tagMaxRecentBlocks := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks))
-	if was := newCfg.MaxRecentBlocks; was <= 0 {
+	if was := resolvedCfg.MaxRecentBlocks; was <= 0 {
 		fallback := defaultConfig.MaxRecentBlocks
-		newCfg.MaxRecentBlocks = fallback
+		resolvedCfg.MaxRecentBlocks = fallback
+		rawCfg.MaxRecentBlocks = fallback
 		log.Warn(tagMaxRecentBlocks+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUILogMaxLines := getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines))
-	if was := newCfg.UILogMaxLines; was <= 0 {
+	if was := resolvedCfg.UILogMaxLines; was <= 0 {
 		fallback := defaultConfig.UILogMaxLines
-		newCfg.UILogMaxLines = fallback
+		resolvedCfg.UILogMaxLines = fallback
+		rawCfg.UILogMaxLines = fallback
 		log.Warn(tagUILogMaxLines+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagLogMaxSizeMB := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB))
-	if was := newCfg.LogMaxSizeMB; was <= 0 {
+	if was := resolvedCfg.LogMaxSizeMB; was <= 0 {
 		fallback := defaultConfig.LogMaxSizeMB
-		newCfg.LogMaxSizeMB = fallback
+		resolvedCfg.LogMaxSizeMB = fallback
+		rawCfg.LogMaxSizeMB = fallback
 		log.Warn(tagLogMaxSizeMB+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -2910,81 +2945,97 @@ func (s *Server) loadMainConfig() error {
 	// IP Strings Parsing & Post-Processing Operations
 	// =========================================================================
 	// Clean up and pre-parse IPv4
-	if ip := net.ParseIP(newCfg.BlockIP); ip != nil && ip.To4() != nil {
-		newCfg.BlockIPv4Parsed = ip.To4()
+	//TODO: do I have to set the parseds to rawCfg too?!
+	if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
+		resolvedCfg.BlockIPv4Parsed = ip.To4()
+		rawCfg.BlockIPv4Parsed = ip.To4()
 	} else {
-		newCfg.BlockIP = "0.0.0.0"                          //TODO: const?
-		newCfg.BlockIPv4Parsed = net.IPv4(0, 0, 0, 0).To4() //TODO: const?
+		const IP0 = "0.0.0.0"
+		const zero = 0
+		resolvedCfg.BlockIP = IP0
+		rawCfg.BlockIP = IP0
+		resolvedCfg.BlockIPv4Parsed = net.IPv4(zero, zero, zero, zero).To4()
+		rawCfg.BlockIPv4Parsed = resolvedCfg.BlockIPv4Parsed // TODO: hopefully no need to have diff. instances of this here?
 	}
 
 	// Clean up and pre-parse IPv6
-	if ip := net.ParseIP(newCfg.BlockIPv6); ip != nil && ip.To16() != nil {
-		newCfg.BlockIPv6Parsed = ip.To16()
+	if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To16() != nil {
+		resolvedCfg.BlockIPv6Parsed = ip.To16()
+		rawCfg.BlockIPv6Parsed = ip.To16() // TODO: do we need this to be same instance for equals to say equals anywhere?
 	} else {
-		newCfg.BlockIPv6 = "::"                           //TODO: const?
-		newCfg.BlockIPv6Parsed = net.ParseIP("::").To16() //TODO: const?
+		const IPv6Zero = "::"
+		resolvedCfg.BlockIPv6 = IPv6Zero
+		resolvedCfg.BlockIPv6Parsed = net.ParseIP(IPv6Zero).To16()
+		rawCfg.BlockIPv6Parsed = resolvedCfg.BlockIPv6Parsed // TODO: hopefully no need to have diff. instances of this here?
 	}
 
 	// Validate ListenDoH host is a literal IP (required for TLS cert SAN)
 	tagListenDoH := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenDoH))
-	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenDoH); splitErr != nil {
-		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenDoH, newCfg.ListenDoH, splitErr)
+	if doHHost, _, splitErr := net.SplitHostPort(resolvedCfg.ListenDoH); splitErr != nil {
+		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenDoH, resolvedCfg.ListenDoH, splitErr)
 	} else if net.ParseIP(doHHost) == nil {
 		return fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenDoH, doHHost)
 	}
-	if doHHost, _, splitErr := net.SplitHostPort(newCfg.ListenUI); splitErr != nil {
-		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenUI, newCfg.ListenUI, splitErr)
+	if doHHost, _, splitErr := net.SplitHostPort(resolvedCfg.ListenUI); splitErr != nil {
+		return fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenUI, resolvedCfg.ListenUI, splitErr)
 	} else if net.ParseIP(doHHost) == nil {
 		return fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, doHHost)
 	}
 
-	newCfg.BlockMode = strings.ToLower(newCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	resolvedCfg.BlockMode = strings.ToLower(resolvedCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	rawCfg.BlockMode = resolvedCfg.BlockMode
 	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
+	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
+
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
-	for i := len(newCfg.UpstreamSNIHostnames); i < len(newCfg.UpstreamURLs); i++ {
-		host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
+	for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
+		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
 		if err2 != nil {
-			log.Warn("invalid1 upstream URL", slog.Int("index", i), SafeErr(err2))
-			return fmt.Errorf("invalid1 upstream URL at index %d: %w", i, err2)
+			log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), SafeErr(err2))
+			return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
 		}
-		newCfg.UpstreamSNIHostnames = append(newCfg.UpstreamSNIHostnames, host)
+		rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
+		resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
 		shouldSaveConfig = true
 	}
-	for i := range newCfg.UpstreamURLs {
-		if newCfg.UpstreamSNIHostnames[i] == "" {
-			host, err2 := hostFromURL(newCfg.UpstreamURLs[i])
+	for i := range resolvedCfg.UpstreamURLs {
+		if resolvedCfg.UpstreamSNIHostnames[i] == "" {
+			host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
 			if err2 != nil {
-				log.Warn("invalid2 upstream URL", slog.Int("index", i), SafeErr(err2))
-				return fmt.Errorf("invalid2 upstream URL at index %d: %w", i, err2)
+				return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
 			}
-			newCfg.UpstreamSNIHostnames[i] = host
+			rawCfg.UpstreamSNIHostnames[i] = host
+			resolvedCfg.UpstreamSNIHostnames[i] = host
 			shouldSaveConfig = true
 		}
 	}
 	log.Debug("Using upstream SNI hostnames:",
-		//slog.Any("SNI_hostnames", config.SNIHostnames),
-		SafeStringSlice("SNI_hostnames", newCfg.UpstreamSNIHostnames),
+		SafeStringSlice("SNI_hostnames", resolvedCfg.UpstreamSNIHostnames),
 	)
 
 	// Helper closure to apply the cleaning and track if a save is needed
-	checkAndClean := func(target *string, configKey, fallback string) {
-		if cleaned, changed := s.cleanFileName(*target, configKey, fallback); changed {
-			*target = cleaned
+	checkAndClean := func(resolvedTarget, rawTarget *string, configKey, fallback string) {
+		if cleaned, changed := s.cleanFileName(*resolvedTarget, configKey, fallback); changed {
+			if *resolvedTarget != *rawTarget {
+				s.logFatal2(fmt.Sprintf("Won't overwrite template %q with cleaned value %q, you must do it manually then rerun.", *rawTarget, *resolvedTarget)) //FIXME: we should be able to do this? but this means either write into the file, or set the env.var.
+			}
+			*resolvedTarget = cleaned
+			*rawTarget = cleaned
 			if !shouldSaveConfig {
 				shouldSaveConfig = true
 			}
 		}
 	}
 
-	checkAndClean(&newCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultConfig.BlacklistFile)
-	checkAndClean(&newCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultConfig.WhitelistFile)
-	checkAndClean(&newCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultConfig.LogQueriesFile)
-	checkAndClean(&newCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultConfig.LogEverythingFile)
-	checkAndClean(&newCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultConfig.HostsFile)
+	checkAndClean(&resolvedCfg.BlacklistFile, &rawCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultConfig.BlacklistFile)
+	checkAndClean(&resolvedCfg.WhitelistFile, &rawCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultConfig.WhitelistFile)
+	checkAndClean(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultConfig.LogQueriesFile)
+	checkAndClean(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultConfig.LogEverythingFile)
+	checkAndClean(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultConfig.HostsFile)
 
 	// NEW: Enforce password setup if it's missing from the config
-	if newCfg.WebUIPasswordHash == "" {
+	if resolvedCfg.WebUIPasswordHash == "" {
 		log.Warn("No WebUI password configured. Securing WebUI now...")
 		fmt.Println("\n========================================================")
 		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
@@ -2996,7 +3047,8 @@ func (s *Server) loadMainConfig() error {
 		}
 
 		// Update live config instance
-		newCfg.WebUIPasswordHash = hash
+		resolvedCfg.WebUIPasswordHash = hash
+		rawCfg.WebUIPasswordHash = hash
 
 		log.Info("WebUI password successfully set.")
 		if !shouldSaveConfig {
@@ -3007,7 +3059,8 @@ func (s *Server) loadMainConfig() error {
 	// Apply the fully validated config atomically
 	// 2. APPLY THE VALIDATED CONFIG ATOMICALLY
 	// From this exact microsecond, all new DNS queries will use the clamped, safe config.
-	s.applyConfig(*newCfg)
+	s.liveRawConfig.Store(rawCfg)
+	s.applyConfig(*resolvedCfg)
 	if shouldSaveConfig {
 		// saveConfig internally calls s.getConfig(), which now has the fully updated data
 		if err = s.saveConfig(); err != nil {
@@ -3016,7 +3069,7 @@ func (s *Server) loadMainConfig() error {
 	}
 	// 4. LOG STRATEGY
 	// Add your new clear architectural description line here:
-	switch newCfg.UpstreamSelectionMode {
+	switch resolvedCfg.UpstreamSelectionMode {
 	case "strict":
 		log.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
 	case "failover":
@@ -3080,6 +3133,17 @@ func (s *Server) cleanFileName(original, configKey, fallback string) (string, bo
 	}
 
 	cleaned := filepath.Clean(original)
+	// Reject Windows reserved device names (CON, NUL, COM1, etc.).
+	// filepath.Base handles any directory prefix; TrimRight strips trailing
+	// dots and spaces that Windows itself strips before resolving the name.
+	baseName := strings.ToUpper(strings.TrimRight(filepath.Base(cleaned), ". "))
+	if _, reserved := reservedNames[baseName]; reserved {
+		log.Warn("Config filename is a reserved Windows device name; using fallback",
+			slog.String("for_config_key", configKey),
+			slog.String("reserved_filename", cleaned),
+			slog.String("fallback_filename", fallback))
+		return filepath.Clean(fallback), true
+	}
 	if cleaned != original {
 		log.Debug("Cleaned filename from config file",
 			slog.String("config_key", configKey),
@@ -3105,13 +3169,15 @@ func hostFromURL(raw string) (string, error) {
 }
 
 func (s *Server) saveConfig() error {
-	cfg := s.getConfig().Clone()
 	log := s.getLogger()
 
-	// --- NEW: Restore the literal {file:...} tags before generating JSON ---
-	restoreRawValues(&cfg)
+	rawCfg := s.liveRawConfig.Load()
+	if rawCfg == nil {
+		// Defensive: should never happen in normal operation.
+		panic2("BUG: saveConfig called before liveRawConfig was initialised")
+	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(rawCfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
 	}
@@ -7984,6 +8050,7 @@ func NewAdminUI(
 	// logger *slog.Logger,
 	// cfg Config,
 	liveConfig *atomic.Pointer[Config],
+	liveRawConfig *atomic.Pointer[Config],
 	liveLogger *atomic.Pointer[slog.Logger],
 	rs *RuleStore,
 	hs *HostStore,
@@ -7997,14 +8064,15 @@ func NewAdminUI(
 	return &AdminUI{
 		// logger:       logger,
 		// config:       cfg,
-		liveConfig:   liveConfig,
-		liveLogger:   liveLogger,
-		ruleStore:    rs,
-		hostStore:    hs,
-		blacklist:    bl,
-		loginTracker: lt,
-		recentBlocks: rb,
-		stats:        stats,
+		liveConfig:    liveConfig,
+		liveRawConfig: liveRawConfig,
+		liveLogger:    liveLogger,
+		ruleStore:     rs,
+		hostStore:     hs,
+		blacklist:     bl,
+		loginTracker:  lt,
+		recentBlocks:  rb,
+		stats:         stats,
 		//upstreamIPs:  upstreamIPs,
 		uiTemplates: tpls,
 	}
@@ -8929,6 +8997,7 @@ func (s *Server) rebindDoHListener(params dohListenerParams) {
 func (s *Server) initAdminUI() {
 	ui := NewAdminUI(
 		&s.liveConfig,
+		&s.liveRawConfig,
 		&s.liveLogger,
 		s.ruleStore,
 		s.hostStore,
@@ -9341,7 +9410,7 @@ type ConfigFieldView struct {
 }
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
-	cfg := ui.getConfig()
+	cfg := ui.getRawConfig()
 	log := ui.getLogger()
 	v := reflect.ValueOf(*cfg)
 	t := v.Type()
@@ -9363,11 +9432,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		//nolint:exhaustive // We intentionally only process specific primitive types for the UI.
 		switch kind {
 		case reflect.String:
-			if raw, ok := cfg.RawStrings[tagKey]; ok {
-				strVal = raw // Show {file:secret.txt} in the UI
-			} else {
-				strVal = val.String()
-			}
+			strVal = val.String()
 			typ = "string"
 		case reflect.Int, reflect.Int64, reflect.Int32:
 			strVal = fmt.Sprintf("%d", val.Int())
@@ -9381,15 +9446,11 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		case reflect.Slice:
 			kind2 := val.Type().Elem().Kind()
 			if kind2 == reflect.String {
-				if rawSlice, ok := cfg.RawStringSlices[tagKey]; ok {
-					strVal = strings.Join(rawSlice, ", ") // Show tags if present
-				} else {
-					var sl []string
-					for j := 0; j < val.Len(); j++ {
-						sl = append(sl, val.Index(j).String())
-					}
-					strVal = strings.Join(sl, ", ")
+				var sl []string
+				for j := 0; j < val.Len(); j++ {
+					sl = append(sl, val.Index(j).String())
 				}
+				strVal = strings.Join(sl, ", ")
 				typ = "[]string"
 			} else {
 				// Log an explicit warning so you immediately catch un-renderable
@@ -9452,6 +9513,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// --- NEW HASHING INTERCEPTOR ---
+			// Hash plaintext password before applying, same as before.
 			if plainPwd, ok := changes["webui_password_hash"].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
 				if !strings.HasPrefix(plainPwd, "$2") && plainPwd != "" {
@@ -9467,10 +9529,10 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			// --- END INTERCEPTOR ---
 
-			// Parse existing file to preserve unknown keys and overall structure
-			data, err := os.ReadFile(configFileName)
-			if err != nil {
-				log.Error("Failed to read config file for update", SafeErr(err))
+			// XXX: Parse existing file to preserve unknown keys and overall structure
+			data, err11 := os.ReadFile(configFileName)
+			if err11 != nil {
+				log.Error("Failed to read config file for update", SafeErr(err11))
 				http.Error(w, "failed to read existing config", http.StatusInternalServerError)
 				return
 			}
@@ -9488,9 +9550,19 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// 	raw[k] = v
 			// }
 
-			newData, err := json.MarshalIndent(raw, "", "  ")
-			if err != nil {
-				log.Error("Failed to marshal updated config", SafeErr(err))
+			// Work from the raw config so tokens like {file:id.key} are preserved.
+			rawCfg := ui.getRawConfig().Clone()
+
+			if err := applyConfigChangesToStruct(&rawCfg, raw); err != nil {
+				log.Warn("Failed to apply config changes", SafeErr(err))
+				http.Error(w, "invalid field value: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Marshal the struct — field order follows Config declaration, not A-Z.
+			newData, err12 := json.MarshalIndent(rawCfg, "", "  ")
+			if err12 != nil {
+				log.Error("Failed to marshal updated config", SafeErr(err12))
 				http.Error(w, "failed to marshal updated config", http.StatusInternalServerError)
 				return
 			}
@@ -9499,35 +9571,37 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			testCfg := defaultConfig()
 			dec := json.NewDecoder(bytes.NewReader(newData))
 			dec.DisallowUnknownFields()
-			if err := dec.Decode(&testCfg); err != nil {
+			if err6 := dec.Decode(&testCfg); err6 != nil {
 				//TODO: needs better validation here! but I guess Reload() is doing the proper validation!
-				log.Warn("Validation failed for new config", SafeErr(err))
-				http.Error(w, "Validation failed (check format/types): "+err.Error(), http.StatusBadRequest)
+				log.Warn("Validation failed for new config", SafeErr(err6))
+				http.Error(w, "Validation failed (check format/types): "+err6.Error(), http.StatusBadRequest)
 				return
 			}
 			// Resolve tags in the dry-run so hard-checks don't crash on the literal {file:...} string
-			if err := resolveConfigTags(&testCfg); err != nil {
-				http.Error(w, "Validation failed (tag resolution): "+err.Error(), http.StatusBadRequest)
+			resolved, err5 := resolveConfigTags(&testCfg)
+			//if _, err := resolveConfigTags(&testCfg); err != nil {
+			if err5 != nil {
+				http.Error(w, "Validation failed (tag resolution): "+err5.Error(), http.StatusBadRequest)
 				return
 			}
 
 			// Hard-check URLs to prevent loadMainConfig panics
-			for i, rawURL := range testCfg.UpstreamURLs {
-				if _, err := url.Parse(rawURL); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid upstream URL at index %d: %v", i, err), http.StatusBadRequest)
+			for i, rawURL := range resolved.UpstreamURLs {
+				if _, err8 := url.Parse(rawURL); err8 != nil {
+					http.Error(w, fmt.Sprintf("Invalid upstream URL at index %d: %v", i, err8), http.StatusBadRequest)
 					return
 				}
-				if _, err := hostFromURL(rawURL); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid upstream host at index %d: %v", i, err), http.StatusBadRequest)
+				if _, err9 := hostFromURL(rawURL); err9 != nil {
+					http.Error(w, fmt.Sprintf("Invalid upstream host at index %d: %v", i, err9), http.StatusBadRequest)
 					return
 				}
 			}
 
 			// Commit to disk and trigger hot-reload
 			if ui.OnApplyConfig != nil {
-				if err := ui.OnApplyConfig(newData); err != nil {
-					log.Error("Failed to apply config (that is: save&reload)", SafeErr(err))
-					http.Error(w, "Failed to save/reload config: "+err.Error(), http.StatusInternalServerError)
+				if err7 := ui.OnApplyConfig(newData); err7 != nil {
+					log.Error("Failed to apply config (that is: save&reload)", SafeErr(err7))
+					http.Error(w, "Failed to save/reload config: "+err7.Error(), http.StatusInternalServerError)
 					return
 				}
 			}
@@ -9727,13 +9801,17 @@ func resolveTag(input string) (resolved string, isTag bool, err error) {
 	return input, false, nil
 }
 
-// resolveConfigTags scans the Config struct via reflection and dynamically resolves any tags.
-// It populates the Raw tracking maps so original tags are not lost.
-func resolveConfigTags(cfg *Config) error {
-	cfg.RawStrings = make(map[string]string)
-	cfg.RawStringSlices = make(map[string][]string)
+// resolveConfigTags returns a deep-copied *Config with every {file:...} and
+// {env:...} token in string and []string fields expanded to its real value.
+// The input raw is never mutated; all changes live in the returned copy.
+func resolveConfigTags(raw *Config) (*Config, error) {
+	if raw == nil {
+		return nil, errors.New("nil config")
+	}
+	resolved0 := raw.Clone()
+	resolved := &resolved0
 
-	v := reflect.ValueOf(cfg).Elem()
+	v := reflect.ValueOf(resolved).Elem()
 	t := v.Type()
 
 	for i := 0; i < t.NumField(); i++ {
@@ -9745,67 +9823,159 @@ func resolveConfigTags(cfg *Config) error {
 		jsonKey := strings.Split(jsonTag, ",")[0]
 		val := v.Field(i)
 
-		if val.Kind() == reflect.String {
+		//The reflection loop is not constructing a new Config. It's only modifying certain fields in place.
+		vk := val.Kind()
+		switch vk { //nolint:exchaustive //only handing the cases that we know are template-able
+		case reflect.String:
 			str := val.String()
-			resolved, isTag, err := resolveTag(str)
+			resolvedStr, isTag, err := resolveTag(str)
 			if isTag {
 				if err != nil {
-					return fmt.Errorf("field %q resolution failed: %w", jsonKey, err)
+					return nil, fmt.Errorf("field %q resolution failed: %w", jsonKey, err)
 				}
-				cfg.RawStrings[jsonKey] = str
-				val.SetString(resolved)
+				val.SetString(resolvedStr)
 			}
-		} else if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String {
-			hasTag := false
-			sliceLen := val.Len()
-			rawSlice := make([]string, sliceLen)
-			for j := 0; j < sliceLen; j++ {
+		case reflect.Slice:
+			if val.Type().Elem().Kind() != reflect.String {
+				panic2(fmt.Sprintf("BUG: dev-unhandled case for reflect.Slice that isn't string but it's %q", vk))
+				continue
+			}
+			for j := 0; j < val.Len(); j++ {
 				str := val.Index(j).String()
-				rawSlice[j] = str
-				resolved, isTag, err := resolveTag(str)
+				resolvedStr, isTag, err := resolveTag(str)
 				if isTag {
 					if err != nil {
-						return fmt.Errorf("field %q[%d] resolution failed: %w", jsonKey, j, err)
+						return nil, fmt.Errorf("field %q[%d] resolution failed: %w", jsonKey, j, err)
 					}
-					hasTag = true
-					val.Index(j).SetString(resolved)
+					val.Index(j).SetString(resolvedStr)
 				}
 			}
-			if hasTag {
-				cfg.RawStringSlices[jsonKey] = rawSlice
+		case reflect.Int, reflect.Bool, reflect.Int8, reflect.Int16, reflect.Int32,
+			reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+			reflect.Uint64, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+			//already copied by clone, ignore
+		default:
+			panic2(fmt.Sprintf("BUG: dev-unhandled case for val.Kind() of %q", vk))
+		} //switch
+	}
+	return resolved, nil
+}
+
+// applyConfigChangesToStruct applies the key→value pairs from changes (as
+// produced by json.Unmarshal into map[string]any) onto cfg using the json
+// struct tags to locate each field.  Only fields whose json tag appears in
+// changes are touched; all others are left intact.
+// Supported field kinds: string, int/int32/int64, uint/uint32/uint64, bool,
+// []string.  Any other kind returns an error.
+func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
+	v := reflect.ValueOf(cfg).Elem()
+	t := v.Type()
+
+	// Build a reverse map: json-key → field index, for O(len(changes)) total
+	// work instead of O(len(changes)*len(fields)).
+	tagToIdx := make(map[string]int, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := strings.Split(tag, ",")[0]
+		tagToIdx[key] = i
+	}
+
+	for jsonKey, rawVal := range changes {
+		idx, ok := tagToIdx[jsonKey]
+		if !ok {
+			return fmt.Errorf("applyConfigChangesToStruct: unknown config key %q", jsonKey)
+		}
+		fv := v.Field(idx)
+
+		switch fv.Kind() {
+		case reflect.String:
+			s, ok := rawVal.(string)
+			if !ok {
+				return fmt.Errorf("field %q: expected string, got %T", jsonKey, rawVal)
 			}
+			fv.SetString(s)
+
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			switch n := rawVal.(type) {
+			case float64:
+				fv.SetInt(int64(n))
+			case int:
+				fv.SetInt(int64(n))
+			case int64:
+				fv.SetInt(n)
+			default:
+				return fmt.Errorf("field %q: expected int, got %T", jsonKey, rawVal)
+			}
+
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			switch n := rawVal.(type) {
+			case float64:
+				if n < 0 {
+					return fmt.Errorf("field %q: negative value %v for unsigned field", jsonKey, n)
+				}
+				fv.SetUint(uint64(n))
+			case uint64:
+				fv.SetUint(n)
+			default:
+				return fmt.Errorf("field %q: expected uint, got %T", jsonKey, rawVal)
+			}
+
+		case reflect.Bool:
+			b, ok := rawVal.(bool)
+			if !ok {
+				return fmt.Errorf("field %q: expected bool, got %T", jsonKey, rawVal)
+			}
+			fv.SetBool(b)
+
+		case reflect.Slice:
+			if fv.Type().Elem().Kind() != reflect.String {
+				return fmt.Errorf("field %q: non-string slice fields are not supported in config edits", jsonKey)
+			}
+			switch arr := rawVal.(type) {
+			case []any:
+				strs := make([]string, len(arr))
+				for i, item := range arr {
+					s, ok := item.(string)
+					if !ok {
+						return fmt.Errorf("field %q[%d]: expected string element, got %T", jsonKey, i, item)
+					}
+					strs[i] = s
+				}
+				fv.Set(reflect.ValueOf(strs))
+			case []string:
+				cp := make([]string, len(arr))
+				copy(cp, arr)
+				fv.Set(reflect.ValueOf(cp))
+			default:
+				return fmt.Errorf("field %q: expected []string, got %T", jsonKey, rawVal)
+			}
+
+		default:
+			return fmt.Errorf("field %q: unsupported kind %s", jsonKey, fv.Kind())
 		}
 	}
 	return nil
 }
 
-// restoreRawValues puts the unresolved {file:...}/{env:...} strings back into the struct
-// before it is marshaled to disk, preserving the dynamic link.
-func restoreRawValues(cfg *Config) {
-	v := reflect.ValueOf(cfg).Elem()
-	t := v.Type()
+func (s *Server) getRawConfig() *Config {
+	//TODO: nil check for live
+	c := s.liveRawConfig.Load()
+	if c == nil {
+		panic2("BUG: Server.liveRawConfig not initialized before use")
+	}
+	return c
+}
 
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		jsonTag := field.Tag.Get("json")
-		if jsonTag == "" || jsonTag == "-" {
-			continue
-		}
-		jsonKey := strings.Split(jsonTag, ",")[0]
-		val := v.Field(i)
-
-		if val.Kind() == reflect.String {
-			if raw, ok := cfg.RawStrings[jsonKey]; ok {
-				val.SetString(raw)
-			}
-		} else if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String {
-			if rawSlice, ok := cfg.RawStringSlices[jsonKey]; ok {
-				if val.Len() == len(rawSlice) {
-					for j := 0; j < val.Len(); j++ {
-						val.Index(j).SetString(rawSlice[j])
-					}
-				}
-			}
+func (ui *AdminUI) getRawConfig() *Config {
+	if ui.liveRawConfig != nil {
+		if c := ui.liveRawConfig.Load(); c != nil {
+			return c
 		}
 	}
+	// Fallback for test environments that only wire liveConfig.
+	ui.getLogger().Warn("If this isn't in a test file, then BUG: liveRawConfig isn't inited, FIXME: fix the tests and remove this!")
+	return ui.getConfig()
 }

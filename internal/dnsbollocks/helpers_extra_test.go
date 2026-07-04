@@ -484,10 +484,13 @@ func TestGetConfigFields(t *testing.T) {
 	}
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
+	var liveRawConfig atomic.Pointer[Config]
+	liveRawConfig.Store(&cfg)
 	var liveLogger atomic.Pointer[slog.Logger]
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
-	ui := &AdminUI{liveConfig: &liveConfig, liveLogger: &liveLogger}
+
+	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 
@@ -554,7 +557,9 @@ func TestGetConfigFields_NoDuplicateKeysAcrossFullDefaultConfig(t *testing.T) {
 	var liveLogger atomic.Pointer[slog.Logger]
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
-	ui := &AdminUI{liveConfig: &liveConfig, liveLogger: &liveLogger}
+	var liveRawConfig atomic.Pointer[Config]
+	liveRawConfig.Store(&cfg)
+	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 	if len(fields) == 0 {
@@ -586,11 +591,9 @@ func TestGetConfigFields_NoUnsupportedWarnings(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
-
-	ui := &AdminUI{
-		liveConfig: &liveConfig,
-		liveLogger: &liveLogger,
-	}
+	var liveRawConfig atomic.Pointer[Config]
+	liveRawConfig.Store(&cfg)
+	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
 
 	// 3. Run the reflection loop
 	fields := ui.getConfigFields()

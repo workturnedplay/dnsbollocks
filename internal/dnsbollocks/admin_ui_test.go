@@ -54,8 +54,11 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
+	// In tests raw == resolved (no tokens), so share the same pointer.
+	var liveRawConfig atomic.Pointer[Config]
+	liveRawConfig.Store(&cfg)
 
-	ui := NewAdminUI(&liveConfig, &liveLogger, rs, hs, bl, lt, rb, stats, tpls)
+	ui := NewAdminUI(&liveConfig, &liveRawConfig, &liveLogger, rs, hs, bl, lt, rb, stats, tpls)
 	rec := httptest.NewRecorder()
 
 	return ui, rec
