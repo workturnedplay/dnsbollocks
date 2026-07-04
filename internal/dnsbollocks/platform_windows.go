@@ -1509,6 +1509,7 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 		} else {
 			bgColor = "\x1b[48;5;88m" // Deep red B (slightly lighter)
 		}
+	case slog.LevelDebug: // already handled in an 'if' above
 	}
 
 	// --- NEW: Pre-scan for action color ---
@@ -7930,8 +7931,10 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 }
 
 func (ui *AdminUI) getLogger() *slog.Logger {
-	if l := ui.liveLogger.Load(); l != nil {
-		return l
+	if ui.liveLogger != nil {
+		if l := ui.liveLogger.Load(); l != nil {
+			return l
+		}
 	}
 	log := slog.Default()
 	log.Error("BUG: AdminUI.liveLogger wasn't inited, using default.")
@@ -9309,6 +9312,7 @@ type ConfigFieldView struct {
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 	cfg := ui.getConfig()
+	log := ui.getLogger()
 	v := reflect.ValueOf(*cfg)
 	t := v.Type()
 	var fields []ConfigFieldView
@@ -9325,7 +9329,9 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		var strVal string
 		var typ string
 
-		switch val.Kind() {
+		kind := val.Kind()
+		//nolint:exhaustive // We intentionally only process specific primitive types for the UI.
+		switch kind {
 		case reflect.String:
 			strVal = val.String()
 			typ = "string"
@@ -9339,7 +9345,8 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 			strVal = fmt.Sprintf("%t", val.Bool())
 			typ = "bool"
 		case reflect.Slice:
-			if val.Type().Elem().Kind() == reflect.String {
+			kind2 := val.Type().Elem().Kind()
+			if kind2 == reflect.String {
 				var sl []string
 				for j := 0; j < val.Len(); j++ {
 					sl = append(sl, val.Index(j).String())
@@ -9347,10 +9354,22 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 				strVal = strings.Join(sl, ", ")
 				typ = "[]string"
 			} else {
-				continue
+				// Log an explicit warning so you immediately catch un-renderable
+				// config slices during development or expansion.
+				log.Error("BUG: Config UI generator skipped unsupported non-string slice field",
+					slog.String("field", tagKey),
+					slog.String("element_type", kind2.String()))
+				panic2("BUG: dev must add some code, see the above logged error")
+				//continue // Skip non-string slices
 			}
 		default:
-			continue
+			// Log it so developers know they added an unsupported config type,
+			// but safely continue so the UI doesn't crash.
+			log.Error("BUG: Config UI generator skipped unsupported field type",
+				"field", tagKey,
+				"kind", kind.String())
+			panic2("BUG: dev must add some code, see the above logged error")
+			//continue
 		}
 
 		fields = append(fields, ConfigFieldView{

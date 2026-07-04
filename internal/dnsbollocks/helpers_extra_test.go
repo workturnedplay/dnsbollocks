@@ -4,7 +4,9 @@
 package dnsbollocks
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -482,7 +484,10 @@ func TestGetConfigFields(t *testing.T) {
 	}
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
-	ui := &AdminUI{liveConfig: &liveConfig}
+	var liveLogger atomic.Pointer[slog.Logger]
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liveLogger.Store(logger)
+	ui := &AdminUI{liveConfig: &liveConfig, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 
@@ -546,7 +551,10 @@ func TestGetConfigFields_NoDuplicateKeysAcrossFullDefaultConfig(t *testing.T) {
 	cfg := defaultConfig()
 	var liveConfig atomic.Pointer[Config]
 	liveConfig.Store(&cfg)
-	ui := &AdminUI{liveConfig: &liveConfig}
+	var liveLogger atomic.Pointer[slog.Logger]
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liveLogger.Store(logger)
+	ui := &AdminUI{liveConfig: &liveConfig, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 	if len(fields) == 0 {
@@ -562,6 +570,39 @@ func TestGetConfigFields_NoDuplicateKeysAcrossFullDefaultConfig(t *testing.T) {
 		if f.Type == "" {
 			t.Errorf("field %q has empty Type", f.Key)
 		}
+	}
+}
+
+func TestGetConfigFields_NoUnsupportedWarnings(t *testing.T) {
+	// 1. Create a buffer to capture logs instead of discarding them
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// 2. Use your actual defaultConfig() to test your real codebase surface area
+	cfg := defaultConfig()
+
+	var liveConfig atomic.Pointer[Config]
+	liveConfig.Store(&cfg)
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(logger)
+
+	ui := &AdminUI{
+		liveConfig: &liveConfig,
+		liveLogger: &liveLogger,
+	}
+
+	// 3. Run the reflection loop
+	fields := ui.getConfigFields()
+	if len(fields) == 0 {
+		t.Fatal("expected fields to be returned")
+	}
+
+	// 4. Assert that NO warnings were thrown.
+	// If this buffer is not empty, it means a field was added to Config
+	// that your switch statement doesn't explicitly know how to render yet.
+	if logBuf.Len() > 0 {
+		t.Errorf("Reflection loop hit an unhandled type or slice. Logs:\n%s", logBuf.String())
 	}
 }
 
