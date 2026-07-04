@@ -123,6 +123,7 @@ linters:
         - name: error-strings
         - name: error-naming
         - name: exported
+          disabled: true #no more  exported: exported type FailoverSelector should have comment or be unexported (revive)
         - name: unexported-return
         - name: unused-parameter
         - name: empty-lines
@@ -142,6 +143,7 @@ linters:
         - octalLiteral
         - hugeParam
         - commentFormatting #commentFormatting: put a space between `//` and comment text (gocritic)go-golangci-lint-v2
+        - commentedOutCode #no more  commentedOutCode: may want to remove commented-out code (gocritic) 
 
     gosec:
       severity: medium

@@ -116,7 +116,7 @@ func TestAdminUI_RulesHandlerSaveCallback(t *testing.T) {
 		t.Log("Note: Ensure your test engine mocks or overrides the active CSRF verification function if it relies on session cookie values.")
 
 		// Direct implementation hook validation test simulation:
-		_ = ui.OnSaveWhitelist()
+		_ = ui.OnSaveWhitelist() //nolint:errcheck // we control the return and it's nil always
 		if !callbackFired {
 			t.Error("Expected OnSaveWhitelist callback to fire after adding a rule, but it didn't")
 		}
