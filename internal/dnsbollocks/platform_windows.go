@@ -9976,12 +9976,11 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 }
 
 func (s *Server) getRawConfig() *Config {
-	//TODO: nil check for live
-	c := s.liveRawConfig.Load()
-	if c == nil {
-		panic2("BUG: Server.liveRawConfig not initialized before use")
+	if c := s.liveRawConfig.Load(); c != nil {
+		return c
 	}
-	return c
+	panic2("BUG: Server.liveRawConfig not initialized before use")
+	panic(nil)
 }
 
 func (ui *AdminUI) getRawConfig() *Config {
@@ -9989,8 +9988,11 @@ func (ui *AdminUI) getRawConfig() *Config {
 		if c := ui.liveRawConfig.Load(); c != nil {
 			return c
 		}
+		panic2("BUG: AdminUI.liveRawConfig.Config isn't inited, should point to the Server.liveRawConfig.Config")
 	}
-	// Fallback for test environments that only wire liveConfig.
-	ui.getLogger().Warn("If this isn't in a test file, then BUG: liveRawConfig isn't inited, FIXME: fix the tests and remove this!")
-	return ui.getConfig()
+	//// Fallback for test environments that only wire liveConfig.
+	// ui.getLogger().Warn("If this isn't in a test file, then BUG: liveRawConfig isn't inited, FIXME: fix the tests and remove this!")
+	// return ui.getConfig()
+	panic2("BUG: AdminUI.liveRawConfig isn't inited, should point to the Server.liveRawConfig")
+	panic(nil)
 }
