@@ -23,6 +23,12 @@ issues:
         - govet
       text: "shadows declaration"
       severity: error
+
+#  exclude-rules:
+#    - linters:
+#        - whitespace
+#      text: "unnecessary trailing newline"
+
 #  exclude-rules:
 #    - linters: [revive]
 #      text: "ALL_CAPS"
@@ -68,7 +74,7 @@ linters:
     - revive
     - misspell
     - unconvert
-    - whitespace
+    # - whitespace #no more: unnecessary trailing newline (whitespace)
 
     # --- unused / dead code ---
     - unused
