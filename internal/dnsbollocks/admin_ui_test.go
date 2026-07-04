@@ -66,7 +66,7 @@ func TestAdminUI_RoutingAndMux(t *testing.T) {
 	_, rec := setupTestAdminUI(t)
 
 	// Create a fake HTTP request to an unprotected/built-in route
-	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
+	req := httptest.NewRequest(http.MethodGet, "/debug/vars", http.NoBody)
 
 	expvar.Handler().ServeHTTP(rec, req)
 

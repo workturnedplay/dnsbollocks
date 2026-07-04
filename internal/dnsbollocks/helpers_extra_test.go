@@ -581,7 +581,7 @@ func TestSafeRequestAttr_Nil(t *testing.T) {
 }
 
 func TestSafeRequestAttr_NonNil(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "https://example.invalid/dns-query?x=1", nil)
+	req := httptest.NewRequest(http.MethodPost, "https://example.invalid/dns-query?x=1", http.NoBody)
 	req.Host = "example.invalid"
 	req.Header.Set("Content-Type", "application/dns-message")
 
@@ -612,7 +612,7 @@ func TestSafeRequestAttr_NonNil(t *testing.T) {
 }
 
 func TestSafeRequestAttr_MissingContentTypeIsEmpty(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "https://example.invalid/dns-query", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.invalid/dns-query", http.NoBody)
 	a := SafeRequestAttr("query", req)
 
 	for _, attr := range a.Value.Group() {

@@ -558,7 +558,7 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.csrfMiddleware(next)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		h.ServeHTTP(rec, req)
 
 		if !called {
@@ -625,7 +625,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("GET without Origin passes (safe method)", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Host = host
 		h.ServeHTTP(rec, req)
 		if !*called {
@@ -636,7 +636,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("POST without Origin or Referer is blocked", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		h.ServeHTTP(rec, req)
 		if *called {
@@ -650,7 +650,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("POST with matching Origin passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		req.Header.Set("Origin", "https://"+host)
 		h.ServeHTTP(rec, req)
@@ -662,7 +662,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("POST with mismatched Origin is blocked", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		req.Header.Set("Origin", "https://evil.example.com")
 		h.ServeHTTP(rec, req)
@@ -677,7 +677,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("null Origin with matching Referer passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		req.Header.Set("Origin", "null")
 		req.Header.Set("Referer", "https://"+host+"/rules")
@@ -690,7 +690,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("null Origin without Referer is blocked", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		req.Header.Set("Origin", "null")
 		h.ServeHTTP(rec, req)
@@ -705,7 +705,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 	t.Run("cross-site non-navigate request is blocked even with a valid Origin", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := newHandler(ui)
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		req.Host = host
 		req.Header.Set("Origin", "https://"+host)
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -729,7 +729,7 @@ func TestAdminUI_HostValidationMiddleware(t *testing.T) {
 		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.hostValidationMiddleware(expectedHost, next)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Host = expectedHost
 		h.ServeHTTP(rec, req)
 		if !called {
@@ -743,7 +743,7 @@ func TestAdminUI_HostValidationMiddleware(t *testing.T) {
 		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.hostValidationMiddleware(expectedHost, next)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Host = "evil.example.com"
 		h.ServeHTTP(rec, req)
 		if called {
@@ -765,7 +765,7 @@ func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 	t.Run("no Sec-Fetch-Site header passes (older browsers)", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := mkHandler(ui)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		h.ServeHTTP(rec, req)
 		if !*called {
 			t.Error("expected request without Sec-Fetch-Site to pass")
@@ -775,7 +775,7 @@ func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 	t.Run("same-origin passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := mkHandler(ui)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		h.ServeHTTP(rec, req)
 		if !*called {
@@ -786,7 +786,7 @@ func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 	t.Run("cross-site navigate GET passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := mkHandler(ui)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		req.Header.Set("Sec-Fetch-Mode", "navigate")
 		h.ServeHTTP(rec, req)
@@ -798,7 +798,7 @@ func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 	t.Run("cross-site cors mode is blocked", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		h, called := mkHandler(ui)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		h.ServeHTTP(rec, req)
@@ -816,7 +816,7 @@ func TestAdminUI_SecurityHeadersMiddleware(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _ = r })
 	h := ui.securityHeadersMiddleware(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	h.ServeHTTP(rec, req)
 
 	headers := rec.Header()
