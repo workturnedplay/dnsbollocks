@@ -186,59 +186,6 @@ type Config struct {
 	ExtraSafety bool `json:"extra_safety"`
 }
 
-// pointer to live logger or default logger if uninited(bug)
-func (s *Server) getLogger() *slog.Logger {
-	if l := s.liveLogger.Load(); l != nil {
-		return l
-	}
-	log := slog.Default()
-	log.Error("BUG: Server.liveLogger wasn't inited, using default.")
-	return log
-}
-
-// pointer to live Server.Config
-func (s *Server) getConfig() *Config {
-	c := s.liveConfig.Load()
-	if c == nil {
-		panic2("BUG: Server.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
-	}
-	return c
-}
-
-// On init and every reload, swap atomically:
-func (s *Server) applyConfig(cfg Config) {
-	s.liveConfig.Store(&cfg)
-	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
-}
-
-// On init and every reload, swap atomically:
-func (s *Server) applyLogger(l *slog.Logger) {
-	s.liveLogger.Store(l)
-	// same — fileWriter reads liveLogger.Load() instead of holding its own copy
-	bugLogger.Store(l) // keep free-function fallback logger in sync too
-	wincoe.Logger = l  //and wincoe lib logger too
-}
-
-// bugLogger is a package-level fallback logger used only by free functions
-// (not methods on Server/AdminUI) that need to log a BUG-class invariant
-// violation immediately before panicking, but have no logger threaded to them.
-// Kept in sync with the active logger via applyLogger. Falls back to
-// slog.Default() before logging is initialized (mirrors Server.getLogger()'s
-// own fallback behavior).
-var bugLogger atomic.Pointer[slog.Logger]
-
-func getBugLogger() *slog.Logger {
-	if l := bugLogger.Load(); l != nil {
-		return l
-	}
-	//def := slog.Default()
-	def := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	wincoe.Logger = def //give wincoe lib a logger too
-	return def
-}
-
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
 	liveConfig atomic.Pointer[Config]      // shared with AdminUI, fileWriter, etc.
@@ -291,6 +238,88 @@ type Server struct {
 
 	reloadMu      sync.RWMutex
 	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
+}
+
+// AdminUI handles all the web control panel routes.
+type AdminUI struct {
+	// logger       *slog.Logger
+	// config       Config // Pass by value so UI can read it safely
+	liveConfig *atomic.Pointer[Config]
+	liveLogger *atomic.Pointer[slog.Logger]
+
+	ruleStore    *RuleStore
+	hostStore    *HostStore
+	blacklist    *BlacklistStore
+	loginTracker *LoginTracker
+	recentBlocks *RecentBlocksTracker
+	stats        *expvar.Int
+
+	uiTemplates *template.Template
+
+	// Callbacks for side-effects
+	OnSaveWhitelist       func() error
+	OnSaveBlacklist       func() error
+	OnSaveHosts           func() error
+	OnInvalidatePattern   func(pattern string)
+	OnInvalidateBlacklist func()
+	OnApplyConfig         func(data []byte) error
+
+	//UI calls this when a fatal exception or manual admin shutdown occurs
+	OnShutdown func(exitCode int)
+	//getExpectedHost func() string // used by hostValidation
+}
+
+// pointer to live logger or default logger if uninited(bug)
+func (s *Server) getLogger() *slog.Logger {
+	if l := s.liveLogger.Load(); l != nil {
+		return l
+	}
+	log := slog.Default()
+	log.Error("BUG: Server.liveLogger wasn't inited, using default.")
+	return log
+}
+
+// pointer to live Server.Config
+func (s *Server) getConfig() *Config {
+	c := s.liveConfig.Load()
+	if c == nil {
+		panic2("BUG: Server.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
+	}
+	return c
+}
+
+// On init and every reload, swap atomically:
+func (s *Server) applyConfig(cfg Config) {
+	s.liveConfig.Store(&cfg)
+	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
+}
+
+// On init and every reload, swap atomically:
+func (s *Server) applyLogger(l *slog.Logger) {
+	s.liveLogger.Store(l)
+	// same — fileWriter reads liveLogger.Load() instead of holding its own copy
+	bugLogger.Store(l) // keep free-function fallback logger in sync too
+	wincoe.Logger = l  //and wincoe lib logger too
+}
+
+// bugLogger is a package-level fallback logger used only by free functions
+// (not methods on Server/AdminUI) that need to log a BUG-class invariant
+// violation immediately before panicking, but have no logger threaded to them.
+// Kept in sync with the active logger via applyLogger. Falls back to
+// slog.Default() before logging is initialized (mirrors Server.getLogger()'s
+// own fallback behavior).
+var bugLogger atomic.Pointer[slog.Logger]
+
+func getBugLogger() *slog.Logger {
+	if l := bugLogger.Load(); l != nil {
+		return l
+	}
+	//def := slog.Default()
+	def := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	wincoe.Logger = def //give wincoe lib a logger too
+	return def
 }
 
 // NewServer initializes a new Server instance.
@@ -7898,35 +7927,6 @@ func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.Fi
 	} else {
 		return fmt.Errorf("failed to open/write/sync/close the file %q, err: %w", filename, err /*non-nil here*/)
 	}
-}
-
-// AdminUI handles all the web control panel routes.
-type AdminUI struct {
-	// logger       *slog.Logger
-	// config       Config // Pass by value so UI can read it safely
-	liveConfig *atomic.Pointer[Config]
-	liveLogger *atomic.Pointer[slog.Logger]
-
-	ruleStore    *RuleStore
-	hostStore    *HostStore
-	blacklist    *BlacklistStore
-	loginTracker *LoginTracker
-	recentBlocks *RecentBlocksTracker
-	stats        *expvar.Int
-
-	uiTemplates *template.Template
-
-	// Callbacks for side-effects
-	OnSaveWhitelist       func() error
-	OnSaveBlacklist       func() error
-	OnSaveHosts           func() error
-	OnInvalidatePattern   func(pattern string)
-	OnInvalidateBlacklist func()
-	OnApplyConfig         func(data []byte) error
-
-	//UI calls this when a fatal exception or manual admin shutdown occurs
-	OnShutdown func(exitCode int)
-	//getExpectedHost func() string // used by hostValidation
 }
 
 func (ui *AdminUI) getLogger() *slog.Logger {
