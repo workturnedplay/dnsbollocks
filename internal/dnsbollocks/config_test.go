@@ -123,7 +123,7 @@ func TestDetectDuplicateJSONObjectKeys(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dups, err := detectDuplicateJSONObjectKeys([]byte(tt.jsonStr))
+			dups, err := detectDuplicateJSONObjectKeysAtTopLevelOnly([]byte(tt.jsonStr))
 
 			if (err != nil) != tt.expectParseErr {
 				t.Fatalf("detectDuplicateJSONObjectKeys() error = %v, expectParseErr %v", err, tt.expectParseErr)

@@ -662,7 +662,7 @@ func (s *Server) loadResponseBlacklist() error {
 		}
 	} else {
 		//actually this is kinda useless because there's only 1 key: 'response_blacklist', it's not testing the cidrs for dups here
-		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+		if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
 			return fmt.Errorf("failed to scan blacklist file %q for duplicate keys: %w", blacklistFileName, dupErr)
 		} else if len(dups) > 0 {
 			for _, dup := range dups {
@@ -773,7 +773,7 @@ func (s *Server) saveResponseBlacklist() error {
 	return nil
 }
 
-// detectDuplicateJSONObjectKeys walks the top-level keys of a JSON object
+// detectDuplicateJSONObjectKeysAtTopLevelOnly walks the top-level keys of a JSON object
 // using the token API and returns any key that appears more than once.
 //
 // This is necessary because Go's json.Decoder silently overwrites duplicate
@@ -784,7 +784,9 @@ func (s *Server) saveResponseBlacklist() error {
 // Only the top-level object is inspected; nested objects are skipped as
 // opaque blobs.  Returns an error only if the bytes are not a valid JSON
 // object at all.
-func detectDuplicateJSONObjectKeys(data []byte) (duplicates []string, err error) {
+//
+// so "it detects duplicate top-level object keys, not arbitrary duplicate JSON keys."
+func detectDuplicateJSONObjectKeysAtTopLevelOnly(data []byte) (duplicates []string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 
 	// Expect opening '{'.
@@ -849,7 +851,7 @@ func (s *Server) loadLocalHosts() error {
 	// Check for duplicate JSON keys BEFORE decoding into a map, because
 	// Go's json.Decoder silently drops all but the last duplicate — our
 	// post-decode seenPatterns check would never see them.
-	if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+	if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
 		return fmt.Errorf("failed to scan hosts file %q for duplicate keys: %w", hostsFileName, dupErr)
 	} else if len(dups) > 0 {
 		// A manually edited file with duplicate keys is almost certainly a
@@ -1112,7 +1114,7 @@ func (s *Server) loadQueryWhitelist() error {
 	if err != nil {
 		return fmt.Errorf("cannot read whitelist file %q: %w", whitelistFileName, err)
 	}
-	if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+	if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
 		return fmt.Errorf("failed to scan whitelist file %q for duplicate keys: %w", whitelistFileName, dupErr)
 	} else if len(dups) > 0 {
 		for _, dup := range dups {
@@ -2442,7 +2444,7 @@ func (s *Server) loadMainConfig() error {
 		// cfg.ExtraSafety is not yet populated from the file at this point, so
 		// we always treat duplicate config keys as a hard error regardless of that
 		// setting — a config with duplicate keys is unambiguously a hand-edit mistake.
-		if dups, dupErr := detectDuplicateJSONObjectKeys(data); dupErr != nil {
+		if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
 			return fmt.Errorf("failed to scan config file %q for duplicate keys: %w", cfgFname, dupErr)
 		} else if len(dups) > 0 {
 			for _, dup := range dups {
