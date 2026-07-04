@@ -2988,6 +2988,11 @@ func (s *Server) loadMainConfig() error {
 
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
+	if len(resolvedCfg.UpstreamURLs) != len(resolvedCfg.UpstreamSNIHostnames) {
+		const msg = "must have same amount of URLs vs SNIs"
+		log.Warn(msg)
+		return fmt.Errorf("%s", msg)
+	}
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
 	for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
 		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
@@ -3000,15 +3005,18 @@ func (s *Server) loadMainConfig() error {
 		shouldSaveConfig = true
 	}
 	for i := range resolvedCfg.UpstreamURLs {
-		if resolvedCfg.UpstreamSNIHostnames[i] == "" {
-			host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
-			if err2 != nil {
-				return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
-			}
-			rawCfg.UpstreamSNIHostnames[i] = host
-			resolvedCfg.UpstreamSNIHostnames[i] = host
-			shouldSaveConfig = true
+		if resolvedCfg.UpstreamSNIHostnames[i] != "" {
+			continue
 		}
+
+		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
+		if err2 != nil {
+			log.Error("invalid upstream URL", slog.Int("at_index", i), SafeErr(err2))
+			return fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
+		}
+		rawCfg.UpstreamSNIHostnames[i] = host
+		resolvedCfg.UpstreamSNIHostnames[i] = host
+		shouldSaveConfig = true
 	}
 	log.Debug("Using upstream SNI hostnames:",
 		SafeStringSlice("SNI_hostnames", resolvedCfg.UpstreamSNIHostnames),
@@ -9585,6 +9593,11 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if len(resolved.UpstreamURLs) != len(resolved.UpstreamSNIHostnames) {
+				http.Error(w, "Must have same amount of URLs vs SNIs", http.StatusBadRequest)
+				return
+			}
+
 			// Hard-check URLs to prevent loadMainConfig panics
 			for i, rawURL := range resolved.UpstreamURLs {
 				if _, err8 := url.Parse(rawURL); err8 != nil {
@@ -9825,7 +9838,7 @@ func resolveConfigTags(raw *Config) (*Config, error) {
 
 		//The reflection loop is not constructing a new Config. It's only modifying certain fields in place.
 		vk := val.Kind()
-		switch vk { //nolint:exchaustive //only handing the cases that we know are template-able
+		switch vk { //nolint:exhaustive //only handing the cases that we know are template-able
 		case reflect.String:
 			str := val.String()
 			resolvedStr, isTag, err := resolveTag(str)
