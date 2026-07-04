@@ -402,9 +402,7 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 				var configVarName string
 
 				for _, stmt := range fn.Body.List {
-
 					switch s := stmt.(type) {
-
 					case *ast.AssignStmt:
 						// cfg := Config{...}
 						if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
@@ -513,10 +511,8 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 						}
 					}
 				}
-
 				return false // no need to inspect any other functions
 			})
-
 		}
 	}
 	if literalsFound != 1 {

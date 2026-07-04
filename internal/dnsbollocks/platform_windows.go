@@ -2355,7 +2355,6 @@ func (s *Server) Run() error {
 }
 
 func OldMain() {
-
 	// log is the single source of truth. Every log event goes through ONE call here.
 	// The multiHandler then fans it out to:
 	//   - dnsbollocks.log (JSON, everything)
@@ -3102,7 +3101,6 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 				certTemplate.DNSNames = append(certTemplate.DNSNames, host)
 			}
 		}
-
 	}
 	if len(certTemplate.IPAddresses) == 0 && len(certTemplate.DNSNames) == 0 {
 		// All hosts were empty or whitespace after trimming — programmer error.
@@ -3891,6 +3889,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			log2 := u.getLogger()
 			log2.Debug("Attempting request to upstream", slog.String("url", u.URL.String()), slog.String("sni", u.SNI))
 			// Capture the HTTP client execution
+			//nolint:bodyclose // it's closed but later, outside of this func and outside of 'for', if resp != nil only.
 			resp, err4ClientDo = u.Client.Do(req) // this is concurrency safe
 			if err4ClientDo == nil {
 				//success
@@ -3958,7 +3957,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err() /*non-nil guaranteed*/)
 			}
 			continue //next try
-		}
+		} //if
 		// non-retryable error
 		// --- NEW DIAGNOSTIC BLOCK ---
 		if strings.Contains(err4ClientDo.Error(), "tls:") || strings.Contains(err4ClientDo.Error(), "x509:") {
@@ -4153,7 +4152,7 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	case blockModeNXDOMAIN:
 		msg.SetRcode(msg, dns.RcodeNameError) // this is NXDOMAIN
 	case blockModeIPBlock: //, "block_ip", "ipblock", "blockip":
-		ttl := uint32(cfg.BlockedResponseTTLSec)
+		ttl := cfg.BlockedResponseTTLSec
 		qtype := msg.Question[0].Qtype
 		switch qtype {
 		case dns.TypeA:
@@ -5888,7 +5887,8 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
 
 		// 1. Extract and sort the keys (DNS Types) to stop random UI shuffling
-		var types []string
+		// Preallocate the slice with the exact capacity needed
+		types := make([]string, 0, len(rulesSnapshot))
 		for typ := range rulesSnapshot {
 			types = append(types, typ)
 		}
