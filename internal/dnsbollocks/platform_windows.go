@@ -3352,7 +3352,7 @@ func (s *Server) generateCertIfNeeded() {
 	if needsRegen {
 		log.Warn("Due to above, regenerating self-signed cert ...", slog.String("public_key_aka_cert_file", certFile), slog.String("private_key_file", keyFile),
 			slog.Any("hosts", requiredHosts))
-		if err = generateCert(certFile, keyFile, requiredHosts); err != nil {
+		if err = s.generateCert(certFile, keyFile, requiredHosts); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
 			s.logFatal("cert generation failed", err)
 			panic("BUG: unreachable")
@@ -3386,7 +3386,8 @@ func (s *Server) generateCertIfNeeded() {
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
-func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) error {
+func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) error {
+	log := s.getLogger()
 	if certFileNameNoPath == "" || keyFileNameNoPath == "" {
 		panic("unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
 	}
@@ -3455,7 +3456,11 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) 
 	if err != nil {
 		return fmt.Errorf("cert write failed: %w", err)
 	} else {
-		defer certOut.Close()
+		defer func() {
+			if closeErr := certOut.Close(); closeErr != nil {
+				log.Error("failed to close cert public key file (incompletely written to disk then?)", SafeErr(closeErr), slog.String("filename", certFileNameNoPath))
+			}
+		}()
 	}
 	if err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
 		return fmt.Errorf("pem encode cert failed: %w", err)
@@ -3468,7 +3473,11 @@ func generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) 
 	if err != nil {
 		return fmt.Errorf("key write failed: %w", err)
 	} else {
-		defer keyOut.Close()
+		defer func() {
+			if closeErr := keyOut.Close(); closeErr != nil {
+				log.Error("failed to close cert private key file (incompletely written to disk then?)", SafeErr(closeErr), slog.String("filename", keyFileNameNoPath))
+			}
+		}()
 	}
 	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}); err != nil {
 		return fmt.Errorf("pem encode key failed: %w", err)
@@ -3632,7 +3641,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	cfg := s.getConfig()
 	log := s.getLogger()
 
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	var timeoutDuration time.Duration = time.Duration(cfg.ClientTCPTimeoutSec) * time.Second
 	const maxDNSTCPPacketSize = 65535 //nopeTODO: make this configurable in config.json ; It's the RFC 1035 hard limit (65535); not a tunable
@@ -3640,7 +3649,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
 	if err1 := conn.SetReadDeadline(time.Now().Add(timeoutDuration)); err1 != nil {
-		log.Warn("failed to set read deadline for length header, thus dropped/ignored", SafeErr(err1))
+		log.Warn("failed to set read deadline for length header, thus dropped/ignored", SafeErr(err1), slog.Duration("deadline", timeoutDuration))
 		return
 	}
 
@@ -3676,7 +3685,11 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// --- 2. READ THE BODY ---
 	// We REFRESH the deadline. The client gets a fresh 5 seconds
 	// to finish sending the actual DNS message.
-	_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
+	//_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
+	if err1 := conn.SetReadDeadline(time.Now().Add(timeoutDuration)); err1 != nil {
+		log.Warn("failed to set read deadline for body, thus dropped/ignored", SafeErr(err1), slog.Duration("deadline", timeoutDuration))
+		return
+	}
 	wire := make([]byte, length)
 	if n, err := io.ReadFull(conn, wire); err != nil {
 		log.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
@@ -3710,7 +3723,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		// Set a WRITE deadline. This prevents a "slow receiver" from
 		// hanging your goroutine forever while you try to push data.
 		if err3 := conn.SetWriteDeadline(time.Now().Add(timeoutDuration)); err3 != nil {
-			log.Warn("failed to set write TCP deadline, thus dropped/ignored", SafeErr(err3))
+			log.Warn("failed to set write TCP deadline, thus dropped/ignored", SafeErr(err3), slog.Duration("deadline", timeoutDuration))
 			return
 		}
 		wroteN, err4 := conn.Write(out.Bytes())
@@ -4314,7 +4327,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		log.Error("doh_no_response")
 		return nil, errors.New("no response")
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
 	body, err4ReadAll := io.ReadAll(resp.Body)
@@ -4370,7 +4383,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 		log.Error("Diagnostic probe failed", slog.String("addr", addr), SafeErr(err))
 		return
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	state := conn.ConnectionState()
 	log.Info("--- TLS Diagnostic Probe ---", slog.String("remote_addr", addr), slog.String("sni_sent", u.SNI))
@@ -4981,9 +4994,9 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 					ip := net.ParseIP(cidrStr)
 					if ip != nil {
 						if ip.To4() != nil {
-							_, n, _ = net.ParseCIDR(cidrStr + "/32")
+							_, n, _ = net.ParseCIDR(cidrStr + "/32") //nolint:errcheck // IP is already validated above
 						} else {
-							_, n, _ = net.ParseCIDR(cidrStr + "/128")
+							_, n, _ = net.ParseCIDR(cidrStr + "/128") //nolint:errcheck // IP is already validated above
 						}
 					}
 				}
@@ -5091,10 +5104,13 @@ func (ui *AdminUI) checkBlacklistMatches(n *net.IPNet) []string {
 
 func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	log := ui.getLogger()
 
 	cidrStr := strings.TrimSpace(r.URL.Query().Get("cidr"))
 	if cidrStr == "" {
-		w.Write([]byte(`{"matches":[]}`))
+		if _, err := w.Write([]byte(`{"matches":[]}`)); err != nil {
+			log.Debug("client disconnected before write completed", SafeErr(err))
+		}
 		return
 	}
 
@@ -5104,9 +5120,9 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 		ip := net.ParseIP(cidrStr)
 		if ip != nil {
 			if ip.To4() != nil {
-				_, n, _ = net.ParseCIDR(cidrStr + "/32")
+				_, n, _ = net.ParseCIDR(cidrStr + "/32") //nolint:errcheck // IP is already validated above
 			} else {
-				_, n, _ = net.ParseCIDR(cidrStr + "/128")
+				_, n, _ = net.ParseCIDR(cidrStr + "/128") //nolint:errcheck // IP is already validated above
 			}
 		}
 	}
@@ -5117,7 +5133,9 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 	}
 
 	// Return array of matching filters to frontend
-	json.NewEncoder(w).Encode(map[string][]string{"matches": matches})
+	if err := json.NewEncoder(w).Encode(map[string][]string{"matches": matches}); err != nil {
+		log.Debug("failed to encode/write json response", SafeErr(err))
+	}
 }
 
 // faviconHandler serves an empty response for /favicon.ico.
@@ -5148,7 +5166,7 @@ func faviconHandler(w http.ResponseWriter, _ *http.Request) {
 // robotsTxtHandler serves a permissive disallow-all robots.txt.
 // Like favicon.ico, browsers and crawlers may request this automatically.
 // Serving it outside auth prevents spurious failure-counter hits.
-func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
+func (ui *AdminUI) robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	cacheCtrl := "public, max-age=86400" // 1-day cache for production crawlers
 	if v := GetVersion(); strings.Contains(v, "+dirty") || strings.Contains(v, "dev") {
 		cacheCtrl = "no-cache, no-store, must-revalidate"
@@ -5157,7 +5175,10 @@ func robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", cacheCtrl)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	if _, err := w.Write([]byte("User-agent: *\nDisallow: /\n")); err != nil {
+		log := ui.getLogger()
+		log.Debug("client disconnected before write completed", SafeErr(err))
+	}
 }
 
 func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
@@ -5218,7 +5239,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 		"/robots.txt",
 		ui.securityHeadersMiddleware(
 			ui.fetchMetadataWhitelistMiddleware(
-				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(robotsTxtHandler))),
+				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(ui.robotsTxtHandler))),
 		),
 	)
 
@@ -6049,7 +6070,12 @@ func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 	if elem, ok := t.m[key]; ok {
 		// We already have this block. Update the time and bump it to the front.
 		// (Zero allocations!)
-		elem.Value.(*BlockedQuery).Time = time.Now()
+		if bq, ok := elem.Value.(*BlockedQuery); ok {
+			bq.Time = time.Now()
+		} else {
+			// Log a severe bug: something else got put in this list!
+			panic("BUG: not of *BlockedQuery type")
+		}
 		t.lst.MoveToFront(elem)
 		return
 	}
@@ -6062,7 +6088,10 @@ func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 		if back == nil {
 			break
 		}
-		bq := back.Value.(*BlockedQuery)
+		bq, ok := back.Value.(*BlockedQuery)
+		if !ok {
+			panic("BUG: not2 of *BlockedQuery type")
+		}
 		delete(t.m, bq.Domain+":"+bq.Type)
 		t.lst.Remove(back)
 	}
@@ -6073,7 +6102,11 @@ func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bo
 	t.mu.Lock()
 	result := make([]BlockedQuery, 0, t.lst.Len())
 	for e := t.lst.Front(); e != nil; e = e.Next() {
-		result = append(result, *e.Value.(*BlockedQuery))
+		if bq, ok := e.Value.(*BlockedQuery); ok {
+			result = append(result, *bq)
+		} else {
+			panic("BUG: not3 of *BlockedQuery type")
+		}
 	}
 	t.mu.Unlock()
 
@@ -6790,8 +6823,13 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 			"Title": title, "Filter": filter, "Content": "No log entries found.",
 		})
 		return
+	} else {
+		defer func() {
+			if closeErr := file.Close(); closeErr != nil {
+				log.Error("failed to close log file", SafeErr(closeErr), slog.String("filename", filePath))
+			}
+		}()
 	}
-	defer file.Close()
 
 	searchLower := strings.ToLower(filter)
 
@@ -7004,7 +7042,6 @@ func UnstickStdinRead(logger *slog.Logger) {
 }
 
 func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
-	//log := s.getLogger()
 
 	fd := int(os.Stdin.Fd())
 
@@ -7014,7 +7051,12 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 	}
 	// This defer is critical! It ensures the terminal exits RAW mode
 	// when the goroutine finishes, preventing a corrupted command prompt.
-	defer term.Restore(fd, oldState)
+	defer func() {
+		log2 := s.getLogger()
+		if err := term.Restore(fd, oldState); err != nil {
+			log2.Warn("failed to restore terminal state", SafeErr(err))
+		}
+	}()
 
 	buf := make([]byte, 3)
 
@@ -7053,7 +7095,9 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		if buf[0] == 0x18 {
 			fmt.Print("\n")
 			log2.Info("Ctrl+X detected → clean exit")
-			_ = term.Restore(fd, oldState)
+			if err2 := term.Restore(fd, oldState); err2 != nil {
+				log2.Warn("failed to restore terminal state", SafeErr(err2))
+			}
 			cleanExitFn()
 		}
 
@@ -7071,7 +7115,9 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		if buf[0] == 0x03 {
 			fmt.Print("\n")
 			log2.Info("Ctrl+C detected → breaking gracefully")
-			_ = term.Restore(fd, oldState)
+			if err2 := term.Restore(fd, oldState); err2 != nil {
+				log2.Warn("failed to restore terminal state", SafeErr(err2))
+			}
 			cleanExitFn()
 		}
 
@@ -7081,7 +7127,9 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 			case 'x', 'X':
 				fmt.Print("\n")
 				log2.Info("Alt+X detected → clean exit")
-				_ = term.Restore(fd, oldState)
+				if err2 := term.Restore(fd, oldState); err2 != nil {
+					log2.Warn("failed to restore terminal state", SafeErr(err2))
+				}
 				cleanExitFn()
 			case 'r', 'R':
 				fmt.Print("\n")
@@ -7423,7 +7471,10 @@ func (rl *ClientRateLimiter) janitorLoop(ctx context.Context, interval time.Dura
 		case <-ticker.C:
 			now := time.Now().Unix()
 			rl.clients.Range(func(key, value any) bool {
-				entry := value.(*clientEntry)
+				entry, ok := value.(*clientEntry)
+				if !ok {
+					panic("BUG: not of *clientEntry type")
+				}
 				// Evict any client IP that hasn't sent a request in over an hour
 				if now-atomic.LoadInt64(&entry.lastSeen) > 3600 {
 					rl.clients.Delete(key)
@@ -7469,7 +7520,10 @@ func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason stri
 		},
 	)
 	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-	entry := clIface.(*clientEntry)
+	entry, ok := clIface.(*clientEntry)
+	if !ok {
+		panic("BUG: not2 of *clientEntry type")
+	}
 	atomic.StoreInt64(&entry.lastSeen, now) // Bump the activity clock
 	if !entry.limiter.Allow() {
 		return false, clientRateLimitExceeded
@@ -7513,7 +7567,11 @@ func (s *goCacheStore) Get(key string) (CacheEntry, bool) {
 	if !ok {
 		return CacheEntry{}, false
 	}
-	return v.(CacheEntry), true
+	if entry, ok := v.(CacheEntry); ok {
+		return entry, true
+	} else {
+		panic("BUG: not of CacheEntry type")
+	}
 }
 
 func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
@@ -8453,7 +8511,13 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 	for {
 		log3 := s.getLogger()
 		// 2. Grab a buffer pointer from the pool
-		bufPtr := udpPool.Get().(*[]byte)
+		bufPtr, ok := udpPool.Get().(*[]byte)
+		if !ok {
+			panic("BUG: not of *[]byte type")
+		}
+		if bufPtr == nil {
+			panic("BUG: somehow stored a nil in cache")
+		}
 		buf := *bufPtr
 
 		n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
@@ -8551,7 +8615,7 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 				slog.Int("max_concurrent", cap(sem)),
 				SafeAddr("rejected_client", conn.RemoteAddr()),
 			)
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 			continue
 		}
 
@@ -8581,8 +8645,11 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 		s.shutdownWG.Add(1)
 		go func(c net.Conn, pCtx context.Context, rel func()) {
 			defer s.shutdownWG.Done() // This fires when handleTCP returns
-			defer rel()               // always release the slot
-			defer c.Close()
+
+			defer rel() // always release the slot
+
+			defer c.Close() //nolint:errcheck // best-effort close, nothing to do on error
+
 			s.handleTCP(pCtx, c)
 		}(conn, tcpPacketCtx, release)
 	}
@@ -8615,12 +8682,12 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 	log.Debug("Attempting TCP bind for DNS listener...")
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
 	if err != nil {
-		udpConn.Close()
+		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		return nil, fmt.Errorf("invalid TCP address %q: %w", addr, err)
 	}
 	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
 	if err != nil {
-		udpConn.Close()
+		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		return nil, fmt.Errorf("TCP bind/listen failed for %q: %w", addr, err)
 	}
 
@@ -8631,8 +8698,10 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 	go func() {
 		defer inst.wg.Done()
 		<-instCtx.Done()
-		udpConn.Close()
-		tcpLn.Close() // This wakes up Accept() with an error safely
+		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
+
+		// This wakes up Accept() with an error safely
+		tcpLn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 	}()
 
 	inst.wg.Add(1)
@@ -8732,7 +8801,9 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		// Give it a max of 3 seconds to finish existing requests before force closing
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second) //TODO: const or configurable in config.json ?
 		defer cancelDown()
-		_ = srv.Shutdown(shutdownCtx) // this returns
+		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && err != context.Canceled {
+			log.Warn("DoH server shutdown error", SafeErr(err))
+		}
 	}()
 
 	inst.wg.Add(1)
@@ -8740,7 +8811,8 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	go func() {
 		defer inst.wg.Done()
 		defer s.shutdownWG.Done() // Signal the server is officially stopped
-		defer listener.Close()    // Graceful close on shutdown
+		// Graceful close on shutdown
+		defer listener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.getLogger().Error("doh_serve_failed", SafeErr(err), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("DoH server failed on %q: %w", addr, err)
@@ -8927,7 +8999,9 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		log.Debug("Shutting down Web UI listener instance...", slog.String("addr", addr))
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
-		_ = srv.Shutdown(shutdownCtx) // this returns
+		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && err != context.Canceled {
+			log.Warn("webUI server shutdown error", SafeErr(err))
+		}
 	}()
 
 	inst.wg.Add(1)
@@ -8935,7 +9009,8 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	go func() {
 		defer inst.wg.Done()
 		defer s.shutdownWG.Done()
-		defer finalListener.Close() // Graceful close
+		// Graceful close
+		defer finalListener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err2 := srv.Serve(finalListener); err2 != nil && err2 != http.ErrServerClosed {
 			log := s.getLogger()
 			log.Error("ui_serve_failed", SafeErr(err2), slog.String("addr", addr))
