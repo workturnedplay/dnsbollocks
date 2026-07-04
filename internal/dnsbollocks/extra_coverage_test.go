@@ -136,18 +136,32 @@ func TestBlockResponse_Drop(t *testing.T) {
 	}
 }
 
-func TestBlockResponse_UnknownModeFallsBackToNXDOMAIN(t *testing.T) {
+func TestBlockResponse_UnknownModePanics(t *testing.T) {
+	t.Parallel()
+
 	cfg := defaultConfig()
 	cfg.BlockMode = "totally-not-a-real-mode"
+
 	s := newBlockTestServer(cfg)
 
-	resp := s.blockResponse(newBlockQuery(dns.TypeA, "blocked.example.com"))
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if resp.Rcode != dns.RcodeNameError {
-		t.Errorf("expected fallback to NXDOMAIN, got %d", resp.Rcode)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("expected panic(string), got %T (%v)", r, r)
+		}
+
+		const want = "BUG: validated BlockMode reached impossible value"
+		if !strings.Contains(msg, want) {
+			t.Fatalf("panic message %q does not contain %q", msg, want)
+		}
+	}()
+
+	_ = s.blockResponse(newBlockQuery(dns.TypeA, "blocked.example.com"))
 }
 
 func TestBlockResponse_EDE(t *testing.T) {
@@ -498,7 +512,10 @@ func TestRotatingLogWriter_WriteAndRotate(t *testing.T) {
 	// Add this immediately after initialization to ensure cleanup
 	defer func() {
 		if w.file != nil {
-			w.file.Close()
+			err2 := w.file.Close()
+			if err2 != nil {
+				t.Fatalf("file close failed, err:%v", err2)
+			}
 		}
 	}()
 

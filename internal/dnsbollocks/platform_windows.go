@@ -175,7 +175,7 @@ type Config struct {
 	CacheNegativeTTLSec int `json:"cache_negative_ttl_sec"`
 
 	//this is the TTL set in the DNS packet, so tells OS how long to cache this
-	BlockedResponseTTLSec int `json:"blocked_response_ttl_sec"`
+	BlockedResponseTTLSec uint32 `json:"blocked_response_ttl_sec"`
 
 	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec"`
 
@@ -2647,8 +2647,8 @@ func (s *Server) loadConfig() error {
 	if err != nil {
 		return err
 	}
-	if err = s.loadLocalHosts(); err != nil {
-		return err
+	if err2 := s.loadLocalHosts(); err2 != nil {
+		return err2
 	}
 
 	return nil
@@ -4150,9 +4150,9 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 
 	//in Go, implicit 'break' after each 'case'
 	switch cfg.BlockMode { //XXX: it's already lowercased!
-	case "nxdomain":
+	case blockModeNXDOMAIN:
 		msg.SetRcode(msg, dns.RcodeNameError) // this is NXDOMAIN
-	case "ip_block", "block_ip", "ipblock", "blockip":
+	case blockModeIPBlock: //, "block_ip", "ipblock", "blockip":
 		ttl := uint32(cfg.BlockedResponseTTLSec)
 		qtype := msg.Question[0].Qtype
 		switch qtype {
@@ -4180,13 +4180,14 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 			msg.SetRcode(msg, dns.RcodeSuccess)
 		}
 
-	case "drop":
+	case blockModeDrop:
 		return nil
 	default:
-		log := s.getLogger()
-		log.Warn("Unknown BlockMode in config file, falling back to NXDOMAIN", slog.String("blockmode", cfg.BlockMode))
-		// fallback to nxdomain
-		msg.SetRcode(msg, dns.RcodeNameError)
+		panic2(fmt.Sprintf("BUG: validated BlockMode reached impossible value, %q", cfg.BlockMode))
+		// log := s.getLogger()
+		// log.Warn("Unknown BlockMode in config file, falling back to NXDOMAIN", slog.String("blockmode", cfg.BlockMode))
+		// // fallback to nxdomain
+		// msg.SetRcode(msg, dns.RcodeNameError)
 	}
 
 	msg.Authoritative = true
@@ -9822,11 +9823,11 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 
 	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))
-	if was := resolvedCfg.BlockedResponseTTLSec; was < 0 {
+	if was := resolvedCfg.BlockedResponseTTLSec; was <= 0 { // so 0 means defaults hmm... TODO: shall we do this for others too? < 0 is defaults for some others
 		fallback := defaultCfg.BlockedResponseTTLSec
 		resolvedCfg.BlockedResponseTTLSec = fallback
 		rawCfg.BlockedResponseTTLSec = fallback
-		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
 	tagLocalHostsOverrideTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec))
@@ -9904,8 +9905,33 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 
 	resolvedCfg.BlockMode = strings.ToLower(resolvedCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	switch resolvedCfg.BlockMode {
+	case blockModeNXDOMAIN:
+		// already canonical
+
+	case blockModeIPBlock:
+		// already canonical
+
+	case "block_ip", "ipblock", "blockip": //aka aliases
+		resolvedCfg.BlockMode = blockModeIPBlock
+		shouldSaveConfig = true
+
+	case blockModeDrop:
+		// already canonical
+
+	default:
+		msg := fmt.Sprintf("Unknown BlockMode %q in config file %q, must be one of these: %q, %q, %q",
+			resolvedCfg.BlockMode,
+			configFileName,
+			blockModeNXDOMAIN,
+			blockModeIPBlock,
+			blockModeDrop,
+		)
+		log.Error(msg, slog.String("blockmode", resolvedCfg.BlockMode))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
+	}
 	rawCfg.BlockMode = resolvedCfg.BlockMode
-	//TODO: ensure only valid values are used here for config.BlockMode or warn/exit!
+	//doneTODO: ensure only valid values are used here for config.BlockMode or warn/exit!
 
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
@@ -10054,3 +10080,9 @@ func NormalizeDomain(s string) string {
 	// }
 	return s
 }
+
+const (
+	blockModeNXDOMAIN = "nxdomain"
+	blockModeIPBlock  = "ip_block"
+	blockModeDrop     = "drop"
+)

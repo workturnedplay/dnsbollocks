@@ -7,6 +7,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -595,5 +597,320 @@ func TestConfigCloneReferenceFieldListHasNoStaleEntries(t *testing.T) {
 		if _, ok := fields[name]; !ok {
 			t.Fatalf("%q is listed in cloneReferenceFields but is no longer a reference-type field", name)
 		}
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUITLSPromotion(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.ListenUI = "0.0.0.0:5380"
+	cfg.WebUIUseTLS = false
+	cfg.WebUIForceTLSOnNonLocalhost = true
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	if !modified {
+		t.Fatal("expected modified=true")
+	}
+
+	if !resolved.WebUIUseTLS {
+		t.Fatal("resolved config was not promoted to TLS")
+	}
+
+	if !raw.WebUIUseTLS {
+		t.Fatal("raw config was not promoted to TLS")
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUITLSNotPromotedOnLoopback(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.ListenUI = "127.0.0.1:5380"
+	cfg.WebUIUseTLS = false
+	cfg.WebUIForceTLSOnNonLocalhost = true
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	if modified {
+		t.Fatal("expected modified=false")
+	}
+
+	if resolved.WebUIUseTLS {
+		t.Fatal("resolved config unexpectedly enabled TLS")
+	}
+
+	if raw.WebUIUseTLS {
+		t.Fatal("raw config unexpectedly enabled TLS")
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUITLSNotPromotedOnIPv6Loopback(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.ListenUI = "[::1]:5380"
+	cfg.WebUIUseTLS = false
+	cfg.WebUIForceTLSOnNonLocalhost = true
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	if modified {
+		t.Fatal("expected modified=false")
+	}
+
+	if resolved.WebUIUseTLS {
+		t.Fatal("resolved config unexpectedly enabled TLS")
+	}
+
+	if raw.WebUIUseTLS {
+		t.Fatal("raw config unexpectedly enabled TLS")
+	}
+}
+
+func TestSanitizeAndValidateConfig_BlockModeLowercased(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.BlockMode = "Ip_BlocK"
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	const want = "ip_block"
+
+	if resolved.BlockMode != want {
+		t.Fatalf("resolved BlockMode = %q, want %q", resolved.BlockMode, want)
+	}
+
+	if raw.BlockMode != want {
+		t.Fatalf("raw BlockMode = %q, want %q", raw.BlockMode, want)
+	}
+
+	// Today this normalization doesn't request a save.
+	// If that ever changes intentionally, update this expectation.
+	if modified {
+		t.Fatal("expected modified=false")
+	}
+}
+
+func TestSanitizeAndValidateConfig_BlockModeAlreadyLowercase(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.BlockMode = blockModeIPBlock
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	if resolved.BlockMode != blockModeIPBlock {
+		t.Fatal("resolved BlockMode unexpectedly changed")
+	}
+
+	if raw.BlockMode != blockModeIPBlock {
+		t.Fatal("raw BlockMode unexpectedly changed")
+	}
+
+	if modified {
+		t.Fatal("expected modified=false")
+	}
+}
+
+func TestSanitizeAndValidateConfig_BlockModeInvalid(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.BlockMode = "lolnope"
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid BlockMode")
+	}
+
+	if modified {
+		t.Fatal("expected modified=false on validation failure")
+	}
+
+	if resolved.BlockMode != "lolnope" {
+		t.Fatalf("resolved BlockMode changed unexpectedly: %q", resolved.BlockMode)
+	}
+
+	if raw.BlockMode != "lolnope" {
+		t.Fatalf("raw BlockMode changed unexpectedly: %q", raw.BlockMode)
+	}
+}
+
+func TestSanitizeAndValidateConfig_BlockModeAliasesCanonicalized(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"block_ip", "block_ip"},
+		{"ipblock", "ipblock"},
+		{"blockip", "blockip"},
+		{"uppercase", "IPBLOCK"},
+		{"mixed", "BlOcK_iP"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+			cfg := defaultConfig()
+			cfg.BlockMode = tt.input
+
+			resolved := cfg.Clone()
+			raw := cfg.Clone()
+			def := defaultConfig()
+
+			modified, err := sanitizeAndValidateConfig(
+				log,
+				&resolved,
+				&raw,
+				&def,
+				false,
+			)
+			if err != nil {
+				t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+			}
+
+			if !modified {
+				t.Fatal("expected modified=true")
+			}
+
+			const want = blockModeIPBlock
+
+			if resolved.BlockMode != want {
+				t.Fatalf("resolved BlockMode = %q, want %q", resolved.BlockMode, want)
+			}
+
+			if raw.BlockMode != want {
+				t.Fatalf("raw BlockMode = %q, want %q", raw.BlockMode, want)
+			}
+		})
+	}
+}
+
+func TestSanitizeAndValidateConfig_BlockModeCanonical(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := defaultConfig()
+	cfg.BlockMode = blockModeIPBlock
+
+	resolved := cfg.Clone()
+	raw := cfg.Clone()
+	def := defaultConfig()
+
+	modified, err := sanitizeAndValidateConfig(
+		log,
+		&resolved,
+		&raw,
+		&def,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("sanitizeAndValidateConfig() returned error: %v", err)
+	}
+
+	if modified {
+		t.Fatal("expected modified=false")
+	}
+
+	if resolved.BlockMode != blockModeIPBlock {
+		t.Fatalf("resolved BlockMode = %q", resolved.BlockMode)
+	}
+
+	if raw.BlockMode != blockModeIPBlock {
+		t.Fatalf("raw BlockMode = %q", raw.BlockMode)
 	}
 }
