@@ -105,7 +105,7 @@ func TestRecentBlocksTracker(t *testing.T) {
 	tracker.Record("test.com", "AAAA", maxBlocks)
 	tracker.Record("overflow.com", "A", maxBlocks) // This should evict example.com
 
-	snap := tracker.Snapshot(func(d, q string) bool { return false })
+	snap := tracker.Snapshot(func(_, _ string) bool { return false })
 
 	if len(snap) != 2 {
 		t.Fatalf("Expected snapshot length to cap at %d, got %d", maxBlocks, len(snap))
@@ -119,7 +119,7 @@ func TestRecentBlocksTracker(t *testing.T) {
 	time.Sleep(1 * time.Millisecond) // Ensure time diff
 	tracker.Record("test.com", "AAAA", maxBlocks)
 
-	snap = tracker.Snapshot(func(d, q string) bool { return false })
+	snap = tracker.Snapshot(func(_, _ string) bool { return false })
 	if len(snap) != 2 || snap[0].Domain != "test.com" {
 		t.Errorf("Expected test.com to move to the front, got %s at index 0", snap[0].Domain)
 	}

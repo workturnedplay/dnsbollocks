@@ -88,7 +88,7 @@ func TestAdminUI_RulesHandlerSaveCallback(t *testing.T) {
 		return nil
 	}
 	// Stub out pattern invalidation so it doesn't crash if invoked
-	ui.OnInvalidatePattern = func(p string) {}
+	ui.OnInvalidatePattern = func(_ string) {}
 
 	// Simulate an authorized POST request containing form data to add a rule
 	// formData := url.Values{}

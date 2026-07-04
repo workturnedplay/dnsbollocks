@@ -1413,10 +1413,12 @@ func NewColoredConsoleHandler(level slog.Level, logger *slog.Logger) slog.Handle
 }
 
 func (h *ColoredConsoleHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	_ = ctx
 	return level >= h.Level
 }
 
 func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error {
+	_ = ctx
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
 
@@ -1853,22 +1855,7 @@ type loginRecord struct {
 	lockedUntil time.Time // zero value means no active lockout
 }
 
-/*
-NOTES:
-DNS query uses only the ASCII form:
-
-	letters a–z
-	digits 0–9
-	hyphen -
-	dot .
-
-What this enforces:
-
-	Labels don’t start or end with -
-	Labels ≤ 63 chars
-	Total length ≤ 253 chars
-	ASCII-only DNS reality
-*/
+// ---- old slow way
 var dnsNameRE = regexp.MustCompile(
 	`^(?i)([a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?$`,
 )
@@ -1880,6 +1867,28 @@ func isValidDNSName1(s string) bool {
 	return dnsNameRE.MatchString(s)
 }
 
+// sanitizeDomainInput removes any characters not explicitly allowed.
+// Safe for logs and DNS-related handling.
+func sanitizeDomainInput1(input string) (sanitized string, modified bool) {
+	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
+
+	var b strings.Builder
+	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
+
+	for _, r := range input {
+		if strings.ContainsRune(allowed, r) {
+			b.WriteRune(r)
+		}
+	}
+
+	sanitized = b.String()
+	modified = sanitized != input
+	// Uses named returns — do not return explicit values. like: return "something", modified
+	return
+}
+
+// ---- END of --- old slow way
+
 // Helper for the fast-path parser
 func isLetterOrDigit(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
@@ -1890,6 +1899,24 @@ func isLetterDigitOrUnderscore(c byte) bool {
 	return isLetterOrDigit(c) || c == '_'
 }
 
+/*
+NOTES:
+DNS query uses only the ASCII form:
+
+	letters a–z
+	digits 0–9
+	hyphen -
+	underscore _
+	dot .
+
+What this enforces:
+
+	Labels don’t start or end with -
+	Labels can start or end with _
+	Labels ≤ 63 chars
+	Total length ≤ 253 chars
+	ASCII-only DNS reality
+*/
 func isValidDNSName(s string) bool {
 	l := len(s)
 	if l == 0 || l > 253 {
@@ -1934,26 +1961,6 @@ func isValidDNSName(s string) bool {
 		}
 	}
 	return true
-}
-
-// sanitizeDomainInput removes any characters not explicitly allowed.
-// Safe for logs and DNS-related handling.
-func sanitizeDomainInput1(input string) (sanitized string, modified bool) {
-	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
-
-	var b strings.Builder
-	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
-
-	for _, r := range input {
-		if strings.ContainsRune(allowed, r) {
-			b.WriteRune(r)
-		}
-	}
-
-	sanitized = b.String()
-	modified = sanitized != input
-	// Uses named returns — do not return explicit values. like: return "something", modified
-	return
 }
 
 func sanitizeDomainInput(input string) (sanitized string, modified bool) {
@@ -4829,6 +4836,7 @@ func formatColorTags(s string, baseColor string) string {
 
 // stripColorTags will be used by the JSON (File) handlers to strip out <color> tags entirely
 var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
+	_ = groups
 	if a.Value.Kind() == slog.KindString {
 		str := a.Value.String()
 		if strings.Contains(str, "<") {
@@ -8434,6 +8442,7 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 
 	// Flush existing per-client limiters so they immediately pick up the new config
 	rl.clients.Range(func(key, value any) bool {
+		_ = value
 		rl.clients.Delete(key)
 		return true
 	})

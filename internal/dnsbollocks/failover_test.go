@@ -75,10 +75,10 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	t.Run("Primary Success", func(t *testing.T) {
 		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
-			createMockUpstream("https://primary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return makeDoHResponse(), nil
 			}),
-			createMockUpstream("https://secondary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://secondary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				t.Fatal("Secondary should not be called if primary succeeds immediately")
 				return nil, errors.New("should not be reached")
 			}),
@@ -103,10 +103,10 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	t.Run("Primary Fails, Falls back to Secondary", func(t *testing.T) {
 		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
-			createMockUpstream("https://primary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return nil, errors.New("simulated timeout/failure")
 			}),
-			createMockUpstream("https://secondary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://secondary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return makeDoHResponse(), nil
 			}),
 		}
@@ -135,10 +135,10 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	t.Run("Global Blackout", func(t *testing.T) {
 		fs := NewFailoverSelector(&liveDiscardLogger)
 		upstreams := []Upstream{
-			createMockUpstream("https://primary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return nil, errors.New("fail")
 			}),
-			createMockUpstream("https://secondary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://secondary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return nil, errors.New("fail")
 			}),
 		}
@@ -168,11 +168,11 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 		var primaryCalled atomic.Bool
 
 		upstreams := []Upstream{
-			createMockUpstream("https://primary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				primaryCalled.Store(true)
 				return makeDoHResponse(), nil
 			}),
-			createMockUpstream("https://secondary.com", discardLogger, func(req *http.Request) (*http.Response, error) {
+			createMockUpstream("https://secondary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				// Add slight delay to ensure primary probe finishes first and proves the race condition works
 				time.Sleep(10 * time.Millisecond)
 				return makeDoHResponse(), nil

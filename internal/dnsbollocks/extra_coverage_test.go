@@ -221,12 +221,12 @@ func TestBlockResponse_ClampsUDPSizeToClientAdvertised(t *testing.T) {
 
 func TestBlacklistStore_TryEdit(t *testing.T) {
 	store := newBlacklistStore()
-	_, cidrA, _ := net.ParseCIDR("10.0.0.0/8")
-	_, cidrB, _ := net.ParseCIDR("192.168.0.0/16")
+	_, cidrA, _ := net.ParseCIDR("10.0.0.0/8")     //nolint:errcheck // IP is already valid
+	_, cidrB, _ := net.ParseCIDR("192.168.0.0/16") //nolint:errcheck // IP is already valid
 	store.TryAdd(cidrA)
 	store.TryAdd(cidrB)
 
-	_, newNet, _ := net.ParseCIDR("172.16.0.0/12")
+	_, newNet, _ := net.ParseCIDR("172.16.0.0/12") //nolint:errcheck // IP is already valid
 	if err := store.TryEdit("10.0.0.0/8", newNet); err != nil {
 		t.Fatalf("unexpected error editing entry: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestBlacklistStore_TryEdit(t *testing.T) {
 		t.Error("expected error editing nonexistent entry")
 	}
 
-	_, conflictNet, _ := net.ParseCIDR("192.168.0.0/16")
+	_, conflictNet, _ := net.ParseCIDR("192.168.0.0/16") //nolint:errcheck // IP is already valid
 	if err := store.TryEdit("172.16.0.0/12", conflictNet); err == nil {
 		t.Error("expected error editing to a CIDR that already exists elsewhere in the store")
 	}
@@ -252,16 +252,16 @@ func TestBlacklistStore_TryEdit(t *testing.T) {
 
 func TestBlacklistStore_CheckMatches(t *testing.T) {
 	store := newBlacklistStore()
-	_, cidrA, _ := net.ParseCIDR("10.0.0.0/8")
+	_, cidrA, _ := net.ParseCIDR("10.0.0.0/8") //nolint:errcheck // IP is already valid
 	store.TryAdd(cidrA)
 
-	_, sub, _ := net.ParseCIDR("10.1.0.0/16")
+	_, sub, _ := net.ParseCIDR("10.1.0.0/16") //nolint:errcheck // IP is already valid
 	matches := store.CheckMatches(sub)
 	if len(matches) != 1 || matches[0] != "10.0.0.0/8" {
 		t.Errorf("expected match against 10.0.0.0/8, got %v", matches)
 	}
 
-	_, unrelated, _ := net.ParseCIDR("172.16.0.0/12")
+	_, unrelated, _ := net.ParseCIDR("172.16.0.0/12") //nolint:errcheck // IP is already valid
 	matches = store.CheckMatches(unrelated)
 	if len(matches) != 0 {
 		t.Errorf("expected no matches for unrelated CIDR, got %v", matches)
@@ -304,6 +304,7 @@ func TestRecentBlocksTracker_Snapshot_IsUnblockedFlag(t *testing.T) {
 	tracker.Record("unblocked.example.com", "A", 10)
 
 	snap := tracker.Snapshot(func(domain, qtype string) bool {
+		_ = qtype
 		return domain == "unblocked.example.com"
 	})
 
@@ -554,7 +555,7 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 	t.Run("GET sets cookie and passes through", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.csrfMiddleware(next)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -577,7 +578,7 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 	t.Run("POST without token is rejected", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.csrfMiddleware(next)
 
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("foo=bar"))
@@ -595,7 +596,7 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 	t.Run("POST with matching cookie+form token passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.csrfMiddleware(next)
 
 		token := "test-token-value"
@@ -617,7 +618,7 @@ func TestAdminUI_OriginValidationMiddleware(t *testing.T) {
 
 	newHandler := func(ui *AdminUI) (http.Handler, *bool) {
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		return ui.originValidationMiddleware(host, true /* useTLS */, next), &called
 	}
 
@@ -725,7 +726,7 @@ func TestAdminUI_HostValidationMiddleware(t *testing.T) {
 	t.Run("matching host passes", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.hostValidationMiddleware(expectedHost, next)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -739,7 +740,7 @@ func TestAdminUI_HostValidationMiddleware(t *testing.T) {
 	t.Run("mismatched host is blocked", func(t *testing.T) {
 		ui, rec := setupTestAdminUI(t)
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.hostValidationMiddleware(expectedHost, next)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -757,7 +758,7 @@ func TestAdminUI_HostValidationMiddleware(t *testing.T) {
 func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 	mkHandler := func(ui *AdminUI) (http.Handler, *bool) {
 		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		return ui.fetchMetadataWhitelistMiddleware(next), &called
 	}
 
@@ -812,7 +813,7 @@ func TestAdminUI_FetchMetadataWhitelistMiddleware(t *testing.T) {
 
 func TestAdminUI_SecurityHeadersMiddleware(t *testing.T) {
 	ui, rec := setupTestAdminUI(t)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _ = r })
 	h := ui.securityHeadersMiddleware(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
