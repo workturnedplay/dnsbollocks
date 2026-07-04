@@ -69,6 +69,36 @@ func TestValidateRulePattern2(t *testing.T) {
 		wantErr string
 	}{
 		{
+			name:    "lowercase check happens before illegal character check",
+			pattern: "Example/com",
+			wantErr: "pattern must be lowercase",
+		},
+		{
+			name:    "illegal character after lowercase passes",
+			pattern: "example/com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "uppercase takes precedence over illegal characters",
+			pattern: "Example/com",
+			wantErr: "pattern must be lowercase",
+		},
+		{
+			name:    "uppercase unicode takes precedence over illegal characters",
+			pattern: "Éxample.com",
+			wantErr: "pattern must be lowercase",
+		},
+		{
+			name:    "only illegal characters when already lowercase",
+			pattern: "example .com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "only illegal characters when already lowercase",
+			pattern: "éxample.com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
 			name:    "valid hostname",
 			pattern: "example.com",
 		},
