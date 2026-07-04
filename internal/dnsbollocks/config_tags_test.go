@@ -189,7 +189,7 @@ func TestResolveConfigTags(t *testing.T) {
 
 	// Error case: unresolvable token.
 	bad := &Config{WebUIPasswordHash: "{env:DOES_NOT_EXIST_123456}"}
-	if _, err := resolveConfigTags(bad); err == nil {
+	if _, err2 := resolveConfigTags(bad); err2 == nil {
 		t.Error("expected error for missing env var, got nil")
 	}
 	// bad must still be unmodified after an error.
@@ -199,9 +199,9 @@ func TestResolveConfigTags(t *testing.T) {
 
 	// No tokens → resolved is a clean clone with no mutations.
 	plain := &Config{ListenDNS: "127.0.0.1:53"}
-	resolvedPlain, err := resolveConfigTags(plain)
-	if err != nil {
-		t.Fatalf("unexpected error for plain config: %v", err)
+	resolvedPlain, err3 := resolveConfigTags(plain)
+	if err3 != nil {
+		t.Fatalf("unexpected error for plain config: %v", err3)
 	}
 	if resolvedPlain.ListenDNS != plain.ListenDNS {
 		t.Errorf("resolvedPlain.ListenDNS = %q, want %q", resolvedPlain.ListenDNS, plain.ListenDNS)

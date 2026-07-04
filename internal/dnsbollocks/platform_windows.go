@@ -8653,8 +8653,8 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		log.Debug("Shutting down Web UI listener instance...", slog.String("addr", addr))
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
-		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && err != context.Canceled {
-			log.Warn("webUI server shutdown error", SafeErr(err))
+		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && err2 != context.Canceled {
+			log.Warn("webUI server shutdown error", SafeErr(err2))
 		}
 	}()
 
