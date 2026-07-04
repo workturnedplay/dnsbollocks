@@ -640,7 +640,7 @@ func (s *Server) loadResponseBlacklist() error {
 
 	blacklistFileName := cfg.BlacklistFile
 	if blacklistFileName == "" {
-		panic("dev. didn't set the default blacklist filename!")
+		panic("BUG: dev. didn't set the default blacklist filename!")
 	}
 	blacklistFileName = filepath.Clean(blacklistFileName)
 	s.fileWriter.CheckPowerLossFile(blacklistFileName)
@@ -824,7 +824,7 @@ func (s *Server) loadLocalHosts() error {
 
 	hostsFileName := cfg.HostsFile
 	if hostsFileName == "" {
-		panic("dev: didn't set the default hosts filename!")
+		panic("BUG: didn't set the default hosts filename!")
 	}
 	hostsFileName = filepath.Clean(hostsFileName)
 	s.fileWriter.CheckPowerLossFile(hostsFileName)
@@ -1090,7 +1090,7 @@ func (s *Server) loadQueryWhitelist() error {
 
 	whitelistFileName := cfg.WhitelistFile
 	if whitelistFileName == "" {
-		panic("dev. didn't set the default whitelist filename!")
+		panic("BUG: dev. didn't set the default whitelist filename!")
 	}
 	whitelistFileName = filepath.Clean(cfg.WhitelistFile)
 	s.fileWriter.CheckPowerLossFile(whitelistFileName)
@@ -2023,7 +2023,7 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 		ui.OnShutdown(1) // Exit code 1 for crashes/errors
 		panic("BUG: AdminUI.OnShutdown returned but is designed to terminate execution")
 	} else {
-		panic("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+		panic("BUG: Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
 	}
 }
 
@@ -2452,7 +2452,7 @@ func (s *Server) loadMainConfig() error {
 		// We decode into a map just to see which keys exist in the JSON.
 		var presentKeys map[string]any
 		if err2 := json.Unmarshal(data, &presentKeys); err2 != nil {
-			panic(fmt.Errorf("shouldn't happen since decoding into Config worked! err:%w", err2))
+			panic(fmt.Errorf("BUG: shouldn't happen since decoding into Config worked! err:%w", err2))
 			//return err
 		}
 
@@ -3050,7 +3050,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 	// Simple rotation on each log line write (respects your LogMaxSizeMB)
 	openLog := func(path string) io.Writer {
 		if path == "" {
-			panic("empty logging filename: '" + path + "'")
+			panic("BUG: empty logging filename: '" + path + "'")
 		}
 		path = filepath.Clean(path)
 
@@ -3144,10 +3144,10 @@ func isLowerASCII(s string) bool {
 // it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
 func matchPattern(pattern, name string) bool {
 	if !isLowerASCII(pattern) {
-		panic("pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
+		panic("BUG: pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
 	}
 	if !isLowerASCII(name) {
-		panic("name was " + name + " which isn't lowercased, so bad coding somewhere!")
+		panic("BUG: name was " + name + " which isn't lowercased, so bad coding somewhere!")
 	}
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
@@ -3385,7 +3385,7 @@ func (s *Server) generateCertIfNeeded() {
 func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, hosts []string) error {
 	log := s.getLogger()
 	if certFileNameNoPath == "" || keyFileNameNoPath == "" {
-		panic("unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
+		panic("BUG: unexpected empty filename(s) for cert,key: '" + certFileNameNoPath + "','" + keyFileNameNoPath + "'")
 	}
 	if len(hosts) == 0 {
 		panic("BUG: generateCert: hosts slice is empty — nothing to put in the SAN")
@@ -3589,7 +3589,7 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	log := s.getLogger()
 
 	if clientAddr == nil {
-		panic("nil ClientAddr in handleUDP, not possible?!")
+		panic("BUG: nil ClientAddr in handleUDP, not possible?!")
 	}
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
@@ -3756,7 +3756,7 @@ func getSecureID() uint16 {
 	// It's safer to crash than to serve insecure/predictable DNS.
 	// If we reach this point, the system CSPRNG is failing.
 	// Panic is the safest security choice for a DNS proxy.
-	panic("critical system error: failed to generate secure random entropy")
+	panic("BUG: critical system error: failed to generate secure random entropy")
 }
 
 type CacheEntry struct {
@@ -3777,7 +3777,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		remoteHost = r.RemoteAddr
 	}
 	if net.ParseIP(remoteHost) == nil {
-		panic("dohHandler: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
+		panic("BUG: dohHandler: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
 	}
 
 	// 1. Identify the client immediately, before replying.
@@ -4582,10 +4582,10 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, c
 	//log := s.getLogger()
 
 	if msg == nil {
-		panic("msg was nil, unexpected bad programming/code ;p")
+		panic("BUG: msg was nil, unexpected bad programming/code ;p")
 	}
 	if len(msg.Question) == 0 {
-		panic("no DNS question! unexpected bad programming/code ;p")
+		panic("BUG: no DNS question! unexpected bad programming/code ;p")
 	}
 
 	q := msg.Question[0]
@@ -6399,7 +6399,7 @@ func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Log
 		logger.Warn("UUID collision in generateUniqueRuleID, regenerating",
 			slog.String("id", id), slog.Int("try", try), slog.Int("max_tries", triesOnCollision))
 	}
-	panic(fmt.Sprintf("UUID collision limit reached(after %d retries) — check RNG or storage", triesOnCollision-1))
+	panic(fmt.Sprintf("BUG: UUID collision limit reached(after %d retries) — check RNG or storage", triesOnCollision-1))
 }
 
 // withRulePrepended safely inserts a new RuleEntry at the beginning of a slice
@@ -7341,7 +7341,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 				remoteHostAuth = r.RemoteAddr
 			}
 			if net.ParseIP(remoteHostAuth) == nil {
-				panic("authMiddleware: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
+				panic("BUG: authMiddleware: net.ResolveTCPAddr requires an IP. r.RemoteAddr is not a valid IP: " + r.RemoteAddr)
 			}
 
 			if remoteTCP, tcpErr := net.ResolveTCPAddr("tcp", r.RemoteAddr); tcpErr == nil {
@@ -7674,7 +7674,7 @@ func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
 		powerlossFileExtension, powerlossFileExtension,
 	)
 	log.Error(logmsg)
-	panic(logmsg)
+	panic(logmsg) //FIXME: ? the errors/args are embedded in the msg
 }
 
 // powerlossFileExtension any saved file with this extension means power-loss (or panic in code?) occurred in a very tiny window and thus this is your potentially safe config and should be manually investigated for restoration purposes esp. if the main file is 0 bytes.
@@ -7952,13 +7952,13 @@ type UpstreamManager struct {
 
 func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int)) *UpstreamManager {
 	if serverCtx == nil {
-		panic("NewUpstreamManager: nil serverCtx")
+		panic("BUG: NewUpstreamManager: nil serverCtx")
 	}
 	if liveConfig == nil {
-		panic("NewUpstreamManager: nil liveConfig pointer")
+		panic("BUG: NewUpstreamManager: nil liveConfig pointer")
 	}
 	if liveLogger == nil {
-		panic("NewUpstreamManager: nil liveLogger pointer")
+		panic("BUG: NewUpstreamManager: nil liveLogger pointer")
 	}
 	um := &UpstreamManager{
 		serverCtx:  serverCtx,
@@ -8255,7 +8255,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 			um.OnShutdown(1) // Exit code 1 for crashes/errors
 			panic("BUG: UpstreamManager.OnShutdown returned but is designed to terminate execution")
 		} else {
-			panic("Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
+			panic("BUG: Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
 		}
 	}
 	log.Debug("Upstreams (re)validated",
@@ -8540,7 +8540,6 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 
 		if n > len(buf) {
 			udpPool.Put(bufPtr) // Clean up before panicking
-			// panic(fmt.Sprintf("n>len(buf) aka %d>%d", n, len(buf)))
 			log3.Error("BUG: ReadFromUDP returned n > dns_udp_buffer_size (from config); dropping packet",
 				slog.Int("n", n),
 				slog.Int("dns_udp_buffer_size", len(buf)),
@@ -8667,7 +8666,7 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 		addrHost = addr
 	}
 	if net.ParseIP(addrHost) == nil {
-		panic("startDNSListenerInstance: listener bind address must be a valid IP literal: " + addr)
+		panic("BUG: startDNSListenerInstance: listener bind address must be a valid IP literal: " + addr)
 	}
 	// Assuming addr is a string like "127.0.0.1:53"
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
@@ -9020,7 +9019,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	// Split the address for the logger to maintain your existing clean log output
 	host, portStr, err := net.SplitHostPort(boundAddr)
 	if err != nil {
-		panic(fmt.Errorf("this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
+		panic(fmt.Errorf("BUG: this wasn't supposed to fail, boundAddr=%s err:%w", boundAddr, err))
 	}
 	log := s.getLogger()
 	log.Info("Web UI listening",
