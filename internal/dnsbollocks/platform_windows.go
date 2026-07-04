@@ -948,7 +948,7 @@ func (s *Server) loadLocalHosts() error {
 		// Normalize pattern the same way the WebUI does: trim whitespace, strip
 		// trailing FQDN dot, lowercase.  Track whether anything actually changed
 		// so we can rewrite the file if needed.
-		normalizedPat := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(pat, ".")))
+		normalizedPat := NormalizeDomain(pat)
 		if normalizedPat != pat {
 			log.Warn("Normalized host pattern",
 				slog.String("before", pat),
@@ -1221,7 +1221,7 @@ func (s *Server) loadQueryWhitelist() error {
 			seenIDs[r.ID] = struct{}{}
 
 			//lowercase it and strip the dot at the end:
-			new2 := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.Pattern, ".")))
+			new2 := NormalizeDomain(r.Pattern)
 			if new2 != r.Pattern {
 				log.Warn("Changed rule pattern", slog.Any("new_pattern", new2), slog.String("old_pattern", r.Pattern), slog.Any("original_rule", r))
 				r.Pattern = new2
@@ -5957,7 +5957,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		} //end delete
 
-		patternNormalized := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(r.FormValue("pattern"), "."))) //XXX: must be lowercased for matchPattern later on.
+		patternNormalized := NormalizeDomain(r.FormValue("pattern")) //XXX: must be lowercased for matchPattern later on.
 		typ := r.FormValue("type")
 		id := r.FormValue("id")
 		enabledStr := r.FormValue("enabled")
@@ -10043,4 +10043,16 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 	}
 
 	return original, false
+}
+
+// NormalizeDomain returns a clean, lowercased domain pattern suitable for rules/hosts.
+// Handles trailing dot, whitespace, IDN safety (future).
+func NormalizeDomain(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSuffix(s, ".")
+	// // Future: punycode / IDN validation here
+	// if s == "" {
+	// 	return ""
+	// }
+	return s
 }
