@@ -1,3 +1,8 @@
+todos from grok:
+* Cert generation: generateCertIfNeeded — make sure private key is zeroed after use (defer runtime.KeepAlive or explicit zero).
+* WebUI password: bcrypt cost should be tunable + minimum 12+.
+
+
 todo:
 * add description for each config setting, visible in config.json as well, not just in webUI
 * allow multiple templates(eg. {file:X}) within a string, in config.json

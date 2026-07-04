@@ -532,3 +532,68 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 		}
 	}
 }
+
+var cloneReferenceFields = map[string]struct{}{
+	"UpstreamURLs":         {},
+	"UpstreamSNIHostnames": {},
+	"BlockIPv4Parsed":      {},
+	"BlockIPv6Parsed":      {},
+	"UpstreamURLsParsed":   {},
+	"UpstreamIPs":          {},
+	"UpstreamSNIs":         {},
+}
+
+func TestConfigCloneReferenceFieldCoverage(t *testing.T) {
+	typ := reflect.TypeFor[Config]()
+
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+
+		switch field.Type.Kind() {
+		case reflect.Slice,
+			reflect.Map,
+			reflect.Pointer,
+			reflect.Interface,
+			reflect.Func,
+			reflect.Chan,
+			reflect.UnsafePointer:
+
+			if _, ok := cloneReferenceFields[field.Name]; !ok {
+				t.Fatalf(
+					"Config field %q is a reference type (%v). "+
+						"Update Config.Clone() and cloneReferenceFields.",
+					field.Name,
+					field.Type,
+				)
+			}
+		}
+	}
+}
+
+func TestConfigCloneReferenceFieldListHasNoStaleEntries(t *testing.T) {
+	typ := reflect.TypeFor[Config]()
+
+	fields := make(map[string]struct{})
+
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+
+		switch field.Type.Kind() {
+		case reflect.Slice,
+			reflect.Map,
+			reflect.Pointer,
+			reflect.Interface,
+			reflect.Func,
+			reflect.Chan,
+			reflect.UnsafePointer:
+
+			fields[field.Name] = struct{}{}
+		}
+	}
+
+	for name := range cloneReferenceFields {
+		if _, ok := fields[name]; !ok {
+			t.Fatalf("%q is listed in cloneReferenceFields but is no longer a reference-type field", name)
+		}
+	}
+}

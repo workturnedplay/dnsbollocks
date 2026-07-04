@@ -102,30 +102,28 @@ type Config struct {
 	UpstreamIPs        []string   `json:"-"` // Added: Keeps triplets grouped together
 	UpstreamSNIs       []string   `json:"-"` // Added: Keeps triplets grouped together
 
-	GlobalRateQPS   int `json:"qps_rate_globally"`    // 100
-	GlobalBurstQPS  int `json:"qps_burst_globally"`   // 100
-	ClientRateQPS   int `json:"qps_rate_per_client"`  // 20
-	ClientBurstQPS  int `json:"qps_burst_per_client"` // 50
-	CacheMinTTL     int `json:"cache_min_ttl"`        // 300s
-	CacheMaxEntries int `json:"cache_max_entries"`    // 10000
-	// Whitelist         map[string][]Rule `json:"whitelist"`          // Per-type rules
-	// ResponseBlacklist []string          `json:"response_blacklist"` // CIDR e.g., "127.0.0.1/8"
-	WhitelistFile string `json:"whitelist_file"` // "query_whitelist.json"
-	BlacklistFile string `json:"blacklist_file"` // "response_blacklist.json"
-	HostsFile     string `json:"hosts_file"`     // "hosts2ip.json" XXX: a host has to match the whitelist first before being considered from here!
-	// ConsoleLogLevel controls what appears on the terminal.
-	// Valid values (case-insensitive): "debug", "info", "warn", "error".
-	// Default: "info". Only >= this level is shown on console.
+	GlobalRateQPS   int    `json:"qps_rate_globally"`    // 100
+	GlobalBurstQPS  int    `json:"qps_burst_globally"`   // 100
+	ClientRateQPS   int    `json:"qps_rate_per_client"`  // 20
+	ClientBurstQPS  int    `json:"qps_burst_per_client"` // 50
+	CacheMinTTL     int    `json:"cache_min_ttl"`        // 300s
+	CacheMaxEntries int    `json:"cache_max_entries"`    // 10000
+	WhitelistFile   string `json:"whitelist_file"`       // "query_whitelist.json"
+	BlacklistFile   string `json:"blacklist_file"`       // "response_blacklist.json"
+	HostsFile       string `json:"hosts_file"`           // "hosts2ip.json" XXX: a host has to match the whitelist first before being considered from here!
 	// Full dnsbollocks.log always gets Debug+; queries.log always gets queries.
 	LogQueriesFile    string `json:"log_queries"` // "queries.log", logs only querry
 	LogEverythingFile string `json:"log_file"`    // "dnsbollocks.log" doneTODO: rename this key and the field because it's logging everything!
-	ConsoleLogLevel   string `json:"console_log_level"`
-	LogMaxSizeMB      int    `json:"log_max_size_mb"`    // 1 for rotation
-	AllowRunAsAdmin   bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
+	// ConsoleLogLevel controls what appears on the terminal.
+	// Valid values (case-insensitive): "debug", "info", "warn", "error".
+	// Default: "info". Only >= this level is shown on console.
+	ConsoleLogLevel string `json:"console_log_level"`
+	LogMaxSizeMB    int    `json:"log_max_size_mb"`    // 1 for rotation
+	AllowRunAsAdmin bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
 	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
 	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
-	// NEW: If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
+	// If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
 	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
 	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
 	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
