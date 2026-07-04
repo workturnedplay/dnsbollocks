@@ -210,7 +210,7 @@ func TestUpstreamManager_ValidationPanicOnEmptyURLs(t *testing.T) {
 		if r := recover(); r == nil {
 			t.Errorf("Expected InitDoHClients to panic on invalid config when handler is nil")
 		} else {
-			expectedPanic := "Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
+			expectedPanic := "BUG: Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
 			if r != expectedPanic {
 				t.Errorf("Expected panic message %q, got: %v", expectedPanic, r)
 			}

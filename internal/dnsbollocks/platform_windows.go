@@ -2088,8 +2088,9 @@ func (s *Server) Reload() {
 	if !s.reloadInProgress.CompareAndSwap(false, true) {
 		log.Warn("Reload already in progress")
 		return
+	} else {
+		defer s.reloadInProgress.Store(false)
 	}
-	defer s.reloadInProgress.Store(false)
 
 	log.Debug("Reload triggered...")
 
@@ -4322,8 +4323,9 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		// last attempt produced no response (shouldn't happen), treat as failure
 		log.Error("doh_no_response")
 		return nil, errors.New("no response")
+	} else {
+		defer resp.Body.Close() //nolint:errcheck // best-effort close, nothing to do on error
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
 	body, err4ReadAll := io.ReadAll(resp.Body)
@@ -4378,8 +4380,9 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	if err != nil {
 		log.Error("Diagnostic probe failed", slog.String("addr", addr), SafeErr(err))
 		return
+	} else {
+		defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 	}
-	defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	state := conn.ConnectionState()
 	log.Info("--- TLS Diagnostic Probe ---", slog.String("remote_addr", addr), slog.String("sni_sent", u.SNI))
@@ -7051,15 +7054,16 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return
+	} else {
+		// This defer is critical! It ensures the terminal exits RAW mode
+		// when the goroutine finishes, preventing a corrupted command prompt.
+		defer func() {
+			log2 := s.getLogger()
+			if err := term.Restore(fd, oldState); err != nil {
+				log2.Warn("failed to restore terminal state", SafeErr(err))
+			}
+		}()
 	}
-	// This defer is critical! It ensures the terminal exits RAW mode
-	// when the goroutine finishes, preventing a corrupted command prompt.
-	defer func() {
-		log2 := s.getLogger()
-		if err := term.Restore(fd, oldState); err != nil {
-			log2.Warn("failed to restore terminal state", SafeErr(err))
-		}
-	}()
 
 	buf := make([]byte, 3)
 

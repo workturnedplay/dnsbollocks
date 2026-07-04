@@ -179,7 +179,7 @@ func TestAdminUI_ShutdownPanic(t *testing.T) {
 		if r := recover(); r == nil {
 			t.Errorf("Expected logFatal to panic when OnShutdown is nil, but it did not panic")
 		} else {
-			expectedPanic := "Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
+			expectedPanic := "BUG: Shutdown requested, but no shutdown handler is wired (likely in a test environment)."
 			if r != expectedPanic {
 				t.Errorf("Expected panic message %q, got: %v", expectedPanic, r)
 			}
