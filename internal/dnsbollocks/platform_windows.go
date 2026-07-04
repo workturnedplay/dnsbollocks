@@ -674,7 +674,7 @@ func (s *Server) loadResponseBlacklist() error {
 				log.Error("ExtraSafety: refusing to continue with duplicate blacklist keys",
 					slog.Int("duplicate_count", len(dups)))
 				s.shutdown(5)
-				panic("unreachable")
+				panic("BUG: unreachable")
 			}
 			log.Warn("Continuing despite duplicate blacklist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
 				slog.Int("duplicate_count", len(dups)))
@@ -724,7 +724,7 @@ func (s *Server) loadResponseBlacklist() error {
 		if cfg.ExtraSafety {
 			log.Error("ExtraSafety: Found duplicate CIDRs from blacklist file, it/they could be due to typos so silently removing it/them and overwriting the file might be a mistake!", slog.Int("found_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
 			s.shutdown(5) //XXX: this will exit program here! //FIXME: find a better way to "quit" than exit program here
-			panic("unreachable")
+			panic("BUG: unreachable")
 		} else {
 			log.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
 			parsed = deduped
@@ -763,7 +763,7 @@ func (s *Server) saveResponseBlacklist() error {
 
 	blacklistFileName := cfg.BlacklistFile
 	if blacklistFileName == "" {
-		panic("bad coding: dev. didn't set the default blacklist filename!")
+		panic("BUG: bad coding: dev. didn't set the default blacklist filename!")
 	}
 	if err := s.fileWriter.SafeWriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
@@ -865,7 +865,7 @@ func (s *Server) loadLocalHosts() error {
 			log.Error("ExtraSafety: refusing to continue with duplicate host keys",
 				slog.Int("duplicate_count", len(dups)))
 			s.shutdown(5)
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 		// Non-ExtraSafety: warn loudly but continue; the map will have kept
 		// whichever value the JSON decoder chose (last-write-wins).
@@ -964,7 +964,7 @@ func (s *Server) loadLocalHosts() error {
 			"(fix them manually or set extra_safety to false)",
 			slog.Uint64("removed_count", removed))
 		s.shutdown(5)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 
 	s.hostStore.ReplaceAll(parsed)
@@ -984,6 +984,7 @@ func (s *Server) loadLocalHosts() error {
 }
 
 func (s *Server) saveLocalHosts() error {
+	log := s.getLogger()
 	cfg := s.getConfig()
 
 	var data []byte
@@ -1000,6 +1001,7 @@ func (s *Server) saveLocalHosts() error {
 	if err := s.fileWriter.SafeWriteFile(cfg.HostsFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write hosts file %q: %w", cfg.HostsFile, err)
 	}
+	log.Info("Saved hosts file", slog.String("path", cfg.HostsFile))
 	return nil
 }
 
@@ -1126,7 +1128,7 @@ func (s *Server) loadQueryWhitelist() error {
 			log.Error("ExtraSafety: refusing to continue with duplicate whitelist keys",
 				slog.Int("duplicate_count", len(dups)))
 			s.shutdown(5)
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 		log.Warn("Continuing despite duplicate whitelist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
 			slog.Int("duplicate_count", len(dups)))
@@ -1222,7 +1224,7 @@ func (s *Server) loadQueryWhitelist() error {
 		if removed > 0 {
 			log.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
 			s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 	}
 
@@ -1239,7 +1241,7 @@ func (s *Server) loadQueryWhitelist() error {
 		slog.String("path", whitelistFileName),
 	)
 	if countRules(rulesByType)-removed != hmn {
-		panic("bad coding: lost some rules, shouldn't happen!")
+		panic("BUG: bad coding: lost some rules, shouldn't happen!")
 	}
 
 	if changed > 0 || removed > 0 {
@@ -2006,14 +2008,14 @@ func (s *Server) logFatal(msg string, err error) {
 	log := s.getLogger()
 	log.Error(msg, SafeErr(err))
 	s.shutdown(1)
-	panic("unreachable")
+	panic("BUG: unreachable")
 }
 
 func (s *Server) logFatal2(msg string) {
 	log := s.getLogger()
 	log.Error(msg)
 	s.shutdown(1)
-	panic("unreachable")
+	panic("BUG: unreachable")
 }
 
 func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
@@ -2031,30 +2033,6 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 	}
 }
 
-// func getWebUIPasswordHashJSONTag() string {
-// 	return getJSONTag("WebUIPasswordHash")
-// }
-
-// // getJSONTag looks up a Config struct field by name and extracts its JSON key.
-// // It panics if the field name doesn't exist, preventing silent code drift.
-// func getJSONTag(fieldName string) string {
-// 	field, found := reflect.TypeOf(Config{}).FieldByName(fieldName)
-// 	if !found {
-// 		panic(fmt.Sprintf("DEVELOPER BUG: Field %q does not exist in Config struct", fieldName))
-// 	}
-
-// 	tag := field.Tag.Get("json")
-// 	if tag == "" || tag == "-" {
-// 		panic(fmt.Sprintf("DEVELOPER BUG: Field %q isn't one that's used in the config file %q and shouldn't be attempted...", fieldName, configFileName))
-// 	}
-
-// 	// Handle cases like `json:"my_field,omitempty"` by truncating at the comma
-// 	if idx := strings.Index(tag, ","); idx != -1 {
-// 		return tag[:idx]
-// 	}
-// 	return tag
-// }
-
 // getJSONTagByOffset finds a Config field by its memory offset and extracts its JSON key.
 // Because it uses real field selectors, it is 100% safe for VS Code automated refactoring.
 // example usage: getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
@@ -2068,7 +2046,7 @@ func getJSONTagByOffset(offset uintptr) string {
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
 				//no fallback
-				panic(fmt.Sprintf("DEVELOPER BUG: Field %q isn't one that's used in the config file %q and shouldn't be attempted...", field.Name, configFileName))
+				panic(fmt.Sprintf("BUG: Field %q isn't one that's used in the config file %q and shouldn't be attempted...", field.Name, configFileName))
 				// return strings.ToLower(field.Name) //fallback
 			}
 
@@ -2080,7 +2058,7 @@ func getJSONTagByOffset(offset uintptr) string {
 		}
 	}
 
-	panic(fmt.Sprintf("DEVELOPER BUG: No field found at offset %d in Config struct", offset))
+	panic(fmt.Sprintf("BUG: No field found at offset %d in Config struct", offset))
 }
 
 // OnReload registers an anonymous action to execute when a reload event is triggered
@@ -2118,32 +2096,32 @@ func (s *Server) Reload() {
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
 	if err := s.loadMainConfig(); err != nil {
 		s.logFatal("main config ("+configFileName+") reload failed:", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	} else {
 		log.Debug("main config reloaded", slog.String("filename", configFileName))
 	}
 	cfgNew := s.getConfig()
 	if !cfgNew.AllowRunAsAdmin && isAdmin {
 		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 
 	if err := s.loadQueryWhitelist(); err != nil {
 		s.logFatal("Whitelist ("+cfgNew.WhitelistFile+") reload failed:", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	} else {
 		log.Debug("Whitelist reloaded", slog.String("filename", cfgNew.WhitelistFile))
 	}
 	if err := s.loadResponseBlacklist(); err != nil {
 		s.logFatal("Blacklist ("+cfgNew.BlacklistFile+") reload failed:", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	} else {
 		log.Debug("Blacklist reloaded", slog.String("filename", cfgNew.BlacklistFile))
 	}
 	// Inside watchKeys, in the Ctrl+R lambda block:
 	if err := s.loadLocalHosts(); err != nil {
 		s.logFatal("Hosts ("+cfgNew.HostsFile+") reload failed:", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	} else {
 		log.Debug("Local hosts reloaded", slog.String("filename", cfgNew.HostsFile))
 	}
@@ -2218,14 +2196,14 @@ func (s *Server) Run() error {
 
 		// Triggers your exact sequence: cancels context, waits on WaitGroups, calls os.Exit()
 		s.shutdown(0)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 
 	// Strictly checking the return value (as promised!)
 	ret, _, errCall := procSetConsoleCtrlHandler.Call(windows.NewCallback(consoleCtrlHandler), 1)
 	if ret == 0 {
 		s.logFatal("Failed to register Windows console termination handler", errCall)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	} else {
 		log.Debug("OS console termination handler successfully registered. Handling graceful shutdown for Ctrl+Break as well.")
 	}
@@ -2233,14 +2211,14 @@ func (s *Server) Run() error {
 
 	if err := s.loadConfig(); err != nil {
 		s.logFatal("Config load failed:", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	cfg := s.getConfig() //XXX: after s.loadConfig() !!
 	log.Info("Config loaded", slog.String("file", configFileName))
 
 	if !cfg.AllowRunAsAdmin && isAdmin {
 		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
@@ -2277,7 +2255,7 @@ func (s *Server) Run() error {
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
 			s.shutdown(0) // clean exit
-			panic("unreachable")
+			panic("BUG: unreachable")
 		},
 	)
 
@@ -2291,7 +2269,7 @@ func (s *Server) Run() error {
 		// Proceed to graceful cleanup
 		//cancel()      // Cancel context for graceful close
 		s.shutdown(130) // Ctrl+C / SIGTERM → non-clean exit => exit code 130 (128+2 like in linux)
-		panic("unreachable")
+		panic("BUG: unreachable")
 
 	case err := <-s.errChan:
 		log5 := s.getLogger()
@@ -2300,7 +2278,7 @@ func (s *Server) Run() error {
 		// You can choose to exit(1) here because a vital organ failed
 		//cancel()    // Cancel context for graceful close
 		s.shutdown(3) // some error happened
-		panic("unreachable")
+		panic("BUG: unreachable")
 
 	case <-s.ctx.Done():
 		log6 := s.getLogger()
@@ -2308,7 +2286,7 @@ func (s *Server) Run() error {
 		log6.Info("context cancelled, shutting down")
 		//cancel()    // Cancel context for graceful close, this was already done since we hit this.
 		s.shutdown(4) // some error happened
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 }
 
@@ -2382,13 +2360,13 @@ func OldMain() {
 	if err := srv.Run(); err != nil {
 		mainLogger.Error("Server exited with error", SafeErr(err))
 		srv.shutdown(1)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 
 	mainLogger.Error("unreachable")
 	//cancel()     // Cancel context for graceful close
 	srv.shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
-	panic("unreachable")
+	panic("BUG: unreachable")
 }
 
 const cacheMinTTLClamp = 10 // seconds
@@ -2924,7 +2902,7 @@ func (s *Server) loadMainConfig() error {
 		hash, err2 := promptAndHashPassword(log)
 		if err2 != nil {
 			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 
 		// Update live config instance
@@ -2992,7 +2970,7 @@ func (s *Server) cleanFileName(original, description, fallback string) (string, 
 
 	if original == "" {
 		if fallback == "" {
-			panic(fmt.Sprintf("dev fail: passed empty filename to clean for %q and the fallback was also empty!", description))
+			panic(fmt.Sprintf("BUG: dev fail: passed empty filename to clean for %q and the fallback was also empty!", description))
 		}
 		log.Warn("Bad filename in config, used fallback",
 			slog.String("for_config_key", description),
@@ -3002,7 +2980,7 @@ func (s *Server) cleanFileName(original, description, fallback string) (string, 
 		// Ensure the fallback itself is clean before returning
 		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice, for DRY purposes.
 		if cleaned != fallback {
-			panic(fmt.Sprintf("dev fail: fallback(%q) for config key %q had to be cleaned into %q", fallback, description, cleaned))
+			panic(fmt.Sprintf("BUG: dev fail: fallback(%q) for config key %q had to be cleaned into %q", fallback, description, cleaned))
 		}
 		return cleaned, true
 	}
@@ -3080,7 +3058,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
 			log.Error("cannot open log file", slog.String("file", path), SafeErr(err))
 			s.shutdown(1) // Keep your existing fatal shutdown here if the initial boot fails
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 
 		// We can safely trigger a manual size check/rotation on boot here just in case!
@@ -3372,7 +3350,7 @@ func (s *Server) generateCertIfNeeded() {
 		if err = generateCert(certFile, keyFile, requiredHosts); err != nil {
 			//done: need to unify logging errors in log and on console somehow, this printf and errorLogger thing is a mess.
 			s.logFatal("cert generation failed", err)
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 		s.certGeneration.Add(1) // <-- Increment here instead of returning true
 		// Build proper guidance message based on whether Web UI TLS is enabled
@@ -3397,7 +3375,7 @@ func (s *Server) generateCertIfNeeded() {
 	s.dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		s.logFatal("cert_load_failed", err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	log.Info("Success - loaded into tls.Certificate")
 }
@@ -4164,7 +4142,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	log := u.getLogger()
 
 	if u.Client == nil {
-		panic(fmt.Sprintf("dev fail: dohClient is still nil at calling doSingleDoHRequest! shouldn't happen! upstreamURL=%s SNI=%s", u.URL, u.SNI))
+		panic(fmt.Sprintf("BUG: dev fail: dohClient is still nil at calling doSingleDoHRequest! shouldn't happen! upstreamURL=%s SNI=%s", u.URL, u.SNI))
 	}
 
 	retries := u.Retries //cfg.UpstreamRetriesPerQuery
@@ -4371,7 +4349,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	port := u.URL.Port()
 	if port == "" {
 		//TODO: replace all panics with logFatal() ?
-		panic("dev fail: port is empty but shoulda been set in validateUpstream() to 443")
+		panic("BUG: dev fail: port is empty but shoulda been set in validateUpstream() to 443")
 	}
 	addr := net.JoinHostPort(u.URL.Hostname(), port)
 
@@ -4723,7 +4701,7 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKey
 	}
 
 	//nolint:unreachable  (can't get rid of warning, so i guess not keeping panic here)
-	//panic("some unhandled case fell thru from switch/ifelse?")
+	panic("BUG: some unhandled case fell thru from switch/ifelse?")
 }
 
 func extractIPs(msg *dns.Msg) []string {
@@ -4854,7 +4832,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	log := s.getLogger()
 
 	if ctx == nil {
-		log.Error("bad coding: logQuery called with nil context", // should never happen
+		log.Error("BUG: bad coding: logQuery called with nil context", // should never happen
 			slog.String("client", client),
 			slog.String("domain", domain))
 		return
@@ -5011,7 +4989,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 						log.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
 						if err := ui.OnSaveBlacklist(); err != nil {
 							ui.logFatal("failed to save response blacklist after add from webUI", err)
-							panic("unreachable")
+							panic("BUG: unreachable")
 						}
 						// Instantly evict cached entries that contain the newly blacklisted IP
 						ui.OnInvalidateBlacklist()
@@ -5048,7 +5026,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 						_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
 					}
 					if err2 != nil {
-						panic("impossible" + err2.Error())
+						panic("BUG: impossible" + err2.Error())
 					}
 				}
 			}
@@ -5071,7 +5049,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 			if err := ui.OnSaveBlacklist(); err != nil {
 				ui.logFatal("failed to save response blacklist after edit from webUI", err)
-				panic("unreachable")
+				panic("BUG: unreachable")
 			}
 		case "delete":
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
@@ -5082,7 +5060,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
 				if err := ui.OnSaveBlacklist(); err != nil {
 					ui.logFatal("failed to save response blacklist after delete from webUI", err)
-					panic("unreachable")
+					panic("BUG: unreachable")
 				}
 			} else {
 				log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
@@ -6258,7 +6236,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			ui.OnInvalidatePattern(pattern)
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule deletion from webUI", err)
-				panic("unreachable")
+				panic("BUG: unreachable")
 			}
 			http.Redirect(w, r, "/rules", http.StatusSeeOther)
 			return
@@ -6325,7 +6303,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err := /*uses lock!*/ ui.OnSaveWhitelist(); err != nil {
 			ui.logFatal("failed to save whitelist after rule add/edit from webUI", err)
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	}
@@ -6537,7 +6515,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 				if err := ui.OnSaveHosts(); err != nil {
 					ui.logFatal("failed to save local hosts after deletion", err)
-					panic("unreachable")
+					panic("BUG: unreachable")
 				}
 				http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 				return
@@ -6623,7 +6601,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err := ui.OnSaveHosts(); err != nil {
 			ui.logFatal("failed to save local hosts after add/edit", err)
-			panic("unreachable")
+			panic("BUG: unreachable")
 		}
 
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
@@ -6776,7 +6754,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
-				panic("unreachable")
+				panic("BUG: unreachable")
 			}
 			http.Redirect(w, r, "/blocks?success="+url.QueryEscape(successMessage), http.StatusSeeOther)
 			return
@@ -7247,7 +7225,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 
 		// Safety fallback: if somehow the hash is still blank, DON'T allow access
 		if cfg.WebUIPasswordHash == "" {
-			panic("no webUI password was set, this shouldn't be possible, dev fail?")
+			panic("BUG: no webUI password was set, this shouldn't be possible, dev fail?")
 		}
 
 		// Extract bare IP (without port) as the per-client rate-limit key.
@@ -7979,7 +7957,7 @@ func (um *UpstreamManager) updateInnerState() error {
 			u.Host = net.JoinHostPort(u.Hostname(), port)
 		}
 		if u.Port() == "" {
-			panic("dev fail: port is empty")
+			panic("BUG: dev fail: port is empty")
 		}
 		cfg.UpstreamURLsParsed = append(cfg.UpstreamURLsParsed, u)
 
@@ -8039,7 +8017,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		// Fire all queries concurrently
 		for i, upstream := range upstreams {
 			if upstream.Client == nil {
-				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
+				panic(fmt.Sprintf("BUG: dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
 					i, upstream.URL, upstream.SNI)) //um.upstreamURLs[i], um.upstreamSNIs[i]))
 			}
 			wg.Add(1)
@@ -8124,7 +8102,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 		for i, upstream := range upstreams {
 			if upstream.Client == nil {
-				panic(fmt.Sprintf("dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
+				panic(fmt.Sprintf("BUG: dev fail: dohClient %d is still nil after init! upstreamURL=%s SNI=%s",
 					i, upstream.URL, upstream.SNI)) //um.upstreamURLs[i], um.upstreamSNIs[i]))
 			}
 			go func(idx int, target Upstream) {
@@ -8681,7 +8659,7 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 	newInst, err := s.startDNSListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("DNS listener (re)ind to %+v failed", params), err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	s.dnsListener.Store(newInst)
 	if old != nil {
@@ -8778,7 +8756,7 @@ func (s *Server) rebindDoHListener(params dohListenerParams) {
 	newInst, err := s.startDoHListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("DoH listener (re)bind to %+v failed", params), err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	s.dohListener.Store(newInst)
 	if old != nil {
@@ -8987,7 +8965,7 @@ func (s *Server) rebindWebUIListener(params uiListenerParams) {
 	newInst, err := s.startWebUIListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("WebUI listener (re)bind to %+v failed", params), err)
-		panic("unreachable")
+		panic("BUG: unreachable")
 	}
 	s.uiListener.Store(newInst)
 	if old != nil {
@@ -9390,7 +9368,7 @@ func isLoopbackBindHost(listenAddr string) bool {
 // Returns the last error if every attempt fails.
 func retryFileOp(maxAttempts int, backoff time.Duration, fn func() error) error {
 	if maxAttempts < 1 {
-		panic("dev fail: retryFileOp called with maxAttempts < 1")
+		panic("BUG: dev fail: retryFileOp called with maxAttempts < 1")
 	}
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
