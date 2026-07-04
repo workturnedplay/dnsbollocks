@@ -469,11 +469,6 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			receivedResults++
 
 			if res.err == nil {
-				// fs.mu.Lock()
-				// if res.index < fs.activeIndex {
-				//     fs.activeIndex = res.index
-				// }
-				// fs.mu.Unlock()
 				// No locks needed here anymore! The goroutine already handled it.
 				return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
 			}
@@ -836,9 +831,6 @@ func (s *Server) loadLocalHosts() error {
 	data, err := os.ReadFile(hostsFileName)
 	if os.IsNotExist(err) {
 		log.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
-		// s.localHostsMu.Lock()
-		// s.localHosts = nil
-		// s.localHostsMu.Unlock()
 		// Pass nil or an empty slice to atomically reset the store
 		s.hostStore.ReplaceAll(nil)
 		s.flushCache()
@@ -1080,9 +1072,6 @@ func (s *Server) saveQueryWhitelist() error {
 	}
 
 	// 2. Serialize the disk write so concurrent WebUI saves don't corrupt the file
-	// s.fileWriteMu.Lock()
-	// defer s.fileWriteMu.Unlock()
-
 	whitelistFileName := cfg.WhitelistFile
 	if whitelistFileName == "" {
 		panic("BUG: bad coding: dev. didn't set the default whitelist filename!")
@@ -2076,10 +2065,17 @@ func (s *Server) OnReload(hook func()) {
 }
 
 func (s *Server) runReloadHooks() {
-	s.reloadMu.RLock()
-	hooks := slices.Clone(s.onReloadHooks)
-	s.reloadMu.RUnlock()
+	var hooks []func()
 
+	// 1. Read-lock, safely clone the slice, and defer RUnlock inside the block
+	func() {
+		s.reloadMu.RLock()
+		defer s.reloadMu.RUnlock()
+
+		hooks = slices.Clone(s.onReloadHooks)
+	}() // <-- Executed immediately
+
+	// 2. Run the hooks safely outside the read lock
 	for _, hook := range hooks {
 		hook()
 	}
@@ -6099,17 +6095,24 @@ func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 
 // Snapshot returns a copy of recent blocks, with IsUnblocked populated via the provided checker.
 func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bool) []BlockedQuery {
-	t.mu.Lock()
-	result := make([]BlockedQuery, 0, t.lst.Len())
-	for e := t.lst.Front(); e != nil; e = e.Next() {
-		if bq, ok := e.Value.(*BlockedQuery); ok {
-			result = append(result, *bq)
-		} else {
-			panic("BUG: not3 of *BlockedQuery type")
-		}
-	}
-	t.mu.Unlock()
+	var result []BlockedQuery
 
+	// 1. Lock, copy data under lock, and defer unlock using an anonymous function block
+	func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+
+		result = make([]BlockedQuery, 0, t.lst.Len())
+		for e := t.lst.Front(); e != nil; e = e.Next() {
+			if bq, ok := e.Value.(*BlockedQuery); ok {
+				result = append(result, *bq)
+			} else {
+				panic("BUG: not of *BlockedQuery type")
+			}
+		}
+	}() // <-- Execute the anonymous function immediately
+
+	// 2. Perform the unblock checks safely outside of the lock
 	for i := range result {
 		b := &result[i]
 		b.IsUnblocked = isUnblocked(b.Domain, b.Type)
@@ -7403,10 +7406,6 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 func (ui *AdminUI) clearLoginLockouts() {
 	log := ui.getLogger()
 
-	// s.loginMu.Lock()
-	// n := len(s.loginRecords)
-	// s.loginRecords = make(map[string]*loginRecord)
-	// s.loginMu.Unlock()
 	n := ui.loginTracker.ClearAll()
 	if n > 0 {
 		log.Warn("WebUI login lockouts cleared by operator reload",

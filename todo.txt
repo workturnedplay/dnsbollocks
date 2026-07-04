@@ -1,12 +1,10 @@
 todo:
-* fixes for v0.12.6 (todo: 4,5 done: 1,2,3, ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
+* fixes for v0.12.6 (todo: 5 done: 1,2,3,4, ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
 * ensure all defer happen in their own 'else' blocks, it's about code-correctness being enforced by code not by the coder when reading it with the intent of modifying it.
 * replace panics except unreachables with something else like logFatal. Maybe even the unreachables so that they're logged first.
-* make sure to check the return errors for things that i don't check for, filter Problems(in vscode) by: errcheck
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * find more places where I need to be Replacing Type Assertions with errors.As
 * find more places where I should be using errors.Is (no warnings about it currently tho)
-* ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
 * hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
@@ -23,6 +21,8 @@ no:
 
 
 done:
+goodenough//* ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
+//* make sure to check the return errors for things that i don't check for, filter Problems(in vscode) by: errcheck
 //* in v0.11.3, do 3 from this: https://claude.ai/chat/e991c86f-3c0b-4d3e-8ea8-295c7defd419
 //* make sure to check the return errors for like SetWriteDeadline
 //* fix this: statsHandler builds RawBody with fmt.Sprintf and wraps it as template.HTML(body.String()). Right now the interpolated values (cfg.UpstreamURLsParsed, cfg.SNIHostnames, cfg.UpstreamIPs) are admin-set config, not attacker-controlled, so it's low risk — but it's the one spot in the codebase where "trust me, this is safe HTML" is asserted rather than enforced by the type system
