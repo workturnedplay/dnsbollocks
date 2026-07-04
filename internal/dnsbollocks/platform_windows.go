@@ -2988,8 +2988,8 @@ func (s *Server) loadMainConfig() error {
 
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
-	if len(resolvedCfg.UpstreamURLs) != len(resolvedCfg.UpstreamSNIHostnames) {
-		const msg = "must have same amount of URLs vs SNIs"
+	if len(resolvedCfg.UpstreamSNIHostnames) > len(resolvedCfg.UpstreamURLs) {
+		const msg = "there are more SNIs vs URLs for upstream, only the opposite is allowed ( >= URLs than SNIs which then inherit the SNI from URLs)"
 		log.Warn(msg)
 		return fmt.Errorf("%s", msg)
 	}
@@ -9594,10 +9594,11 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			if len(resolved.UpstreamURLs) != len(resolved.UpstreamSNIHostnames) {
-				http.Error(w, "Must have same amount of URLs vs SNIs", http.StatusBadRequest)
+			if len(resolved.UpstreamSNIHostnames) > len(resolved.UpstreamURLs) {
+				http.Error(w, "there are more SNIs vs URLs for upstream, only the opposite is allowed ( >= URLs than SNIs which then inherit the SNI from URLs)", http.StatusBadRequest)
 				return
 			}
+			//TODO: make the SNIs inherit from URLs, if missing, like loadMainConfig() already does, but DRY the common code!
 
 			// Hard-check URLs to prevent loadMainConfig panics
 			for i, rawURL := range resolved.UpstreamURLs {
