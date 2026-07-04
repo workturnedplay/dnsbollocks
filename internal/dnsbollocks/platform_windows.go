@@ -4387,8 +4387,8 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKey
 	}
 
 	//nolint:unreachable  (can't get rid of warning, so i guess not keeping panic here)
-	panic2("BUG: some unhandled case fell thru from switch/ifelse?")
-	panic(nil)
+	//panic2("BUG: some unhandled case fell thru from switch/ifelse?")
+	//panic(nil)
 }
 
 func extractIPs(msg *dns.Msg) []string {
