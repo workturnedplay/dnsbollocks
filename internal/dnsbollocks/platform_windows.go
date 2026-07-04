@@ -3004,6 +3004,7 @@ func (s *Server) loadMainConfig() error {
 		resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
 		shouldSaveConfig = true
 	}
+	//FIXME: this is weird, what are we doing here below vs above?!
 	for i := range resolvedCfg.UpstreamURLs {
 		if resolvedCfg.UpstreamSNIHostnames[i] != "" {
 			continue
