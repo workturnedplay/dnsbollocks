@@ -9905,7 +9905,7 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 		}
 		fv := v.Field(idx)
 
-		switch fv.Kind() {
+		switch fv.Kind() { //nolint:exhaustive // we error on the unsupported ones
 		case reflect.String:
 			s, ok := rawVal.(string)
 			if !ok {
@@ -9969,6 +9969,7 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 			}
 
 		default:
+			panic2(fmt.Sprintf("field %q: unsupported kind %s", jsonKey, fv.Kind())) //yeah we panic instead!
 			return fmt.Errorf("field %q: unsupported kind %s", jsonKey, fv.Kind())
 		}
 	}
