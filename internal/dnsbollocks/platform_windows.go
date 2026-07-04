@@ -2208,6 +2208,27 @@ func (s *Server) Run() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	log.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
+
+	// --- OS Console Event Handler Integration ---
+	globalConsoleEventTrigger = func(eventName string) {
+		logEvt := s.getLogger()
+		logEvt.Warn("OS Console Event received, overriding for safe teardown", slog.String("event", eventName))
+
+		// Triggers your exact sequence: cancels context, waits on WaitGroups, calls os.Exit()
+		s.shutdown(0)
+		panic("unreachable")
+	}
+
+	// Strictly checking the return value (as promised!)
+	ret, _, errCall := procSetConsoleCtrlHandler.Call(windows.NewCallback(consoleCtrlHandler), 1)
+	if ret == 0 {
+		s.logFatal("Failed to register Windows console termination handler", errCall)
+		panic("unreachable")
+	} else {
+		log.Debug("OS console termination handler successfully registered. Handling graceful shutdown for Ctrl+Break as well.")
+	}
+	// --------------------------------------------
+
 	if err := s.loadConfig(); err != nil {
 		s.logFatal("Config load failed:", err)
 		panic("unreachable")
@@ -6954,10 +6975,16 @@ func (s *Server) shutdown(exitCode int) {
 
 func finalShutdownSequence(logger *slog.Logger, exitCode int) {
 	UnstickStdinRead(logger)
-	if !wincoe.WaitAnyKeyIfInteractive() {
-		logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
-	}
-	//bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
+	// NEW: Check if the OS is forcefully terminating us
+	if skipInteractivePause.Load() {
+		logger.Debug("Skipping 'Press any key' pause because OS is forcefully terminating the session.")
+	} else {
+		// Normal exit (like Ctrl+C or clean UI shutdown) - pause as usual
+		if !wincoe.WaitAnyKeyIfInteractive() {
+			logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
+		}
+	} //ifelse
+
 	logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 	os.Exit(exitCode)
 }
@@ -9428,4 +9455,54 @@ func writeSyncedFile(filename string, data []byte, flags int, perm os.FileMode) 
 		return fmt.Errorf("close failed: %w", closeErr)
 	}
 	return nil
+}
+
+var (
+	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
+	procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
+
+	// Global bridge so our Win32 callback can reach your Server instance
+	globalConsoleEventTrigger func(eventName string)
+
+	// NEW: Flag to bypass the "Press any key" pause during forced teardowns
+	skipInteractivePause atomic.Bool
+)
+
+// consoleCtrlHandler must be a top-level function with no free variables for windows.NewCallback()
+func consoleCtrlHandler(ctrlType uint32) uintptr {
+	const (
+		CtrlCEvent        = windows.CTRL_C_EVENT        //0
+		CtrlBreakEvent    = windows.CTRL_BREAK_EVENT    //1
+		CtrlCloseEvent    = windows.CTRL_CLOSE_EVENT    //2
+		CtrlLogoffEvent   = windows.CTRL_LOGOFF_EVENT   //5
+		CtrlShutdownEvent = windows.CTRL_SHUTDOWN_EVENT //6
+	)
+
+	var eventName string
+	switch ctrlType {
+	case CtrlCEvent:
+		eventName = "CTRL_C_EVENT (Ctrl+C)" //it's the sigChan one that triggers tho (this one does only while in shutdown())
+	case CtrlBreakEvent:
+		eventName = "CTRL_BREAK_EVENT (Ctrl+Break)"
+	case CtrlCloseEvent:
+		skipInteractivePause.Store(true) // <-- Bypass pause! Console is closing.
+		eventName = "CTRL_CLOSE_EVENT (Console Window Closed)"
+	case CtrlLogoffEvent:
+		skipInteractivePause.Store(true) // <-- Bypass pause! User is logging out.
+		eventName = "CTRL_LOGOFF_EVENT (User Logoff)"
+	case CtrlShutdownEvent:
+		skipInteractivePause.Store(true) // <-- Bypass pause! OS is shutting down.
+		eventName = "CTRL_SHUTDOWN_EVENT (System Shutdown)"
+	default:
+		// Return 0 (FALSE) for unhandled events so Windows continues standard routing
+		return 0
+	}
+
+	if globalConsoleEventTrigger != nil {
+		// This will block, eventually calling os.Exit() from inside your shutdown sequence.
+		// This is required. If we returned 1 immediately, the OS would kill the process mid-cleanup.
+		globalConsoleEventTrigger(eventName)
+	}
+
+	return 1 // TRUE (Though os.Exit will usually fire before we ever reach this line)
 }
