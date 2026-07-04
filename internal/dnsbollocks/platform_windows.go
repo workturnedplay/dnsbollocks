@@ -184,6 +184,10 @@ type Config struct {
 	UILogMaxLines int `json:"ui_log_max_lines"`
 
 	ExtraSafety bool `json:"extra_safety"`
+
+	// --- NEW: Runtime Substitution Tracking ---
+	RawStrings      map[string]string   `json:"-"` // Tracks {file:...}/{env:...} tags for strings
+	RawStringSlices map[string][]string `json:"-"` // Tracks tags for string slices
 }
 
 // Server encapsulates all the state required to run the DNSbollocks application.
@@ -651,6 +655,22 @@ func (c Config) Clone() Config {
 	if c.BlockIPv6Parsed != nil {
 		dst.BlockIPv6Parsed = make(net.IP, len(c.BlockIPv6Parsed))
 		copy(dst.BlockIPv6Parsed, c.BlockIPv6Parsed)
+	}
+
+	// Deep-copy the substitution tracking maps
+	if c.RawStrings != nil {
+		dst.RawStrings = make(map[string]string, len(c.RawStrings))
+		for k, v := range c.RawStrings {
+			dst.RawStrings[k] = v
+		}
+	}
+	if c.RawStringSlices != nil {
+		dst.RawStringSlices = make(map[string][]string, len(c.RawStringSlices))
+		for k, v := range c.RawStringSlices {
+			cp := make([]string, len(v))
+			copy(cp, v)
+			dst.RawStringSlices[k] = cp
+		}
 	}
 
 	return dst
@@ -2511,6 +2531,12 @@ func (s *Server) loadMainConfig() error {
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
+
+		// --- NEW: Resolve {file:...} and {env:...} tags BEFORE validation limits clamp down ---
+		if err3 := resolveConfigTags(newCfg); err3 != nil {
+			log.Error("Configuration substitution failed", slog.String("file", cfgFname), SafeErr(err3))
+			return fmt.Errorf("config substitution failed: %w", err3)
+		}
 		// 3. Second, check for MISSING fields (No manual list!)
 		// We decode into a map just to see which keys exist in the JSON.
 		var presentKeys map[string]any
@@ -3079,8 +3105,12 @@ func hostFromURL(raw string) (string, error) {
 }
 
 func (s *Server) saveConfig() error {
-	cfg := s.getConfig()
+	cfg := s.getConfig().Clone()
 	log := s.getLogger()
+
+	// --- NEW: Restore the literal {file:...} tags before generating JSON ---
+	restoreRawValues(&cfg)
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
@@ -9333,7 +9363,11 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		//nolint:exhaustive // We intentionally only process specific primitive types for the UI.
 		switch kind {
 		case reflect.String:
-			strVal = val.String()
+			if raw, ok := cfg.RawStrings[tagKey]; ok {
+				strVal = raw // Show {file:secret.txt} in the UI
+			} else {
+				strVal = val.String()
+			}
 			typ = "string"
 		case reflect.Int, reflect.Int64, reflect.Int32:
 			strVal = fmt.Sprintf("%d", val.Int())
@@ -9347,11 +9381,15 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		case reflect.Slice:
 			kind2 := val.Type().Elem().Kind()
 			if kind2 == reflect.String {
-				var sl []string
-				for j := 0; j < val.Len(); j++ {
-					sl = append(sl, val.Index(j).String())
+				if rawSlice, ok := cfg.RawStringSlices[tagKey]; ok {
+					strVal = strings.Join(rawSlice, ", ") // Show tags if present
+				} else {
+					var sl []string
+					for j := 0; j < val.Len(); j++ {
+						sl = append(sl, val.Index(j).String())
+					}
+					strVal = strings.Join(sl, ", ")
 				}
-				strVal = strings.Join(sl, ", ")
 				typ = "[]string"
 			} else {
 				// Log an explicit warning so you immediately catch un-renderable
@@ -9465,6 +9503,11 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				//TODO: needs better validation here! but I guess Reload() is doing the proper validation!
 				log.Warn("Validation failed for new config", SafeErr(err))
 				http.Error(w, "Validation failed (check format/types): "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			// Resolve tags in the dry-run so hard-checks don't crash on the literal {file:...} string
+			if err := resolveConfigTags(&testCfg); err != nil {
+				http.Error(w, "Validation failed (tag resolution): "+err.Error(), http.StatusBadRequest)
 				return
 			}
 
@@ -9635,4 +9678,134 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 	}
 
 	return 1 // TRUE (Though os.Exit will usually fire before we ever reach this line)
+}
+
+var reservedNames = map[string]struct{}{
+	"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
+	"COM1": {}, "COM2": {}, "COM3": {}, "COM4": {}, "COM5": {},
+	"COM6": {}, "COM7": {}, "COM8": {}, "COM9": {},
+	"LPT1": {}, "LPT2": {}, "LPT3": {}, "LPT4": {}, "LPT5": {},
+	"LPT6": {}, "LPT7": {}, "LPT8": {}, "LPT9": {},
+}
+
+// resolveTag extracts the content of {file:filename} or {env:VAR}.
+// It returns the resolved text, a boolean indicating if a tag was processed, and an error if it fails.
+func resolveTag(input string) (resolved string, isTag bool, err error) {
+	input = strings.TrimSpace(input)
+
+	if strings.HasPrefix(input, "{file:") && strings.HasSuffix(input, "}") {
+		original := strings.TrimSpace(input[6 : len(input)-1])
+
+		filename := strings.TrimRight(original, ". ")
+		filename = strings.ToUpper(filename)
+		// Strict directory traversal prevention
+		if strings.ContainsAny(filename, `/\:`) {
+			return "", true, fmt.Errorf("path separators not allowed in {file:...} — must be in same directory: %q", filename)
+		}
+		if _, bad := reservedNames[filename]; bad {
+			return "", true, fmt.Errorf("reserved Windows filename original: %q, processed:%q", original, filename)
+		}
+		configDir := filepath.Dir(configFileName)
+		path := filepath.Join(configDir, filename) //in same dir as config.json
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", true, fmt.Errorf("failed to read external config file %q: %w", path, err)
+		}
+		// Trim trailing newlines commonly found in text files
+		return strings.TrimSpace(string(data)), true, nil
+	}
+
+	if strings.HasPrefix(input, "{env:") && strings.HasSuffix(input, "}") {
+		envVar := strings.TrimSpace(input[5 : len(input)-1])
+		val, ok := os.LookupEnv(envVar)
+		if !ok {
+			return "", true, fmt.Errorf("required environment variable %q is not set", envVar)
+		}
+		return strings.TrimSpace(val), true, nil
+	}
+
+	return input, false, nil
+}
+
+// resolveConfigTags scans the Config struct via reflection and dynamically resolves any tags.
+// It populates the Raw tracking maps so original tags are not lost.
+func resolveConfigTags(cfg *Config) error {
+	cfg.RawStrings = make(map[string]string)
+	cfg.RawStringSlices = make(map[string][]string)
+
+	v := reflect.ValueOf(cfg).Elem()
+	t := v.Type()
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		jsonKey := strings.Split(jsonTag, ",")[0]
+		val := v.Field(i)
+
+		if val.Kind() == reflect.String {
+			str := val.String()
+			resolved, isTag, err := resolveTag(str)
+			if isTag {
+				if err != nil {
+					return fmt.Errorf("field %q resolution failed: %w", jsonKey, err)
+				}
+				cfg.RawStrings[jsonKey] = str
+				val.SetString(resolved)
+			}
+		} else if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String {
+			hasTag := false
+			sliceLen := val.Len()
+			rawSlice := make([]string, sliceLen)
+			for j := 0; j < sliceLen; j++ {
+				str := val.Index(j).String()
+				rawSlice[j] = str
+				resolved, isTag, err := resolveTag(str)
+				if isTag {
+					if err != nil {
+						return fmt.Errorf("field %q[%d] resolution failed: %w", jsonKey, j, err)
+					}
+					hasTag = true
+					val.Index(j).SetString(resolved)
+				}
+			}
+			if hasTag {
+				cfg.RawStringSlices[jsonKey] = rawSlice
+			}
+		}
+	}
+	return nil
+}
+
+// restoreRawValues puts the unresolved {file:...}/{env:...} strings back into the struct
+// before it is marshaled to disk, preserving the dynamic link.
+func restoreRawValues(cfg *Config) {
+	v := reflect.ValueOf(cfg).Elem()
+	t := v.Type()
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		jsonKey := strings.Split(jsonTag, ",")[0]
+		val := v.Field(i)
+
+		if val.Kind() == reflect.String {
+			if raw, ok := cfg.RawStrings[jsonKey]; ok {
+				val.SetString(raw)
+			}
+		} else if val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.String {
+			if rawSlice, ok := cfg.RawStringSlices[jsonKey]; ok {
+				if val.Len() == len(rawSlice) {
+					for j := 0; j < val.Len(); j++ {
+						val.Index(j).SetString(rawSlice[j])
+					}
+				}
+			}
+		}
+	}
 }

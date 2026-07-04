@@ -4,12 +4,6 @@ todo:
 * find more places where I should be using errors.Is (no warnings about it currently tho)
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
-* hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
-  * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
-  * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
-  * or like: {file:id.key}
-  * ensure the save keeps the pattern not the result after pattern got replaced with actual.
-  * had undone a naive version of this 6 months ago, in commit 37ceffa6df9dbd04f43a96ad34df5391798c53b3
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
 * link to Tinywall in readme and to Go lang to install Go.
@@ -19,6 +13,12 @@ no:
 
 
 done:
+//* hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
+//  * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
+//  * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
+//  * or like: {file:id.key}
+//  * ensure the save keeps the pattern not the result after pattern got replaced with actual.
+//  * had undone a naive version of this 6 months ago, in commit 37ceffa6df9dbd04f43a96ad34df5391798c53b3
 //* fixes for v0.12.6(minus a few commits:4? i moved tag since unpushed, it's this commit a6f47de774fa68eee7fe883b4d0d59859c882c1c) (todo:  done: 1,2,3,4,5 ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
 //* (this is 5 from above) replace panics except unreachables(actually do all) with something else like logFatal. Maybe even the unreachables so that they're logged first. Problem is that not everyone has logger, only ui. and s. !
 //* ensure all defer happen in their own 'else' blocks, it's about code-correctness being enforced by code not by the coder when reading it with the intent of modifying it.
