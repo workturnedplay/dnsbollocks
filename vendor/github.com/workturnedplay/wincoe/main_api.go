@@ -575,11 +575,11 @@ func RealProc(p *windows.LazyProc) LazyProcish {
 //   - if name is empty or whitespace-only
 func RealProc2(dll *windows.LazyDLL, name string) LazyProcish {
 	if dll == nil {
-		panic("RealProc2: nil dll")
+		panic2("RealProc2: nil dll")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		panic("RealProc2: empty proc name")
+		panic2("RealProc2: empty proc name")
 	}
 	return RealProc(dll.NewProc(name))
 }
@@ -635,7 +635,7 @@ func (b *BoundProc) Call(args ...uintptr) (uintptr, uintptr, error) {
 // It panics if the check function is nil.
 func NewBoundProc(dll *windows.LazyDLL, name string, check WinCheckFunc) *BoundProc {
 	if check == nil {
-		panic("NewBoundProc: nil WinCheckFunc passed as arg")
+		panic2("NewBoundProc: nil WinCheckFunc passed as arg")
 	}
 
 	return &BoundProc{
@@ -663,7 +663,7 @@ func NewBoundProc(dll *windows.LazyDLL, name string, check WinCheckFunc) *BoundP
 //go:uintptrescapes
 func WinCall(proc LazyProcish, check WinCheckFunc, args ...uintptr) (uintptr, uintptr, error) {
 	if proc == nil {
-		panic(fmt.Errorf("WinCall: nil proc"))
+		panic2("WinCall: nil proc")
 	}
 
 	op := strings.TrimSpace(proc.Name())
@@ -704,7 +704,7 @@ func init() {
 func loadDll(dll *windows.LazyDLL) {
 	err := dll.Load()
 	if err != nil {
-		panic("critical system dll " + dll.Name + " not found, error: " + err.Error())
+		panic2("critical system dll " + dll.Name + " not found, error: " + err.Error())
 	}
 }
 
@@ -749,7 +749,7 @@ func callWithRetry(who string, initialSize uint32, call func(bufPtr *byte, s *ui
 
 		if err == nil {
 			if uint64(size) > uint64(len(buf)) {
-				panic("impossible: size is bigger than len(buf)")
+				impossibiru("size is bigger than len(buf)")
 			}
 			return buf, nil // epic fail here if returning buf[:size] because size is 0 even tho servicesReturned is > 0
 			//return buf[:size], nil // fixed one issue! nope this "fix" was wrong because: The size parameter is only reliable when the API returns ERROR_MORE_DATA or ERROR_INSUFFICIENT_BUFFER. On success it is frequently set to 0, even when the buffer contains real data.
@@ -930,7 +930,12 @@ func QueryFullProcessName(pid uint32) (string, error) {
 }
 
 func impossibiru(msg string) {
-	panic(fmt.Sprintf("Impossible: '%s'", msg))
+	msg2 := fmt.Sprintf("Impossible: '%s'", msg)
+	panic2(msg2)
+}
+func panic2(msg string) {
+	Logger.Error(msg)
+	panic(msg)
 }
 
 // exePathFromPID returns process image path for pid or an error.
@@ -1180,7 +1185,7 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	//var owningPid uint32
 	for i := uint32(0); i < num; i++ {
 		if offset+rowSize > len(buf) {
-			panic(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+			panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
 			//break
 		}
 		localAddr := binary.LittleEndian.Uint32(buf[offset : offset+4])

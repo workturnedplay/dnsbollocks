@@ -7,7 +7,7 @@ github.com/miekg/dns
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/workturnedplay/wincoe v0.0.18
+# github.com/workturnedplay/wincoe v0.0.19
 ## explicit; go 1.26.2
 github.com/workturnedplay/wincoe
 # golang.org/x/crypto v0.53.0
@@ -38,7 +38,7 @@ golang.org/x/term
 # golang.org/x/time v0.15.0
 ## explicit; go 1.25.0
 golang.org/x/time/rate
-# golang.org/x/tools v0.46.0
+# golang.org/x/tools v0.47.0
 ## explicit; go 1.25.0
 golang.org/x/tools/go/ast/edge
 golang.org/x/tools/go/ast/inspector
