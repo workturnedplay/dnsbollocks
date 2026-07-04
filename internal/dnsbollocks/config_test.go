@@ -60,6 +60,92 @@ func TestValidateRulePattern(t *testing.T) {
 	}
 }
 
+func TestValidateRulePattern2(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr string
+	}{
+		{
+			name:    "valid hostname",
+			pattern: "example.com",
+		},
+		{
+			name:    "valid wildcard",
+			pattern: "*.example.com",
+		},
+		{
+			name:    "valid underscore",
+			pattern: "_service._tcp.example.com",
+		},
+		{
+			name:    "empty",
+			pattern: "",
+			wantErr: "pattern cannot be empty",
+		},
+		{
+			name:    "uppercase",
+			pattern: "Example.com",
+			wantErr: "pattern must be lowercase",
+		},
+		{
+			name:    "mixed case",
+			pattern: "foo.Bar",
+			wantErr: "pattern must be lowercase",
+		},
+		{
+			name:    "space",
+			pattern: "example .com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "slash",
+			pattern: "example/com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "unicode",
+			pattern: "éxample.com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "leading space",
+			pattern: " example.com",
+			wantErr: "pattern contains illegal characters",
+		},
+		{
+			name:    "trailing space",
+			pattern: "example.com ",
+			wantErr: "pattern contains illegal characters",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateRulePattern(tc.pattern)
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateRulePattern(%q) returned unexpected error: %v", tc.pattern, err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("validateRulePattern(%q) returned nil, want %q", tc.pattern, tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("validateRulePattern(%q) error = %q, want %q", tc.pattern, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateDNSType(t *testing.T) {
 	tests := []struct {
 		typ         string

@@ -1982,6 +1982,9 @@ func validateRulePattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("pattern cannot be empty")
 	}
+	if pattern != strings.ToLower(pattern) {
+		return errors.New("pattern must be lowercase")
+	}
 	if _, modified := sanitizeDomainInput(pattern); modified {
 		return errors.New("pattern contains illegal characters")
 	}
@@ -6495,23 +6498,23 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost { //"POST" {
 		// --- DELETE ---
 		if r.FormValue("delete") == "1" {
-			pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
-			if pattern == "" {
+			patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
+			if patternLowercased == "" {
 				log.Warn("Failed to delete local host: pattern required")
 				http.Error(w, "pattern required for delete", http.StatusBadRequest)
 				return
 			}
 
-			if err := validateRulePattern(pattern); err != nil {
-				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+			if err := validateRulePattern(patternLowercased); err != nil {
+				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 
-			if ui.hostStore.DeleteHost(pattern) {
-				log.Info("Successfully deleted local host override via WebUI", slog.String("pattern", pattern))
+			if ui.hostStore.DeleteHost(patternLowercased) {
+				log.Info("Successfully deleted local host override via WebUI", slog.String("pattern", patternLowercased))
 				// --- NEW: Invalidate the cache for the deleted pattern ---
-				ui.OnInvalidatePattern(pattern)
+				ui.OnInvalidatePattern(patternLowercased)
 
 				if err := ui.OnSaveHosts(); err != nil {
 					ui.logFatal("failed to save local hosts after deletion", err)
@@ -6521,32 +6524,32 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			log.Warn("Failed to delete local host: host not found", slog.String("pattern", pattern))
+			log.Warn("Failed to delete local host: host not found", slog.String("pattern", patternLowercased))
 			http.Error(w, "host not found", http.StatusNotFound)
 			return
 		}
 
 		// --- ADD / EDIT ---
-		pattern := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
-		oldPattern := strings.ToLower(strings.TrimSpace(r.FormValue("old_pattern")))
+		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
+		oldPatternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("old_pattern")))
 		isEdit := r.FormValue("edit") == "1"
 
-		if pattern == "" {
+		if patternLowercased == "" {
 			log.Warn("Failed to add/edit local host: hostname required")
 			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
 			return
 		}
 		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 
-		if err := validateRulePattern(pattern); err != nil {
-			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", pattern), SafeErr(err))
+		if err := validateRulePattern(patternLowercased); err != nil {
+			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// old_pattern (edit path) needs the same check.
-		if isEdit && oldPattern != "" {
-			if err := validateRulePattern(oldPattern); err != nil {
-				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPattern), SafeErr(err))
+		if isEdit && oldPatternLowercased != "" {
+			if err := validateRulePattern(oldPatternLowercased); err != nil {
+				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), SafeErr(err))
 				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6569,35 +6572,35 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(netIPs) == 0 {
-			log.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", pattern))
+			log.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", patternLowercased))
 			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
 			return
 		}
 
 		var err error = nil
 		if isEdit {
-			ui.hostStore.EditHost(oldPattern, pattern, netIPs)
+			ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
 		} else {
 			//it's Add (Delete was handled above)
-			err = ui.hostStore.AddHost(pattern, netIPs)
+			err = ui.hostStore.AddHost(patternLowercased, netIPs)
 		}
 
 		if err != nil {
-			log.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", pattern), slog.Any("IPs", netIPs))
+			log.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
 
 		// --- NEW: Cache Invalidation ---
 		// If this was an edit, purge the old pattern's cached entries, if different than new pattern
-		if isEdit && oldPattern != "" && oldPattern != pattern {
-			ui.OnInvalidatePattern(oldPattern)
+		if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
+			ui.OnInvalidatePattern(oldPatternLowercased)
 		}
 		// Always purge the new pattern so the local override takes immediate effect
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
-		ui.OnInvalidatePattern(pattern) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
+		ui.OnInvalidatePattern(patternLowercased) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
 		// -------------------------------
-		log.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", pattern), slog.Int("ip_count", len(netIPs)))
+		log.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", patternLowercased), slog.Int("ip_count", len(netIPs)))
 
 		if err := ui.OnSaveHosts(); err != nil {
 			ui.logFatal("failed to save local hosts after add/edit", err)
