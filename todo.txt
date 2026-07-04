@@ -2,7 +2,6 @@ todo:
 * add description for each config setting, visible in config.json as well, not just in webUI
 * allow multiple templates(eg. {file:X}) within a string, in config.json
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
-* ensure consistent treatment of config settings when they come from webUI's save/apply(so in configHandler func.) and when from disk(loadMainConfig func.).
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * find more places where I need to be Replacing Type Assertions with errors.As
 * find more places where I should be using errors.Is (no warnings about it currently tho)
@@ -17,6 +16,7 @@ no:
 
 
 done:
+//* ensure consistent treatment of config settings when they come from webUI's save/apply(so in configHandler func.) and when from disk(loadMainConfig func.).
 //* hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
 //  * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!
 //  * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
