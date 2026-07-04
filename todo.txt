@@ -9,6 +9,7 @@ todo:
   * maybe use a pattern to reference a file with the current path where config.json is as the default implied path, like %id.key% which opens .\id.key file and puts that value in its place if %id.key% appears in the config.json
   * or like: {file:id.key}
   * ensure the save keeps the pattern not the result after pattern got replaced with actual.
+  * had undone a naive version of this 6 months ago, in commit 37ceffa6df9dbd04f43a96ad34df5391798c53b3
 * append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs!
   like in DoH Path only as: "{clientexe}"
 * link to Tinywall in readme and to Go lang to install Go.
@@ -18,7 +19,7 @@ no:
 
 
 done:
-//* fixes for v0.12.6(minus a few commits:4? i moved tag since unpushed) (todo:  done: 1,2,3,4,5 ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
+//* fixes for v0.12.6(minus a few commits:4? i moved tag since unpushed, it's this commit a6f47de774fa68eee7fe883b4d0d59859c882c1c) (todo:  done: 1,2,3,4,5 ) https://claude.ai/chat/8e5f83fe-cee6-48aa-9a31-c9483559918e
 //* (this is 5 from above) replace panics except unreachables(actually do all) with something else like logFatal. Maybe even the unreachables so that they're logged first. Problem is that not everyone has logger, only ui. and s. !
 //* ensure all defer happen in their own 'else' blocks, it's about code-correctness being enforced by code not by the coder when reading it with the intent of modifying it.
 goodenough//* ensure all Unlock() or RUnlock() are happening in 'defer'-ers even if have to wrap it in anon(or better: helper) function calls, as long as it's safe.
