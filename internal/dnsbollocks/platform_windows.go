@@ -403,6 +403,11 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 		return nil, "", nil, errors.New("no upstreams available")
 	}
 
+	// --- FIX: Create a local context to cancel orphaned parallel requests ---
+	exchangeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// ------------------------------------------------------------------------
+
 	fs.mu.RLock()
 	currentIdx := fs.activeIndex
 	fs.mu.RUnlock()
@@ -454,7 +459,9 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 			// 1. Safe, single struct resolution instead of parallel slices
 			target := upstreams[idx]
-			resp, err := target.doSingleDoHRequest(ctx, reqBytes) //target.Client, target.URL, target.SNI, reqBytes)
+			// --- FIX: Pass exchangeCtx instead of ctx ---
+			//By doing this, the moment your return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil executes, the defer cancel() is triggered. doSingleDoHRequest respects context cancellation under the hood (via http.NewRequestWithContext), so any active HTTP dials or reads being performed by the slower upstreams are instantly aborted, immediately returning the resources to your system.
+			resp, err := target.doSingleDoHRequest(exchangeCtx, reqBytes) //target.Client, target.URL, target.SNI, reqBytes)
 
 			// 1. Do the promotion BEFORE sending to the channel
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
@@ -4040,7 +4047,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	// that was otherwise rejected.
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
 		ServerName:         u.SNI,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, //nolint:gosec // needed for what we wanna use this for, read above.
 	})
 
 	if err != nil {
@@ -4382,9 +4389,9 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKey
 	default:
 		// Keep other types (MX, TXT, CNAME, etc.)
 		return true, rr, ""
-	}
+	} //switch
 
-	//nolint:unreachable  (can't get rid of warning, so i guess not keeping panic here)
+	//XXXnolint:unreachable // (can't get rid of warning, so i guess not keeping panic here)
 	//panic2("BUG: some unhandled case fell thru from switch/ifelse?")
 	//panic(nil)
 }
@@ -4431,7 +4438,7 @@ var QueryActionANSI = map[string]string{
 var colorTagsRegex = regexp.MustCompile(`<(/?)(green|red|yellow|cyan|gray|white|magenta)>`)
 
 // formatColorTags parses tags like <green>word</green> into ANSI codes
-func formatColorTags(s string, baseColor string) string {
+func formatColorTags(s, baseColor string) string {
 	if !strings.Contains(s, "<") {
 		return s
 	}
@@ -8088,7 +8095,7 @@ func (s *Server) getCache() DNSCache {
 	return *c
 }
 
-func (s *Server) swapDNSCache(janitorIntervalMinutes int, maxEntries int) {
+func (s *Server) swapDNSCache(janitorIntervalMinutes, maxEntries int) {
 	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries)
 	s.liveDNSCache.Store(&newCache)
 }
