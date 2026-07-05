@@ -50,31 +50,31 @@
     // change innerText without touching the DOM structure.
     function highlightTextNodes(element, terms) {
         if (!element) return;
-
+        
         // Remove any existing highlights first so we start clean on every call.
         element.querySelectorAll('mark.filter-highlight').forEach(mark => {
             mark.replaceWith(document.createTextNode(mark.textContent));
         });
         element.normalize(); // merge adjacent text nodes created by the replacements
-
+        
         if (terms.length === 0) return; // nothing to highlight — just clearing was the job
-
+        
         const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         const regex = new RegExp('(' + escaped.join('|') + ')', 'gi');
-
+        
         // Collect all text nodes under element up-front; modifying the DOM during
         // the TreeWalker traversal can confuse some browsers.
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
         const textNodes = [];
         let node;
         while ((node = walker.nextNode()) !== null) textNodes.push(node);
-
+        
         textNodes.forEach(textNode => {
             const text = textNode.textContent;
             regex.lastIndex = 0;
             if (!regex.test(text)) { regex.lastIndex = 0; return; } // fast-path: no match
             regex.lastIndex = 0;
-
+            
             const frag = document.createDocumentFragment();
             let lastIdx = 0;
             let match;
@@ -94,7 +94,7 @@
             textNode.parentNode.replaceChild(frag, textNode);
         });
     }
-
+    
     // Applies highlights to the three text targets in a config table row.
     // Pass terms=[] to clear all highlights on that row.
     function applyConfigRowHighlight(row, terms) {
@@ -249,7 +249,7 @@
             row.style.display = isMatch ? '' : 'none';
         });
     }
-
+    
     // --- Client-side Config Filter Logic (with persistent storage and highlight) ---
     function applyConfigFilter() {
         const filterInput = document.getElementById('configFilter');
@@ -275,7 +275,7 @@
             
             const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
             row.style.display = isMatch ? '' : 'none';
-
+            
             // Apply or clear highlights in the three text targets.
             // Hidden rows also get their highlights cleared so stale marks don't
             // appear if the row later becomes visible due to a different filter term.
@@ -449,14 +449,14 @@
         
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
-
+        
         // Capture the row's rendered height before hiding it so we can prevent
         // the edit row from being shorter (which causes a layout jump).
         // In HTML tables, setting `height` on a <tr> acts as min-height.
         // Fall back to 64px (the standard row height from CSS) if the row is
         // somehow unmeasurable (e.g., hidden by an active filter).
         const rowHeight = Math.max(64, row.getBoundingClientRect().height);
-
+        
         row.style.display = 'none';
         row.classList.add('being-edited');
         
@@ -465,14 +465,20 @@
         const clone = tmpl.content.cloneNode(true);
         const editRow = clone.querySelector('tr');
         editRow.id = 'editConfigRow_' + key;
-
+        
         // Lock the edit row so it cannot be shorter than the original row,
         // preventing any upward layout jump. It can still expand for textareas.
         editRow.style.height = rowHeight + 'px';
-
+        
         // Populate key and safely carry over its description block
         const keyDisplay = editRow.querySelector('.edit-key-display');
-        keyDisplay.textContent = key;
+        // Clone the inner span element to preserve existing filter highlight nodes
+        const origKeyText = row.querySelector('.config-key-text');
+        if (origKeyText) {
+            keyDisplay.appendChild(origKeyText.cloneNode(true));
+        } else {
+            keyDisplay.textContent = key;
+        }
         
         const origDesc = row.querySelector('.config-field-desc');
         if (origDesc) {
@@ -582,7 +588,7 @@
         
         // Insert the edit row into the live DOM before any post-insertion adjustments.
         row.after(clone);
-
+        
         // Post-insertion: auto-size the textarea now that it is in the DOM and
         // scrollHeight is measurable. This must happen after row.after(clone).
         if (type === '[]string') {
@@ -591,22 +597,22 @@
                 // Collapse to measure true content height, then expand to fit.
                 ta.style.height = 'auto';
                 const contentH = ta.scrollHeight;
-
+                
                 // The user may have previously resized a textarea on this page.
                 // Apply the saved height if it is larger than the content height,
                 // so the preference is honoured without hiding any content.
                 const savedH = parseInt(sessionStorage.getItem('config_textarea_height') || '0', 10);
                 const finalH = Math.max(contentH, savedH, 85); // 85px is the CSS minimum
                 ta.style.height = finalH + 'px';
-
+                
                 // Prevent the user from dragging the textarea smaller than its
                 // content; they can still make it bigger.
                 ta.style.minHeight = Math.max(contentH, 85) + 'px';
-
+                
                 // Also update the edit row's height floor so the row matches the
                 // (now potentially taller) textarea.
                 editRow.style.height = Math.max(rowHeight, finalH + 12) + 'px'; // +12 for cell padding
-
+                
                 // Persist the height whenever the user finishes a resize drag.
                 // offsetHeight reflects the actual rendered height including padding.
                 ta.addEventListener('mouseup', () => {
@@ -617,7 +623,7 @@
                 });
             }
         }
-
+        
         editRow.querySelector('.config-input')?.focus();
     }
     
