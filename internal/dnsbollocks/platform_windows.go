@@ -4764,28 +4764,31 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 				return
 			}
 
-			ui.OnInvalidateBlacklist()
-
+			// 1. Attempt to update the rule list (Source of Truth) first
 			if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
 				log.Warn("Failed to edit blacklist entry", SafeErr(err),
 					slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-
 			log.Info("Successfully edited response blacklist entry via WebUI",
 				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+
+			// 2. Only clear the cache if the edit actually succeeded!
+			ui.OnInvalidateBlacklist()
+
 			if err := ui.OnSaveBlacklist(); err != nil {
 				ui.logFatal("failed to save response blacklist after edit from webUI", err)
 				panic2("BUG: unreachable")
 			}
 		case "delete":
 			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
-			//ok this will invalidate cache for all blacklisted IPs, and then delete the intended one
-			ui.OnInvalidateBlacklist() //we this is no good because the deleted cidrStr isn't in the blacklist anymore, unless I do it before deleting it?
+			// 1. Remove the CIDR from the rules list (Source of Truth)
 			// Using the clean delete helper method with natural defer unlock
 			if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
 				log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
+				// 2. Global flush of the cache so it re-reads the updated rules list
+				ui.OnInvalidateBlacklist()
 				if err := ui.OnSaveBlacklist(); err != nil {
 					ui.logFatal("failed to save response blacklist after delete from webUI", err)
 					panic2("BUG: unreachable")
