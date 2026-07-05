@@ -110,7 +110,8 @@ select {
 /* Configuration Textarea Control - Strict CSP Compliant */
 textarea.config-textarea {
     width: 100% !important;
-    height: 85px !important;
+    height: 85px; /* Removed !important so manual resizing works */
+    min-height: 85px; /* Ensures it never squishes smaller than default */
     padding: 6px !important;
     box-sizing: border-box !important;
     resize: vertical !important;
@@ -364,4 +365,15 @@ tr.edit-row td.edit-id-display {
 /* Add a clean horizontal separation between inline action buttons */
 #configTable td.actions button + button {
     margin-left: 6px;
+}
+
+/* Maintain identical row metrics and padding when entering edit mode on the config page */
+#configTable tr.edit-row {
+    height: auto !important;
+}
+
+#configTable tr.edit-row td {
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+    vertical-align: top !important;
 }
