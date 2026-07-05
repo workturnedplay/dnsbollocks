@@ -110,12 +110,19 @@ select {
 /* Configuration Textarea Control - Strict CSP Compliant */
 textarea.config-textarea {
     width: 100% !important;
-    height: 85px; /* Removed !important so manual resizing works */
     min-height: 85px; /* Ensures it never squishes smaller than default */
     padding: 6px !important;
     box-sizing: border-box !important;
     resize: vertical !important;
     font-family: monospace !important;
+}
+
+/* add near the bottom, before the end */
+mark.filter-highlight {
+    background: #f39c12;
+    color: #000;
+    border-radius: 2px;
+    padding: 0 1px;
 }
 
 
