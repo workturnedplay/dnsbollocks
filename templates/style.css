@@ -119,29 +119,10 @@ select {
 textarea.config-textarea {
     width: 100% !important;
     min-height: 85px; /* Ensures it never squishes smaller than default */
-    
-    /* Fixed typography needed to sync the background stripes */
-    padding: 6px 8px !important;
-    line-height: 24px !important; 
-    font-size: 14px !important;
-    font-family: monospace !important;
-    
-    /* Zebra-Stripe "Ruled Paper" Effect */
-    background-color: var(--bg-input) !important;
-    background-image: repeating-linear-gradient(
-        transparent, 
-        transparent 24px, 
-        rgba(255, 255, 255, 0.04) 24px, 
-        rgba(255, 255, 255, 0.04) 48px
-    ) !important;
-    
-    /* Locks the gradient to the text so it scrolls with it */
-    background-attachment: local !important; 
-    background-position: 0 6px !important; /* Matches padding-top to sync exactly */
-    
+    padding: 6px !important;
     box-sizing: border-box !important;
     resize: vertical !important;
-    overflow-wrap: anywhere !important; /* Breaks long URLs cleanly */
+    font-family: monospace !important;
 }
 
 /* add near the bottom, before the end */
