@@ -299,7 +299,7 @@ tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
 
 /* Strict row-height lock to match active table rows perfectly */
 tr.edit-row, tr.edit-host-row {
-    height: 64px !important; 
+    height: 64px;
 }
 
 /* Shave off vertical padding so the inner elements never force an expansion */
