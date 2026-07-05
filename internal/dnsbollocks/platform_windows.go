@@ -10082,9 +10082,8 @@ var configTagRegex = regexp.MustCompile(`\{(file|env):([^{}]*)\}`)
 
 // resolveTag extracts the content of {file:filename} or {env:VAR} which may appear multiple times within a string.
 // tag aka template
-// It returns the resolved text, a boolean indicating if a tag was processed, and an error if it fails.
+// It returns the resolved text, a boolean indicating if a tag was found, and an error if it fails.
 func resolveTag(input string) (resolved string, isTag bool, err error) {
-	originalInput := input
 	var firstErr error
 	matchedAny := false
 
@@ -10152,7 +10151,5 @@ func resolveTag(input string) (resolved string, isTag bool, err error) {
 		return "", matchedAny, firstErr
 	}
 
-	// If the resulting string is different from the original, we successfully replaced tags
-	isTag = resolved != originalInput
-	return resolved, isTag, nil
+	return resolved, matchedAny, nil
 }
