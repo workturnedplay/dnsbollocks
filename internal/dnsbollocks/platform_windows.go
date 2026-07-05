@@ -755,7 +755,7 @@ func (s *Server) loadResponseBlacklist() error {
 	if dups > 0 {
 		if cfg.ExtraSafety {
 			log.Error("ExtraSafety: Found duplicate CIDRs from blacklist file, it/they could be due to typos so silently removing it/them and overwriting the file might be a mistake!", slog.Int("found_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
-			s.shutdown(5) //XXX: this will exit program here! //FIXME: find a better way to "quit" than exit program here
+			s.shutdown(5) //XXX: this will exit program here! //noFIXME: find a better way to "quit" than exit program here
 			panic2("BUG: unreachable")
 		} else {
 			log.Info("Removed duplicate CIDRs from blacklist file", slog.Int("removed_count", len(parsed)-len(deduped)), slog.String("file", blacklistFileName))
@@ -1249,7 +1249,7 @@ func (s *Server) loadQueryWhitelist() error {
 	if cfg.ExtraSafety {
 		if removed > 0 {
 			log.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
-			s.shutdown(5) //FIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
+			s.shutdown(5) //noFIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
 			panic2("BUG: unreachable")
 		}
 	}
@@ -6354,7 +6354,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// Always purge the new pattern so the local override takes immediate effect
 		// (e.g., clearing out previous NXDOMAINs or external IPs)
-		ui.OnInvalidatePattern(patternLowercased) //FIXME: pattern here could be same as oldPattern, avoid purging twice?
+		ui.OnInvalidatePattern(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
 		// -------------------------------
 		log.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", patternLowercased), slog.Int("ip_count", len(netIPs)))
 
@@ -8325,7 +8325,7 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 			log3.Error("BUG: could not cast remote addr to TCPAddr", SafeAddr("addr", conn.RemoteAddr()))
 			// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
 		} else {
-			//FIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
+			//itisnecessarysonothingtodoFIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 			// 2. Call your new TCP PID/Exe helper
 
 			pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
@@ -8349,13 +8349,24 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 	}
 }
 
+// networkForIP returns the network string for the given IP host and transport family.
+// family must be "tcp" or "udp".
+// Returns "tcp4"/"udp4" for IPv4 literals, "tcp6"/"udp6" for everything else.
+// Always use this instead of bare "tcp"/"udp" when binding to an explicit IP literal
+// so the OS cannot silently pick an unexpected address family on dual-stack hosts.
+func networkForIP(host, family string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		return family + "4"
+	}
+	return family + "6"
+}
+
 // non-blocking! listens on both UDP and TCP ports 53
 func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListenerInstance, error) {
 	log := s.getLogger()
 	addr := params.Addr
 	log.Debug("Starting DNS listener", slog.String("addr", addr))
 
-	log.Debug("Attempting UDP bind for DNS listener...")
 	// Verify it's an IP before UDP/TCP resolution
 	addrHost, _, splitErr := net.SplitHostPort(addr)
 	if splitErr != nil {
@@ -8364,25 +8375,30 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 	if net.ParseIP(addrHost) == nil {
 		panic2("BUG: startDNSListenerInstance: listener bind address must be a valid IP literal: " + addr)
 	}
+
+	udpNet := networkForIP(addrHost, "udp") // "udp4" or "udp6" — prevents dual-stack ambiguity
+	log.Debug("Attempting UDP bind for DNS listener...", slog.String("udp_type", udpNet))
 	// Assuming addr is a string like "127.0.0.1:53"
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	udpAddr, err := net.ResolveUDPAddr(udpNet, addr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid UDP address %q: %w", addr, err)
+		return nil, fmt.Errorf("invalid %q address %q: %w", udpNet, addr, err)
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := net.ListenUDP(udpNet, udpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("UDP bind/listen failed for %q: %w", addr, err)
+		return nil, fmt.Errorf("%q bind/listen failed for %q: %w", udpNet, addr, err)
 	}
-	log.Debug("Attempting TCP bind for DNS listener...")
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr) // parses, no DNS for literal IPs, FIXME: this shouldn't attempt to DNS resolve the hostname!
+
+	tcpNet := networkForIP(addrHost, "tcp") // "tcp4" or "tcp6" — prevents dual-stack ambiguity
+	log.Debug("Attempting TCP bind for DNS listener...", slog.String("tcp_type", tcpNet))
+	tcpAddr, err := net.ResolveTCPAddr(tcpNet, addr) // parses, no DNS for literal IPs, doneabovewithSplitFIXME: this shouldn't attempt to DNS resolve the hostname!
 	if err != nil {
 		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
-		return nil, fmt.Errorf("invalid TCP address %q: %w", addr, err)
+		return nil, fmt.Errorf("invalid %q address %q: %w", tcpNet, addr, err)
 	}
-	tcpLn, err := net.ListenTCP("tcp", tcpAddr) // returns *net.TCPListener
+	tcpLn, err := net.ListenTCP(tcpNet, tcpAddr) // returns *net.TCPListener
 	if err != nil {
 		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
-		return nil, fmt.Errorf("TCP bind/listen failed for %q: %w", addr, err)
+		return nil, fmt.Errorf("%q bind/listen failed for %q: %w", tcpNet, addr, err)
 	}
 
 	instCtx, cancel := context.WithCancel(s.ctx)
@@ -8441,6 +8457,11 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	log := s.getLogger()
 	addr := params.Addr
 	log.Debug("Starting DoH listener", slog.String("address", addr))
+	dohHost, _, dohSplitErr := net.SplitHostPort(addr)
+	if dohSplitErr != nil {
+		// sanitizeAndValidateConfig already verified this is a valid host:port IP literal
+		panic2("BUG: startDoHListenerInstance: invalid addr " + addr)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", s.dohHandler)
@@ -8449,7 +8470,7 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{s.getCert()}, // Use loaded cert, doneFIXME: ensure it was loaded or fail-fast here before tls.Listen(which would have to be torn down if this fails)
 	}
-	listener, err := tls.Listen("tcp", addr, &tlsCfg)
+	listener, err := tls.Listen(networkForIP(dohHost, "tcp"), addr, &tlsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("DoH listener failed to bind/listen on %q: %w", addr, err)
 	}
@@ -8648,7 +8669,12 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		panic2("BUG: startWebUIListenerInstance called before initAdminUI")
 	}
 	addr := params.Addr
-	baseListener, err := net.Listen("tcp", addr) //FIXME: use tcp4 if it's ipv4 or tcp6 if it's ipv6, read the description for net.Listen
+	uiHost, _, uiSplitErr := net.SplitHostPort(addr)
+	if uiSplitErr != nil {
+		// sanitizeAndValidateConfig already verified this is a valid host:port IP literal
+		panic2("BUG: startWebUIListenerInstance: invalid addr " + addr)
+	}
+	baseListener, err := net.Listen(networkForIP(uiHost, "tcp"), addr) //doneFIXME: use tcp4 if it's ipv4 or tcp6 if it's ipv6, read the description for net.Listen
 	if err != nil {
 		return nil, fmt.Errorf("UI listener failed to bind/listen on %q: %w", addr, err)
 	}
@@ -8909,9 +8935,15 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 	// 1. Close the current file so Windows doesn't block the rename
 	if err := w.file.Close(); err != nil {
 		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), SafeErr(err))
+		w.file = nil // clear stale handle so reopenOriginal() starts from a known state
 		w.reopenOriginal()
 		return
 	}
+	// Clear the now-closed handle immediately. From this point on, every error
+	// path calls reopenOriginal(); if that also fails, w.file stays nil and
+	// Write() returns the informative "log file is not open" sentinel rather
+	// than a cryptic OS error from writing to a dead file descriptor.
+	w.file = nil
 
 	// 2. Determine the dynamic backup name (.1, .2, etc.)
 	backupPath := getNextLogBackupName(w.path)
@@ -9499,9 +9531,6 @@ func (ui *AdminUI) getRawConfig() *Config {
 		}
 		panic2("BUG: AdminUI.liveRawConfig.Config isn't inited, should point to the Server.liveRawConfig.Config")
 	}
-	//// Fallback for test environments that only wire liveConfig.
-	// ui.getLogger().Warn("If this isn't in a test file, then BUG: liveRawConfig isn't inited, FIXME: fix the tests and remove this!")
-	// return ui.getConfig()
 	panic2("BUG: AdminUI.liveRawConfig isn't inited, should point to the Server.liveRawConfig")
 	panic(nil)
 }
@@ -10065,7 +10094,7 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 			slog.String("fallback_filename", fallback))
 
 		// Ensure the fallback itself is clean before returning
-		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice, for DRY purposes.
+		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice; for DRY purposes.
 		if cleaned != fallback {
 			msg := fmt.Sprintf("BUG: dev fail: fallback(%q) for config key %q had to be cleaned into %q", fallback, configKey, cleaned)
 			log.Error(msg, slog.String("config_key", configKey), slog.String("fallback_filename", fallback), slog.String("filename_cleaned", cleaned))
