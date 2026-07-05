@@ -22,7 +22,21 @@ func TestResolveTag(t *testing.T) {
 	if err2 != nil {
 		t.Fatalf("failed to create second test file: %v", err2)
 	}
-	defer os.Remove(path2) //nolint:errcheck
+	defer os.Remove(path2) //nolint:errcheck //don't care
+
+	const emptyFileName = "test_empty_file.txt"
+	emptyPath := filepath.Join(configDir, emptyFileName)
+	if err := os.WriteFile(emptyPath, nil, 0600); err != nil {
+		t.Fatalf("failed to create empty test file: %v", err)
+	}
+	defer os.Remove(emptyPath) //nolint:errcheck //don't care
+
+	const crlfFileName = "test_crlf_file.txt"
+	crlfPath := filepath.Join(configDir, crlfFileName)
+	if err := os.WriteFile(crlfPath, []byte("secret\r\n"), 0600); err != nil {
+		t.Fatalf("failed to create CRLF test file: %v", err)
+	}
+	defer os.Remove(crlfPath) //nolint:errcheck //don't care
 
 	// Set up a mock environment variable
 	t.Setenv("TEST_ENV_VAR", "secret_from_env")
@@ -180,6 +194,48 @@ func TestResolveTag(t *testing.T) {
 			wantIsTag: false,
 			wantErr:   false,
 		},
+		{
+			name:      "Adjacent tags",
+			input:     "{env:TEST_ENV_VAR}{file:test_secret_file_123.txt}",
+			wantVal:   "secret_from_envsecret_from_file",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Tag at beginning",
+			input:     "{env:TEST_ENV_VAR}suffix",
+			wantVal:   "secret_from_envsuffix",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Tag at end",
+			input:     "prefix{env:TEST_ENV_VAR}",
+			wantVal:   "prefixsecret_from_env",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Duplicate file tags",
+			input:     "{file:test_secret_file_123.txt}{file:test_secret_file_123.txt}",
+			wantVal:   "secret_from_filesecret_from_file",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Empty file",
+			input:     "{file:test_empty_file.txt}",
+			wantVal:   "",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "CRLF file trimmed",
+			input:     "{file:test_crlf_file.txt}",
+			wantVal:   "secret",
+			wantIsTag: true,
+			wantErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -212,6 +268,8 @@ func TestResolveConfigTags(t *testing.T) {
 
 	raw := &Config{
 		ListenDNS:         "127.0.0.1:53",
+		CacheMinTTL:       123,
+		ExtraSafety:       false,
 		WebUIPasswordHash: "{env:TEST_WEBUI_PWD}",
 		UpstreamURLs: []string{
 			"https://9.9.9.9/dns-query",
@@ -237,6 +295,21 @@ func TestResolveConfigTags(t *testing.T) {
 	}
 	if raw.ListenDNS != "127.0.0.1:53" {
 		t.Errorf("raw.ListenDNS was mutated: got %q", raw.ListenDNS)
+	}
+
+	// Result must not alias the original slices.
+	resolved.UpstreamURLs[0] = "modified"
+
+	if raw.UpstreamURLs[0] == "modified" {
+		t.Fatal("resolved.UpstreamURLs aliases raw.UpstreamURLs")
+	}
+
+	if resolved.CacheMinTTL != 123 {
+		t.Errorf("CacheMinTTL changed: got %d want %d", resolved.CacheMinTTL, 123)
+	}
+
+	if resolved.ExtraSafety != false {
+		t.Errorf("ExtraSafety changed unexpectedly")
 	}
 
 	// resolved has real values.
@@ -285,5 +358,22 @@ func TestResolveConfigTags(t *testing.T) {
 	}
 	if resolvedPlain.ListenDNS != plain.ListenDNS {
 		t.Errorf("resolvedPlain.ListenDNS = %q, want %q", resolvedPlain.ListenDNS, plain.ListenDNS)
+	}
+}
+
+func TestResolveConfigTags_NilSlicesRemainNil(t *testing.T) {
+	raw := &Config{}
+
+	resolved, err := resolveConfigTags(raw)
+	if err != nil {
+		t.Fatalf("resolveConfigTags failed: %v", err)
+	}
+
+	if resolved.UpstreamURLs != nil {
+		t.Fatal("UpstreamURLs should remain nil")
+	}
+
+	if resolved.UpstreamSNIHostnames != nil {
+		t.Fatal("UpstreamSNIHostnames should remain nil")
 	}
 }
