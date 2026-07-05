@@ -1,6 +1,5 @@
 todo:
 * on /config webUI page, during Edit the row vertical size changes, it shouldn't! either expands or shrinks. The expand is ok for textarea ones, even though they could also be precomputed maybe, then the expand should be allowed only due to user dragging bottom-right corner of textarea to make it bigger, but smaller shouldn't be allowed and thus row itself too shouldn't allow smaller, for this textarea case.
-* allow the filter in /config to search the descriptions too
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * find more places where I need to be Replacing Type Assertions with errors.As
@@ -16,6 +15,7 @@ no:
 
 
 done:
+//* allow the filter in /config to search the descriptions too
 //* add description(s) for each config setting, visible in config.json as well, not just in webUI
 //* allow multiple templates(eg. {file:X}) within a string, in config.json
 //grok* Cert generation: generateCertIfNeeded — make sure private key is zeroed after use (defer runtime.KeepAlive or explicit zero).

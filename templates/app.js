@@ -206,7 +206,12 @@
             if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
             const key = (row.dataset.key || "").toLowerCase();
             const val = (row.dataset.original || "").toLowerCase();
-            const searchTarget = key + " " + val;
+            // Safely grab the text contents of the inline description field if it exists
+            const descElem = row.querySelector('.config-field-desc');
+            const desc = descElem ? descElem.textContent.toLowerCase() : "";
+            
+            // Include key, value, and description in the search text boundary
+            const searchTarget = key + " " + val + " " + desc;
             
             const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
             row.style.display = isMatch ? '' : 'none';
