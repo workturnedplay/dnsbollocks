@@ -1,4 +1,5 @@
 todo:
+* in /config remember the last textarea size (clamp to minimum, unless it's done auto anyway) and use that on any new/future uses of that textarea, for values(doh) only.
 * in /config at least, if not in others too, can we get some text highlight on what the filter matched ? but not just the first one but all occurrences, especially important in description which may have say multiple "upstream" text in it and all should be highlighted if filter is "upstream".
 * get the textaread in /config to be at least as big as the shown items in the value ie. if 4 lines because there are 4 upstream_urls then textarea should be at least 4 or 5 lines long when Edit gets clicked first time, currently it's like 3.5 lines long.
 * on /config webUI page, during Edit the row vertical size changes, it shouldn't! either expands or shrinks. The expand is ok for textarea ones, even though they could also be precomputed maybe, then the expand should be allowed only due to user dragging bottom-right corner of textarea to make it bigger, but smaller shouldn't be allowed and thus row itself too shouldn't allow smaller, for this textarea case.
