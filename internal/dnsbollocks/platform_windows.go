@@ -36,6 +36,7 @@ import (
 	"expvar"
 	"maps"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"sync/atomic"
@@ -129,6 +130,7 @@ type Config struct {
 	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
 
 	WebUIPasswordHash           string `json:"webui_password_hash"`
+	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"`
 	WebUIUseTLS                 bool   `json:"webui_use_tls"` //ie. https:// not http://
 	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"`
 	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"`
@@ -1397,7 +1399,8 @@ func defaultConfig() Config {
 
 		ExtraSafety: true,
 
-		WebUIPasswordHash: "", // empty because it will be set at startup or loaded from disk, we don't want to have an already set up "dnsbollocks" pwd here, then it won't get asked at startup
+		WebUIPasswordHash:       "", // empty because it will be set at startup or loaded from disk, we don't want to have an already set up "dnsbollocks" pwd here, then it won't get asked at startup
+		WebUIPasswordBcryptCost: 12,
 	}
 	//compute based on others
 	cfg.LocalDoHIdleTimeoutSec = 2 * cfg.LocalDoHReadTimeoutSec
@@ -2412,7 +2415,7 @@ func OldMain() {
 	hashCmd := flag.Bool("hash-password", false, "Securely prompt for a password, output the bcrypt hash, and exit")
 	flag.Parse()
 	if *hashCmd {
-		hash, err := promptAndHashPassword(localLogger)
+		hash, err := promptAndHashPassword(localLogger, 12) // Hardcode safe minimum for CLI
 		if err != nil {
 			localLogger.Error("Failed to set password: ", SafeErr(err))
 			finalShutdownSequence(localLogger, 1)
@@ -2593,7 +2596,7 @@ func (s *Server) loadMainConfig() error {
 		fmt.Println("\n========================================================")
 		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
 		fmt.Println("========================================================")
-		hash, err2 := promptAndHashPassword(log)
+		hash, err2 := promptAndHashPassword(log, resolvedCfg.WebUIPasswordBcryptCost)
 		if err2 != nil {
 			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
 			panic2("BUG: unreachable")
@@ -3147,9 +3150,16 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 			}
 		}()
 	}
-	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}); err != nil {
+	// Extract the raw bytes explicitly so we can zero them
+	privBytes := x509.MarshalPKCS1PrivateKey(priv)
+
+	// Ensure the bytes are wiped from memory when this function exits
+	defer clear(privBytes)
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: privBytes}); err != nil {
 		return fmt.Errorf("pem encode key failed: %w", err)
 	}
+	// Prevent the garbage collector from cleaning up the original RSA struct prematurely
+	runtime.KeepAlive(priv)
 	return nil
 }
 
@@ -6836,7 +6846,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 	}
 }
 
-func promptAndHashPassword(logger *slog.Logger) (string, error) {
+func promptAndHashPassword(logger *slog.Logger, cost int) (string, error) {
 	fd := int(os.Stdin.Fd())
 
 	// 1. Create a channel to catch the Ctrl+C signal
@@ -6912,9 +6922,9 @@ func promptAndHashPassword(logger *slog.Logger) (string, error) {
 	}
 
 	// DefaultCost is 10, which is perfectly balanced for modern hardware
-	hash, err := bcrypt.GenerateFromPassword(pwd1, bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword(pwd1, cost)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate bcrypt from password: %w", err /*non-nil here*/)
+		return "", fmt.Errorf("failed to generate bcrypt from password with cost %d, err: %w", cost, err /*non-nil here*/)
 	}
 
 	return string(hash), nil
@@ -9024,10 +9034,12 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			if plainPwd, ok := changes["webui_password_hash"].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
 				if !strings.HasPrefix(plainPwd, "$2") && plainPwd != "" {
-					log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already")
-					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), bcrypt.DefaultCost)
+					// Fetch current configured cost
+					cost := ui.getConfig().WebUIPasswordBcryptCost
+					log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
+					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), cost)
 					if hashErr != nil {
-						log.Error("Failed to hash new webui password", SafeErr(hashErr))
+						log.Error("Failed to hash new webui password", SafeErr(hashErr), slog.Int("cost", cost))
 						http.Error(w, "failed to hash new password", http.StatusInternalServerError)
 						return
 					}
@@ -9527,6 +9539,16 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		log.Warn(tagWebUIUseTLS+" is false. Even on loopback, Basic-Auth sends the password as base64 "+
 			"(not encrypted) to any other local process/user that can observe loopback traffic.",
 			slog.String("listen_ui", resolvedCfg.ListenUI))
+	}
+	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
+	if was := resolvedCfg.WebUIPasswordBcryptCost; was < 12 {
+		fallback := 12
+		if defaultCfg.WebUIPasswordBcryptCost >= 12 {
+			fallback = defaultCfg.WebUIPasswordBcryptCost
+		}
+		resolvedCfg.WebUIPasswordBcryptCost = fallback
+		rawCfg.WebUIPasswordBcryptCost = fallback
+		log.Warn(tagWebUIPasswordBcryptCost+" clamped to secure minimum", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================

@@ -1,8 +1,3 @@
-todos from grok:
-* Cert generation: generateCertIfNeeded — make sure private key is zeroed after use (defer runtime.KeepAlive or explicit zero).
-* WebUI password: bcrypt cost should be tunable + minimum 12+.
-
-
 todo:
 * add description for each config setting, visible in config.json as well, not just in webUI
 * allow multiple templates(eg. {file:X}) within a string, in config.json
@@ -21,6 +16,8 @@ no:
 
 
 done:
+//grok* Cert generation: generateCertIfNeeded — make sure private key is zeroed after use (defer runtime.KeepAlive or explicit zero).
+//grok* WebUI password: bcrypt cost should be tunable + minimum 12+.
 //* ensure consistent treatment of config settings when they come from webUI's save/apply(so in configHandler func.) and when from disk(loadMainConfig func.).
 //* hide the upstream url from config.json maybe point to another file for it as it contains the ID used by nextdns for example and can't git commit that!
 //  * get the NEXTDNS_ID from env or from cmdline? not cmdline, it appears in task manager!

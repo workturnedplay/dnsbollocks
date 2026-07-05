@@ -34,6 +34,7 @@
   "remove_https_ipv4_hints": true,
   "use_ede_in_blocked_reply": true,
   "webui_password_hash": "$2a$10$Nll0qnxtOwMYPW30QDgl2.u3hD2CQywRPIcNwIrVKx.EhOaxliqku",
+  "webui_password_bcrypt_cost": 12,
   "webui_use_tls": true,
   "webui_force_tls_on_non_localhost": true,
   "webui_max_login_failures": 5,
