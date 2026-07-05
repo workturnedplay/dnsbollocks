@@ -368,8 +368,9 @@ tr.edit-row td.edit-id-display {
 }
 
 /* Maintain identical row metrics and padding when entering edit mode on the config page */
-#configTable tr.edit-row {
-    height: auto !important;
+#configTable tbody tr {
+    /* Acts as a min-height floor so rows don't pop/expand when type-hints appear */
+    height: 70px; 
 }
 
 #configTable tr.edit-row td {
