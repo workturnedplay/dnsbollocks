@@ -241,7 +241,7 @@ type AdminUI struct {
 	OnSaveHosts           func() error
 	OnInvalidatePattern   func(pattern string)
 	OnInvalidateBlacklist func()
-	OnApplyConfig         func(data []byte) error
+	OnApplyConfig         func(cfg *Config) error
 
 	//UI calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
@@ -8517,10 +8517,19 @@ func (s *Server) initAdminUI() {
 	ui.OnSaveHosts = s.saveLocalHosts
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
-	ui.OnApplyConfig = func(dataAlreadyMarshalled []byte) error {
-		if err := s.fileWriter.SafeWriteFile(configFileName, dataAlreadyMarshalled, 0600); err != nil {
+	ui.OnApplyConfig = func(cfg *Config) error {
+		// 1. Convert struct to JSON with inline documentation descriptions
+		newData, err := marshalConfigWithDescriptions(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal error: %w", err)
+		}
+
+		// 2. Commit to disk
+		if err := s.fileWriter.SafeWriteFile(configFileName, newData, 0600); err != nil {
 			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
 		}
+
+		// 3. Trigger hot-reload logic here...
 		s.Reload()
 		return nil
 	}
@@ -9110,18 +9119,9 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Since sanitizeAndValidateConfig actively clamps unsafe values inside rawCfg
-			// (e.g. SNIs paddings or limits corrections), we MUST re-marshal it!
-			newData, err12 = json.MarshalIndent(rawCfg, "", "  ")
-			if err12 != nil {
-				log.Error("Failed to re-marshal sanitized config", SafeErr(err12))
-				http.Error(w, "failed to re-marshal config after sanitization", http.StatusInternalServerError)
-				return
-			}
-
 			// Commit to disk and trigger hot-reload
 			if ui.OnApplyConfig != nil {
-				if err7 := ui.OnApplyConfig(newData); err7 != nil {
+				if err7 := ui.OnApplyConfig(&rawCfg); err7 != nil {
 					log.Error("Failed to apply config (that is: save&reload)", SafeErr(err7))
 					http.Error(w, "Failed to save/reload config: "+err7.Error(), http.StatusInternalServerError)
 					return
