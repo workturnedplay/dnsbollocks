@@ -622,6 +622,30 @@
                         sessionStorage.setItem('config_textarea_height', String(h));
                     }
                 });
+                
+                // Double left-click on the resize handle clears the saved user preference
+                ta.addEventListener('dblclick', (e) => {
+                    const rect = ta.getBoundingClientRect();
+                    const clickX = e.clientX - rect.left;
+                    const clickY = e.clientY - rect.top;
+                    
+                    // Check if the click happened inside a 20px square at the bottom-right corner
+                    if (clickX >= rect.width - 20 && clickY >= rect.height - 20) {
+                        if (confirm('Reset and stop remembering the custom textarea size?')) {
+                            // Remove the preference completely
+                            sessionStorage.removeItem('config_textarea_height');
+                            
+                            // Recalculate and snap layout back to natural content boundaries instantly
+                            ta.style.height = 'auto';
+                            const freshContentH = ta.scrollHeight;
+                            const defaultH = Math.max(freshContentH, 85); // 85px is the CSS minimum
+                            
+                            ta.style.height = defaultH + 'px';
+                            ta.style.minHeight = defaultH + 'px';
+                            editRow.style.height = Math.max(rowHeight, defaultH + 12) + 'px'; // +12 for cell padding
+                        }
+                    }
+                });
             }
         }
         
