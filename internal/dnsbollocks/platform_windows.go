@@ -9044,6 +9044,8 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		data := map[string]any{
 			"Fields": ui.getConfigFields(),
+			//Dynamically inject the UpstreamURLs JSON tag
+			"UpstreamURLsKey": getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamURLs)),
 		}
 		ui.renderTemplate(w, r, "config", data)
 		return

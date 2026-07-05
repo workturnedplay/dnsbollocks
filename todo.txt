@@ -1,7 +1,4 @@
 todo:
-* if an upstream_urls line (aka url) is too horizontally-long, it wraps into the next line, need a way to visually see what consitutes a line, maybe each line should be zebra colored ? but we definitely should keep wrapping it, i think, else it would go too much to the right and make editing weird visually when moving cursor (hides the left/prefix of everything after aka the next lines go out of visual, I think, haven't tried w/o wrap)
-* mention the upstream_urls template {builtin:clientexe} in the /config webUI page's notice and include the key name upstream_utls dynamically, not hardcode it (in case we rename it in .go code) - probably has to be sent via template var in configHandler akin to how "Fields" is set/sent.
-* if i horiz. resize browser window, the webUI has fixed size, it won't expand to fit it, it should, maybe also have a minimum size as well, for when shrank too much.
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
@@ -15,6 +12,9 @@ no:
 
 
 done:
+//* if an upstream_urls line (aka url) is too horizontally-long, it wraps into the next line, need a way to visually see what constitutes a line, maybe each line should be zebra colored (background color different) ? but we definitely should keep wrapping it, i think, else it would go too much to the right and make editing weird visually when moving cursor (hides the left/prefix of everything after aka the next lines go out of visual, I think, haven't tried w/o wrap)
+//* mention the upstream_urls template {builtin:clientexe} in the /config webUI page's notice and include the key name upstream_utls dynamically, not hardcode it (in case we rename it in .go code) - probably has to be sent via template var in configHandler akin to how "Fields" is set/sent.
+//* if i horiz. resize browser window, the webUI has fixed size, it won't expand to fit it, it should, maybe also have a minimum size as well, for when shrank too much.
 //* find more places where I need to be Replacing Type Assertions with errors.As
 //* find more places where I should be using errors.Is (no warnings about it currently tho)
 //* in /config webUI page, prevent the row(s) from shrinking when entering Edit mode, their expansion is already prevented (except for textarea, which is intended)

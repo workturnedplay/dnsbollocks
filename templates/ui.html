@@ -397,8 +397,9 @@
         You can securely read sensitive parameters (like passwords, custom keys, or tokens) directly from the environment or external paths instead of exposing them raw in the configuration file:
     </p>
     <ul>
-        <li><code>{env:VARIABLE_NAME}</code> – Pulls the value from a system environment variable.</li>
-        <li><code>{file:relative/or/absolute/path}</code> – Reads the content of an external text file.</li>
+        <li><code>{env:VARIABLE_NAME}</code> – Pulls the value from a system environment variable named "VARIABLE_NAME".</li>
+        <li><code>{file:FILENAME}</code> – Reads the content of an external text file named "FILENAME" that's next to the config.json file.</li>
+        <li><code>{builtin:clientexe}</code> – Specific to "{{.UpstreamURLsKey}}" setting(key) only: Dynamically evaluates to the querying executable's name (useful for passing client attribution to services like NextDNS).</li>
     </ul>
 </div>
 <table id="configTable">
