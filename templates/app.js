@@ -525,10 +525,11 @@
                                        </select>`;
             hint.innerText = "Boolean (true/false)";
         } else if (type === '[]string') {
-            // Swap to textarea and format the current comma-string into newlines for easier editing
-            const formattedDisplay = currentDisplay.split(',').map(s => s.trim()).join('\n');
+            // Swap to textarea and format the current comma-string into 2xnewlines for easier editing and visually delimit each logical line (needed due to wrapping)
+            const formattedDisplay = currentDisplay.split(',').map(s => s.trim()).join('\n\n');
             container.innerHTML = `<textarea class="config-input config-textarea">${formattedDisplay}</textarea>`;
-            hint.innerText = "List (separate with newlines or commas)";
+            // Updated, highly reassuring hint text
+            hint.innerText = "List (separate items with newlines or commas. Extra spaces, multiple commas, or empty lines are auto-cleaned.)";
         } else if (type === 'int') {
             container.innerHTML = `<input type="number" class="config-input w-100" value="${currentDisplay}">`;
             hint.innerText = "Integer value";
