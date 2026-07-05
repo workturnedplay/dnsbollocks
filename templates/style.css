@@ -367,14 +367,25 @@ tr.edit-row td.edit-id-display {
     margin-left: 6px;
 }
 
-/* Maintain identical row metrics and padding when entering edit mode on the config page */
+/* 1. Remove all rigid hardcoded height floors so the browser calculates rows naturally */
 #configTable tbody tr {
-    /* Acts as a min-height floor so rows don't pop/expand when type-hints appear */
-    height: 70px; 
+    height: auto !important;
 }
 
+/* 2. Align cell padding perfectly between display mode and edit mode */
+#configTable tr td, 
 #configTable tr.edit-row td {
     padding-top: 8px !important;
     padding-bottom: 8px !important;
     vertical-align: top !important;
+}
+
+/* 3. Programmatically eliminate the type-hint from row height calculations */
+#configTable .edit-type-hint {
+    display: block !important;
+    height: 0 !important;          /* Takes up 0px of layout space */
+    overflow: visible !important;   /* Prevents the text from being hidden/clipped */
+    margin-top: 2px !important;     /* Clean separation below the input box */
+    line-height: 1 !important;
+    color: #888;
 }
