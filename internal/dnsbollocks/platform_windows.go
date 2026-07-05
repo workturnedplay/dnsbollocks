@@ -3878,8 +3878,9 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 3. Pass the merged context to the HTTP request
 
 			// create request with supplied context so caller controls deadline/cancel
+			targetURLStr := u.URL.String()
 			var e error
-			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, u.URL.String(), bytes.NewReader(reqBytes))
+			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))
 			if e != nil {
 				// Wrap the error to give it context and satisfy wrapcheck
 				return true, fmt.Errorf("failed to create DoH HTTP request: %w", e /*non-nil*/)
@@ -3891,7 +3892,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			}
 
 			log2 := u.getLogger()
-			log2.Debug("Attempting request to upstream", slog.String("url", u.URL.String()), slog.String("sni", u.SNI))
+			log2.Debug("Attempting request to upstream", slog.String("url", targetURLStr), slog.String("sni", u.SNI))
 			// Capture the HTTP client execution
 			//nolint:bodyclose // it's closed but later, outside of this func and outside of 'for', if resp != nil only.
 			resp, err4ClientDo = u.Client.Do(req) // this is concurrency safe
@@ -8457,7 +8458,7 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		// Give it a max of 3 seconds to finish existing requests before force closing
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second) //TODO: const or configurable in config.json ?
 		defer cancelDown()
-		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && err != context.Canceled {
+		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && !errors.Is(err, context.Canceled) {
 			log.Warn("DoH server shutdown error", SafeErr(err))
 		}
 	}()
@@ -8469,7 +8470,7 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		defer s.shutdownWG.Done() // Signal the server is officially stopped
 		// Graceful close on shutdown
 		defer listener.Close() //nolint:errcheck // best-effort close, nothing to do on error
-		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.getLogger().Error("doh_serve_failed", SafeErr(err), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("DoH server failed on %q: %w", addr, err)
 		}
@@ -8665,7 +8666,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		log.Debug("Shutting down Web UI listener instance...", slog.String("addr", addr))
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
-		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && err2 != context.Canceled {
+		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && !errors.Is(err2, context.Canceled) {
 			log.Warn("webUI server shutdown error", SafeErr(err2))
 		}
 	}()
@@ -8677,7 +8678,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		defer s.shutdownWG.Done()
 		// Graceful close
 		defer finalListener.Close() //nolint:errcheck // best-effort close, nothing to do on error
-		if err2 := srv.Serve(finalListener); err2 != nil && err2 != http.ErrServerClosed {
+		if err2 := srv.Serve(finalListener); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
 			log := s.getLogger()
 			log.Error("ui_serve_failed", SafeErr(err2), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("webUI server failed on %q: %w", addr, err2)
