@@ -390,7 +390,17 @@
 <div class="mb-20">
     <input type="text" id="configFilter" class="table-filter-input w-100" placeholder="Filter settings... (e.g., 'timeout')">
 </div>
-
+<div class="config-global-notice">
+    <strong>💡 Advanced Tip: Dynamic Config Templates Available</strong>
+    <p>
+        Any text or list setting below supports template strings that are dynamically evaluated at runtime. 
+        You can securely read sensitive parameters (like passwords, custom keys, or tokens) directly from the environment or external paths instead of exposing them raw in the configuration file:
+    </p>
+    <ul>
+        <li><code>{env:VARIABLE_NAME}</code> – Pulls the value from a system environment variable.</li>
+        <li><code>{file:relative/or/absolute/path}</code> – Reads the content of an external text file.</li>
+    </ul>
+</div>
 <table id="configTable">
     <colgroup>
         <col class="col-35">
