@@ -7,15 +7,22 @@ import (
 )
 
 func TestResolveTag(t *testing.T) {
-	// Create a temporary file in the current directory to satisfy the strict path rules
+	// Create temporary files in the current directory to satisfy strict path rules
 	const testFileName1 = "test_secret_file_123.txt"
 	configDir := filepath.Dir(configFileName)
 	path := filepath.Join(configDir, testFileName1)
 	err := os.WriteFile(path, []byte("secret_from_file\n"), 0600)
 	if err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+		t.Fatalf("failed to create first test file: %v", err)
 	}
-	defer os.Remove(path) //nolint:errcheck //don't case
+	defer os.Remove(path) //nolint:errcheck //don't care
+	const testFileName2 = "test_secret_file_456.txt"
+	path2 := filepath.Join(configDir, testFileName2)
+	err2 := os.WriteFile(path2, []byte("another_secret_content\n"), 0600)
+	if err2 != nil {
+		t.Fatalf("failed to create second test file: %v", err2)
+	}
+	defer os.Remove(path2) //nolint:errcheck
 
 	// Set up a mock environment variable
 	t.Setenv("TEST_ENV_VAR", "secret_from_env")
@@ -115,6 +122,64 @@ func TestResolveTag(t *testing.T) {
 			wantIsTag: true,
 			wantErr:   true,
 		},
+
+		// --- Inline / Multiple Template Edge Cases ---
+		{
+			name:      "Multiple env tags",
+			input:     "{env:TEST_ENV_VAR}/{env:TEST_ENV_VAR}",
+			wantVal:   "secret_from_env/secret_from_env",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Multiple distinct file tags",
+			input:     "https://{file:test_secret_file_123.txt}/{file:test_secret_file_456.txt}",
+			wantVal:   "https://secret_from_file/another_secret_content",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Mixed file and env tags",
+			input:     "http://{env:TEST_ENV_VAR}/{file:test_secret_file_123.txt}",
+			wantVal:   "http://secret_from_env/secret_from_file",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Multiple tags surrounded by literal text",
+			input:     "Prefix-{env:TEST_ENV_VAR}-Middle-{file:test_secret_file_123.txt}-Suffix",
+			wantVal:   "Prefix-secret_from_env-Middle-secret_from_file-Suffix",
+			wantIsTag: true,
+			wantErr:   false,
+		},
+		{
+			name:      "Multiple tags where one is an invalid env",
+			input:     "{env:TEST_ENV_VAR}/{env:MISSING_ENV_VAR_123}",
+			wantVal:   "",
+			wantIsTag: true,
+			wantErr:   true,
+		},
+		{
+			name:      "Multiple tags where one is a missing file",
+			input:     "{file:test_secret_file_123.txt}/{file:does_not_exist.txt}",
+			wantVal:   "",
+			wantIsTag: true,
+			wantErr:   true,
+		},
+		{
+			name:      "No tags but literal curly lookalikes",
+			input:     "this {is not a valid:tag}",
+			wantVal:   "this {is not a valid:tag}",
+			wantIsTag: false,
+			wantErr:   false,
+		},
+		{
+			name:      "Invalid prefix spacing is rejected as literal",
+			input:     "{file : test_secret_file_123.txt}",
+			wantVal:   "{file : test_secret_file_123.txt}",
+			wantIsTag: false,
+			wantErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -135,11 +200,11 @@ func TestResolveTag(t *testing.T) {
 }
 
 func TestResolveConfigTags(t *testing.T) {
-	const testFileName2 = "test_upstream_123.txt"
+	const testFileName3 = "test_upstream_123.txt"
 	configDir := filepath.Dir(configFileName)
-	path := filepath.Join(configDir, testFileName2)
+	path := filepath.Join(configDir, testFileName3)
 	if err := os.WriteFile(path, []byte("https://8.8.8.8/dns-query\n"), 0600); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+		t.Fatalf("failed to create upstream test file: %v", err)
 	}
 	defer os.Remove(path) //nolint:errcheck // don't care
 
@@ -151,6 +216,7 @@ func TestResolveConfigTags(t *testing.T) {
 		UpstreamURLs: []string{
 			"https://9.9.9.9/dns-query",
 			"{file:test_upstream_123.txt}",
+			"https://{env:TEST_WEBUI_PWD}.example.com/api?endpoint={file:test_upstream_123.txt}", // Multiple inline mix
 		},
 	}
 
@@ -166,6 +232,9 @@ func TestResolveConfigTags(t *testing.T) {
 	if raw.UpstreamURLs[1] != "{file:test_upstream_123.txt}" {
 		t.Errorf("raw.UpstreamURLs[1] was mutated: got %q", raw.UpstreamURLs[1])
 	}
+	if raw.UpstreamURLs[2] != "https://{env:TEST_WEBUI_PWD}.example.com/api?endpoint={file:test_upstream_123.txt}" {
+		t.Errorf("raw.UpstreamURLs[2] was mutated: got %q", raw.UpstreamURLs[2])
+	}
 	if raw.ListenDNS != "127.0.0.1:53" {
 		t.Errorf("raw.ListenDNS was mutated: got %q", raw.ListenDNS)
 	}
@@ -177,6 +246,9 @@ func TestResolveConfigTags(t *testing.T) {
 	if resolved.UpstreamURLs[1] != "https://8.8.8.8/dns-query" {
 		t.Errorf("resolved.UpstreamURLs[1] = %q, want %q", resolved.UpstreamURLs[1], "https://8.8.8.8/dns-query")
 	}
+	if resolved.UpstreamURLs[2] != "https://hashed_pwd_xyz.example.com/api?endpoint=https://8.8.8.8/dns-query" {
+		t.Errorf("resolved.UpstreamURLs[2] = %q, want %q", resolved.UpstreamURLs[2], "https://hashed_pwd_xyz.example.com/api?endpoint=https://8.8.8.8/dns-query")
+	}
 	if resolved.ListenDNS != "127.0.0.1:53" {
 		t.Errorf("resolved.ListenDNS = %q, want %q (literal should pass through)", resolved.ListenDNS, "127.0.0.1:53")
 	}
@@ -187,7 +259,7 @@ func TestResolveConfigTags(t *testing.T) {
 		t.Errorf("raw.ListenDNS changed after mutating resolved: got %q", raw.ListenDNS)
 	}
 
-	// Error case: unresolvable token.
+	// Error case: single unresolvable token.
 	bad := &Config{WebUIPasswordHash: "{env:DOES_NOT_EXIST_123456}"}
 	if _, err2 := resolveConfigTags(bad); err2 == nil {
 		t.Error("expected error for missing env var, got nil")
@@ -195,6 +267,14 @@ func TestResolveConfigTags(t *testing.T) {
 	// bad must still be unmodified after an error.
 	if bad.WebUIPasswordHash != "{env:DOES_NOT_EXIST_123456}" {
 		t.Errorf("bad.WebUIPasswordHash was mutated despite error: got %q", bad.WebUIPasswordHash)
+	}
+
+	// Error case: multi-tag template with one unresolvable token.
+	badMulti := &Config{
+		UpstreamURLs: []string{"https://{env:TEST_WEBUI_PWD}.com/{env:DOES_NOT_EXIST_ABC_123}"},
+	}
+	if _, errMulti := resolveConfigTags(badMulti); errMulti == nil {
+		t.Error("expected error for multi-tag slice string containing an unresolvable env token, got nil")
 	}
 
 	// No tokens → resolved is a clean clone with no mutations.
