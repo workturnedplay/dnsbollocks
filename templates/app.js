@@ -387,7 +387,15 @@
         const clone = tmpl.content.cloneNode(true);
         const editRow = clone.querySelector('tr');
         editRow.id = 'editConfigRow_' + key;
-        editRow.querySelector('.edit-key-display').innerText = key;
+        // Populate key and safely carry over its description block
+        const keyDisplay = editRow.querySelector('.edit-key-display');
+        keyDisplay.textContent = key;
+        
+        const origDesc = row.querySelector('.config-field-desc');
+        if (origDesc) {
+            keyDisplay.appendChild(document.createElement('br'));
+            keyDisplay.appendChild(origDesc.cloneNode(true));
+        }
         
         const container = editRow.querySelector('.edit-input-container');
         const hint = editRow.querySelector('.edit-type-hint');

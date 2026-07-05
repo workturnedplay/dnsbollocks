@@ -355,3 +355,13 @@ tr.edit-row td.edit-id-display {
     padding-top: 8px;
     padding-bottom: 8px;
 }
+
+/* Prevent config page action buttons from breaking/stacking vertically */
+#configTable td.actions {
+    white-space: nowrap !important;
+}
+
+/* Add a clean horizontal separation between inline action buttons */
+#configTable td.actions button + button {
+    margin-left: 6px;
+}
