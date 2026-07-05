@@ -1,4 +1,5 @@
 todo:
+* allow the filter in /config to search the descriptions too
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * find more places where I need to be Replacing Type Assertions with errors.As

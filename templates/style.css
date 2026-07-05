@@ -352,7 +352,7 @@ tr.edit-row td.edit-id-display {
 }
 #configTable td {
     white-space: normal;
-    vertical-align: top;
+    vertical-align: middle !important; /* Fixes the left column alignment */
     padding-top: 8px;
     padding-bottom: 8px;
 }
@@ -367,25 +367,29 @@ tr.edit-row td.edit-id-display {
     margin-left: 6px;
 }
 
-/* 1. Remove all rigid hardcoded height floors so the browser calculates rows naturally */
-#configTable tbody tr {
+/* 1. Reset all height constraints to let rows breathe naturally */
+#configTable tbody tr,
+#configTable tr.edit-row {
     height: auto !important;
 }
 
-/* 2. Align cell padding perfectly between display mode and edit mode */
-#configTable tr td, 
-#configTable tr.edit-row td {
-    padding-top: 8px !important;
-    padding-bottom: 8px !important;
-    vertical-align: top !important;
+
+/* 2. Pre-allocate an empty bottom pocket in the middle column for ALL rows */
+#configTable td:nth-child(2) {
+    /* Standard top padding, but extra bottom padding to hold the hint */
+    padding-bottom: 36px !important; /* Adjust this slightly if you want more/less room */
 }
 
-/* 3. Programmatically eliminate the type-hint from row height calculations */
+/* 3. Strip the hint's structural height and slide it visually into the pocket */
 #configTable .edit-type-hint {
     display: block !important;
-    height: 0 !important;          /* Takes up 0px of layout space */
-    overflow: visible !important;   /* Prevents the text from being hidden/clipped */
-    margin-top: 2px !important;     /* Clean separation below the input box */
-    line-height: 1 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 0 !important;
+    overflow: visible !important;
+    
+    /* Visually shifts the text down into the 24px padding WITHOUT affecting layout */
+    transform: translateY(14px) !important; 
     color: #888;
 }
