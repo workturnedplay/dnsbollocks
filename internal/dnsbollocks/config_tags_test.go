@@ -29,11 +29,11 @@ func TestResolveTag(t *testing.T) {
 	}{
 		{"Literal string", "just_a_normal_string", "just_a_normal_string", false, false},
 		{"Valid file tag", "{file:test_secret_file_123.txt}", "secret_from_file", true, false},
-		{"Valid file tag with spaces", "  {file:test_secret_file_123.txt}  ", "secret_from_file", true, false},
+		{"Valid file tag with spaces", "  {file:test_secret_file_123.txt}  ", "  secret_from_file  ", true, false},
 		{"Invalid file tag (path traversal)", "{file:../secret.txt}", "", true, true},
 		{"Invalid file tag (not found)", "{file:does_not_exist.txt}", "", true, true},
 		{"Valid env tag", "{env:TEST_ENV_VAR}", "secret_from_env", true, false},
-		{"Valid env tag with spaces", "  {env:TEST_ENV_VAR}  ", "secret_from_env", true, false},
+		{"Valid env tag with spaces", "  {env:TEST_ENV_VAR}  ", "  secret_from_env  ", true, false},
 		{"Invalid env tag (not set)", "{env:MISSING_ENV_VAR_123}", "", true, true},
 		{
 			name:      "Reserved filename CON",
@@ -128,7 +128,7 @@ func TestResolveTag(t *testing.T) {
 				t.Errorf("resolveTag() gotIsTag = %v, want %v", gotIsTag, tt.wantIsTag)
 			}
 			if gotVal != tt.wantVal {
-				t.Errorf("resolveTag() gotVal = %v, want %v", gotVal, tt.wantVal)
+				t.Errorf("resolveTag() gotVal = %q, want %q", gotVal, tt.wantVal)
 			}
 		})
 	}
@@ -141,7 +141,7 @@ func TestResolveConfigTags(t *testing.T) {
 	if err := os.WriteFile(path, []byte("https://8.8.8.8/dns-query\n"), 0600); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
-	defer os.Remove(path) //nolint:errcheck
+	defer os.Remove(path) //nolint:errcheck // don't care
 
 	t.Setenv("TEST_WEBUI_PWD", "hashed_pwd_xyz")
 

@@ -9286,45 +9286,6 @@ var reservedNames = map[string]struct{}{
 	"LPT6": {}, "LPT7": {}, "LPT8": {}, "LPT9": {},
 }
 
-// resolveTag extracts the content of {file:filename} or {env:VAR}.
-// It returns the resolved text, a boolean indicating if a tag was processed, and an error if it fails.
-func resolveTag(input string) (resolved string, isTag bool, err error) {
-	input = strings.TrimSpace(input)
-
-	if strings.HasPrefix(input, "{file:") && strings.HasSuffix(input, "}") {
-		original := strings.TrimSpace(input[6 : len(input)-1])
-
-		filename := strings.TrimRight(original, ". ")
-		filename = strings.ToUpper(filename)
-		// Strict directory traversal prevention
-		if strings.ContainsAny(filename, `/\:`) {
-			return "", true, fmt.Errorf("path separators not allowed in {file:...} — must be in same directory: %q", filename)
-		}
-		if _, bad := reservedNames[filename]; bad {
-			return "", true, fmt.Errorf("reserved Windows filename original: %q, processed:%q", original, filename)
-		}
-		configDir := filepath.Dir(configFileName)
-		path := filepath.Join(configDir, filename) //in same dir as config.json
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", true, fmt.Errorf("failed to read external config file %q: %w", path, err)
-		}
-		// Trim trailing newlines commonly found in text files
-		return strings.TrimSpace(string(data)), true, nil
-	}
-
-	if strings.HasPrefix(input, "{env:") && strings.HasSuffix(input, "}") {
-		envVar := strings.TrimSpace(input[5 : len(input)-1])
-		val, ok := os.LookupEnv(envVar)
-		if !ok {
-			return "", true, fmt.Errorf("required environment variable %q is not set", envVar)
-		}
-		return strings.TrimSpace(val), true, nil
-	}
-
-	return input, false, nil
-}
-
 // resolveConfigTags returns a deep-copied *Config with every {file:...} and
 // {env:...} token in string and []string fields expanded to its real value.
 // The input raw is never mutated; all changes live in the returned copy.
@@ -10115,3 +10076,83 @@ const (
 	blockModeIPBlock  = "ip_block"
 	blockModeDrop     = "drop"
 )
+
+// Changed quantifier from + to * to allow matching empty tags like {file:}
+var configTagRegex = regexp.MustCompile(`\{(file|env):([^{}]*)\}`)
+
+// resolveTag extracts the content of {file:filename} or {env:VAR} which may appear multiple times within a string.
+// tag aka template
+// It returns the resolved text, a boolean indicating if a tag was processed, and an error if it fails.
+func resolveTag(input string) (resolved string, isTag bool, err error) {
+	originalInput := input
+	var firstErr error
+	matchedAny := false
+
+	// Find and replace all instances of {file:...} or {env:...}
+	resolved = configTagRegex.ReplaceAllStringFunc(input, func(match string) string {
+		matchedAny = true // Track that we encountered at least one tag syntax
+		// If we've already hit an error on a previous tag in this string, skip processing
+		if firstErr != nil {
+			return match
+		}
+
+		// Extract the type (file/env) and the value inside the tag
+		matches := configTagRegex.FindStringSubmatch(match)
+		if len(matches) != 3 {
+			return match
+		}
+
+		tagType := matches[1]
+		tagValue := strings.TrimSpace(matches[2])
+
+		// Explicitly catch empty or whitespace-only tags
+		if tagValue == "" {
+			firstErr = fmt.Errorf("empty followup inside {%s:} tag, should be {%s:SOMETHINGHERE}", tagType, tagType)
+			return match
+		}
+
+		switch tagType {
+		case "file":
+			filename := strings.TrimRight(tagValue, ". ")
+			filename = strings.ToUpper(filename)
+			// Strict directory traversal prevention
+			if strings.ContainsAny(filename, `/\:`) {
+				firstErr = fmt.Errorf("path separators not allowed in {file:...} — must be in same directory: %q", filename)
+				return match
+			}
+			if _, bad := reservedNames[filename]; bad {
+				firstErr = fmt.Errorf("reserved Windows filename original: %q, processed:%q", tagValue, filename)
+				return match
+			}
+			configDir := filepath.Dir(configFileName)
+			path := filepath.Join(configDir, filename) //only look for the file in same dir as config.json
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				firstErr = fmt.Errorf("failed to read external config file %q: %w", path, readErr)
+				return match
+			}
+			// Trim trailing newlines commonly found in text files
+			return strings.TrimSpace(string(data))
+
+		case "env":
+			val, ok := os.LookupEnv(tagValue)
+			if !ok {
+				firstErr = fmt.Errorf("required environment variable %q is not set", tagValue)
+				return match
+			}
+			//trim spaces around the value
+			return strings.TrimSpace(val)
+		}
+
+		return match
+	})
+
+	// If any of the inline tags failed, return the error but preserve matchedAny as true
+	if firstErr != nil {
+		return "", matchedAny, firstErr
+	}
+
+	// If the resulting string is different from the original, we successfully replaced tags
+	isTag = resolved != originalInput
+	return resolved, isTag, nil
+}
