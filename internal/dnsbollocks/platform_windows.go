@@ -77,19 +77,16 @@ import (
 
 // Config holds the JSON configuration.
 type Config struct {
-	ListenDNS    string   `json:"listen_dns"`    // e.g., "127.0.0.1:53"
-	ListenDoH    string   `json:"listen_doh"`    // e.g., "127.0.0.1:443"
-	ListenUI     string   `json:"listen_ui"`     //ip:port
-	UpstreamURLs []string `json:"upstream_urls"` // ["https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"],
-	//TODO: rename this:
-	UpstreamSNIHostnames []string `json:"upstream_sni_hostnames"` // Optional: ["dns.quad9.net", "cloudflare-dns.com"]
-	//"strict" (or "priority"): The existing strict rule matching behavior.
-	//"failover": The new intelligent, stateful sticky failover behavior.
-	UpstreamSelectionMode   string `json:"upstream_selection_mode"`    // "fastest", "strict", or "failover"
-	UpstreamRetriesPerQuery int    `json:"upstream_retries_per_query"` // e.g., 1 retry (and 1 first try implied, thus 2 total tries!) ie. how many retries are attempted per DNS query to upstream DoH if it fails!
-	BlockMode               string `json:"block_mode"`                 // "nxdomain", "drop", "ip_block"
-	BlockIP                 string `json:"block_ip"`                   // "0.0.0.0" used by "ip_block"
-	BlockIPv6               string `json:"block_ipv6"`                 // "::" used by "ip_block"
+	ListenDNS               string   `json:"listen_dns"    desc:"IP:port for the plain DNS (UDP and TCP) listener. Must be an IP literal, never a hostname."`
+	ListenDoH               string   `json:"listen_doh"    desc:"IP:port for the local DNS-over-HTTPS (DoH) listener. Must be an IP literal. A TLS certificate is auto-generated for this IP."`
+	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be an IP literal. TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
+	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority."`
+	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
+	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
+	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
+	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (send no reply)."`
+	BlockIP                 string   `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
+	BlockIPv6               string   `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
 
 	// Pre-parsed IPs for blazing fast performance and thread-safety
 	BlockIPv4Parsed net.IP `json:"-"` // this isn't persisted to disk
@@ -103,87 +100,67 @@ type Config struct {
 	UpstreamIPs        []string   `json:"-"` // Added: Keeps triplets grouped together
 	UpstreamSNIs       []string   `json:"-"` // Added: Keeps triplets grouped together
 
-	GlobalRateQPS   int    `json:"qps_rate_globally"`    // 100
-	GlobalBurstQPS  int    `json:"qps_burst_globally"`   // 100
-	ClientRateQPS   int    `json:"qps_rate_per_client"`  // 20
-	ClientBurstQPS  int    `json:"qps_burst_per_client"` // 50
-	CacheMinTTL     int    `json:"cache_min_ttl"`        // 300s
-	CacheMaxEntries int    `json:"cache_max_entries"`    // 10000
-	WhitelistFile   string `json:"whitelist_file"`       // "query_whitelist.json"
-	BlacklistFile   string `json:"blacklist_file"`       // "response_blacklist.json"
-	HostsFile       string `json:"hosts_file"`           // "hosts2ip.json" XXX: a host has to match the whitelist first before being considered from here!
-	// Full dnsbollocks.log always gets Debug+; queries.log always gets queries.
-	LogQueriesFile    string `json:"log_queries"` // "queries.log", logs only querry
-	LogEverythingFile string `json:"log_file"`    // "dnsbollocks.log" doneTODO: rename this key and the field because it's logging everything!
-	// ConsoleLogLevel controls what appears on the terminal.
-	// Valid values (case-insensitive): "debug", "info", "warn", "error".
-	// Default: "info". Only >= this level is shown on console.
-	ConsoleLogLevel string `json:"console_log_level"`
-	LogMaxSizeMB    int    `json:"log_max_size_mb"`    // 1 for rotation
-	AllowRunAsAdmin bool   `json:"allow_run_as_admin"` // if running the exe as Admin in windows is allowed or if false just exits.
-	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
-	// Windows treats NXDOMAIN for AAAA as authoritative non-existence which prevents IPv4 fallback.
-	BlockAAAAasEmptyNoError bool `json:"block_aaaa_as_empty_noerror"` // default true
-	// If true, an 'HTTPS' query will be allowed if an 'A' rule matches the domain.
-	AllowHTTPSIfAAllowed bool `json:"allow_https_if_a_allowed"`
-	RemoveHTTPSIPv4Hints bool `json:"remove_https_ipv4_hints"`
-	UseEDEInBlockedReply bool `json:"use_ede_in_blocked_reply"`
+	GlobalRateQPS           int    `json:"qps_rate_globally"    desc:"Maximum DNS queries per second across all clients combined (token-bucket sustained rate)."`
+	GlobalBurstQPS          int    `json:"qps_burst_globally"   desc:"Maximum burst of DNS queries allowed globally above the sustained qps_rate_globally limit."`
+	ClientRateQPS           int    `json:"qps_rate_per_client"  desc:"Maximum DNS queries per second allowed from a single client IP."`
+	ClientBurstQPS          int    `json:"qps_burst_per_client" desc:"Maximum burst of DNS queries allowed from a single client IP above qps_rate_per_client."`
+	CacheMinTTL             int    `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. Hard floor is 10s."`
+	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
+	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
+	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
+	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. A domain must also match a whitelist rule before these overrides apply."`
+	LogQueriesFile          string `json:"log_queries" desc:"Path to the DNS query-only log file (JSON lines). Created automatically."`
+	LogEverythingFile       string `json:"log_file"    desc:"Path to the full system log file (JSON lines, all levels including debug). Created automatically."`
+	ConsoleLogLevel         string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
+	LogMaxSizeMB            int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
+	AllowRunAsAdmin         bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
+	BlockAAAAasEmptyNoError bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
+	AllowHTTPSIfAAllowed    bool   `json:"allow_https_if_a_allowed"  desc:"If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule."`
+	RemoveHTTPSIPv4Hints    bool   `json:"remove_https_ipv4_hints"   desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
+	UseEDEInBlockedReply    bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
 
-	WebUIPasswordHash           string `json:"webui_password_hash"`
-	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"`
-	WebUIUseTLS                 bool   `json:"webui_use_tls"` //ie. https:// not http://
-	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"`
-	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"`
-	WebUILoginLockoutSec        int    `json:"webui_login_lockout_sec"`
-	WebUIReadHeaderTimeoutSec   int    `json:"webui_read_header_timeout_sec"`
-	WebUIReadTimeoutSec         int    `json:"webui_read_timeout_sec"`
-	WebUIWriteTimeoutSec        int    `json:"webui_write_timeout_sec"`
-	WebUIIdleTimeoutSec         int    `json:"webui_idle_timeout_sec"`
+	WebUIPasswordHash           string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
+	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 12). Higher values are slower but more resistant to brute-force."`
+	WebUIUseTLS                 bool   `json:"webui_use_tls"                     desc:"Serve the web admin UI over HTTPS using the auto-generated self-signed certificate. Strongly recommended for any non-loopback address."`
+	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"  desc:"Automatically promote webui_use_tls to true when listen_ui is bound to a non-loopback address, preventing the password from being transmitted as plaintext."`
+	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"          desc:"Number of consecutive failed WebUI login attempts from a single IP before that IP is locked out."`
+	WebUILoginLockoutSec        int    `json:"webui_login_lockout_sec"           desc:"Duration in seconds a client IP remains locked out after exceeding webui_max_login_failures."`
+	WebUIReadHeaderTimeoutSec   int    `json:"webui_read_header_timeout_sec"     desc:"Seconds the WebUI HTTP server waits for a client to send request headers before closing the connection (Slowloris defence)."`
+	WebUIReadTimeoutSec         int    `json:"webui_read_timeout_sec"            desc:"Seconds the WebUI HTTP server waits for a complete request body."`
+	WebUIWriteTimeoutSec        int    `json:"webui_write_timeout_sec"           desc:"Seconds the WebUI HTTP server waits while writing the HTTP response to a client."`
+	WebUIIdleTimeoutSec         int    `json:"webui_idle_timeout_sec"            desc:"Seconds the WebUI HTTP server keeps an idle keep-alive connection open. Auto-clamped to at least 2x webui_read_timeout_sec."`
 
-	MaxConcurrentDNSTCPConns   int `json:"max_concurrent_dns_tcp_conns"`
-	MaxConcurrentDNSUDPQueries int `json:"max_concurrent_dns_udp_queries"`
+	MaxConcurrentDNSTCPConns   int `json:"max_concurrent_dns_tcp_conns"    desc:"Maximum simultaneous DNS-over-TCP connections. Connections beyond this limit are rejected immediately to bound memory and goroutine count."`
+	MaxConcurrentDNSUDPQueries int `json:"max_concurrent_dns_udp_queries"  desc:"Maximum DNS-over-UDP packets being processed concurrently. Excess packets are dropped rather than queued."`
 
-	// Network & Connection Limits
-	ClientTCPTimeoutSec int `json:"client_tcp_timeout_sec"`
-	MaxRecentBlocks     int `json:"max_recent_blocks"`
-	// UpstreamServer is actually the local DoH server we host, not the upstream DoH we forward to
-	// Local DoH Listener Timeouts (Us as a server)
-	LocalDoHReadHeaderTimeoutSec int `json:"local_doh_read_header_timeout_sec"`
-	LocalDoHReadTimeoutSec       int `json:"local_doh_read_timeout_sec"`
-	LocalDoHWriteTimeoutSec      int `json:"local_doh_write_timeout_sec"`
-	LocalDoHIdleTimeoutSec       int `json:"local_doh_idle_timeout_sec"`
-	// UpstreamServerReadTimeoutSec       int `json:"upstreamserver_read_timeout_sec"`
-	// UpstreamServerWriteTimeoutSec      int `json:"upstreamserver_write_timeout_sec"`
-	// UpstreamServerReadHeaderTimeoutSec int `json:"upstreamserver_read_header_timeout_sec"`
-	// UpstreamServerIdleTimeoutSec       int `json:"upstreamserver_idle_timeout_sec"`
+	ClientTCPTimeoutSec          int `json:"client_tcp_timeout_sec" desc:"Per-operation timeout (seconds) for plain DNS TCP connections: reading the 2-byte length header, reading the body, and writing the response each receive this budget independently."`
+	MaxRecentBlocks              int `json:"max_recent_blocks"      desc:"Maximum number of recently blocked domains tracked for the WebUI Blocks page (LRU eviction when full)."`
+	LocalDoHReadHeaderTimeoutSec int `json:"local_doh_read_header_timeout_sec" desc:"Seconds the local DoH HTTPS listener waits for a client to send HTTP request headers."`
+	LocalDoHReadTimeoutSec       int `json:"local_doh_read_timeout_sec"        desc:"Seconds the local DoH HTTPS listener waits for a complete HTTP request body."`
+	LocalDoHWriteTimeoutSec      int `json:"local_doh_write_timeout_sec"       desc:"Seconds the local DoH HTTPS listener waits while writing the HTTP response."`
+	LocalDoHIdleTimeoutSec       int `json:"local_doh_idle_timeout_sec"        desc:"Seconds the local DoH HTTPS listener keeps an idle keep-alive connection open. Auto-clamped to at least 2x local_doh_read_timeout_sec."`
 
-	//these apply to the upstream DoH server where we forward our DNS requests to:
-	// Outbound Upstream Client Settings (Us talking to upstreams)
-	CertLogTimeoutSec        int `json:"cert_log_timeout_sec"`
-	UpstreamDialTimeoutSec   int `json:"upstream_dial_timeout_sec"`
-	UpstreamClientTimeoutSec int `json:"upstream_client_timeout_sec"`
-	UpstreamRetryBackoffMs   int `json:"upstream_retry_backoff_ms"`
+	CertLogTimeoutSec        int `json:"cert_log_timeout_sec"          desc:"Timeout (seconds) for the diagnostic TLS probe that logs certificate chain details when an upstream TLS handshake fails."`
+	UpstreamDialTimeoutSec   int `json:"upstream_dial_timeout_sec"     desc:"Timeout (seconds) for establishing a new TCP connection to an upstream DoH server."`
+	UpstreamClientTimeoutSec int `json:"upstream_client_timeout_sec"   desc:"Overall timeout (seconds) for a single upstream DoH HTTP request including dial, headers, and body. Must be >= upstream_dial_timeout_sec."`
+	UpstreamRetryBackoffMs   int `json:"upstream_retry_backoff_ms"     desc:"Milliseconds to wait between retry attempts to an upstream DoH server after a transient network failure."`
 
-	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"`
-	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"`
-	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host"`
+	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"   desc:"Seconds to keep an idle upstream HTTP connection in the pool before closing it."`
+	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"          desc:"Global maximum idle upstream HTTP connections kept in the pool across all upstream hosts combined."`
+	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host" desc:"Maximum idle upstream HTTP connections per upstream host. Auto-clamped to not exceed upstream_max_idle_conns."`
 
-	// Buffer & Sizing Limits
-	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes"`
-	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"`
+	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes" desc:"Maximum bytes accepted in an incoming DoH request body, guarding against memory exhaustion from oversized payloads."`
+	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"        desc:"Per-packet receive buffer size in bytes for UDP DNS (512–65535). 4096 safely handles modern EDNS0 payloads."`
 
-	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes"`
-	// Cache & Diagnostic Limits, affects our own caching of it only
-	CacheNegativeTTLSec int `json:"cache_negative_ttl_sec"`
+	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
+	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses, reducing retry storms during upstream outages."`
 
-	//this is the TTL set in the DNS packet, so tells OS how long to cache this
-	BlockedResponseTTLSec uint32 `json:"blocked_response_ttl_sec"`
+	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response."`
+	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec" desc:"TTL (seconds) embedded in DNS records synthesised from the local host-override file (hosts2ip.json)."`
 
-	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec"`
+	UILogMaxLines int `json:"ui_log_max_lines" desc:"Maximum log lines shown per page in the WebUI log viewer. Older lines are omitted to prevent excessive RAM usage and browser freezes."`
 
-	UILogMaxLines int `json:"ui_log_max_lines"`
-
-	ExtraSafety bool `json:"extra_safety"`
+	ExtraSafety bool `json:"extra_safety" desc:"Enable extra defensive checks: duplicate-entry detection in JSON files, power-loss staging files for atomic writes, and strict purging of malformed or duplicate rules on load. Recommended for production."`
 }
 
 // Server encapsulates all the state required to run the DNSbollocks application.
@@ -2487,6 +2464,7 @@ func (s *Server) loadMainConfig() error {
 			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
 				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
 		}
+
 		// not admin, auto create config file with defaults
 		//doneFIXME: make sure it's not found not just don't have read permission (but could have write!)
 		log.Warn("Config file not found; using defaults and creating new file", slog.String("config_file", cfgFname))
@@ -2497,6 +2475,15 @@ func (s *Server) loadMainConfig() error {
 		//rawCfg = &rawTempCfg
 		shouldSaveConfig = true
 	} else {
+		// Strip "_description_*" keys written by marshalConfigWithDescriptions so that
+		// DisallowUnknownFields does not reject them and the duplicate-key scanner
+		// does not flag them as anomalies.
+		var stripErr error
+		data, stripErr = stripConfigDescriptionKeys(data)
+		if stripErr != nil {
+			return fmt.Errorf("failed to strip description keys from config file %q: %w", cfgFname, stripErr)
+		}
+
 		// Duplicate config keys (e.g. "extra_safety" appearing twice) are silently
 		// last-write-wins in Go's json.Decoder.  Catch them before decoding.
 		// cfg.ExtraSafety is not yet populated from the file at this point, so
@@ -2685,7 +2672,7 @@ func (s *Server) saveConfig() error {
 		panic2("BUG: saveConfig called before liveRawConfig was initialised")
 	}
 
-	data, err := json.MarshalIndent(rawCfg, "", "  ")
+	data, err := marshalConfigWithDescriptions(rawCfg)
 	if err != nil {
 		return fmt.Errorf("config marshal failed: %w", err)
 	}
@@ -8924,6 +8911,7 @@ type ConfigFieldView struct {
 	Key   string
 	Value string
 	Type  string
+	Desc  string
 }
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
@@ -8992,6 +8980,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 			Key:   tagKey,
 			Value: strVal,
 			Type:  typ,
+			Desc:  field.Tag.Get("desc"),
 		})
 	}
 
@@ -9055,7 +9044,16 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to read existing config", http.StatusInternalServerError)
 				return
 			}
-
+			// === ADD THIS BLOCK (exact parallel to loadMainConfig) ===
+			var stripErr error
+			data, stripErr = stripConfigDescriptionKeys(data)
+			if stripErr != nil {
+				log.Error("failed to strip description keys from config file before WebUI update", SafeErr(stripErr))
+				http.Error(w, "failed to process config file (strip descriptions)", http.StatusInternalServerError)
+				return
+			}
+			// Optional: you could also run the duplicate-key check here for extra safety,
+			// but it's not strictly required since we're about to re-validate anyway.
 			var raw map[string]any
 			if err2 := json.Unmarshal(data, &raw); err2 != nil {
 				log.Error("Failed to parse existing config file", SafeErr(err2))
@@ -10152,4 +10150,98 @@ func resolveTag(input string) (resolved string, isTag bool, err error) {
 	}
 
 	return resolved, matchedAny, nil
+}
+
+// marshalConfigWithDescriptions produces a JSON encoding of cfg with each
+// field preceded by a "_description_<key>" entry containing the field's
+// `desc` struct tag.  The result is valid standard JSON and is fully
+// round-trippable: stripConfigDescriptionKeys removes the description
+// entries before the standard decoder processes the file on load.
+func marshalConfigWithDescriptions(cfg *Config) ([]byte, error) {
+	t := reflect.TypeOf(*cfg)
+	v := reflect.ValueOf(*cfg)
+
+	var buf bytes.Buffer
+	buf.WriteString("{\n")
+
+	first := true
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		jsonKey, _, _ := strings.Cut(jsonTag, ",")
+		if jsonKey == "" || jsonKey == "-" {
+			continue
+		}
+
+		if !first {
+			buf.WriteString(",\n")
+		}
+		first = false
+
+		// Write the _description_ entry if a desc tag is present.
+		if desc := field.Tag.Get("desc"); desc != "" {
+			descKeyBytes, err := json.Marshal("_description_" + jsonKey)
+			if err != nil {
+				return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal desc key for %q: %w", jsonKey, err)
+			}
+			descValBytes, err := json.Marshal(desc)
+			if err != nil {
+				return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal desc value for %q: %w", jsonKey, err)
+			}
+			buf.WriteString("  ")
+			buf.Write(descKeyBytes)
+			buf.WriteString(": ")
+			buf.Write(descValBytes)
+			buf.WriteString(",\n")
+		}
+
+		// Write the real field.
+		keyBytes, err := json.Marshal(jsonKey)
+		if err != nil {
+			return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal key %q: %w", jsonKey, err)
+		}
+		valBytes, err := json.Marshal(v.Field(i).Interface())
+		if err != nil {
+			return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal value for %q: %w", jsonKey, err)
+		}
+		// Re-indent multi-line values (slices, objects) to match surrounding 2-space indent.
+		var indented bytes.Buffer
+		if err := json.Indent(&indented, valBytes, "  ", "  "); err != nil {
+			return nil, fmt.Errorf("marshalConfigWithDescriptions: indent value for %q: %w", jsonKey, err)
+		}
+		buf.WriteString("  ")
+		buf.Write(keyBytes)
+		buf.WriteString(": ")
+		buf.Write(indented.Bytes())
+	}
+
+	buf.WriteString("\n}")
+	return buf.Bytes(), nil
+}
+
+// stripConfigDescriptionKeys removes all "_description_*" (and any other "_*")
+// top-level keys from the raw JSON bytes before the standard decoder processes
+// the config file.  This lets DisallowUnknownFields work correctly even when
+// the file was written by marshalConfigWithDescriptions.
+//
+// It also re-encodes through a map[string]json.RawMessage, which loses the
+// original key order — that is intentional and harmless for loading.
+func stripConfigDescriptionKeys(data []byte) ([]byte, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("stripConfigDescriptionKeys: unmarshal: %w", err)
+	}
+	for k := range raw {
+		if strings.HasPrefix(k, "_") {
+			delete(raw, k)
+		}
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("stripConfigDescriptionKeys: re-marshal: %w", err)
+	}
+	return out, nil
 }
