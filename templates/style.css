@@ -366,30 +366,3 @@ tr.edit-row td.edit-id-display {
 #configTable td.actions button + button {
     margin-left: 6px;
 }
-
-/* 1. Reset all height constraints to let rows breathe naturally */
-#configTable tbody tr,
-#configTable tr.edit-row {
-    height: auto !important;
-}
-
-
-/* 2. Pre-allocate an empty bottom pocket in the middle column for ALL rows */
-#configTable td:nth-child(2) {
-    /* Standard top padding, but extra bottom padding to hold the hint */
-    padding-bottom: 36px !important; /* Adjust this slightly if you want more/less room */
-}
-
-/* 3. Strip the hint's structural height and slide it visually into the pocket */
-#configTable .edit-type-hint {
-    display: block !important;
-    height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    line-height: 0 !important;
-    overflow: visible !important;
-    
-    /* Visually shifts the text down into the 24px padding WITHOUT affecting layout */
-    transform: translateY(14px) !important; 
-    color: #888;
-}
