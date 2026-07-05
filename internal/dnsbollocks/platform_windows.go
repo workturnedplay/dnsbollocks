@@ -80,7 +80,7 @@ type Config struct {
 	ListenDNS               string   `json:"listen_dns"    desc:"IP:port for the plain DNS (UDP and TCP) listener. Must be an IP literal, never a hostname."`
 	ListenDoH               string   `json:"listen_doh"    desc:"IP:port for the local DNS-over-HTTPS (DoH) listener. Must be an IP literal. A TLS certificate is auto-generated for this IP."`
 	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be an IP literal. TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
-	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority."`
+	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority. If you use template '{builtin:clientexe}'(with no single quotes) it will be replaced with the querying executable name (useful for NextDNS URLs)"`
 	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
@@ -3822,6 +3822,23 @@ func SafeRequestAttr(key string, req *http.Request) slog.Attr {
 	)
 }
 
+const templateClientExe = "{builtin:clientexe}"
+
+// Global variable to hold the exact string Go's net/url produces
+var templateClientExeEscaped string
+
+func init() {
+	// Parse a dummy URL containing the token to see exactly how Go encodes it
+	dummy, err := url.Parse("https://localhost/" + templateClientExe)
+	if err == nil {
+		// dummy.String() yields "https://localhost/%7Bbuiltin:clientexe%7D"
+		templateClientExeEscaped = strings.TrimPrefix(dummy.String(), "https://localhost/")
+	} else {
+		// Fallback just in case
+		templateClientExeEscaped = "%7Bbuiltin:clientexe%7D"
+	}
+}
+
 func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
 	log := u.getLogger()
 
@@ -3879,6 +3896,26 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 
 			// create request with supplied context so caller controls deadline/cancel
 			targetURLStr := u.URL.String()
+			// Check if the user configured either variant of the placeholder in their upstream URL
+			if strings.Contains(targetURLStr, templateClientExe) || strings.Contains(targetURLStr, templateClientExeEscaped) {
+				exeName := "unknown-process"
+
+				// Extract the metadata from the context
+				if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok && info.exe != "" {
+					//// Optionally strip the .exe extension for cleaner NextDNS logs
+					//exeName = strings.TrimSuffix(info.exe, ".exe")
+					exeName = info.exe
+
+					// URL-encode the executable name to prevent malformed requests
+					exeName = url.PathEscape(exeName)
+				}
+
+				// Inject the executable name by replacing both potential string variations
+				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExe, exeName)
+				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExeEscaped, exeName)
+			}
+
+			// Build the request using the dynamically generated URL
 			var e error
 			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))
 			if e != nil {
