@@ -10111,7 +10111,12 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
 
-	if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To16() != nil {
+	/*
+		In Go's standard library, net.ParseIP() always returns a 16-byte slice for any valid address it reads, whether it's IPv4 or IPv6:
+		If you pass it an IPv6 address like "::", it returns 16 bytes of zeros ([0, 0, ... 0]).
+		If you pass it an IPv4 address like "127.0.0.1", it returns a 16-byte slice containing an IPv4-mapped IPv6 address (12 bytes of padding followed by 127, 0, 0, 1).
+	*/
+	if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To4() == nil {
 		resolvedCfg.BlockIPv6Parsed = ip.To16()
 		rawCfg.BlockIPv6Parsed = ip.To16()
 	} else {
