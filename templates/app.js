@@ -449,6 +449,8 @@
         
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
+        //const isPwd = row.dataset.isPwd === 'true';
+        //const options = row.dataset.options;
         
         // Capture the row's rendered height before hiding it so we can prevent
         // the edit row from being shorter (which causes a layout jump).
@@ -491,6 +493,7 @@
         
         // Remove strict row height lock temporarily so textareas can expand
         editRow.style.height = 'auto';// Safe CSSOM assignment
+        
         // Dynamically type the input control cleanly without inline string styles
         if (key === 'upstream_selection_mode') {
             container.innerHTML = `<select class="config-input w-100">
@@ -556,6 +559,17 @@
         clone.querySelector('.config-stage-btn').addEventListener('click', () => {
             
             const rawVal = editRow.querySelector('.config-input').value;
+            
+            // Password confirmation logic!
+            //&& rawVal !== '********' && rawVal !== currentDisplay) {
+            if (isPwd && rawVal !== '' ) {
+                const confirmPwd = prompt("Please confirm your new password by typing it again:");
+                if (confirmPwd !== rawVal) {
+                    alert("Passwords do not match. Staging cancelled.");
+                    return; // Abort, FIXME: have to re-add listener for this Stage button!
+                }
+            }
+            
             let parsedVal = rawVal;
             let displayVal = rawVal;
             

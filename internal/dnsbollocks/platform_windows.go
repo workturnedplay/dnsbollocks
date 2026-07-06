@@ -9016,6 +9016,8 @@ type ConfigFieldView struct {
 	Value string
 	Type  string
 	Desc  string
+	//Options    string // Comma-separated list for dropdowns
+	//IsPassword bool   // Flag to trigger password masking and confirmation
 }
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
@@ -9024,6 +9026,12 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 	v := reflect.ValueOf(*cfg)
 	t := v.Type()
 	var fields []ConfigFieldView
+
+	// Dynamically fetch tags so we don't hardcode them!
+	// tagUpstreamMode := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamSelectionMode))
+	// tagLogLevel := getJSONTagByOffset(unsafe.Offsetof(Config{}.ConsoleLogLevel))
+	// tagBlockMode := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockMode))
+	tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -9080,19 +9088,37 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 			//continue
 		}
 
+		// // Inject dynamic UI constraints based on the resolved tags
+		// options := ""
+		// isPwd := false
+
+		// if tagKey == tagUpstreamMode {
+		// 	options = "fastest,failover,strict"
+		// } else if tagKey == tagLogLevel {
+		// 	options = "debug,info,warn,error"
+		// } else if tagKey == tagBlockMode {
+		// 	options = "nxdomain,ip_block,drop"
+		// } else
+		if tagKey == tagWebUIPwd {
+			//isPwd = true
+			strVal = placeHolderPassword // Mask it from the browser completely!
+		}
+
 		fields = append(fields, ConfigFieldView{
 			Key:   tagKey,
 			Value: strVal,
 			Type:  typ,
 			Desc:  field.Tag.Get("desc"),
+			//Options: options,
+			//IsPassword: isPwd,
 		})
 	}
 
-	for i, field := range fields {
-		if field.Key == "webui_password_hash" && field.Value != "" {
-			fields[i].Value = placeHolderPassword // Mask it from the browser completely!
-		}
-	}
+	// for i, field := range fields {
+	// 	if field.Key == "webui_password_hash" && field.Value != "" {
+	// 		fields[i].Value = placeHolderPassword // Mask it from the browser completely!
+	// 	}
+	// }
 
 	sort.Slice(fields, func(i, j int) bool {
 		return fields[i].Key < fields[j].Key
@@ -9134,22 +9160,24 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// --- NEW HASHING INTERCEPTOR ---
+			// Fetch the exact tag for the password field
+			tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 			// Hash plaintext password before applying, same as before.
-			if plainPwd, ok := changes["webui_password_hash"].(string); ok {
+			if plainPwd, ok := changes[tagWebUIPwd].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
+				//TODO: find out why this isn't needed here: && plainPwd != placeHolderPassword
 				if plainPwd != "" && !strings.HasPrefix(plainPwd, "$2") {
-
 					// Fetch current configured cost
 					cost := ui.getConfig().WebUIPasswordBcryptCost
 					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
-					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost))
+					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
 					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), cost)
 					if hashErr != nil {
-						log.Error("Failed to hash new webui password", SafeErr(hashErr), slog.Int("cost", cost))
+						log.Error("Failed to hash new webui password", SafeErr(hashErr), slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
 						http.Error(w, "failed to hash new password", http.StatusInternalServerError)
 						return
 					}
-					changes["webui_password_hash"] = string(hashBytes)
+					changes[tagWebUIPwd] = string(hashBytes)
 				} else if plainPwd == "" { //|| plainPwd == placeHolderPassword {//nah, shouldn't check for this!
 					// The input was empty, meaning the user didn't want to change their password.
 
@@ -9158,8 +9186,8 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					// Even if the disk file was wiped a millisecond ago, maps.Copy will
 					// overwrite that vacuum with this valid hash.
 					//log.Debug("Will keep using the old password/hash.")
-					log.Debug("Password unchanged; retaining active memory hash")
-					changes["webui_password_hash"] = ui.getRawConfig().WebUIPasswordHash
+					log.Debug("Password unchanged; retaining active memory hash", slog.String(configFileName, tagWebUIPwd))
+					changes[tagWebUIPwd] = ui.getRawConfig().WebUIPasswordHash
 				}
 			}
 			// --- END INTERCEPTOR ---
@@ -10118,8 +10146,10 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, err
 	}
 
-	if resolvedCfg.WebUIPasswordHash == "" && isWebUI {
-		return shouldSaveConfig, errors.New("webui_password_hash cannot be empty")
+	if isWebUI && resolvedCfg.WebUIPasswordHash == "" {
+		//only for webUI case, non-webUI will ask for pwd to be set on startup, after this!
+		tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
+		return shouldSaveConfig, errors.New(tagWebUIPwd + " cannot be empty at this point")
 	}
 
 	return shouldSaveConfig, nil

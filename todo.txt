@@ -1,6 +1,6 @@
 todo:
 * in app.js handle this better: hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
-* empty password in js/html should retain prev. value, which currently is "********" (no quotes)
+* empty password in js/html should retain prev. value, which currently is "********" (no quotes). Unclear why/how even if it's kept at the default of "********" it will still not be set to this (wrong)value when submitting changes for other keys, which is the correct way so it's already doing it somehow. I forget how app.js actually does it.
 * ensure the new webUI entered password when set, asks for confirmation of it before continuing to set it.
 * when saving config from webUI and the on-disk config was changed, what do we do exactly? if it's same it's np, but if anything changed, which should take prio then? the webUI page coulda been more stale than the more recent on-disk config.json change, heck maybe the change wasn't even reloaded via Ctrl+R yet!
 * find other uses of hardcoded json tags like "webui_password_hash" is/was., there are some in app.js like 'block_mode' etc, unclear how to template these into app.js which is static currently! maybe read these in from the html? this way templating on the html works.
