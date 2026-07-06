@@ -1289,9 +1289,9 @@ func defaultConfig() Config {
 		ListenUI:                "127.0.0.1:8080",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		UpstreamSNIHostnames:    []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
-		UpstreamSelectionMode:   "failover",
+		UpstreamSelectionMode:   upstreamSelectionModeFailover,
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
-		BlockMode:               "nxdomain",
+		BlockMode:               blockModeNXDOMAIN,
 		BlockIP:                 "0.0.0.0",
 		BlockIPv6:               "::", // Default unspecified IPv6
 
@@ -1309,7 +1309,7 @@ func defaultConfig() Config {
 
 		LogQueriesFile:              "queries.log",
 		LogEverythingFile:           "dnsbollocks.log",
-		ConsoleLogLevel:             "info",
+		ConsoleLogLevel:             consoleLogLevelInfo,
 		LogMaxSizeMB:                4095, // Rotation threshold
 		AllowRunAsAdmin:             false,
 		BlockAAAAasEmptyNoError:     true,
@@ -1736,14 +1736,17 @@ func (m multiHandler) WithGroup(name string) slog.Handler {
 
 func parseConsoleLogLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug", "d":
+	case consoleLogLevelDebug, "d":
 		return slog.LevelDebug
-	case "warn", "warning", "w":
-		return slog.LevelWarn
-	case "error", "e":
-		return slog.LevelError
-	default: // "info" or anything else
+	case consoleLogLevelInfo, "i":
 		return slog.LevelInfo
+	case consoleLogLevelWarn, "warning", "w":
+		return slog.LevelWarn
+	case consoleLogLevelError, "e":
+		return slog.LevelError
+	default:
+		//anything else means... Debug
+		return slog.LevelDebug
 	}
 }
 
@@ -2617,11 +2620,11 @@ func (s *Server) loadMainConfig() error {
 	// 4. LOG STRATEGY
 	// Add your new clear architectural description line here:
 	switch resolvedCfg.UpstreamSelectionMode {
-	case "strict":
+	case upstreamSelectionModeStrict:
 		log.Info("Upstream DNS strategy initialized: STRICT MATCH MODE (All upstreams queried; queries will be safely dropped if response IPs mismatch to protect against manipulation/spoofing; WARNING: Virtually unusable on standard networks due to false-positive drops caused by modern CDNs, Geo-DNS routing, and load balancers returning different IPs for identical queries.).")
-	case "failover":
+	case upstreamSelectionModeFailover:
 		log.Info("Upstream DNS strategy initialized: FAILOVER MODE (Sticky sequence tracking; queries the current active upstream and all higher-priority(first in list are higher prio.) failed upstreams in parallel to eliminate timeout penalties while instantly healing and restoring primary upstreams the moment they recover.).")
-	case "fastest":
+	case upstreamSelectionModeFastest:
 		//nolint:gocritic // Reason: Keeping 'fastest' explicit for readability
 		fallthrough
 	default:
@@ -4182,7 +4185,7 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// and we whitelist it in A afterwards, then dnscache might've cached the NXDOMAIN from AAAA and treat it as such for X more seconds thus
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
-	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == "nxdomain" {
+	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == blockModeNXDOMAIN {
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
 		resp.Rcode = dns.RcodeSuccess
@@ -7787,7 +7790,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 	}
 
 	switch cfg.UpstreamSelectionMode {
-	case "strict":
+	case upstreamSelectionModeStrict:
 		// ==========================================
 		// STRICT MODE: Wait for all & strict compare
 		// ==========================================
@@ -7856,7 +7859,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 		return reference, upstreamState1
 
-	case "failover":
+	case upstreamSelectionModeFailover:
 		// ==========================================
 		// FAILOVER MODE: Priority-based with active healing
 		// ==========================================
@@ -7869,7 +7872,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		}
 		return resp, upstreamState1
 
-	case "fastest":
+	case upstreamSelectionModeFastest:
 		//nolint:gocritic // Reason: Keeping 'fastest' explicit for readability
 		fallthrough
 	default:
@@ -9145,6 +9148,24 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			"KeyConsoleLogLevel":       getJSONTagByOffset(unsafe.Offsetof(Config{}.ConsoleLogLevel)),
 			"KeyBlockMode":             getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockMode)),
 			"KeyWebUIPasswordHash":     getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)),
+			// Valid option values for select-type fields, comma-separated so app.js never
+			// hard-codes enum strings. Changing a constant in Go propagates automatically.
+			"OptsUpstreamSelectionMode": strings.Join([]string{
+				upstreamSelectionModeFastest,
+				upstreamSelectionModeFailover,
+				upstreamSelectionModeStrict,
+			}, ","),
+			"OptsConsoleLogLevel": strings.Join([]string{
+				consoleLogLevelDebug,
+				consoleLogLevelInfo,
+				consoleLogLevelWarn,
+				consoleLogLevelError,
+			}, ","),
+			"OptsBlockMode": strings.Join([]string{
+				blockModeNXDOMAIN,
+				blockModeIPBlock,
+				blockModeDrop,
+			}, ","),
 		}
 		ui.renderTemplate(w, r, "config", data)
 		return
@@ -10073,6 +10094,22 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
+	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
+	// reset to the safe default so the server starts rather than refusing to boot.
+	resolvedCfg.UpstreamSelectionMode = strings.ToLower(strings.TrimSpace(resolvedCfg.UpstreamSelectionMode))
+	switch resolvedCfg.UpstreamSelectionMode {
+	case upstreamSelectionModeFastest, upstreamSelectionModeFailover, upstreamSelectionModeStrict:
+		// valid — no action required
+	default:
+		log.Warn("Unknown upstream_selection_mode; resetting to default",
+			slog.String("was", resolvedCfg.UpstreamSelectionMode),
+			slog.String("default", upstreamSelectionModeFailover))
+		resolvedCfg.UpstreamSelectionMode = defaultCfg.UpstreamSelectionMode
+		//rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
+		shouldSaveConfig = true
+	}
+	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
+
 	// Hard-check URLs unconditionally to prevent downstream panics
 	for i, rawURL := range resolvedCfg.UpstreamURLs {
 		if _, err := url.Parse(rawURL); err != nil {
@@ -10225,6 +10262,25 @@ const (
 	blockModeNXDOMAIN = "nxdomain"
 	blockModeIPBlock  = "ip_block"
 	blockModeDrop     = "drop"
+)
+
+// upstreamSelectionMode* are the only valid values for Config.UpstreamSelectionMode.
+// They are used in Go logic, in the sanitizeAndValidateConfig validator, and injected
+// into the HTML template so app.js never hard-codes these strings.
+const (
+	upstreamSelectionModeFailover = "failover"
+	upstreamSelectionModeFastest  = "fastest"
+	upstreamSelectionModeStrict   = "strict"
+)
+
+// consoleLogLevel* are the canonical values for Config.ConsoleLogLevel understood by
+// parseConsoleLogLevel. Aliases ("d", "w", "e") remain accepted for human convenience
+// but these constants are the only values written to disk and shown in the WebUI.
+const (
+	consoleLogLevelDebug = "debug"
+	consoleLogLevelInfo  = "info"
+	consoleLogLevelWarn  = "warn"
+	consoleLogLevelError = "error"
 )
 
 // Changed quantifier from + to * to allow matching empty tags like {file:}

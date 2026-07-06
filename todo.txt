@@ -1,5 +1,5 @@
 todo:
-* missed the options which are hardcoded in app.js
+* if i change the pwd, but don't yet Apply, and Edit it again and Stage empty, it still shows the previously changed pwd but it won't actually use that one, it defaults to whatever was before the change, tho visually it looks like the changed pwd.
 * when saving config from webUI and the on-disk config was changed, what do we do exactly? if it's same it's np, but if anything changed, which should take prio then? the webUI page coulda been more stale than the more recent on-disk config.json change, heck maybe the change wasn't even reloaded via Ctrl+R yet!
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
@@ -12,6 +12,7 @@ no:
 
 
 done:
+//* missed the options which are hardcoded in app.js
 //* in app.js handle this better: hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
 //* empty password in js/html should retain prev. value, which currently is "********" (no quotes) when Stage is clicked with empty value, not just when Cancel is clicked. Unclear why/how even if it's kept at the default of "********"(visible, not edited in) it will still not be set to this (wrong)value when submitting changes for other keys, which is the correct way so it's already doing it right somehow, ok found it: it's due to display-value vs edit-input-container, the latter is always empty and it's what's sent, the former is just for show, in app.js.
 //* DRY uses of "webui_password_hash" and ensure we use the json tag of it(done in .go file), because if renamed in the Config struct, uses of hardcoded "webui_password_hash" will fail miserably otherwise. This affects app.js too, for it uses 'webui_password_hash' and there's more in app.js like 'block_mode' etc.

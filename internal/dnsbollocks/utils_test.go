@@ -229,8 +229,8 @@ func TestParseConsoleLogLevel(t *testing.T) {
 		{"error", slog.LevelError},
 		{"E", slog.LevelError},
 		{"info", slog.LevelInfo},
-		{"unknown", slog.LevelInfo}, // defaults to info
-		{"", slog.LevelInfo},
+		{"unknown", slog.LevelDebug}, // defaults to Debug
+		{"", slog.LevelDebug},
 	}
 
 	for _, tt := range tests {

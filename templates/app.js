@@ -14,7 +14,7 @@
     if (!csrfToken) {
         console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
     }
-
+    
     // Config field key names are injected by Go into data-* attributes on #configKeysData
     // (only present on the /config page). Falls back to empty strings on other pages so
     // CONFIG_KEYS is always safe to reference — editConfig is only called on /config anyway.
@@ -22,10 +22,18 @@
     // app.js never hard-codes json tag strings.
     const _cfgKeysEl = document.getElementById('configKeysData');
     const CONFIG_KEYS = _cfgKeysEl ? {
+        // JSON tag key names — used to identify which config row is being edited.
         upstreamSelectionMode: _cfgKeysEl.dataset.keyUpstreamSelectionMode || '',
         consoleLogLevel:       _cfgKeysEl.dataset.keyConsoleLogLevel       || '',
         blockMode:             _cfgKeysEl.dataset.keyBlockMode             || '',
         webuiPasswordHash:     _cfgKeysEl.dataset.keyWebuiPasswordHash     || '',
+        // Valid option arrays for select-type fields.
+        // Comma-separated from Go (all values are plain lowercase ASCII, no commas),
+        // split here. An empty attribute produces [] → buildSelectHTML falls back to
+        // a plain text input so the field remains editable even if data is missing.
+        optsUpstreamSelectionMode: (_cfgKeysEl.dataset.optsUpstreamSelectionMode || '').split(',').filter(Boolean),
+        optsConsoleLogLevel:       (_cfgKeysEl.dataset.optsConsoleLogLevel       || '').split(',').filter(Boolean),
+        optsBlockMode:             (_cfgKeysEl.dataset.optsBlockMode             || '').split(',').filter(Boolean),
     } : {};
     
     // postAdminForm sends a POST with fields, injecting csrf_token automatically,
@@ -452,6 +460,49 @@
     
     const stagedChanges = {};
     
+    // Escapes a string for safe embedding inside an HTML attribute value or element text.
+    // Option values originate from Go constants (plain lowercase ASCII), but we escape
+    // defensively so this is safe regardless of what Go ever sends in future.
+    function escapeForAttr(s) {
+        return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+    
+    // Builds a <select> element HTML string for enum-type config fields.
+    // options: string array from CONFIG_KEYS.opts* (injected by Go).
+    // currentValue: the value currently stored in the config row (may not be in options
+    //   if the config was written by a newer Go version or hand-edited).
+    // Defense-in-depth: if options is empty (e.g. template failed to render), falls back
+    //   to a plain text input so the field is still editable rather than silently broken.
+    function buildSelectHTML(options, currentValue) {
+        if (!Array.isArray(options) || options.length === 0) {
+            console.warn('buildSelectHTML: empty or missing options list; falling back to plain text input. ' +
+                'This likely means the Go template did not inject the expected data-opts-* attribute.');
+                const safeVal = escapeForAttr(currentValue);
+                return `<input type="text" class="config-input w-100" value="${safeVal}">`;
+        }
+            
+        // If the live value is not in the known enum (e.g. hand-edited config or written by a
+        // newer Go version), prepend it as a clearly-labelled option so the user can see what
+        // is stored and consciously pick a replacement. We never silently discard it.
+        const isKnown = options.includes(currentValue);
+        let html = '';
+        if (!isKnown && currentValue !== '') {
+            const safe = escapeForAttr(currentValue);
+            html += `<option value="${safe}" selected>${safe} \u26A0 (current\u2014not in known list)</option>\n`;
+        }
+        html += options.map(v => {
+            const safe = escapeForAttr(v);
+            const sel  = v === currentValue ? ' selected' : '';
+            return `<option value="${safe}"${sel}>${safe}</option>`;
+        }).join('\n');
+        return `<select class="config-input w-100">\n${html}\n</select>`;
+    }
+    
     function editConfig(key) {
         // Find existing items
         const row = document.getElementById('configRow_' + key);
@@ -509,26 +560,16 @@
         
         // Dynamically type the input control cleanly without inline string styles
         if (key === CONFIG_KEYS.upstreamSelectionMode) {
-            container.innerHTML = `<select class="config-input w-100">
-                                        <option value="fastest" ${currentDisplay === 'fastest' ? 'selected' : ''}>fastest</option>
-                                        <option value="failover" ${currentDisplay === 'failover' ? 'selected' : ''}>failover</option>
-                                        <option value="strict" ${currentDisplay === 'strict' ? 'selected' : ''}>strict</option>
-                                       </select>`;
+            // Option values come from Go's upstreamSelectionMode* constants via CONFIG_KEYS.
+            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsUpstreamSelectionMode, currentDisplay);
             hint.innerText = "Strategy for querying upstreams";
         } else if (key === CONFIG_KEYS.consoleLogLevel) {
-            container.innerHTML = `<select class="config-input w-100">
-                                        <option value="debug" ${currentDisplay === 'debug' ? 'selected' : ''}>debug</option>
-                                        <option value="info" ${currentDisplay === 'info' ? 'selected' : ''}>info</option>
-                                        <option value="warn" ${currentDisplay === 'warn' ? 'selected' : ''}>warn</option>
-                                        <option value="error" ${currentDisplay === 'error' ? 'selected' : ''}>error</option>
-                                       </select>`;
+            // Option values come from Go's consoleLogLevel* constants via CONFIG_KEYS.
+            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsConsoleLogLevel, currentDisplay);
             hint.innerText = "Console output verbosity";
         } else if (key === CONFIG_KEYS.blockMode) {
-            container.innerHTML = `<select class="config-input w-100">
-                                        <option value="nxdomain" ${currentDisplay === 'nxdomain' ? 'selected' : ''}>nxdomain</option>
-                                        <option value="ip_block" ${currentDisplay === 'ip_block' ? 'selected' : ''}>ip_block</option>
-                                        <option value="drop" ${currentDisplay === 'drop' ? 'selected' : ''}>drop</option>
-                                       </select>`;
+            // Option values come from Go's blockMode* constants via CONFIG_KEYS.
+            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsBlockMode, currentDisplay);
             hint.innerText = "Action taken when blocking queries";
         } else if (key === CONFIG_KEYS.webuiPasswordHash) {
             container.innerHTML = `<input type="text" class="config-input monospace-code2" placeholder="Enter NEW password here...">`;
@@ -554,7 +595,7 @@
             container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
             hint.innerText = "BUG: FIXME: unhandled type '"+type+"', fallback to:String value";
             //hint.innerText = "String value";
-
+            
             // This branch should be unreachable: Go's getConfigFields() panics on unknown types.
             // If it is ever reached it means a new Config field type was added without updating
             // getConfigFields() — the console warning below will make that obvious.
@@ -614,7 +655,7 @@
             if (isPwd && rawVal === '') {
                 displayVal = currentDisplay;
             }
-
+            
             // Save to object, modify UI, flag it
             stagedChanges[key] = parsedVal;
             row.querySelector('.display-value').innerText = displayVal;
@@ -628,7 +669,15 @@
             applyConfigFilter();
             // Pop the banner
             updateBanner();
-        }, { once: false });//okTODO: find out if this 'false' here means this listener's still alive once done staging, or it's deleted for some reason, maybe button goes away? "each Edit creates a fresh clone with fresh listeners — there's no accumulation of listeners piling up on the same element. " - Claude
+        }, { once: false });// { once: false } is intentional:
+        // • On validation failure (e.g. password mismatch → early return), the edit row
+        //   stays in the DOM and the user must be able to click Stage again to retry.
+        //   once:true would silently disable the button after the first failed attempt.
+        // • On success, editRow.remove() destroys the button element from the DOM, so
+        //   the listener is garbage-collected with it — no leak.
+        // • No accumulation across Edit presses: editConfig() starts by clicking all
+        //   .config-cancel-btn elements, removing any existing edit row before the new
+        //   clone is inserted, so listeners are always on a fresh, short-lived element.
         
         // Insert the edit row into the live DOM before any post-insertion adjustments.
         row.after(clone);
