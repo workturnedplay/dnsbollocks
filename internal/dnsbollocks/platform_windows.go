@@ -3150,9 +3150,10 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 	return nil
 }
 
-type contextKey string
+//type contextKey string
 
-const clientInfoKey contextKey = "clientInfo"
+// const clientInfoKey contextKey = "clientInfo"
+type clientInfoKey struct{}
 
 type clientMetadata struct {
 	protocol   string
@@ -3209,7 +3210,7 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 	)
 
 	// Create a specific context for THIS packet
-	return context.WithValue(ctx, clientInfoKey, clientMetadata{
+	return context.WithValue(ctx, clientInfoKey{}, clientMetadata{
 		protocol:   protocol,
 		pid:        pid,
 		exe:        exe,
@@ -3719,7 +3720,8 @@ func computeTTLForCaching(msg *dns.Msg) time.Duration {
 	return time.Duration(minTTL) * time.Second
 }
 
-// Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
+// Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'github.com/workturnedplay/dnsbollocks/internal/dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
+// see .\build.bat which does this already.
 var Version = ""
 
 // Compute the string exactly once at package startup
@@ -3901,7 +3903,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				exeName := "unknown-process"
 
 				// Extract the metadata from the context
-				if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok && info.exe != "" {
+				if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
 					//// Optionally strip the .exe extension for cleaner NextDNS logs
 					//exeName = strings.TrimSuffix(info.exe, ".exe")
 					exeName = info.exe
@@ -4593,7 +4595,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	//         slog.String("domain", domain))
 	// } else {
 	// --- NEW: Pull the PID/Exe info from the context backpack ---
-	if info, ok := ctx.Value(clientInfoKey).(clientMetadata); ok {
+	if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
 		elapsed := time.Since(info.startTime)
 		attrs = append(attrs,
 			slog.String("exe", info.exe))
@@ -4897,7 +4899,19 @@ func (ui *AdminUI) robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	// ── Inner mux: all routes that require authentication ────────────────
 	innerMux := http.NewServeMux()
-	innerMux.HandleFunc("/", ui.statsHandler)
+	// 2. Make the / handler strict
+	innerMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// If it's literally exactly "/", redirect to the dashboard (e.g., /stats or /logs)
+		if r.URL.Path == "/" {
+			//load /stats page by default.
+			http.Redirect(w, r, "/stats", http.StatusSeeOther)
+			return
+		}
+
+		// If it's anything else (like /typo), return a standard 404
+		http.NotFound(w, r)
+	})
+	innerMux.HandleFunc("/stats", ui.statsHandler)
 	innerMux.HandleFunc("/rules", ui.rulesHandler)
 	innerMux.HandleFunc("/hosts", ui.hostsHandler)
 	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
@@ -5297,7 +5311,8 @@ func (ui *AdminUI) hostValidationMiddleware(expectedHost string, next http.Handl
 // 	})
 // }
 
-const csrfTokenKey contextKey = "csrfToken"
+// const csrfTokenKey contextKey = "csrfToken"
+type csrfTokenKey struct{}
 
 func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5320,7 +5335,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		}
 
 		// 2. Pass token down the context so the template renderer can grab it
-		ctx := context.WithValue(r.Context(), csrfTokenKey, token)
+		ctx := context.WithValue(r.Context(), csrfTokenKey{}, token)
 		r = r.WithContext(ctx)
 
 		// 3. Validate the token on all state-changing POST requests
@@ -5355,6 +5370,10 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 }
 
 func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	cfg := ui.getConfig()
 	data := map[string]any{
 		"Blocks":       ui.stats.String(),
@@ -6380,7 +6399,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	data["Version"] = GetVersion() //cache-busting
 
 	// Inject the CSRF token into the map
-	if token, ok := r.Context().Value(csrfTokenKey).(string); ok {
+	if token, ok := r.Context().Value(csrfTokenKey{}).(string); ok {
 		data["CSRFToken"] = token
 	}
 
@@ -6725,7 +6744,7 @@ func finalShutdownSequence(logger *slog.Logger, exitCode int) {
 	// NEW: Check if the OS is forcefully terminating us
 	if skipInteractivePause.Load() {
 		logger.Debug("Skipping 'Press any key' pause because OS is forcefully terminating the session.")
-	} else {
+	} else { //nolint:gocritic // i want the braces
 		// Normal exit (like Ctrl+C or clean UI shutdown) - pause as usual
 		if !wincoe.WaitAnyKeyIfInteractive() {
 			logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
