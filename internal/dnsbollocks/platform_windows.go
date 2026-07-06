@@ -7409,24 +7409,6 @@ func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason stri
 		clientIP = "localhost"
 	}
 
-	// now := time.Now().Unix()
-	// // 3. Use the clean IP as the sync.Map key
-	// // Load or atomically store a newly provisioned tracker entry
-	// clIface, _ := rl.clients.LoadOrStore(
-	// 	clientIP,
-	// 	&clientEntry{
-	// 		//rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
-	// 		limiter:  rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
-	// 		lastSeen: now,
-	// 	},
-	// )
-	// //TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-	// entry, ok := clIface.(*clientEntry)
-	// if !ok {
-	// 	panic2("BUG: not2 of *clientEntry type")
-	// }
-	// atomic.StoreInt64(&entry.lastSeen, now) // Bump the activity clock
-
 	// 3. Thread-safe LRU management with guaranteed deferred unlock
 	limiter := rl.getOrCreateLimiter(clientIP)
 
@@ -7462,6 +7444,8 @@ func (rl *ClientRateLimiter) getOrCreateLimiter(clientIP string) *rate.Limiter {
 	}
 	elem := rl.ll.PushFront(entry)
 	rl.cache[clientIP] = elem
+
+	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
 
 	// Enforce hard memory cap via LRU Eviction
 	if rl.ll.Len() > rl.maxSize {
@@ -8312,15 +8296,6 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 	// Update the global token bucket limits
 	rl.global.SetLimit(rate.Limit(cfg.GlobalQPS))
 	rl.global.SetBurst(cfg.GlobalBurst)
-
-	// rl.cfg = cfg
-
-	// // Flush existing per-client limiters so they immediately pick up the new config
-	// rl.clients.Range(func(key, value any) bool {
-	// 	_ = value
-	// 	rl.clients.Delete(key)
-	// 	return true
-	// })
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
