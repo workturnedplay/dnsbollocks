@@ -10101,29 +10101,38 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	// =========================================================================
 	// IP Strings Parsing & Post-Processing Operations
 	// =========================================================================
-	// Clean up and pre-parse IPv4
-	if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
-		resolvedCfg.BlockIPv4Parsed = ip.To4()
-		rawCfg.BlockIPv4Parsed = ip.To4()
-	} else {
-		msg := fmt.Sprintf("Invalid IPv4 address %q for block_ip in config file %q", resolvedCfg.BlockIP, configFileName)
-		log.Error(msg, slog.String("block_ip", resolvedCfg.BlockIP))
-		return shouldSaveConfig, fmt.Errorf("%s", msg)
-	}
-
 	/*
 		In Go's standard library, net.ParseIP() always returns a 16-byte slice for any valid address it reads, whether it's IPv4 or IPv6:
 		If you pass it an IPv6 address like "::", it returns 16 bytes of zeros ([0, 0, ... 0]).
 		If you pass it an IPv4 address like "127.0.0.1", it returns a 16-byte slice containing an IPv4-mapped IPv6 address (12 bytes of padding followed by 127, 0, 0, 1).
 	*/
-	if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To4() == nil {
-		resolvedCfg.BlockIPv6Parsed = ip.To16()
-		rawCfg.BlockIPv6Parsed = ip.To16()
-	} else {
-		msg := fmt.Sprintf("Invalid IPv6 address %q for block_ipv6 in config file %q", resolvedCfg.BlockIPv6, configFileName)
-		log.Error(msg, slog.String("block_ipv6", resolvedCfg.BlockIPv6))
-		return shouldSaveConfig, fmt.Errorf("%s", msg)
-	}
+	{ // tiny scope to prevent locals from leaking
+		// Validate and parse BlockIP (IPv4)
+		ipV4Raw := net.ParseIP(resolvedCfg.BlockIP)
+		ip4 := ipV4Raw.To4()
+		if ip4 != nil {
+			resolvedCfg.BlockIPv4Parsed = ip4
+			rawCfg.BlockIPv4Parsed = ip4
+		} else {
+			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIP))
+			msg := fmt.Sprintf("Invalid IPv4 address %q for %q in config file %q", resolvedCfg.BlockIP, tag, configFileName)
+			log.Error(msg, slog.String(tag, resolvedCfg.BlockIP))
+			return shouldSaveConfig, fmt.Errorf("%s", msg)
+		}
+
+		// Validate and parse BlockIPv6 (IPv6)
+		ipV6Raw := net.ParseIP(resolvedCfg.BlockIPv6)
+		isIPv6 := ipV6Raw != nil && ipV6Raw.To4() == nil
+		if isIPv6 {
+			resolvedCfg.BlockIPv6Parsed = ipV6Raw
+			rawCfg.BlockIPv6Parsed = ipV6Raw
+		} else {
+			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIPv6))
+			msg := fmt.Sprintf("Invalid IPv6 address %q for %q in config file %q", resolvedCfg.BlockIPv6, tag, configFileName)
+			log.Error(msg, slog.String(tag, resolvedCfg.BlockIPv6))
+			return shouldSaveConfig, fmt.Errorf("%s", msg)
+		}
+	} //end tiny scope
 
 	// //TODO: do I have to set the parseds to rawCfg too?!
 	// if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
