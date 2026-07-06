@@ -417,7 +417,7 @@
     </thead>
     <tbody>
         {{range .Fields}}
-        <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}">
+        <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}" data-is-pwd="{{.IsPassword}}">
             <td class="config-key-code" title="{{.Desc}}">
                 <span class="config-key-text">{{.Key}}</span>
                 {{if .Desc}}<br><small class="config-field-desc">{{.Desc}}</small>{{end}}

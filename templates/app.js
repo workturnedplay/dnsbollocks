@@ -449,7 +449,7 @@
         
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
-        //const isPwd = row.dataset.isPwd === 'true';
+        const isPwd = row.dataset.isPwd === 'true';
         //const options = row.dataset.options;
         
         // Capture the row's rendered height before hiding it so we can prevent
@@ -519,7 +519,7 @@
             hint.innerText = "Action taken when blocking queries";
         } else if (key === 'webui_password_hash') {
             container.innerHTML = `<input type="text" class="config-input monospace-code2" placeholder="Enter NEW password here...">`;
-            hint.innerText = "Type a plaintext password (it will be hashed on save), don't prefix it with $2";
+            hint.innerText = "Type a password, or paste a hash(prefixed with $2), empty means keep current pwd.";
         } else if (type === 'bool') {
             const isTrue = currentDisplay === 'true';
             container.innerHTML = `<select class="config-input w-100">
@@ -566,7 +566,7 @@
                 const confirmPwd = prompt("Please confirm your new password by typing it again:");
                 if (confirmPwd !== rawVal) {
                     alert("Passwords do not match. Staging cancelled.");
-                    return; // Abort, FIXME: have to re-add listener for this Stage button!
+                    return; // Abort, doneFIXME: have to re-add listener for this Stage button! ok i set once:false below
                 }
             }
             
@@ -599,7 +599,7 @@
             applyConfigFilter();
             // Pop the banner
             updateBanner();
-        }, { once: true });
+        }, { once: false });//TODO: find out if this 'false' here means this listener's still alive once done staging, or it's deleted for some reason, maybe button goes away?
         
         // Insert the edit row into the live DOM before any post-insertion adjustments.
         row.after(clone);

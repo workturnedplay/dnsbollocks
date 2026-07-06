@@ -85,8 +85,9 @@ type Config struct {
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
 	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (send no reply)."`
-	BlockIP                 string   `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
-	BlockIPv6               string   `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
+	//FIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two:
+	BlockIP   string `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
+	BlockIPv6 string `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
 
 	// Pre-parsed IPs for blazing fast performance and thread-safety
 	BlockIPv4Parsed net.IP `json:"-"` // this isn't persisted to disk
@@ -9017,7 +9018,7 @@ type ConfigFieldView struct {
 	Type  string
 	Desc  string
 	//Options    string // Comma-separated list for dropdowns
-	//IsPassword bool   // Flag to trigger password masking and confirmation
+	IsPassword bool // Flag to trigger password masking and confirmation
 }
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
@@ -9090,7 +9091,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 
 		// // Inject dynamic UI constraints based on the resolved tags
 		// options := ""
-		// isPwd := false
+		isPwd := false
 
 		// if tagKey == tagUpstreamMode {
 		// 	options = "fastest,failover,strict"
@@ -9100,7 +9101,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		// 	options = "nxdomain,ip_block,drop"
 		// } else
 		if tagKey == tagWebUIPwd {
-			//isPwd = true
+			isPwd = true
 			strVal = placeHolderPassword // Mask it from the browser completely!
 		}
 
@@ -9110,7 +9111,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 			Type:  typ,
 			Desc:  field.Tag.Get("desc"),
 			//Options: options,
-			//IsPassword: isPwd,
+			IsPassword: isPwd,
 		})
 	}
 
