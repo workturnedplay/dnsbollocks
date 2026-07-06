@@ -5525,28 +5525,43 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 // RuleStore manages the in-memory DNS query whitelist.
 // Persistence (loadQueryWhitelist / saveQueryWhitelist) stays on Server.
 type RuleStore struct {
-	mu    sync.RWMutex
-	rules map[string][]RuleEntry // type -> rules
+	mu    sync.Mutex                             // Serializes writers (Add, Update, Delete, ReplaceAll)
+	rules atomic.Pointer[map[string][]RuleEntry] // type -> rules
 }
 
 // only use once, before server start, never on reloads(Ctrl+R) tho
 func newRuleStore() *RuleStore {
-	return &RuleStore{rules: make(map[string][]RuleEntry)}
+	rs := &RuleStore{}
+	empty := make(map[string][]RuleEntry)
+	rs.rules.Store(&empty)
+	return rs
+}
+
+// cloneRuleMap creates a shallow copy of the map.
+// The underlying slices are also safe because all our mutators
+// (withRulePrepended, withRuleRemovedAt, withRuleUpdatedAtIndex)
+// return completely new slice allocations.
+func cloneRuleMap(orig map[string][]RuleEntry) map[string][]RuleEntry {
+	clone := make(map[string][]RuleEntry, len(orig))
+	for k, v := range orig {
+		clone[k] = v
+	}
+	return clone
 }
 
 // ReplaceAll atomically swaps in a freshly-loaded/normalized ruleset.
 func (rs *RuleStore) ReplaceAll(newRules map[string][]RuleEntry) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	rs.rules = newRules
+	rs.rules.Store(&newRules)
 }
 
 // Snapshot returns a full deep copy (for the web UI and for saving).
 func (rs *RuleStore) Snapshot() map[string][]RuleEntry {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	out := make(map[string][]RuleEntry, len(rs.rules))
-	for key, entries := range rs.rules {
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	out := make(map[string][]RuleEntry, len(current))
+	for key, entries := range current {
 		// Copy the slice to prevent modification of the underlying array
 		newSlice := make([]RuleEntry, len(entries))
 		copy(newSlice, entries)
@@ -5557,9 +5572,9 @@ func (rs *RuleStore) Snapshot() map[string][]RuleEntry {
 
 // MatchForType returns (id, true) if an enabled rule in qtype matches domain.
 func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	for _, rule := range rs.rules[qtype] {
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	for _, rule := range current[qtype] {
 		if rule.Enabled && matchPattern(rule.Pattern, domain) {
 			return rule.ID, true
 		}
@@ -5569,9 +5584,9 @@ func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
 
 // CountAll returns the total rule count across all types.
 func (rs *RuleStore) CountAll() uint64 {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	return countRules(rs.rules)
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	return countRules(current)
 }
 
 // AddRule adds a new rule and returns its generated ID.
@@ -5579,14 +5594,20 @@ func (rs *RuleStore) CountAll() uint64 {
 func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Logger) (id string, err error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	for _, rule := range rs.rules[typ] {
+
+	current := *rs.rules.Load()
+	for _, rule := range current[typ] {
 		if rule.Pattern == pattern {
 			return "", fmt.Errorf("rule with pattern %q already exists for type %s", pattern, typ)
 		}
 	}
-	id = generateUniqueRuleID(rs.rules, logger)
+	id = generateUniqueRuleID(current, logger)
 	newRule := RuleEntry{ID: id, Pattern: pattern, Enabled: enabled}
-	rs.rules[typ] = withRulePrepended(rs.rules[typ], newRule, logger)
+
+	next := cloneRuleMap(current)
+	next[typ] = withRulePrepended(next[typ], newRule, logger)
+	rs.rules.Store(&next)
+
 	logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
 		slog.String("id", id), slog.Bool("enabled", enabled))
 	return id, nil
@@ -5597,14 +5618,17 @@ func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Log
 func (rs *RuleStore) DeleteRule(typ, id string, logger *slog.Logger) (pattern string, err error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	rules, ok := rs.rules[typ] //so this is a contents copy then?
+
+	current := *rs.rules.Load()
+	rules, ok := current[typ]
 	if !ok {
 		return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
 	}
-	for i, rule := range rules { //or this 'rule' is a contents copy ?
+	for i, rule := range rules {
 		if rule.ID == id {
-			// Replaces the shifting copy hacks with an isolated fresh array allocation
-			rs.rules[typ] = withRuleRemovedAt(rules, i, logger)
+			next := cloneRuleMap(current)
+			next[typ] = withRuleRemovedAt(rules, i, logger)
+			rs.rules.Store(&next)
 			return rule.Pattern, nil
 		}
 	}
@@ -5617,14 +5641,15 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	if id == "" {
 		panic2(fmt.Sprintf("BUG: attempted to update a rule with empty id passed-in, rule with newType %q and newPattern %q", newType, newPattern))
 	}
-	//hmm I see we're not attempting to sanitizeDomainInput(id) here, we're assuming it's good, makes some sense.
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+
+	current := *rs.rules.Load()
 
 	var foundType string
 	var foundIndex int
 	found := false
-	for t, rules := range rs.rules {
+	for t, rules := range current {
 		for i, r := range rules {
 			if r.ID == id {
 				foundType, foundIndex, oldPattern, found = t, i, r.Pattern, true
@@ -5640,7 +5665,7 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	}
 
 	// Check for duplicate pattern in the target type, excluding the rule being edited.
-	for _, rule := range rs.rules[newType] {
+	for _, rule := range current[newType] {
 		if rule.ID != id && rule.Pattern == newPattern {
 			return "", "", fmt.Errorf("rule with pattern %q already exists for type %s", newPattern, newType)
 		}
@@ -5648,15 +5673,19 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 
 	oldType = foundType
 	newRule := RuleEntry{ID: id, Pattern: newPattern, Enabled: enabled}
+
+	next := cloneRuleMap(current)
+
 	if foundType == newType {
-		// Type didn't change -> Update fully IN-PLACE cleanly using our new function
-		rs.rules[newType] = withRuleUpdatedAtIndex(rs.rules[newType], foundIndex, newRule, logger)
+		// Type didn't change -> Update cleanly
+		next[newType] = withRuleUpdatedAtIndex(next[newType], foundIndex, newRule, logger)
 	} else {
 		// Type changed -> Safely remove from old slice, safely prepend to new slice
-		rs.rules[foundType] = withRuleRemovedAt(rs.rules[foundType], foundIndex, logger)
-		// 2. Prepend smoothly to the new category using your new function
-		rs.rules[newType] = withRulePrepended(rs.rules[newType], newRule, logger)
+		next[foundType] = withRuleRemovedAt(next[foundType], foundIndex, logger)
+		next[newType] = withRulePrepended(next[newType], newRule, logger)
 	}
+	rs.rules.Store(&next)
+
 	logger.Info("Rule updated", slog.String("id", id),
 		slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
 		slog.String("old_pattern", oldPattern))
@@ -5668,12 +5697,23 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, changed bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	for i, rule := range rs.rules[typ] {
+
+	current := *rs.rules.Load()
+
+	for i, rule := range current[typ] {
 		if rule.Pattern == domain {
 			if rule.Enabled == enabled {
 				return true, false
 			}
-			rs.rules[typ][i].Enabled = enabled //XXX: mutates in place
+
+			// We can no longer mutate the rule in-place because readers
+			// might be actively iterating this slice lock-free!
+			next := cloneRuleMap(current)
+			updatedRule := rule
+			updatedRule.Enabled = enabled
+			next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil)
+			rs.rules.Store(&next)
+
 			return true, true
 		}
 	}
