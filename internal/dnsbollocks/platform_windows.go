@@ -2812,7 +2812,7 @@ func panic2(msg string) {
 }
 
 // it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
-func matchPattern(pattern, name string) bool {
+func matchPattern1(pattern, name string) bool {
 	if !isLowerASCII(pattern) {
 		panic2("BUG: pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
 	}
@@ -2821,11 +2821,11 @@ func matchPattern(pattern, name string) bool {
 	}
 
 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
-	return recursiveMatch(pattern, name)
+	return recursiveMatch1(pattern, name)
 }
 
 // recursiveMatch handles all tokens recursively.
-func recursiveMatch(pattern, name string) bool {
+func recursiveMatch1(pattern, name string) bool {
 	for len(pattern) > 0 {
 		switch {
 		case strings.HasPrefix(pattern, "{**}"):
@@ -2835,7 +2835,7 @@ func recursiveMatch(pattern, name string) bool {
 				return false
 			}
 			for i := 1; i <= len(name); i++ {
-				if recursiveMatch(pattern, name[i:]) {
+				if recursiveMatch1(pattern, name[i:]) {
 					return true
 				}
 			}
@@ -2845,10 +2845,10 @@ func recursiveMatch(pattern, name string) bool {
 			// consume 0+ chars including dots
 			pattern = pattern[2:]
 			if len(name) == 0 {
-				return recursiveMatch(pattern, "")
+				return recursiveMatch1(pattern, "")
 			}
 			for i := 0; i <= len(name); i++ {
-				if recursiveMatch(pattern, name[i:]) {
+				if recursiveMatch1(pattern, name[i:]) {
 					return true
 				}
 			}
@@ -2865,7 +2865,7 @@ func recursiveMatch(pattern, name string) bool {
 				return false
 			}
 			for i := 1; i <= max3; i++ {
-				if recursiveMatch(pattern, name[i:]) {
+				if recursiveMatch1(pattern, name[i:]) {
 					return true
 				}
 			}
@@ -2875,16 +2875,16 @@ func recursiveMatch(pattern, name string) bool {
 			// consume 0+ chars, stop at dot
 			pattern = pattern[1:]
 			if len(name) == 0 {
-				return recursiveMatch(pattern, "")
+				return recursiveMatch1(pattern, "")
 			}
 			for i := 0; i <= len(name); i++ {
 				if i < len(name) && name[i] == '.' {
-					if recursiveMatch(pattern, name[i:]) {
+					if recursiveMatch1(pattern, name[i:]) {
 						return true
 					}
 					break
 				}
-				if recursiveMatch(pattern, name[i:]) {
+				if recursiveMatch1(pattern, name[i:]) {
 					return true
 				}
 			}
@@ -2917,6 +2917,141 @@ func recursiveMatch(pattern, name string) bool {
 	}
 
 	return len(name) == 0
+}
+
+type tokenKind int
+
+const (
+	tokLiteral           tokenKind = iota // Exact character match
+	tokStar                               // * (0+ chars, stops at .)
+	tokBracketStar                        // {*}  (1+ chars, stops at .)
+	tokDoubleStar                         // ** (0+ chars, includes .)
+	tokBracketDoubleStar                  // {**} (1+ chars, includes .)
+	tokQuestion                           // ?    (exactly 1 char, not .)
+	tokExclamation                        // !    (exactly 1 char, any)
+)
+
+type patternToken struct {
+	kind tokenKind
+	char byte // Only used if kind == tokLiteral
+}
+
+// tokenizePattern converts the rule pattern into an optimized slice of match actions.
+func tokenizePattern(pattern string) []patternToken {
+	var tokens []patternToken
+	i := 0
+	for i < len(pattern) {
+		if strings.HasPrefix(pattern[i:], "{**}") {
+			tokens = append(tokens, patternToken{kind: tokBracketDoubleStar})
+			i += 4
+		} else if strings.HasPrefix(pattern[i:], "**") {
+			tokens = append(tokens, patternToken{kind: tokDoubleStar})
+			i += 2
+		} else if strings.HasPrefix(pattern[i:], "{*}") {
+			tokens = append(tokens, patternToken{kind: tokBracketStar})
+			i += 3
+		} else if strings.HasPrefix(pattern[i:], "*") {
+			tokens = append(tokens, patternToken{kind: tokStar})
+			i += 1
+		} else if strings.HasPrefix(pattern[i:], "?") {
+			tokens = append(tokens, patternToken{kind: tokQuestion})
+			i += 1
+		} else if strings.HasPrefix(pattern[i:], "!") {
+			tokens = append(tokens, patternToken{kind: tokExclamation})
+			i += 1
+		} else {
+			tokens = append(tokens, patternToken{kind: tokLiteral, char: pattern[i]})
+			i += 1
+		}
+	}
+	return tokens
+}
+
+// matchPattern implements a strictly bounded, non-recursive wildcard match.
+// It maps out state transitions layer-by-layer for each token against the target domain name.
+// It is completely immune to stack overflows and exponential backtracking DoS.
+func matchPattern(pattern, name string) bool {
+	if !isLowerASCII(pattern) {
+		panic2("BUG: pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
+	}
+	if !isLowerASCII(name) {
+		panic2("BUG: name was " + name + " which isn't lowercased, so bad coding somewhere!")
+	}
+
+	if pattern == "" && name == "" {
+		return true
+	}
+
+	tokens := tokenizePattern(pattern)
+	numChars := len(name)
+
+	// We only need two rows to track matching states across token iterations.
+	// prevRow tracks matches for tokens[0...i-1]
+	// currRow tracks matches for tokens[0...i]
+	prevRow := make([]bool, numChars+1)
+	currRow := make([]bool, numChars+1)
+
+	// Base case: An empty pattern matches an empty domain string
+	prevRow[0] = true
+
+	for _, tok := range tokens {
+		// Update the 0-th column: a token can match an empty domain string
+		// only if it and all prior tokens are 0-length wildcards.
+		if tok.kind == tokStar || tok.kind == tokDoubleStar {
+			currRow[0] = prevRow[0]
+		} else {
+			currRow[0] = false
+		}
+
+		for j := 1; j <= numChars; j++ {
+			ch := name[j-1]
+
+			switch tok.kind {
+			case tokLiteral:
+				// Must match exactly
+				currRow[j] = prevRow[j-1] && (ch == tok.char)
+
+			case tokQuestion:
+				// Exactly 1 char, not '.'
+				currRow[j] = prevRow[j-1] && (ch != '.')
+
+			case tokExclamation:
+				// Exactly 1 char, unconditionally
+				currRow[j] = prevRow[j-1]
+
+			case tokStar:
+				// 0+ chars, stops at '.'
+				// Match 0 chars (prevRow[j]) OR consume 1+ chars (currRow[j-1]) if not '.'
+				currRow[j] = prevRow[j] || (currRow[j-1] && ch != '.')
+
+			case tokDoubleStar:
+				// 0+ chars, includes '.'
+				// Match 0 chars (prevRow[j]) OR consume 1+ chars unconditionally (currRow[j-1])
+				currRow[j] = prevRow[j] || currRow[j-1]
+
+			case tokBracketStar:
+				// 1+ chars, stops at '.'
+				// Match exactly 1 (prevRow[j-1]) OR >1 (currRow[j-1]), provided it's not '.'
+				currRow[j] = (prevRow[j-1] || currRow[j-1]) && (ch != '.')
+
+			case tokBracketDoubleStar:
+				// 1+ chars, includes '.'
+				// Match exactly 1 (prevRow[j-1]) OR >1 (currRow[j-1]) unconditionally
+				currRow[j] = prevRow[j-1] || currRow[j-1]
+			}
+		}
+
+		// Shift current row states to previous row for the next token cycle
+		copy(prevRow, currRow)
+
+		// Explicitly zero out the current row buffer to avoid state leakage
+		for j := range currRow {
+			currRow[j] = false
+		}
+	}
+
+	// The final element of prevRow represents whether the full token set matches the full domain
+	return prevRow[numChars]
 }
 
 // generate a cert that's valid for both local DoH listener and for webUI
