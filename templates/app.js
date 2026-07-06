@@ -535,7 +535,7 @@
             hint.innerText = "Integer value";
         } else {
             container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
-            hint.innerText = "String value";
+            hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
         }
         
         // Re-apply the height lock now that we know whether it is a textarea or not.
