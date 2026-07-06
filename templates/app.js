@@ -654,6 +654,12 @@
             // currentDisplay is "********" (set by getConfigFields) so we reuse it here.
             if (isPwd && rawVal === '') {
                 displayVal = currentDisplay;
+
+                // If we already staged a new password, keep it instead of sending 
+                // an empty string which would tell the backend to use the original unedited hash.
+                if (stagedChanges[key] !== undefined) {
+                    parsedVal = stagedChanges[key];
+                }
             }
             
             // Save to object, modify UI, flag it
