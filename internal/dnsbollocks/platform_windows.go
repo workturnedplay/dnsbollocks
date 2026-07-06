@@ -10102,29 +10102,47 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	// IP Strings Parsing & Post-Processing Operations
 	// =========================================================================
 	// Clean up and pre-parse IPv4
-	//TODO: do I have to set the parseds to rawCfg too?!
 	if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
 		resolvedCfg.BlockIPv4Parsed = ip.To4()
 		rawCfg.BlockIPv4Parsed = ip.To4()
 	} else {
-		const IP0 = "0.0.0.0"
-		const zero = 0
-		resolvedCfg.BlockIP = IP0
-		rawCfg.BlockIP = IP0
-		resolvedCfg.BlockIPv4Parsed = net.IPv4(zero, zero, zero, zero).To4()
-		rawCfg.BlockIPv4Parsed = resolvedCfg.BlockIPv4Parsed // TODO: hopefully no need to have diff. instances of this here?
+		msg := fmt.Sprintf("Invalid IPv4 address %q for block_ip in config file %q", resolvedCfg.BlockIP, configFileName)
+		log.Error(msg, slog.String("block_ip", resolvedCfg.BlockIP))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
 
-	// Clean up and pre-parse IPv6
 	if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To16() != nil {
 		resolvedCfg.BlockIPv6Parsed = ip.To16()
-		rawCfg.BlockIPv6Parsed = ip.To16() // TODO: do we need this to be same instance for equals to say equals anywhere?
+		rawCfg.BlockIPv6Parsed = ip.To16()
 	} else {
-		const IPv6Zero = "::"
-		resolvedCfg.BlockIPv6 = IPv6Zero
-		resolvedCfg.BlockIPv6Parsed = net.ParseIP(IPv6Zero).To16()
-		rawCfg.BlockIPv6Parsed = resolvedCfg.BlockIPv6Parsed // TODO: hopefully no need to have diff. instances of this here?
+		msg := fmt.Sprintf("Invalid IPv6 address %q for block_ipv6 in config file %q", resolvedCfg.BlockIPv6, configFileName)
+		log.Error(msg, slog.String("block_ipv6", resolvedCfg.BlockIPv6))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
+
+	// //TODO: do I have to set the parseds to rawCfg too?!
+	// if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
+	// 	resolvedCfg.BlockIPv4Parsed = ip.To4()
+	// 	rawCfg.BlockIPv4Parsed = ip.To4()
+	// } else {
+	// 	const IP0 = "0.0.0.0"
+	// 	const zero = 0
+	// 	resolvedCfg.BlockIP = IP0
+	// 	rawCfg.BlockIP = IP0
+	// 	resolvedCfg.BlockIPv4Parsed = net.IPv4(zero, zero, zero, zero).To4()
+	// 	rawCfg.BlockIPv4Parsed = resolvedCfg.BlockIPv4Parsed // TODO: hopefully no need to have diff. instances of this here?
+	// }
+
+	// // Clean up and pre-parse IPv6
+	// if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To16() != nil {
+	// 	resolvedCfg.BlockIPv6Parsed = ip.To16()
+	// 	rawCfg.BlockIPv6Parsed = ip.To16() // TODO: do we need this to be same instance for equals to say equals anywhere?
+	// } else {
+	// 	const IPv6Zero = "::"
+	// 	resolvedCfg.BlockIPv6 = IPv6Zero
+	// 	resolvedCfg.BlockIPv6Parsed = net.ParseIP(IPv6Zero).To16()
+	// 	rawCfg.BlockIPv6Parsed = resolvedCfg.BlockIPv6Parsed // TODO: hopefully no need to have diff. instances of this here?
+	// }
 
 	// Validate ListenDoH host is a literal IP (required for TLS cert SAN)
 	tagListenDoH := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenDoH))
@@ -10139,6 +10157,20 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	} else if net.ParseIP(uiHost) == nil {
 		return shouldSaveConfig, fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, uiHost)
 	}
+
+	resolvedCfg.ConsoleLogLevel = strings.ToLower(strings.TrimSpace(resolvedCfg.ConsoleLogLevel))
+	switch resolvedCfg.ConsoleLogLevel {
+	case consoleLogLevelDebug, "d", consoleLogLevelInfo, "i", consoleLogLevelWarn, "warning", "w", consoleLogLevelError, "e":
+		// Valid
+	default:
+		msg := fmt.Sprintf("Unknown console_log_level %q in config file %q. Allowed values: debug, info, warn, error",
+			resolvedCfg.ConsoleLogLevel,
+			configFileName,
+		)
+		log.Error(msg, slog.String("console_log_level", resolvedCfg.ConsoleLogLevel))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
+	}
+	rawCfg.ConsoleLogLevel = resolvedCfg.ConsoleLogLevel
 
 	resolvedCfg.BlockMode = strings.ToLower(resolvedCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
 	switch resolvedCfg.BlockMode {
@@ -10176,13 +10208,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	case upstreamSelectionModeFastest, upstreamSelectionModeFailover, upstreamSelectionModeStrict:
 		// valid — no action required
 	default:
-		log.Warn("Unknown upstream_selection_mode; resetting to default",
-			slog.String("was", resolvedCfg.UpstreamSelectionMode),
-			slog.String("default", upstreamSelectionModeFailover))
-		resolvedCfg.UpstreamSelectionMode = defaultCfg.UpstreamSelectionMode
-		//rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
-		//FIXME: do we wanna set a default here if it's wrong, or is it better to yell and fail?! what if user just typoed another config, we should definitely fail here!
-		shouldSaveConfig = true
+		msg := fmt.Sprintf("Unknown upstream_selection_mode %q in config file %q, must be one of these: %q, %q, %q",
+			resolvedCfg.UpstreamSelectionMode,
+			configFileName,
+			upstreamSelectionModeFastest,
+			upstreamSelectionModeFailover,
+			upstreamSelectionModeStrict,
+		)
+		log.Error(msg, slog.String("upstream_selection_mode", resolvedCfg.UpstreamSelectionMode))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
 	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
 

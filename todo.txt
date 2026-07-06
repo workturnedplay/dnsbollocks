@@ -1,5 +1,4 @@
 todo:
-* fail when resolvedCfg.UpstreamSelectionMode is invalid, don't default to something because the fail might be due to typos! see if anything else does this and apply same concept: fail, don't default (it's probably fine for ints, bools, unless actually invalid NaN or not a bool somehow)
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
@@ -11,6 +10,7 @@ no:
 
 
 done:
+//* fail when resolvedCfg.UpstreamSelectionMode is invalid, don't default to something because the fail might be due to typos! see if anything else does this and apply same concept: fail, don't default (it's probably fine for ints, bools, unless actually invalid NaN or not a bool somehow)
 //* when saving config from webUI and the on-disk config was changed, what do we do exactly? if it's same it's np, but if anything changed, which should take prio then? the webUI page coulda been more stale than the more recent on-disk config.json change, heck maybe the change wasn't even reloaded via Ctrl+R yet!
 //* if i change the pwd, but don't yet Apply, and Edit it again and Stage empty, it still shows the previously changed pwd but it won't actually use that one, it defaults to whatever was before the change, tho visually it looks like the changed pwd.
 //* missed the options which are hardcoded in app.js
