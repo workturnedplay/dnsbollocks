@@ -1,5 +1,5 @@
 todo:
-* continue the tests in https://claude.ai/chat/c3a10bf7-2d3a-4655-8f2e-c9a54e57b405
+* continue the tests in https://claude.ai/chat/c3a10bf7-2d3a-4655-8f2e-c9a54e57b405  tests are written to a file but 'Failed to load file content' "Try Again" button, or "Download as Go" (says failed) or "Copy" also won't work. F12 in firefox says "503 Service Unavailable" and response payload is "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"
 
 * ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!)
 
