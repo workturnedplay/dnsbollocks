@@ -9139,6 +9139,12 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			"Fields": ui.getConfigFields(),
 			//Dynamically inject the UpstreamURLs JSON tag
 			"UpstreamURLsKey": getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamURLs)),
+			// Injected so app.js never hard-codes json tag strings.
+			// If a Config field is renamed, only the struct tag changes; JS follows automatically.
+			"KeyUpstreamSelectionMode": getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamSelectionMode)),
+			"KeyConsoleLogLevel":       getJSONTagByOffset(unsafe.Offsetof(Config{}.ConsoleLogLevel)),
+			"KeyBlockMode":             getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockMode)),
+			"KeyWebUIPasswordHash":     getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)),
 		}
 		ui.renderTemplate(w, r, "config", data)
 		return

@@ -14,6 +14,19 @@
     if (!csrfToken) {
         console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
     }
+
+    // Config field key names are injected by Go into data-* attributes on #configKeysData
+    // (only present on the /config page). Falls back to empty strings on other pages so
+    // CONFIG_KEYS is always safe to reference — editConfig is only called on /config anyway.
+    // This ensures renaming a Config struct field + its json tag is the only change needed;
+    // app.js never hard-codes json tag strings.
+    const _cfgKeysEl = document.getElementById('configKeysData');
+    const CONFIG_KEYS = _cfgKeysEl ? {
+        upstreamSelectionMode: _cfgKeysEl.dataset.keyUpstreamSelectionMode || '',
+        consoleLogLevel:       _cfgKeysEl.dataset.keyConsoleLogLevel       || '',
+        blockMode:             _cfgKeysEl.dataset.keyBlockMode             || '',
+        webuiPasswordHash:     _cfgKeysEl.dataset.keyWebuiPasswordHash     || '',
+    } : {};
     
     // postAdminForm sends a POST with fields, injecting csrf_token automatically,
     // and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
@@ -495,14 +508,14 @@
         editRow.style.height = 'auto';// Safe CSSOM assignment
         
         // Dynamically type the input control cleanly without inline string styles
-        if (key === 'upstream_selection_mode') {
+        if (key === CONFIG_KEYS.upstreamSelectionMode) {
             container.innerHTML = `<select class="config-input w-100">
                                         <option value="fastest" ${currentDisplay === 'fastest' ? 'selected' : ''}>fastest</option>
                                         <option value="failover" ${currentDisplay === 'failover' ? 'selected' : ''}>failover</option>
                                         <option value="strict" ${currentDisplay === 'strict' ? 'selected' : ''}>strict</option>
                                        </select>`;
             hint.innerText = "Strategy for querying upstreams";
-        } else if (key === 'console_log_level') {
+        } else if (key === CONFIG_KEYS.consoleLogLevel) {
             container.innerHTML = `<select class="config-input w-100">
                                         <option value="debug" ${currentDisplay === 'debug' ? 'selected' : ''}>debug</option>
                                         <option value="info" ${currentDisplay === 'info' ? 'selected' : ''}>info</option>
@@ -510,14 +523,14 @@
                                         <option value="error" ${currentDisplay === 'error' ? 'selected' : ''}>error</option>
                                        </select>`;
             hint.innerText = "Console output verbosity";
-        } else if (key === 'block_mode') {
+        } else if (key === CONFIG_KEYS.blockMode) {
             container.innerHTML = `<select class="config-input w-100">
                                         <option value="nxdomain" ${currentDisplay === 'nxdomain' ? 'selected' : ''}>nxdomain</option>
                                         <option value="ip_block" ${currentDisplay === 'ip_block' ? 'selected' : ''}>ip_block</option>
                                         <option value="drop" ${currentDisplay === 'drop' ? 'selected' : ''}>drop</option>
                                        </select>`;
             hint.innerText = "Action taken when blocking queries";
-        } else if (key === 'webui_password_hash') {
+        } else if (key === CONFIG_KEYS.webuiPasswordHash) {
             container.innerHTML = `<input type="text" class="config-input monospace-code2" placeholder="Enter NEW password here...">`;
             hint.innerText = "Type a password, or paste a hash(prefixed with $2), empty means keep current pwd.";
         } else if (type === 'bool') {
@@ -538,7 +551,14 @@
             hint.innerText = "Integer value";
         } else {
             container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
-            hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
+            container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
+            hint.innerText = "BUG: FIXME: unhandled type '"+type+"', fallback to:String value";
+            //hint.innerText = "String value";
+
+            // This branch should be unreachable: Go's getConfigFields() panics on unknown types.
+            // If it is ever reached it means a new Config field type was added without updating
+            // getConfigFields() — the console warning below will make that obvious.
+            console.warn('BUG: editConfig: unexpected type for key', key, '(type:', type, ') — falling back to plain text input. Update getConfigFields() in Go and editConfig() in app.js.');
         }
         
         // Re-apply the height lock now that we know whether it is a textarea or not.
@@ -586,6 +606,15 @@
                 displayVal = parsedVal.join(', ');
             }
             
+            // For the password field, an empty input means "keep existing hash" (the Go backend
+            // substitutes the current hash when it receives an empty string). Keep the display
+            // showing "********" so it's clear to the user that the password is unchanged,
+            // rather than showing a blank cell that looks like the password was cleared.
+            // currentDisplay is "********" (set by getConfigFields) so we reuse it here.
+            if (isPwd && rawVal === '') {
+                displayVal = currentDisplay;
+            }
+
             // Save to object, modify UI, flag it
             stagedChanges[key] = parsedVal;
             row.querySelector('.display-value').innerText = displayVal;
@@ -599,7 +628,7 @@
             applyConfigFilter();
             // Pop the banner
             updateBanner();
-        }, { once: false });//TODO: find out if this 'false' here means this listener's still alive once done staging, or it's deleted for some reason, maybe button goes away?
+        }, { once: false });//okTODO: find out if this 'false' here means this listener's still alive once done staging, or it's deleted for some reason, maybe button goes away? "each Edit creates a fresh clone with fresh listeners — there's no accumulation of listeners piling up on the same element. " - Claude
         
         // Insert the edit row into the live DOM before any post-insertion adjustments.
         row.after(clone);

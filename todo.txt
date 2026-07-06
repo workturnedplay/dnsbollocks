@@ -1,9 +1,6 @@
 todo:
-* in app.js handle this better: hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
-* empty password in js/html should retain prev. value, which currently is "********" (no quotes) when Stage is clicked with empty value, not just when Cancel is clicked. Unclear why/how even if it's kept at the default of "********"(visible, not edited in) it will still not be set to this (wrong)value when submitting changes for other keys, which is the correct way so it's already doing it right somehow, ok found it: it's due to display-value vs edit-input-container, the latter is always empty and it's what's sent, the former is just for show, in app.js.
+* missed the options which are hardcoded in app.js
 * when saving config from webUI and the on-disk config was changed, what do we do exactly? if it's same it's np, but if anything changed, which should take prio then? the webUI page coulda been more stale than the more recent on-disk config.json change, heck maybe the change wasn't even reloaded via Ctrl+R yet!
-* DRY uses of "webui_password_hash" and ensure we use the json tag of it(done in .go file), because if renamed in the Config struct, uses of hardcoded "webui_password_hash" will fail miserably otherwise. This affects app.js too, for it uses 'webui_password_hash' and there's more in app.js like 'block_mode' etc.
-* find other uses of hardcoded json tags like "webui_password_hash" is/was., there are some in app.js like 'block_mode' etc, unclear how to template these into app.js which is static currently! maybe read these in from the html? this way templating on the html works.
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
@@ -15,6 +12,10 @@ no:
 
 
 done:
+//* in app.js handle this better: hint.innerText = "FIXME: unhandled type '"+type+"', fallback to:String value";
+//* empty password in js/html should retain prev. value, which currently is "********" (no quotes) when Stage is clicked with empty value, not just when Cancel is clicked. Unclear why/how even if it's kept at the default of "********"(visible, not edited in) it will still not be set to this (wrong)value when submitting changes for other keys, which is the correct way so it's already doing it right somehow, ok found it: it's due to display-value vs edit-input-container, the latter is always empty and it's what's sent, the former is just for show, in app.js.
+//* DRY uses of "webui_password_hash" and ensure we use the json tag of it(done in .go file), because if renamed in the Config struct, uses of hardcoded "webui_password_hash" will fail miserably otherwise. This affects app.js too, for it uses 'webui_password_hash' and there's more in app.js like 'block_mode' etc.
+//* find other uses of hardcoded json tags like "webui_password_hash" is/was., there are some in app.js like 'block_mode' etc, unclear how to template these into app.js which is static currently! maybe read these in from the html? this way templating on the html works.
 //* ensure the new webUI entered password when set, asks for confirmation of it before continuing to set it.
 //* append the exe that made the query for the specific hostname to the nextdns upstream url so the exe appears in nextdns' logs! like in DoH Path only as: "{builtin:clientexe}"
 //* if an upstream_urls line (aka url) is too horizontally-long, it wraps into the next line, need a way to visually see what constitutes a line, maybe each line should be zebra colored (background color different) ? but we definitely should keep wrapping it, i think, else it would go too much to the right and make editing weird visually when moving cursor (hides the left/prefix of everything after aka the next lines go out of visual, I think, haven't tried w/o wrap)

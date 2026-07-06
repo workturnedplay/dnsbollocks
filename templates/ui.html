@@ -374,6 +374,13 @@
 {{end}}
 
 {{define "config"}}
+{{/* Config field key names injected by Go so app.js never hard-codes json tag strings. */}}
+<div id="configKeysData"
+    data-key-upstream-selection-mode="{{.KeyUpstreamSelectionMode}}"
+    data-key-console-log-level="{{.KeyConsoleLogLevel}}"
+    data-key-block-mode="{{.KeyBlockMode}}"
+    data-key-webui-password-hash="{{.KeyWebUIPasswordHash}}"
+    hidden></div>
 <h2>Engine Configuration</h2>
 <p class="section-desc">
     Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload" button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
