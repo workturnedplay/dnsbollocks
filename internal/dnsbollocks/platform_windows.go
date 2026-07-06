@@ -5377,10 +5377,6 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 }
 
 func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
 	cfg := ui.getConfig()
 	data := map[string]any{
 		"Blocks":       ui.stats.String(),
@@ -7527,6 +7523,7 @@ func (fw *genericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 					panic(logmsg)
 				}
 			}()
+			//continue with staging .powerloss file already having been created+sync'd successfully. and the defer to remove it being in place.
 		} else {
 			// --- FAILURE BRANCH ---
 
