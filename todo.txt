@@ -4,7 +4,7 @@ todo:
 * ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!)
 
 * do the 1_2(ReplaceFileW) from below as an addition to what already exists.
-* do these for v0.15.2 (dontdo: 1_1 done: 2_1,3_1 todo: 1_2(ReplaceFileW), 2_2, 3_2, 4_1, 4_2): https://gemini.google.com/app/277f8cbefd801877
+* do these for v0.15.2 (dontdo: 1_1 done: 2_1, 2_2, 3_1 todo: 1_2(ReplaceFileW),  3_2, 4_1, 4_2): https://gemini.google.com/app/277f8cbefd801877
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb

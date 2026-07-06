@@ -7353,56 +7353,37 @@ func rateLimitConfigFrom(cfg Config) RateLimitConfig {
 	}
 }
 
-// clientEntry wraps the limiter with a timestamp for the janitor to inspect.
-type clientEntry struct {
-	limiter  *rate.Limiter
-	lastSeen int64 // Unix timestamp, managed via sync/atomic
+// lruClientEntry wraps the limiter with the client's IP so we can
+// delete it from the map during an LRU eviction from the linked list.
+type lruClientEntry struct {
+	ip      string
+	limiter *rate.Limiter
 }
 
 // ClientRateLimiter enforces a global QPS cap and a per-client QPS cap.
-// A request must pass both gates. Extracted from Server so it can be
-// unit-tested and mocked without constructing a full Server.
+// It uses a strict LRU cache to bound memory usage and prevent OOM crashes
+// during spoofed UDP floods or port scans.
 type ClientRateLimiter struct {
-	global  *rate.Limiter
-	clients sync.Map // Maps string (IP) -> *clientEntry
-	cfg     RateLimitConfig
-	logger  *slog.Logger
+	global *rate.Limiter
+	cfg    RateLimitConfig
+	logger *slog.Logger
+
+	// LRU State
+	mu      sync.Mutex
+	maxSize int
+	ll      *list.List
+	cache   map[string]*list.Element
 }
 
 func newClientRateLimiter(ctx context.Context, cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
-	rl := &ClientRateLimiter{
-		global: rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
-		cfg:    cfg,
-		logger: logger,
-	}
-	// Spin up the janitor tied directly to the server lifecycle context
-	go rl.janitorLoop(ctx, 10*time.Minute)
-	return rl
-}
-
-func (rl *ClientRateLimiter) janitorLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			now := time.Now().Unix()
-			rl.clients.Range(func(key, value any) bool {
-				entry, ok := value.(*clientEntry)
-				if !ok {
-					panic2("BUG: not of *clientEntry type")
-				}
-				// Evict any client IP that hasn't sent a request in over an hour
-				if now-atomic.LoadInt64(&entry.lastSeen) > 3600 {
-					rl.clients.Delete(key)
-				}
-				return true
-			})
-		case <-ctx.Done():
-			// Server or configuration context cancelled; exit goroutine cleanly
-			return
-		}
+	_ = ctx // Context is no longer needed since we dropped the background janitor
+	return &ClientRateLimiter{
+		global:  rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
+		cfg:     cfg,
+		logger:  logger,
+		maxSize: 10000, // Hard memory cap: 10k unique IPs is plenty and uses < 2MB of RAM
+		ll:      list.New(),
+		cache:   make(map[string]*list.Element),
 	}
 }
 
@@ -7423,30 +7404,79 @@ func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason stri
 		clientIP = clientAddr
 	}
 	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+	// 2. Collapse loopback addresses to prevent bypassing limits
 	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.IsLoopback() {
 		clientIP = "localhost"
 	}
-	now := time.Now().Unix()
-	// 3. Use the clean IP as the sync.Map key
-	// Load or atomically store a newly provisioned tracker entry
-	clIface, _ := rl.clients.LoadOrStore(
-		clientIP,
-		&clientEntry{
-			//rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
-			limiter:  rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
-			lastSeen: now,
-		},
-	)
-	//TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
-	entry, ok := clIface.(*clientEntry)
-	if !ok {
-		panic2("BUG: not2 of *clientEntry type")
-	}
-	atomic.StoreInt64(&entry.lastSeen, now) // Bump the activity clock
-	if !entry.limiter.Allow() {
+
+	// now := time.Now().Unix()
+	// // 3. Use the clean IP as the sync.Map key
+	// // Load or atomically store a newly provisioned tracker entry
+	// clIface, _ := rl.clients.LoadOrStore(
+	// 	clientIP,
+	// 	&clientEntry{
+	// 		//rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+	// 		limiter:  rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+	// 		lastSeen: now,
+	// 	},
+	// )
+	// //TODO: add per exe limit, not just per IP limit; already have global limit though as 'rate_qps' in config.json
+	// entry, ok := clIface.(*clientEntry)
+	// if !ok {
+	// 	panic2("BUG: not2 of *clientEntry type")
+	// }
+	// atomic.StoreInt64(&entry.lastSeen, now) // Bump the activity clock
+
+	// 3. Thread-safe LRU management with guaranteed deferred unlock
+	limiter := rl.getOrCreateLimiter(clientIP)
+
+	if !limiter.Allow() {
 		return false, clientRateLimitExceeded
 	}
 	return true, ""
+}
+
+// getOrCreateLimiter looks up the client's limiter or creates a new one if missing.
+// It uses a deferred unlock to guarantee mutex release while keeping the critical section small.
+func (rl *ClientRateLimiter) getOrCreateLimiter(clientIP string) *rate.Limiter {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// Cache Hit: Move to front and return
+	if elem, ok := rl.cache[clientIP]; ok {
+		rl.ll.MoveToFront(elem)
+		entry, ok := elem.Value.(*lruClientEntry)
+		if !ok {
+			panic2("BUG: not of *lruClientEntry type")
+		}
+		if entry == nil {
+			panic2("BUG: nil *lruClientEntry")
+		}
+		return entry.limiter
+	}
+
+	// Cache Miss: Create a new bucket
+	entry := &lruClientEntry{
+		ip:      clientIP,
+		limiter: rate.NewLimiter(rate.Limit(rl.cfg.ClientQPS), rl.cfg.ClientBurst),
+	}
+	elem := rl.ll.PushFront(entry)
+	rl.cache[clientIP] = elem
+
+	// Enforce hard memory cap via LRU Eviction
+	if rl.ll.Len() > rl.maxSize {
+		oldest := rl.ll.Back()
+		if oldest != nil {
+			rl.ll.Remove(oldest)
+			oldEntry, ok := oldest.Value.(*lruClientEntry)
+			if !ok {
+				panic2("BUG: not of *lruClientEntry type")
+			}
+			delete(rl.cache, oldEntry.ip)
+		}
+	}
+
+	return entry.limiter
 }
 
 // DNSCache is the caching contract used by the query handler.
@@ -8282,14 +8312,23 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 	// Update the global token bucket limits
 	rl.global.SetLimit(rate.Limit(cfg.GlobalQPS))
 	rl.global.SetBurst(cfg.GlobalBurst)
-	rl.cfg = cfg
 
+	// rl.cfg = cfg
+
+	// // Flush existing per-client limiters so they immediately pick up the new config
+	// rl.clients.Range(func(key, value any) bool {
+	// 	_ = value
+	// 	rl.clients.Delete(key)
+	// 	return true
+	// })
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	rl.cfg = cfg
 	// Flush existing per-client limiters so they immediately pick up the new config
-	rl.clients.Range(func(key, value any) bool {
-		_ = value
-		rl.clients.Delete(key)
-		return true
-	})
+	rl.ll.Init()
+	rl.cache = make(map[string]*list.Element)
 }
 
 // writeTimeoutConn wraps a net.Conn to enforce a strict timeout on every Write call.
