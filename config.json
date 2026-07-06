@@ -5,7 +5,7 @@
   "listen_doh": "127.0.0.2:443",
   "_description_listen_ui": "IP:port for the web admin UI. Must be an IP literal. TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true.",
   "listen_ui": "127.0.0.1:3406",
-  "_description_upstream_urls": "HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority.",
+  "_description_upstream_urls": "HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority. If you use the template '{builtin:clientexe}'(without the single quotes, doh) it will be replaced with the querying executable name (useful for NextDNS URLs)",
   "upstream_urls": [
     "https://9.9.9.9/dns-query",
     "https://1.1.1.1/dns-query"

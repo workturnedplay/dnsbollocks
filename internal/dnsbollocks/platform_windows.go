@@ -1382,6 +1382,9 @@ func defaultConfig() Config {
 	//compute based on others
 	cfg.LocalDoHIdleTimeoutSec = 2 * cfg.LocalDoHReadTimeoutSec
 	cfg.UpstreamMaxIdleConns = 10 * cfg.UpstreamMaxIdleConnsPerHost
+	if cfg.WebUIPasswordHash != "" {
+		panic2("BUG: password hash shouldn't be set in defaults, else logic needs to be change in other places counting on this")
+	}
 	return cfg
 }
 
@@ -9085,12 +9088,21 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		})
 	}
 
+	for i, field := range fields {
+		if field.Key == "webui_password_hash" && field.Value != "" {
+			fields[i].Value = placeHolderPassword // Mask it from the browser completely!
+		}
+	}
+
 	sort.Slice(fields, func(i, j int) bool {
 		return fields[i].Key < fields[j].Key
 	})
 
 	return fields
 }
+
+// This is explicitly intended to hide the pwd hash from webUI view.
+const placeHolderPassword = "********"
 
 func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
@@ -9125,10 +9137,12 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// Hash plaintext password before applying, same as before.
 			if plainPwd, ok := changes["webui_password_hash"].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
-				if !strings.HasPrefix(plainPwd, "$2") && plainPwd != "" {
+				if plainPwd != "" && !strings.HasPrefix(plainPwd, "$2") {
+
 					// Fetch current configured cost
 					cost := ui.getConfig().WebUIPasswordBcryptCost
-					log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
+					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
+					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost))
 					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), cost)
 					if hashErr != nil {
 						log.Error("Failed to hash new webui password", SafeErr(hashErr), slog.Int("cost", cost))
@@ -9136,6 +9150,16 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					changes["webui_password_hash"] = string(hashBytes)
+				} else if plainPwd == "" { //|| plainPwd == placeHolderPassword {//nah, shouldn't check for this!
+					// The input was empty, meaning the user didn't want to change their password.
+
+					// === HEAL INSTEAD OF DELETE ===
+					// Force the browser's empty change to inherit our trusted memory state.
+					// Even if the disk file was wiped a millisecond ago, maps.Copy will
+					// overwrite that vacuum with this valid hash.
+					//log.Debug("Will keep using the old password/hash.")
+					log.Debug("Password unchanged; retaining active memory hash")
+					changes["webui_password_hash"] = ui.getRawConfig().WebUIPasswordHash
 				}
 			}
 			// --- END INTERCEPTOR ---
