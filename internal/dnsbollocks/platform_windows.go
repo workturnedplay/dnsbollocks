@@ -321,7 +321,7 @@ func NewServer(logger *slog.Logger) *Server {
 	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 	s.applyConfig(defaultConfig())
-	s.fileWriter = newSafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
+	s.fileWriter = newGenericSafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
 	return s // yes it escapes to heap
 }
 
@@ -7348,25 +7348,25 @@ type FileWriter interface {
 	SetExtraSafety(enabled bool)
 }
 
-// safeFileWriter is the production FileWriter.
+// genericSafeFileWriter is the production FileWriter.
 // It serialises all writes through its own mutex (replacing Server.fileWriteMu)
 // and conditionally uses a staging file when cfg.ExtraSafety is true.
 // cfg is a pointer to Server.config so ExtraSafety is always read at call time.
-type safeFileWriter struct {
+type genericSafeFileWriter struct {
 	mu          sync.Mutex
 	extraSafety bool
 	//logger      *slog.Logger
 	liveLogger *atomic.Pointer[slog.Logger]
 }
 
-func newSafeFileWriter(extraSafety bool, liveLogger *atomic.Pointer[slog.Logger]) FileWriter {
-	return &safeFileWriter{
+func newGenericSafeFileWriter(extraSafety bool, liveLogger *atomic.Pointer[slog.Logger]) FileWriter {
+	return &genericSafeFileWriter{
 		extraSafety: extraSafety,
 		liveLogger:  liveLogger,
 	}
 }
 
-func (fw *safeFileWriter) getLogger() *slog.Logger {
+func (fw *genericSafeFileWriter) getLogger() *slog.Logger {
 	if l := fw.liveLogger.Load(); l != nil {
 		return l
 	}
@@ -7375,7 +7375,7 @@ func (fw *safeFileWriter) getLogger() *slog.Logger {
 	return log
 }
 
-func (fw *safeFileWriter) SetExtraSafety(enabled bool) {
+func (fw *genericSafeFileWriter) SetExtraSafety(enabled bool) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 	fw.extraSafety = enabled
@@ -7388,7 +7388,7 @@ func (fw *safeFileWriter) SetExtraSafety(enabled bool) {
 // checkPowerLossFile inspects the file system for a lingering commit file.
 // If found, it halts execution to prevent the application from overwriting
 // or loading potentially corrupted state.
-func (fw *safeFileWriter) CheckPowerLossFile(filename string) {
+func (fw *genericSafeFileWriter) CheckPowerLossFile(filename string) {
 	if filename == "" {
 		return
 	}
@@ -7440,7 +7440,7 @@ const powerlossFileExtension string = ".powergotlost"
 // block the creation of temporary files.
 //
 // By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
-func (fw *safeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
+func (fw *genericSafeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
 	log := fw.getLogger()
 	const tryTimesForFileOp = 6              //how many times
 	const backoffMsTimeForFileOpPerTry = 100 // ms

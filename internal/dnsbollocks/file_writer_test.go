@@ -31,7 +31,7 @@ func TestSafeFileWriter(t *testing.T) {
 	liveLogger.Store(logger)
 
 	// Initialize with extraSafety ON, passing the pointer to the atomic.Pointer
-	fw := newSafeFileWriter(true, &liveLogger)
+	fw := newGenericSafeFileWriter(true, &liveLogger)
 
 	// --- Test 1: Normal Write ---
 	data := []byte(`{"status": "ok"}`)
@@ -122,7 +122,7 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 		&slog.HandlerOptions{Level: slog.LevelError}))
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
-	fw := newSafeFileWriter(true, &liveLogger)
+	fw := newGenericSafeFileWriter(true, &liveLogger)
 
 	stagingFile := targetFile + powerlossFileExtension
 
@@ -153,7 +153,7 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newSafeFileWriter(true, &liveLogger)
+	fw := newGenericSafeFileWriter(true, &liveLogger)
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -197,7 +197,7 @@ func TestSafeFileWriter_ExtraSafetyOff_NoStagingFileCreated(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newSafeFileWriter(false, &liveLogger)
+	fw := newGenericSafeFileWriter(false, &liveLogger)
 
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"ok":true}`), 0644); err != nil {
 		t.Fatalf("SafeWriteFile failed: %v", err)
@@ -215,7 +215,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newSafeFileWriter(false, &liveLogger)
+	fw := newGenericSafeFileWriter(false, &liveLogger)
 
 	// --- OFF → write → no staging ---
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"v":1}`), 0644); err != nil {
@@ -253,7 +253,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 func TestSafeFileWriter_CheckPowerLossFile_EmptyFilename(t *testing.T) {
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newSafeFileWriter(true, &liveLogger)
+	fw := newGenericSafeFileWriter(true, &liveLogger)
 
 	defer func() {
 		if r := recover(); r != nil {
