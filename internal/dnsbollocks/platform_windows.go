@@ -9138,8 +9138,23 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
 	if r.Method == http.MethodGet {
+		// Optimistic-concurrency version token: embed the config file's mod-time
+		// so the browser can send it back on Apply and we can detect staleness.
+		var configVersion string
+		if fi, statErr := os.Stat(configFileName); statErr == nil {
+			configVersion = fmt.Sprintf("%d", fi.ModTime().UnixNano())
+		} else if os.IsNotExist(statErr) {
+			configVersion = "0" // file not yet created — first-time setup
+		} else {
+			log.Warn("configHandler: could not stat config file for version token", SafeErr(statErr))
+			configVersion = "0"
+		}
+
 		data := map[string]any{
 			"Fields": ui.getConfigFields(),
+
+			"ConfigVersion": configVersion,
+
 			//Dynamically inject the UpstreamURLs JSON tag
 			"UpstreamURLsKey": getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamURLs)),
 			// Injected so app.js never hard-codes json tag strings.
@@ -9187,13 +9202,75 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Optimistic concurrency: refuse to apply if config.json was written to
+			// disk after this page was loaded (e.g. a Ctrl+R reload, a concurrent
+			// WebUI session, or a manual file edit). The client sends back the
+			// mod-time token it received when the page was served.
+			//
+			// "0" means the file didn't exist when the page loaded (first-time
+			// setup), so there is nothing to conflict with. Empty means an old
+			// cached page that predates this feature; skip silently for
+			// backward-compatibility.
+			submittedVersion := r.FormValue("config_version")
+			if submittedVersion != "" && submittedVersion != "0" {
+				if fi, statErr := os.Stat(configFileName); statErr == nil {
+					currentVersion := fmt.Sprintf("%d", fi.ModTime().UnixNano())
+					if currentVersion != submittedVersion {
+						log.Warn("WebUI config apply rejected: config.json changed on disk since the page was loaded",
+							slog.String("page_load_version", submittedVersion),
+							slog.String("current_disk_version", currentVersion),
+							slog.String("client", r.RemoteAddr),
+						)
+						http.Error(w,
+							"Conflict: config.json was modified on disk since you loaded this page.\n"+
+								"This can happen after a Ctrl+R reload, a concurrent session, or a manual file edit.\n"+
+								"Please refresh the page (F5) to load the latest config, then re-apply your changes.",
+							http.StatusConflict,
+						)
+						return
+					}
+				} else if !os.IsNotExist(statErr) {
+					// stat failed for an unexpected reason — fail safe rather than
+					// silently allowing a potentially conflicting write.
+					log.Error("configHandler: stat failed during conflict check", SafeErr(statErr))
+					http.Error(w, "Internal error: could not verify config file version.", http.StatusInternalServerError)
+					return
+				}
+				//else:
+				// os.IsNotExist → file was deleted between page-load and apply;
+				// treat as a fresh create and allow the save.
+			}
+			/*
+				Why this works correctly for every case:
+				Scenario: Normal single-user apply
+				Outcome: Versions match → apply proceeds
+
+				Ctrl+R reload happened between page-load and Apply
+				Mod-time changed → 409, user sees clear message
+
+				Manual config.json edit on disk
+				Same as above
+
+				Two browser tabs, one applies first
+				Second tab's Apply gets 409; after F5 it gets fresh token
+
+				First-time setup (file didn't exist at page-load)
+				Token is "0" → check skipped → file created
+
+				Old cached JS (no config_version field sent)
+				Empty string → check skipped → backward-compatible
+
+				Successful apply + page redirect
+				Page reload fetches new token → subsequent edits work normally
+			*/
+
 			// --- NEW HASHING INTERCEPTOR ---
 			// Fetch the exact tag for the password field
 			tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 			// Hash plaintext password before applying, same as before.
 			if plainPwd, ok := changes[tagWebUIPwd].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
-				//TODO: find out why this isn't needed here: && plainPwd != placeHolderPassword
+				//doneTODO: find out why this isn't needed here: && plainPwd != placeHolderPassword  so it's due to displayed vs edited being different areas even tho they seem to be in the same place in the UI.
 				if plainPwd != "" && !strings.HasPrefix(plainPwd, "$2") {
 					// Fetch current configured cost
 					cost := ui.getConfig().WebUIPasswordBcryptCost
@@ -10090,8 +10167,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
 	rawCfg.BlockMode = resolvedCfg.BlockMode
-	//doneTODO: ensure only valid values are used here for config.BlockMode or warn/exit!
-
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
 	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
@@ -10106,6 +10181,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 			slog.String("default", upstreamSelectionModeFailover))
 		resolvedCfg.UpstreamSelectionMode = defaultCfg.UpstreamSelectionMode
 		//rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
+		//FIXME: do we wanna set a default here if it's wrong, or is it better to yell and fail?! what if user just typoed another config, we should definitely fail here!
 		shouldSaveConfig = true
 	}
 	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode

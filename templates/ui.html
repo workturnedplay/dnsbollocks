@@ -376,6 +376,7 @@
 {{define "config"}}
 {{/* Config field key names injected by Go so app.js never hard-codes json tag strings. */}}
 <div id="configKeysData"
+    data-config-version="{{.ConfigVersion}}"
     data-key-upstream-selection-mode="{{.KeyUpstreamSelectionMode}}"
     data-key-console-log-level="{{.KeyConsoleLogLevel}}"
     data-key-block-mode="{{.KeyBlockMode}}"

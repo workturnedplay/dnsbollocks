@@ -21,6 +21,10 @@
     // This ensures renaming a Config struct field + its json tag is the only change needed;
     // app.js never hard-codes json tag strings.
     const _cfgKeysEl = document.getElementById('configKeysData');
+    // Optimistic-concurrency token: the mod-time of config.json at page-load
+    // time. Sent back on Apply so the server can detect a stale page.
+    // Falls back to '0' on pages that predate this feature or on non-config pages.
+    const configVersion = _cfgKeysEl ? (_cfgKeysEl.dataset.configVersion || '0') : '0';
     const CONFIG_KEYS = _cfgKeysEl ? {
         // JSON tag key names — used to identify which config row is being edited.
         upstreamSelectionMode: _cfgKeysEl.dataset.keyUpstreamSelectionMode || '',
@@ -767,7 +771,8 @@
         
         const success = await postAdminForm('/config', {
             'action': 'apply',
-            'payload': JSON.stringify(stagedChanges)
+            'payload': JSON.stringify(stagedChanges),
+            'config_version': configVersion
         }, 'Failed to apply configuration');
         
         if (success) {
