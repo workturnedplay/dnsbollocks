@@ -165,6 +165,9 @@ type Config struct {
 	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
 	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses, reducing retry storms during upstream outages."`
 
+	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
+	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
+
 	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response."`
 	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec" desc:"TTL (seconds) embedded in DNS records synthesised from the local host-override file (hosts2ip.json)."`
 
@@ -330,7 +333,14 @@ func NewServer(logger *slog.Logger) *Server {
 	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 	s.applyConfig(defaultConfig())
-	s.fileWriter = wincoe.NewWin11SafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
+	cfg := s.getConfig() //this is defaults here, btw!
+	s.fileWriter = wincoe.NewWin11SafeFileWriter(
+		/*so these 3 from cfg. have actually the default value for themselves because at this point, the server itself didn't even read the config yet! FIXME: must decouple config greading with NewServer starting also this means the s.shutdown(exitCode) too! */
+		cfg.ExtraSafety,              //this is overwriten at loadMainConfig time which happens at Run() and at Ctrl+R aka reload.
+		cfg.FileWriterMaxRetries,     //TODO: ^
+		cfg.FileWriterRetryBackoffMs, //TODO: ^
+
+		&s.liveLogger)
 	return s // yes it escapes to heap
 }
 
@@ -1384,6 +1394,9 @@ func defaultConfig() Config {
 
 		//You are telling the underlying go-cache library to run its background cleanup sweep exactly every 60 minutes. If CacheMaxEntries is set very high, a 1-hour sweep might allow memory usage to balloon before it gets cleaned up.
 		CacheJanitorIntervalMinutes: 60,
+
+		FileWriterMaxRetries:     6,
+		FileWriterRetryBackoffMs: 100,
 
 		//You added a smart truncation limit to prevent browser crashes when reading massive logs. However, some admins might have beefy machines and want to see 20,000 lines, while others might be running the UI on an old phone and need it capped at 1,000.
 		UILogMaxLines: 5000,
@@ -9987,6 +10000,22 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		resolvedCfg.CacheNegativeTTLSec = fallback
 		rawCfg.CacheNegativeTTLSec = fallback
 		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagFileWriterMaxRetries := getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterMaxRetries))
+	if was := resolvedCfg.FileWriterMaxRetries; was <= 0 { //TODO: shouldn't we support 0 retries? aka 1 try if fails fails, no retrying!?!
+		fallback := defaultCfg.FileWriterMaxRetries
+		resolvedCfg.FileWriterMaxRetries = fallback
+		rawCfg.FileWriterMaxRetries = fallback
+		log.Warn(tagFileWriterMaxRetries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagFileWriterRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterRetryBackoffMs))
+	if was := resolvedCfg.FileWriterRetryBackoffMs; was <= 0 {
+		fallback := defaultCfg.FileWriterRetryBackoffMs
+		resolvedCfg.FileWriterRetryBackoffMs = fallback
+		rawCfg.FileWriterRetryBackoffMs = fallback
+		log.Warn(tagFileWriterRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))

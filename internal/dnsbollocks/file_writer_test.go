@@ -32,7 +32,7 @@ func TestSafeFileWriter(t *testing.T) {
 	liveLogger.Store(logger)
 
 	// Initialize with extraSafety ON, passing the pointer to the atomic.Pointer
-	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, 6, 100, &liveLogger)
 
 	// --- Test 1: Normal Write ---
 	data := []byte(`{"status": "ok"}`)
@@ -123,7 +123,7 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 		&slog.HandlerOptions{Level: slog.LevelError}))
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
-	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, 6, 100, &liveLogger)
 
 	stagingFile := targetFile + wincoe.PowerlossFileExtension
 
@@ -154,7 +154,7 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, 6, 100, &liveLogger)
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -198,7 +198,7 @@ func TestSafeFileWriter_ExtraSafetyOff_NoStagingFileCreated(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := wincoe.NewWin11SafeFileWriter(false, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(false, 6, 100, &liveLogger)
 
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"ok":true}`), 0644); err != nil {
 		t.Fatalf("SafeWriteFile failed: %v", err)
@@ -216,7 +216,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := wincoe.NewWin11SafeFileWriter(false, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(false, 6, 100, &liveLogger)
 
 	// --- OFF → write → no staging ---
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"v":1}`), 0644); err != nil {
@@ -254,7 +254,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 func TestSafeFileWriter_CheckPowerLossFile_EmptyFilename(t *testing.T) {
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, 6, 100, &liveLogger)
 
 	defer func() {
 		if r := recover(); r != nil {
