@@ -1,5 +1,4 @@
 todo:
-* maybe add: !TERM to mean exclude that from the filtered(in any webUI pages that support filtering), like: face | fbcdn !hugging
 * should prolly decouple the os.Exit from Server.shutdown(exitCode) or use something else to shutdown/close server without exiting, so it can be used from tests, and also somehow undo the log file set/promoted, get back to the original, or somehow close it so tmpdir can be deleted from tests.
 * Do you want to extract the retry limits/backoffs inside the SafeWriteFile function (tryTimesForFileOp = 6 / backoffMsTimeForFileOpPerTry = 100) into the config as well, or do you feel those are low-level engine constants better left hidden from the end user?
 
@@ -18,6 +17,7 @@ no:
 
 
 done:
+//* maybe add: !TERM to mean exclude that from the filtered(in any webUI pages that support filtering), example filter string: face | fbcdn !hugging
 //* do these for v0.15.2 (dontdo: 1_1 done: 2_1, 2_2, 3_1, 3_2, 4_1, 1_2(ReplaceFileW) todo: 4_2): https://gemini.google.com/app/277f8cbefd801877
 //* make the filters have AND and OR between terms, somehow, but using & and | perhaps and make a note somewhere(maybe same place when filter is empty) that they're possible.
 //* do the 1_2(ReplaceFileW) from below as an addition to what already exists. See if to manually make a .bak if doing it with ReplaceFileW but it fails.

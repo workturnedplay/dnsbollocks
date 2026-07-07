@@ -130,12 +130,34 @@
     
     // --- Filter Expression Parser ---
     // Grammar: clause | clause | ...  where clause = term & term & ...
-    //          and term = word word ... (ordered substring match, existing behaviour)
-    // Examples: "foo bar" → ordered AND; "foo & bar" → unordered AND;
-    //           "foo | bar" → OR; "foo bar | baz & qux" → complex
+    //          and term = word word ... (ordered substring match)
+    // Global NOT: !term (anywhere in the string, requires a space before it)
+    // Examples: "foo | bar !baz" → (foo OR bar) AND NOT baz
     function matchesFilterExpression(text, rawFilter) {
         if (!rawFilter || rawFilter.length === 0) return true;
-        const orGroups = rawFilter.split('|').map(s => s.trim()).filter(s => s.length > 0);
+        
+        const negativeTerms = [];
+        let remainingFilter = rawFilter;
+
+        // 1. Extract global negative terms (e.g., " !hugging")
+        // Matches '!' at the start of the string or after a whitespace.
+        remainingFilter = remainingFilter.replace(/(?:^|\s)!(\S+)/g, (match, term) => {
+            negativeTerms.push(term);
+            return ' '; // Replace with space to maintain separation for remaining tokens
+        }).trim();
+
+        // 2. Global Exclusion: If the text contains ANY of the negative terms, instantly reject.
+        for (const neg of negativeTerms) {
+            if (text.indexOf(neg) !== -1) {
+                return false;
+            }
+        }
+
+        // If the filter was ONLY negative terms (e.g., "!hugging") and it survived the check above, it's a match!
+        if (remainingFilter.length === 0) return true;
+
+        // 3. Continue with existing AND/OR logic on the remaining filter
+        const orGroups = remainingFilter.split('|').map(s => s.trim()).filter(s => s.length > 0);
         if (orGroups.length === 0) return true;
         return orGroups.some(orGroup => {
             const andTerms = orGroup.split('&').map(s => s.trim()).filter(s => s.length > 0);
@@ -155,10 +177,12 @@
     }
 
     // Collects all literal word tokens from a filter expression for highlight use.
-    // Strips | and & operators, then splits on whitespace.
+    // Strips ! exclusions, | and & operators, then splits on whitespace.
     function extractHighlightTerms(rawFilter) {
         if (!rawFilter) return [];
-        return rawFilter.replace(/[|&]/g, ' ').split(/\s+/).filter(t => t.length > 0);
+        // Remove negative terms first so they don't trigger the yellow highlighter
+        const cleanedFilter = rawFilter.replace(/(?:^|\s)!(\S+)/g, ' ');
+        return cleanedFilter.replace(/[|&]/g, ' ').split(/\s+/).filter(t => t.length > 0);
     }
 
     // --- Client-Side Table Ordered-Substring Filter Logic ---
