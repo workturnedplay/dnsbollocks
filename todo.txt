@@ -1,6 +1,7 @@
 todo:
-* saveConfig should be decoupled from Server !
-* maybe more fileWriter tests into wincoe since the impl. is there.
+* saveConfig should be decoupled from Server ! but since it's using Server.fileWriter.SafeWriteFile() and this one has its own settings, then hmmm, how shall we do this? pass the instance to it? and if nil instance then it will spin one with defaultConfig() defaults?! sounds reasonable to me, tho this means the fileWriter instance itself is decoupled from Server too, and thus passed to the server and Server should can reload it on Ctrl+R with diff. args, so I guess that means just setting the 2 things it has (retries and backoff ms).
+* the logger should be decoupled from Server but since Server should be able to change the log file then it should be able to close the old file, but it should do this by telling the logger to do it. So don't like accept 2 args like func NewServer(logger *slog.Logger, logFile *os.File, ...  but rather 1 arg that represent the logger (which was inited in OldMain already, to full logger after config.json got loaded) then Server can tell logger it wants a new file and logger knows to close old and open new, also logger should have a Close() for when OldMain is done with it or something. But also, logger should can be closed in tests, to then allow tests to delete the tmpdir they made.
+* maybe move fileWriter tests into wincoe since the impl. is there.
 * should prolly decouple the os.Exit from Server.shutdown(exitCode) or use something else to shutdown/close server without exiting, so it can be used from tests, and also somehow undo the log file set/promoted, get back to the original, or somehow close it so tmpdir can be deleted from tests. But need to analyze the side-effects of this, as there's code that used to depend on s.shutdown(N) meaning os.Exit, and the general logic/arch. of the whole thing may be dependent on this.
 
 

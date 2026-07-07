@@ -2820,8 +2820,12 @@ func hostFromURL(raw string) (string, error) {
 	return host, nil
 }
 
+// // SaveConfig safely marshals and writes the configuration to disk.
+// // It is completely decoupled from the Server struct.
+// func SaveConfig(log *slog.Logger, rawCfg *Config) error {
 func (s *Server) saveConfig() error {
 	log := s.getLogger()
+	//log.Debug("saving config...")
 
 	rawCfg := s.liveRawConfig.Load()
 	if rawCfg == nil {
