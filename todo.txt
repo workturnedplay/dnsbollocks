@@ -1,5 +1,6 @@
 todo:
-* should prolly decouple the os.Exit from Server.shutdown(exitCode) or use something else to shutdown/close server without exiting, so it can be used from tests, and also somehow undo the log file set/promoted, get back to the original, or somehow close it so tmpdir can be deleted from tests.
+* maybe more fileWriter tests into wincoe since the impl. is there.
+* should prolly decouple the os.Exit from Server.shutdown(exitCode) or use something else to shutdown/close server without exiting, so it can be used from tests, and also somehow undo the log file set/promoted, get back to the original, or somehow close it so tmpdir can be deleted from tests. But need to analyze the side-effects of this, as there's code that used to depend on s.shutdown(N) meaning os.Exit, and the general logic/arch. of the whole thing may be dependent on this.
 * also decouple NewServer and config.json loading so that when NewServer is called the config is already not the defaults which affects the in-NewServer inits like: s.fileWriter = wincoe.NewWin11SafeFileWriter(...)
 
 
