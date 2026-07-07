@@ -337,8 +337,8 @@ func NewServer(logger *slog.Logger) *Server {
 	s.fileWriter = wincoe.NewWin11SafeFileWriter(
 		/*so these 3 from cfg. have actually the default value for themselves because at this point, the server itself didn't even read the config yet! FIXME: must decouple config greading with NewServer starting also this means the s.shutdown(exitCode) too! */
 		cfg.ExtraSafety,              //this is overwriten at loadMainConfig time which happens at Run() and at Ctrl+R aka reload.
-		cfg.FileWriterMaxRetries,     //TODO: ^
-		cfg.FileWriterRetryBackoffMs, //TODO: ^
+		cfg.FileWriterMaxRetries,     //doneTODO: ^
+		cfg.FileWriterRetryBackoffMs, //doneTODO: ^
 
 		&s.liveLogger)
 	return s // yes it escapes to heap
@@ -1414,6 +1414,7 @@ func defaultConfig() Config {
 	if cfg.WebUIPasswordHash != "" {
 		panic2("BUG: password hash shouldn't be set in defaults, else logic needs to be change in other places counting on this")
 	}
+
 	return cfg
 }
 
@@ -2485,7 +2486,8 @@ func (s *Server) loadMainConfig() error {
 	// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
 	var rawCfg *Config = &rawTempCfg
 
-	s.fileWriter.SetExtraSafety(defaultConfig.ExtraSafety) //using default cfg.ExtraSafety until read from disk
+	s.fileWriter.SetExtraSafety(defaultConfig.ExtraSafety)                                                  //using default cfg.ExtraSafety until read from disk, this is already set to this default in the NewServer constructor tho
+	s.fileWriter.SetRetryParams(defaultConfig.FileWriterMaxRetries, defaultConfig.FileWriterRetryBackoffMs) //TODO: ensure defautlConfig had sanitizeAndValidateConfig run on it
 
 	s.fileWriter.CheckPowerLossFile(cfgFname) //a default Config was already set at birth(even tho we also set it here, above, this one we set above isn't in effect yet), or kept the previously loaded one, those values are used by any child callers that use Server's Config during loadMainConfig() until the new config is atomically swapped in(at the end tho)
 	data, err := os.ReadFile(cfgFname)
@@ -2598,6 +2600,7 @@ func (s *Server) loadMainConfig() error {
 	}
 
 	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+	//s.fileWriter.SetRetryParams(defaultConfig.FileWriterMaxRetries, defaultConfig.FileWriterRetryBackoffMs) Can't do this here because it's not validated yet, good thing sanitizeAndValidateConfig below doesn't use this (assuming logger doesn't either)
 
 	//Use the unified sanitization/validation helper ---
 	changed, errVal := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultConfig, false)
@@ -2610,7 +2613,27 @@ func (s *Server) loadMainConfig() error {
 	}
 	if changed {
 		shouldSaveConfig = true
+
+		{ //if something did change, see if it changes again, then we know defaultConfig() or conditions within sanitize*() are broken!
+			//XXX: run it again to see if the defaultConfig() was broken with respect to the conditions within sanitizeAndValidateConfig, because once it passed thru it, if u run it again it wouldn't change anything! this check for defaultConfig() only works on the settings that the prev. run changed! so it won't detect anything if they weren't changed.
+			changed2, errVal2 := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultConfig, false)
+			if errVal2 != nil {
+				// Intercept fatal strings and crash exactly as the old code did
+				if strings.HasPrefix(errVal2.Error(), "FATAL:") {
+					s.logFatal2(strings.TrimPrefix(errVal2.Error(), "FATAL: "))
+				}
+				return errVal2
+			}
+			if changed2 {
+				panic2("BUG: defaultConfig() has values that break the conditions within sanitizeAndValidateConfig, they must be changed; or the conditions in sanitizeAndValidateConfig are inconsistent(less likely)")
+			}
+		}
 	}
+
+	//(re)apply newly loaded validated/clamped config settings for fileWriter
+	//TODO: make these 2 lines into a helper function and call that here and in another place above
+	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	// Enforce password setup if it's missing from the config
 	if resolvedCfg.WebUIPasswordHash == "" {
