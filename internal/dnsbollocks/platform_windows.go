@@ -65,6 +65,7 @@ import (
 	"github.com/patrickmn/go-cache"
 	"github.com/workturnedplay/dnsbollocks/templates"
 	"github.com/workturnedplay/wincoe"
+	"golang.org/x/net/http2"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 	"golang.org/x/time/rate"
@@ -8239,7 +8240,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 
 				// Wrap the connection with a strict write deadline (e.g., 5 seconds).
 				// Match this to your cfg.UpstreamClientTimeoutSec or use a sensible default.
-				return &writeTimeoutConn{
+				return &rwTimeoutConn{
 					Conn:    conn,
 					timeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 				}, nil
@@ -8254,6 +8255,16 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
 			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
 		}
+		// --- NEW: Proactive HTTP/2 Health Checks ---
+		// This extracts the hidden HTTP/2 transport and configures PING frames.
+		t2, err := http2.ConfigureTransports(t)
+		if err == nil {
+			// If the connection is idle (no reads) for 5 seconds, send an HTTP/2 PING.
+			t2.ReadIdleTimeout = 5 * time.Second //TODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
+			// If the upstream doesn't ACK the PING within 2 seconds, destroy the zombie connection.
+			t2.PingTimeout = 2 * time.Second //TODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps?
+		}
+
 		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t)
 		if um.dohTransportsPtrs[i] != t {
 			panic2("BUG: dev fail: dohTransportsPtrs[i] != t")
@@ -8306,21 +8317,34 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 	rl.cache = make(map[string]*list.Element)
 }
 
-// writeTimeoutConn wraps a net.Conn to enforce a strict timeout on every Write call.
-// This prevents HTTP/2 write loops from hanging indefinitely on blackholed connections.
-type writeTimeoutConn struct {
+// rwTimeoutConn wraps a net.Conn to enforce a strict timeout on every Read and Write call.
+// This prevents HTTP/1.1 and HTTP/2 loops from hanging indefinitely on blackholed connections.
+type rwTimeoutConn struct {
 	net.Conn
 	timeout time.Duration
 }
 
-func (w *writeTimeoutConn) Write(b []byte) (int, error) {
-	if w.timeout > 0 {
-		if err := w.Conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
-			// Return 0 bytes written and wrap the error so the caller knows exactly what failed
-			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", w.timeout, err)
+func (c *rwTimeoutConn) Read(b []byte) (int, error) {
+	if c.timeout > 0 {
+		if err := c.Conn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+			return 0, fmt.Errorf("failed to set read deadline (%d) on upstream conn: %w", c.timeout, err)
 		}
 	}
-	n, err := w.Conn.Write(b)
+	n, err := c.Conn.Read(b)
+	if err != nil {
+		return n, fmt.Errorf("failed to read from net connection: %w", err)
+	}
+	return n, nil
+}
+
+func (c *rwTimeoutConn) Write(b []byte) (int, error) {
+	if c.timeout > 0 {
+		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+			// Return 0 bytes written and wrap the error so the caller knows exactly what failed
+			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", c.timeout, err)
+		}
+	}
+	n, err := c.Conn.Write(b)
 	if err == nil {
 		return n, nil
 	} else {
