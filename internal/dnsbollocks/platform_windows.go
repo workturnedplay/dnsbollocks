@@ -81,6 +81,8 @@ type Config struct {
 	ListenDNS               string   `json:"listen_dns"    desc:"IP:port for the plain DNS (UDP and TCP) listener. Must be an IP literal, never a hostname."`
 	ListenDoH               string   `json:"listen_doh"    desc:"IP:port for the local DNS-over-HTTPS (DoH) listener. Must be an IP literal. A TLS certificate is auto-generated for this IP."`
 	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be an IP literal. TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
+	TLSCertFile             string   `json:"tls_cert_file" desc:"Path to the TLS certificate file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
+	TLSKeyFile              string   `json:"tls_key_file"  desc:"Path to the TLS private key file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
 	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority. If you use the template '{builtin:clientexe}'(without the single quotes, doh) it will be replaced with the querying executable name (useful for NextDNS URLs)"`
 	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
@@ -1294,6 +1296,8 @@ func defaultConfig() Config {
 		ListenDNS:               "127.0.0.1:53",
 		ListenDoH:               "127.0.0.1:443",
 		ListenUI:                "127.0.0.1:8080",
+		TLSCertFile:             "cert.pem",
+		TLSKeyFile:              "key.pem",
 		UpstreamURLs:            []string{"https://9.9.9.9/dns-query", "https://1.1.1.1/dns-query"},
 		UpstreamSNIHostnames:    []string{"dns.quad9.net", "cloudflare-dns.com"}, // if empty it uses the IP or host from the url which also works!
 		UpstreamSelectionMode:   upstreamSelectionModeFailover,
@@ -3071,8 +3075,8 @@ func (s *Server) generateCertIfNeeded() {
 	cfg := s.getConfig()
 
 	log.Debug("check if cert is valid or needs regen")
-	const certFile = "cert.pem"
-	const keyFile = "key.pem"
+	certFile := cfg.TLSCertFile
+	keyFile := cfg.TLSKeyFile
 
 	needsRegen := false
 
@@ -10593,6 +10597,13 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, err
 	}
 	if err := checkAndClean(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultCfg.HostsFile); err != nil {
+		return shouldSaveConfig, err
+	}
+
+	if err := checkAndClean(&resolvedCfg.TLSCertFile, &rawCfg.TLSCertFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)), defaultCfg.TLSCertFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	if err := checkAndClean(&resolvedCfg.TLSKeyFile, &rawCfg.TLSKeyFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)), defaultCfg.TLSKeyFile); err != nil {
 		return shouldSaveConfig, err
 	}
 

@@ -150,9 +150,6 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 	})
 
 	t.Run("WebUI TLS Disabled - Generates Cert Only For DoH IP", func(t *testing.T) {
-		// FIX: Clean up certs left over from previous sub-tests to force a fresh generation
-		os.Remove("cert.pem")
-		os.Remove("key.pem")
 
 		// Setup a server with WebUIUseTLS explicitly set to false
 		s := &Server{}
@@ -162,6 +159,10 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 			WebUIUseTLS: false,               // TLS is disabled for Web UI
 		}
 		s.liveConfig.Store(cfg)
+		// FIX: Clean up certs left over from previous sub-tests to force a fresh generation
+		conf := s.getConfig()
+		_ = os.Remove(conf.TLSCertFile)
+		_ = os.Remove(conf.TLSKeyFile)
 
 		// Use a silent logger for tests to reduce console noise
 		nopLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
