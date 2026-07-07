@@ -33,7 +33,7 @@
         webuiPasswordHash:     _cfgKeysEl.dataset.keyWebuiPasswordHash     || '',
         // Valid option arrays for select-type fields.
         // Comma-separated from Go (all values are plain lowercase ASCII, no commas),
-        // split here. An empty attribute produces [] → buildSelectHTML falls back to
+        // split here. An empty attribute produces [] → buildSelectElement falls back to
         // a plain text input so the field remains editable even if data is missing.
         optsUpstreamSelectionMode: (_cfgKeysEl.dataset.optsUpstreamSelectionMode || '').split(',').filter(Boolean),
         optsConsoleLogLevel:       (_cfgKeysEl.dataset.optsConsoleLogLevel       || '').split(',').filter(Boolean),
@@ -464,47 +464,46 @@
     
     const stagedChanges = {};
     
-    // Escapes a string for safe embedding inside an HTML attribute value or element text.
-    // Option values originate from Go constants (plain lowercase ASCII), but we escape
-    // defensively so this is safe regardless of what Go ever sends in future.
-    function escapeForAttr(s) {
-        return String(s)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    }
-    
-    // Builds a <select> element HTML string for enum-type config fields.
+    // buildSelectElement creates a <select> DOM element for enum-type config fields.
     // options: string array from CONFIG_KEYS.opts* (injected by Go).
     // currentValue: the value currently stored in the config row (may not be in options
     //   if the config was written by a newer Go version or hand-edited).
     // Defense-in-depth: if options is empty (e.g. template failed to render), falls back
     //   to a plain text input so the field is still editable rather than silently broken.
-    function buildSelectHTML(options, currentValue) {
+    // Uses createElement/textContent throughout — no innerHTML, no string escaping needed.
+    function buildSelectElement(options, currentValue) {
         if (!Array.isArray(options) || options.length === 0) {
-            console.warn('buildSelectHTML: empty or missing options list; falling back to plain text input. ' +
+            console.warn('buildSelectElement: empty or missing options list; falling back to plain text input. ' +
                 'This likely means the Go template did not inject the expected data-opts-* attribute.');
-                const safeVal = escapeForAttr(currentValue);
-                return `<input type="text" class="config-input w-100" value="${safeVal}">`;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'config-input w-100';
+            input.value = currentValue;
+            return input;
         }
-            
+
+        const select = document.createElement('select');
+        select.className = 'config-input w-100';
+
         // If the live value is not in the known enum (e.g. hand-edited config or written by a
         // newer Go version), prepend it as a clearly-labelled option so the user can see what
         // is stored and consciously pick a replacement. We never silently discard it.
         const isKnown = options.includes(currentValue);
-        let html = '';
         if (!isKnown && currentValue !== '') {
-            const safe = escapeForAttr(currentValue);
-            html += `<option value="${safe}" selected>${safe} \u26A0 (current\u2014not in known list)</option>\n`;
+            const opt = document.createElement('option');
+            opt.value = currentValue;           // .value = string, no HTML injection
+            opt.selected = true;
+            opt.textContent = currentValue + ' \u26A0 (current\u2014not in known list)';
+            select.appendChild(opt);
         }
-        html += options.map(v => {
-            const safe = escapeForAttr(v);
-            const sel  = v === currentValue ? ' selected' : '';
-            return `<option value="${safe}"${sel}>${safe}</option>`;
-        }).join('\n');
-        return `<select class="config-input w-100">\n${html}\n</select>`;
+        for (const v of options) {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.selected = (v === currentValue);
+            opt.textContent = v;
+            select.appendChild(opt);
+        }
+        return select;
     }
     
     function editConfig(key) {
@@ -563,40 +562,61 @@
         editRow.style.height = 'auto';// Safe CSSOM assignment
         
         // Dynamically type the input control cleanly without inline string styles
+        // All branches use createElement + .value/.textContent — no innerHTML, no string escaping.
         if (key === CONFIG_KEYS.upstreamSelectionMode) {
             // Option values come from Go's upstreamSelectionMode* constants via CONFIG_KEYS.
-            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsUpstreamSelectionMode, currentDisplay);
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsUpstreamSelectionMode, currentDisplay));
             hint.innerText = "Strategy for querying upstreams";
         } else if (key === CONFIG_KEYS.consoleLogLevel) {
             // Option values come from Go's consoleLogLevel* constants via CONFIG_KEYS.
-            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsConsoleLogLevel, currentDisplay);
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsConsoleLogLevel, currentDisplay));
             hint.innerText = "Console output verbosity";
         } else if (key === CONFIG_KEYS.blockMode) {
             // Option values come from Go's blockMode* constants via CONFIG_KEYS.
-            container.innerHTML = buildSelectHTML(CONFIG_KEYS.optsBlockMode, currentDisplay);
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsBlockMode, currentDisplay));
             hint.innerText = "Action taken when blocking queries";
         } else if (key === CONFIG_KEYS.webuiPasswordHash) {
-            container.innerHTML = `<input type="text" class="config-input monospace-code2" placeholder="Enter NEW password here...">`;
+            const pwdInput = document.createElement('input');
+            pwdInput.type = 'text';
+            pwdInput.className = 'config-input monospace-code2';
+            pwdInput.placeholder = 'Enter NEW password here...';
+            container.appendChild(pwdInput);
             hint.innerText = "Type a password, or paste a hash(prefixed with $2), empty means keep current pwd.";
         } else if (type === 'bool') {
+            const boolSelect = document.createElement('select');
+            boolSelect.className = 'config-input w-100';
             const isTrue = currentDisplay === 'true';
-            container.innerHTML = `<select class="config-input w-100">
-                                        <option value="true" ${isTrue ? 'selected' : ''}>true</option>
-                                        <option value="false" ${!isTrue ? 'selected' : ''}>false</option>
-                                       </select>`;
+            for (const val of ['true', 'false']) {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.selected = (val === 'true') ? isTrue : !isTrue;
+                opt.textContent = val;
+                boolSelect.appendChild(opt);
+            }
+            container.appendChild(boolSelect);
             hint.innerText = "Boolean (true/false)";
         } else if (type === '[]string') {
             // Swap to textarea and format the current comma-string into 2xnewlines for easier editing and visually delimit each logical line (needed due to wrapping)
-            const formattedDisplay = currentDisplay.split(',').map(s => s.trim()).join('\n\n');
-            container.innerHTML = `<textarea class="config-input config-textarea">${formattedDisplay}</textarea>`;
+            const listTA = document.createElement('textarea');
+            listTA.className = 'config-input config-textarea';
+            // .value assignment never interprets HTML — safe even if entries contain < > & etc.
+            listTA.value = currentDisplay.split(',').map(s => s.trim()).join('\n\n');
+            container.appendChild(listTA);
             // Updated, highly reassuring hint text
             hint.innerText = "List (separate items with newlines or commas. Extra spaces, multiple commas, or empty lines are auto-cleaned.)";
         } else if (type === 'int') {
-            container.innerHTML = `<input type="number" class="config-input w-100" value="${currentDisplay}">`;
+            const numInput = document.createElement('input');
+            numInput.type = 'number';
+            numInput.className = 'config-input w-100';
+            numInput.value = currentDisplay;
+            container.appendChild(numInput);
             hint.innerText = "Integer value";
         } else {
-            container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
-            container.innerHTML = `<input type="text" class="config-input w-100" value="${currentDisplay}">`;
+            const textInput = document.createElement('input');
+            textInput.type = 'text';
+            textInput.className = 'config-input w-100';
+            textInput.value = currentDisplay;
+            container.appendChild(textInput);
             hint.innerText = "BUG: FIXME: unhandled type '"+type+"', fallback to:String value";
             //hint.innerText = "String value";
             
