@@ -151,6 +151,8 @@ type Config struct {
 	UpstreamH2ReadIdleTimeoutSec int `json:"upstream_h2_read_idle_timeout_sec" desc:"Time (seconds) an HTTP/2 connection must be idle before sending a health-check PING. Must be less than upstream_idle_conn_timeout_sec."`
 	UpstreamH2PingTimeoutSec     int `json:"upstream_h2_ping_timeout_sec" desc:"Timeout (seconds) waiting for an HTTP/2 PING response before closing the zombie connection. Must be less than upstream_h2_read_idle_timeout_sec."`
 
+	ServerGracefulShutdownSec int `json:"server_graceful_shutdown_sec" desc:"Time (seconds) to wait for active HTTP/DoH connections to finish during a reload or shutdown before forcefully severing them."`
+
 	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"   desc:"Seconds to keep an idle upstream HTTP connection in the pool before closing it."`
 	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"          desc:"Global maximum idle upstream HTTP connections kept in the pool across all upstream hosts combined."`
 	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host" desc:"Maximum idle upstream HTTP connections per upstream host. Auto-clamped to not exceed upstream_max_idle_conns."`
@@ -1355,6 +1357,7 @@ func defaultConfig() Config {
 		UpstreamH2ReadIdleTimeoutSec: 5,
 		UpstreamH2PingTimeoutSec:     3,
 		UpstreamTCPKeepAliveSec:      15,
+		ServerGracefulShutdownSec:    3,
 		//UpstreamMaxIdleConns:        100,
 		UpstreamMaxIdleConnsPerHost: 10,
 		//A 100ms backoff before retrying a transient network error is standard, but on highly congested networks, a longer backoff might be necessary to let the router breathe.
@@ -8701,6 +8704,7 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 // non-blocking!
 func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListenerInstance, error) {
 	log := s.getLogger()
+
 	addr := params.Addr
 	log.Debug("Starting DoH listener", slog.String("address", addr))
 	dohHost, _, dohSplitErr := net.SplitHostPort(addr)
@@ -8758,9 +8762,10 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		defer s.shutdownWG.Done() // Signal this watcher is finished
 		<-instCtx.Done()
 		log := s.getLogger()
+		cfg := s.getConfig()
 		log.Debug("Shutting down DoH listener instance...", slog.String("addr", addr))
 		// Give it a max of 3 seconds to finish existing requests before force closing
-		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second) //TODO: const or configurable in config.json ?
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), time.Duration(cfg.ServerGracefulShutdownSec)*time.Second)
 		defer cancelDown()
 		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && !errors.Is(err, context.Canceled) {
 			log.Warn("DoH server shutdown error", SafeErr(err))
@@ -10138,6 +10143,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		rawCfg.UpstreamH2PingTimeoutSec = fallback
 		log.Warn(tagH2PingTimeout+" clamped (cannot be >= to the H2 read idle timeout)",
 			slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	tagServerShutdown := getJSONTagByOffset(unsafe.Offsetof(Config{}.ServerGracefulShutdownSec))
+	if was := resolvedCfg.ServerGracefulShutdownSec; was <= 0 {
+		// No complex relational constraints needed here, just a sane floor.
+		fallback := defaultCfg.ServerGracefulShutdownSec // e.g., 3
+		resolvedCfg.ServerGracefulShutdownSec = fallback
+		rawCfg.ServerGracefulShutdownSec = fallback
+		log.Warn(tagServerShutdown+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagCertLogTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec))
