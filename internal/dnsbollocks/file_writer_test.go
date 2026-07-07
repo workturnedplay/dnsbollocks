@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/workturnedplay/wincoe"
 	"io"
 	"log/slog"
 	"os"
@@ -31,7 +32,7 @@ func TestSafeFileWriter(t *testing.T) {
 	liveLogger.Store(logger)
 
 	// Initialize with extraSafety ON, passing the pointer to the atomic.Pointer
-	fw := newWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
 
 	// --- Test 1: Normal Write ---
 	data := []byte(`{"status": "ok"}`)
@@ -50,7 +51,7 @@ func TestSafeFileWriter(t *testing.T) {
 	}
 
 	// Verify the power loss file was cleaned up
-	powerLossFile := targetFile + powerlossFileExtension
+	powerLossFile := targetFile + wincoe.PowerlossFileExtension
 	if _, err2 := os.Stat(powerLossFile); !os.IsNotExist(err2) {
 		t.Error("Expected power loss staging file to be deleted after successful write")
 	}
@@ -122,9 +123,9 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 		&slog.HandlerOptions{Level: slog.LevelError}))
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
-	fw := newWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
 
-	stagingFile := targetFile + powerlossFileExtension
+	stagingFile := targetFile + wincoe.PowerlossFileExtension
 
 	for i := range 5 {
 		data := []byte(fmt.Sprintf(`{"iteration": %d}`, i))
@@ -153,7 +154,7 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -186,7 +187,7 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 	}
 
 	// No staging file left behind regardless of which writer won.
-	if _, err := os.Stat(targetFile + powerlossFileExtension); !os.IsNotExist(err) {
+	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file left behind after concurrent writes")
 	}
 }
@@ -197,14 +198,14 @@ func TestSafeFileWriter_ExtraSafetyOff_NoStagingFileCreated(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newWin11SafeFileWriter(false, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(false, &liveLogger)
 
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"ok":true}`), 0644); err != nil {
 		t.Fatalf("SafeWriteFile failed: %v", err)
 	}
 
 	// When ExtraSafety is OFF the staging file must never appear at all.
-	if _, err := os.Stat(targetFile + powerlossFileExtension); !os.IsNotExist(err) {
+	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file was created despite ExtraSafety being OFF")
 	}
 }
@@ -215,13 +216,13 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newWin11SafeFileWriter(false, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(false, &liveLogger)
 
 	// --- OFF → write → no staging ---
 	if err := fw.SafeWriteFile(targetFile, []byte(`{"v":1}`), 0644); err != nil {
 		t.Fatalf("write with ExtraSafety OFF failed: %v", err)
 	}
-	if _, err := os.Stat(targetFile + powerlossFileExtension); !os.IsNotExist(err) {
+	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file must not exist when ExtraSafety is OFF")
 	}
 
@@ -231,7 +232,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	if err := fw.SafeWriteFile(targetFile, data2, 0644); err != nil {
 		t.Fatalf("write with ExtraSafety ON failed: %v", err)
 	}
-	if _, err := os.Stat(targetFile + powerlossFileExtension); !os.IsNotExist(err) {
+	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file must be cleaned up after successful write with ExtraSafety ON")
 	}
 	got, _ := os.ReadFile(targetFile)
@@ -245,7 +246,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	if err := fw.SafeWriteFile(targetFile, data3, 0644); err != nil {
 		t.Fatalf("write after second toggle failed: %v", err)
 	}
-	if _, err := os.Stat(targetFile + powerlossFileExtension); !os.IsNotExist(err) {
+	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file must not exist after toggling ExtraSafety back OFF")
 	}
 }
@@ -253,7 +254,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 func TestSafeFileWriter_CheckPowerLossFile_EmptyFilename(t *testing.T) {
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	fw := newWin11SafeFileWriter(true, &liveLogger)
+	fw := wincoe.NewWin11SafeFileWriter(true, &liveLogger)
 
 	defer func() {
 		if r := recover(); r != nil {

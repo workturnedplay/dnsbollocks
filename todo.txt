@@ -4,8 +4,7 @@ todo:
 * make the filters have AND and OR between terms, somehow, but using & and | perhaps and make a note somewhere(maybe same place when filter is empty) that they're possible.
 * ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!). Since I'm hosting it on localhost IP and talking directly to in from win11, why does it take so long, does it bcrypt hash the password and compare it on every request and this is the cost that's causing such delays?
 
-* do the 1_2(ReplaceFileW) from below as an addition to what already exists. See if to manually make a .bak if doing it with ReplaceFileW but it fails.
-* do these for v0.15.2 (dontdo: 1_1 done: 2_1, 2_2, 3_1, 3_2, 4_1, todo: 1_2(ReplaceFileW), 4_2): https://gemini.google.com/app/277f8cbefd801877
+* do these for v0.15.2 (dontdo: 1_1 done: 2_1, 2_2, 3_1, 3_2, 4_1, 1_2(ReplaceFileW) todo: 4_2): https://gemini.google.com/app/277f8cbefd801877
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
@@ -18,6 +17,7 @@ no:
 
 
 done:
+//* do the 1_2(ReplaceFileW) from below as an addition to what already exists. See if to manually make a .bak if doing it with ReplaceFileW but it fails.
 //* continue the 4_1 from here: https://claude.ai/chat/47de6072-51ed-4c00-9862-40980783e1c3
 //* Exposing TLSCertFile and TLSKeyFile in the config allows users to mount valid internal CA certificates. You would run these through your existing checkAndClean file logic in sanitizeAndValidateConfig.
 //* see what other values should be in config.json or should be clamped/changed depending on other values, i'm looking at you buildSet with those t2.ReadIdleTimeout and t2.PingTimeout and KeepAlive in net.Dialer, at least.

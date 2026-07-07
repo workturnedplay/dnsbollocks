@@ -196,7 +196,7 @@ type Server struct {
 	recentBlocks *RecentBlocksTracker
 
 	// fileWriteMu serialises all file-write calls across all stores.
-	fileWriter FileWriter
+	fileWriter wincoe.FileWriter
 	//fileWriteMu sync.Mutex
 
 	//dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
@@ -330,7 +330,7 @@ func NewServer(logger *slog.Logger) *Server {
 	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 	s.applyConfig(defaultConfig())
-	s.fileWriter = newWin11SafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
+	s.fileWriter = wincoe.NewWin11SafeFileWriter(s.getConfig().ExtraSafety /*default value for it, for now*/, &s.liveLogger)
 	return s // yes it escapes to heap
 }
 
@@ -523,7 +523,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// log.Warn("⚠️ Upstream still failed; marking as failed", // XXX: this is unnecessary spam
 			// 	slog.String("url", upstreams[res.index].URL.String()),
 			// 	slog.String("sni", upstreams[res.index].SNI),
-			// 	SafeErr(res.err),
+			// 	wincoe.SafeErr(res.err),
 			// )
 			// Track the failure
 			failedUpstreams = append(failedUpstreams, upstreams[res.index].URL.String())
@@ -589,7 +589,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 		log.Warn("⚠️ Fallback upstream failed; moving to next (if available)",
 			slog.String("url", target.URL.String()),
 			slog.String("sni", target.SNI),
-			SafeErr(err),
+			wincoe.SafeErr(err),
 		)
 		failedUpstreams = append(failedUpstreams, target.URL.String())
 	} //for
@@ -1435,7 +1435,7 @@ func NewColoredConsoleHandler(level slog.Level, logger *slog.Logger) slog.Handle
 	// Activate Windows VT Processing globally
 	err := wincoe.EnableVirtualTerminalProcessing()
 	if err != nil {
-		logger.Warn("EnableVirtualTerminalProcessing failed", SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
+		logger.Warn("EnableVirtualTerminalProcessing failed", wincoe.SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
 	}
 
 	var c uint64 // Initialize the shared counter (escapes to heap, doh)
@@ -2068,7 +2068,7 @@ const configFileName = "config.json"
 
 func (s *Server) logFatal(msg string, err error) {
 	log := s.getLogger()
-	log.Error(msg, SafeErr(err))
+	log.Error(msg, wincoe.SafeErr(err))
 	s.shutdown(1)
 	panic2("BUG: unreachable")
 }
@@ -2083,7 +2083,7 @@ func (s *Server) logFatal2(msg string) {
 func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 	log := ui.getLogger()
 	// // 1. Log the severe error message
-	args = append(args, SafeErr(err)) //works for nil err too
+	args = append(args, wincoe.SafeErr(err)) //works for nil err too
 	log.Error("FATAL WEB UI ERROR: "+msg, args...)
 
 	// 2. Trigger the application shutdown if the callback is wired
@@ -2345,7 +2345,7 @@ func (s *Server) Run() error {
 	case err := <-s.errChan:
 		log5 := s.getLogger()
 		// Case B: A background goroutine (TCP/DoH) died
-		log5.Error("CRITICAL: background service failure", SafeErr(err))
+		log5.Error("CRITICAL: background service failure", wincoe.SafeErr(err))
 		// You can choose to exit(1) here because a vital organ failed
 		//cancel()    // Cancel context for graceful close
 		s.shutdown(3) // some error happened
@@ -2416,7 +2416,7 @@ func OldMain() {
 	if *hashCmd {
 		hash, err := promptAndHashPassword(localLogger, 12) // Hardcode safe minimum for CLI
 		if err != nil {
-			localLogger.Error("Failed to set password: ", SafeErr(err))
+			localLogger.Error("Failed to set password: ", wincoe.SafeErr(err))
 			finalShutdownSequence(localLogger, 1)
 		}
 		//fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for \"webui_password_hash\":\n%s\n", configFileName, hash)
@@ -2430,7 +2430,7 @@ func OldMain() {
 	srv := NewServer(localLogger)
 
 	if err := srv.Run(); err != nil {
-		localLogger.Error("Server exited with error", SafeErr(err))
+		localLogger.Error("Server exited with error", wincoe.SafeErr(err))
 		srv.shutdown(1)
 		panic2("BUG: unreachable")
 	}
@@ -2533,7 +2533,7 @@ func (s *Server) loadMainConfig() error {
 		// Missing fields will retain the values from DefaultConfig().
 		if err = dec.Decode(&rawCfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
-			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), SafeErr(err))
+			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), wincoe.SafeErr(err))
 			return fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
 
@@ -2544,7 +2544,7 @@ func (s *Server) loadMainConfig() error {
 		var err3 error
 		resolvedCfg, err3 = resolveConfigTags(rawCfg)
 		if err3 != nil {
-			log.Error("Configuration substitution failed", slog.String("file", cfgFname), SafeErr(err3))
+			log.Error("Configuration substitution failed", slog.String("file", cfgFname), wincoe.SafeErr(err3))
 			return fmt.Errorf("config substitution failed: %w", err3)
 		}
 		// 3. Second, check for MISSING fields (No manual list!)
@@ -2737,7 +2737,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
 		if err != nil {
 			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
-			log.Error("cannot open log file", slog.String("file", path), SafeErr(err))
+			log.Error("cannot open log file", slog.String("file", path), wincoe.SafeErr(err))
 			s.shutdown(1) // Keep your existing fatal shutdown here if the initial boot fails
 			panic2("BUG: unreachable")
 		}
@@ -2796,7 +2796,7 @@ func getNextLogBackupName(basePath string) string {
 // 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
 // 		old := path + ".old"
 // 		if err := os.Rename(path, old); err != nil {
-// 			log.Error("Log rotation failed", slog.String("path", path), SafeErr(err))
+// 			log.Error("Log rotation failed", slog.String("path", path), wincoe.SafeErr(err))
 // 		} else {
 // 			log.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
 // 		}
@@ -3119,7 +3119,7 @@ func (s *Server) generateCertIfNeeded() {
 	certBytes, err := os.ReadFile(certFile)
 	if err != nil {
 		// File missing or unreadable
-		log.Warn("Cert file doesn't exist", slog.String("file", certFile), SafeErr(err)) // no \n
+		log.Warn("Cert file doesn't exist", slog.String("file", certFile), wincoe.SafeErr(err)) // no \n
 		needsRegen = true
 	} else {
 		// Parse the PEM
@@ -3130,7 +3130,7 @@ func (s *Server) generateCertIfNeeded() {
 		} else {
 			cert, err2 := x509.ParseCertificate(block.Bytes)
 			if err2 != nil {
-				log.Warn("Cert file failed parsing", slog.String("file", certFile), SafeErr(err2)) // no \n
+				log.Warn("Cert file failed parsing", slog.String("file", certFile), wincoe.SafeErr(err2)) // no \n
 				needsRegen = true
 			} else {
 				// Verify that ALL required hosts are present in the existing certificate's SAN list
@@ -3273,7 +3273,7 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 	} else {
 		defer func() {
 			if closeErr := certOut.Close(); closeErr != nil {
-				log.Error("failed to close cert public key file (incompletely written to disk then?)", SafeErr(closeErr), slog.String("filename", certFileNameNoPath))
+				log.Error("failed to close cert public key file (incompletely written to disk then?)", wincoe.SafeErr(closeErr), slog.String("filename", certFileNameNoPath))
 			}
 		}()
 	}
@@ -3290,7 +3290,7 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 	} else {
 		defer func() {
 			if closeErr := keyOut.Close(); closeErr != nil {
-				log.Error("failed to close cert private key file (incompletely written to disk then?)", SafeErr(closeErr), slog.String("filename", keyFileNameNoPath))
+				log.Error("failed to close cert private key file (incompletely written to disk then?)", wincoe.SafeErr(closeErr), slog.String("filename", keyFileNameNoPath))
 			}
 		}()
 	}
@@ -3334,7 +3334,7 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 			slog.String("proto", protocol),
 			//slog.String("clientAddr", clientAddr.String()),
 			SafeAddr("clientAddr", clientAddr),
-			SafeErr(err))
+			wincoe.SafeErr(err))
 		//services = []string{"<err:no_pid>"}
 		//return ctx
 		serviceInfo = "err:no_pid"
@@ -3363,7 +3363,7 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 		slog.Int64("pid", int64(pid)),
 		slog.String("exe", exe),
 		slog.String("services", serviceInfo),
-		SafeErr(err),
+		wincoe.SafeErr(err),
 	)
 
 	// Create a specific context for THIS packet
@@ -3377,25 +3377,6 @@ func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, cli
 		startTime:  time.Now(), // Capture start time
 	})
 	//}
-}
-
-// SafeErr converts an error to a primitive string attribute safely.
-// If the error is nil, it gracefully logs it as "<nil>" without panicking.
-func SafeErr(err error) slog.Attr {
-	// if err == nil {
-	//     return slog.String("err", "<nil>")
-	// }
-	// return SafeErr(err)
-	return SafeErr2("err", err)
-}
-
-// SafeErr2 converts an error to a primitive string attribute safely.
-// If the error is nil, it gracefully logs it as "<nil>" without panicking.
-func SafeErr2(msg string, err error) slog.Attr {
-	if err == nil {
-		return slog.String(msg, "<nil>")
-	}
-	return slog.String(msg, err.Error())
 }
 
 // SafeAddr converts any net.Addr (UDP, TCP, IP, Unix, etc.) to a safe primitive string.
@@ -3421,7 +3402,7 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
 		// Edge: Invalid packet (common in floods)
-		log.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
+		log.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", wincoe.SafeErr(err))
 		return
 	}
 	// 1. EXTRACT MAX UDP SIZE
@@ -3449,12 +3430,12 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 
 	pack, err := resp.Pack()
 	if err != nil {
-		log.Warn("failed to pack DNS UDP packet response thus not sent", SafeErr(err))
+		log.Warn("failed to pack DNS UDP packet response thus not sent", wincoe.SafeErr(err))
 		return
 	}
 	wroteN, err := ln.WriteToUDP(pack, clientAddr)
 	if err != nil {
-		log.Warn("failed to write to UDP the DNS packet response", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		log.Warn("failed to write to UDP the DNS packet response", wincoe.SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 		return
 	}
 }
@@ -3472,7 +3453,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
 	if err1 := conn.SetReadDeadline(time.Now().Add(timeoutDuration)); err1 != nil {
-		log.Warn("failed to set read deadline for length header, thus dropped/ignored", SafeErr(err1), slog.Duration("deadline", timeoutDuration))
+		log.Warn("failed to set read deadline for length header, thus dropped/ignored", wincoe.SafeErr(err1), slog.Duration("deadline", timeoutDuration))
 		return
 	}
 
@@ -3489,7 +3470,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 			)
 		} else {
 			log.Warn("couldn't read 2 bytes from TCP DNS connection, thus dropped/ignored",
-				SafeErr(err),
+				wincoe.SafeErr(err),
 				slog.Int("read_bytes", n),
 				slog.Int("wanted_to_read_bytes", TWO),
 				slog.Duration("timeout", timeoutDuration),
@@ -3510,12 +3491,12 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// to finish sending the actual DNS message.
 	//_ = conn.SetReadDeadline(time.Now().Add(timeoutDuration))
 	if err1 := conn.SetReadDeadline(time.Now().Add(timeoutDuration)); err1 != nil {
-		log.Warn("failed to set read deadline for body, thus dropped/ignored", SafeErr(err1), slog.Duration("deadline", timeoutDuration))
+		log.Warn("failed to set read deadline for body, thus dropped/ignored", wincoe.SafeErr(err1), slog.Duration("deadline", timeoutDuration))
 		return
 	}
 	wire := make([]byte, length)
 	if n, err := io.ReadFull(conn, wire); err != nil {
-		log.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
+		log.Warn("couldn't read some bytes from TCP DNS connection, thus dropped/ignored", wincoe.SafeErr(err), slog.Int("read_bytes", n), slog.Int("wanted_to_read_bytes", length),
 			slog.Duration("timeout", timeoutDuration))
 		return
 	}
@@ -3523,7 +3504,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	// --- 3. PROCESS ---
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
-		log.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", SafeErr(err))
+		log.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", wincoe.SafeErr(err))
 		return
 	}
 
@@ -3532,26 +3513,26 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	if resp != nil {
 		pack, err1 := resp.Pack() // Ignore err
 		if err1 != nil {
-			log.Warn("failed to pack DNS TCP packet response thus not sent", SafeErr(err1))
+			log.Warn("failed to pack DNS TCP packet response thus not sent", wincoe.SafeErr(err1))
 			return
 		}
 		// Prepare the output (length + payload)
 		out := new(bytes.Buffer)
 		err2 := binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
 		if err2 != nil {
-			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", SafeErr(err2))
+			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", wincoe.SafeErr(err2))
 			return
 		}
 		out.Write(pack)
 		// Set a WRITE deadline. This prevents a "slow receiver" from
 		// hanging your goroutine forever while you try to push data.
 		if err3 := conn.SetWriteDeadline(time.Now().Add(timeoutDuration)); err3 != nil {
-			log.Warn("failed to set write TCP deadline, thus dropped/ignored", SafeErr(err3), slog.Duration("deadline", timeoutDuration))
+			log.Warn("failed to set write TCP deadline, thus dropped/ignored", wincoe.SafeErr(err3), slog.Duration("deadline", timeoutDuration))
 			return
 		}
 		wroteN, err4 := conn.Write(out.Bytes())
 		if err4 != nil {
-			log.Warn("failed to write to TCP the DNS packet response body, thus dropped/ignored", SafeErr(err4), slog.Int("wrote_bytes", wroteN),
+			log.Warn("failed to write to TCP the DNS packet response body, thus dropped/ignored", wincoe.SafeErr(err4), slog.Int("wrote_bytes", wroteN),
 				slog.Int("shoulda_written", len(pack)), slog.Duration("timeout", timeoutDuration))
 			return
 		}
@@ -3663,7 +3644,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	pack, err := resp.Pack()
 	if err != nil {
-		log.Warn("doh_pack_response_to_client_failed", SafeErr(err), slog.String("client", r.RemoteAddr))
+		log.Warn("doh_pack_response_to_client_failed", wincoe.SafeErr(err), slog.String("client", r.RemoteAddr))
 		// Return a 500 error to the DoH client
 		http.Error(w, "Failed to pack DNS response", http.StatusInternalServerError)
 		return
@@ -3674,7 +3655,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	wroteN, err := w.Write(pack)
 	if err != nil {
-		log.Warn("failed to write the DoH reply to client (the DNS packet response body)", SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
+		log.Warn("failed to write the DoH reply to client (the DNS packet response body)", wincoe.SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 		return
 	}
 }
@@ -4128,7 +4109,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			(errors.As(err4ClientDo, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
 
 		if isRetryable {
-			log.Error("doh_post_transient_error for this query", SafeErr(err4ClientDo),
+			log.Error("doh_post_transient_error for this query", wincoe.SafeErr(err4ClientDo),
 				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries),
 				//slog.Any("query", req),
 				SafeRequestAttr("query", req),
@@ -4165,7 +4146,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			log.Error("TLS verification failed when tried to query upstream DNS server",
 				slog.String("url", u.URL.String()),
 				slog.String("sni_used", u.SNI),
-				SafeErr(err4ClientDo))
+				wincoe.SafeErr(err4ClientDo))
 
 			// Run a manual probe to see what the server is actually sending
 			u.logCertDetails() //targetURL.Hostname(), targetURL.Port(), sni)
@@ -4173,7 +4154,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			log.Error("Failed to query upstream DNS server",
 				slog.String("url", u.URL.String()),
 				slog.String("sni_used", u.SNI),
-				SafeErr(err4ClientDo))
+				wincoe.SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
 		return nil, fmt.Errorf("failed to send the HTTP request to the upstream DoH server %q, err: %w", u.URL.String(), err4ClientDo /*non-nil here*/)
@@ -4197,7 +4178,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
 	body, err4ReadAll := io.ReadAll(resp.Body)
 	if err4ReadAll != nil {
-		log.Error("doh_readbody_failed", SafeErr(err4ReadAll))
+		log.Error("doh_readbody_failed", wincoe.SafeErr(err4ReadAll))
 		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll /*non-nil here*/)
 	}
 
@@ -4217,7 +4198,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	upMsg := new(dns.Msg)
 	if err4Unpack := upMsg.Unpack(body); err4Unpack != nil {
 		n := len(body)
-		log.Error("doh_unpack_failed", SafeErr(err4Unpack),
+		log.Error("doh_unpack_failed", wincoe.SafeErr(err4Unpack),
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
@@ -4245,7 +4226,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	})
 
 	if err != nil {
-		log.Error("Diagnostic probe failed", slog.String("addr", addr), SafeErr(err))
+		log.Error("Diagnostic probe failed", slog.String("addr", addr), wincoe.SafeErr(err))
 		return
 	} else {
 		defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
@@ -4774,7 +4755,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		if info.err != nil {
 			attrs = append(attrs,
 				//slog.String("err", info.err.Error()),
-				SafeErr(info.err),
+				wincoe.SafeErr(info.err),
 			)
 		}
 		attrs = append(attrs,
@@ -4925,7 +4906,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 
 			// 1. Attempt to update the rule list (Source of Truth) first
 			if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
-				log.Warn("Failed to edit blacklist entry", SafeErr(err),
+				log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(err),
 					slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -4981,7 +4962,7 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 	cidrStr := strings.TrimSpace(r.URL.Query().Get("cidr"))
 	if cidrStr == "" {
 		if _, err := w.Write([]byte(`{"matches":[]}`)); err != nil {
-			log.Debug("client disconnected before write completed", SafeErr(err))
+			log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
 		}
 		return
 	}
@@ -5006,7 +4987,7 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 
 	// Return array of matching filters to frontend
 	if err := json.NewEncoder(w).Encode(map[string][]string{"matches": matches}); err != nil {
-		log.Debug("failed to encode/write json response", SafeErr(err))
+		log.Debug("failed to encode/write json response", wincoe.SafeErr(err))
 	}
 }
 
@@ -5049,7 +5030,7 @@ func (ui *AdminUI) robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte("User-agent: *\nDisallow: /\n")); err != nil {
 		log := ui.getLogger()
-		log.Debug("client disconnected before write completed", SafeErr(err))
+		log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
 	}
 }
 
@@ -6186,7 +6167,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := validateDNSType(typ); err != nil {
-				log.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+				log.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6226,12 +6207,12 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := validateDNSType(typ); err != nil {
-			log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), SafeErr(err))
+			log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := validateRulePattern(patternNormalized); err != nil {
-			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), SafeErr(err))
+			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), wincoe.SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -6247,7 +6228,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
 			if err != nil {
-				log.Warn("Failed to edit rule", SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
+				log.Warn("Failed to edit rule", wincoe.SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
@@ -6264,7 +6245,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 			newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
 			if err != nil {
-				log.Warn("Failed to add rule", SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternNormalized))
+				log.Warn("Failed to add rule", wincoe.SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternNormalized))
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
@@ -6477,7 +6458,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if err := validateRulePattern(patternLowercased); err != nil {
-				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
+				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
 				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6513,14 +6494,14 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 
 		if err := validateRulePattern(patternLowercased); err != nil {
-			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), SafeErr(err))
+			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
 			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		// old_pattern (edit path) needs the same check.
 		if isEdit && oldPatternLowercased != "" {
 			if err := validateRulePattern(oldPatternLowercased); err != nil {
-				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), SafeErr(err))
+				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(err))
 				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -6557,7 +6538,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.Warn("Failed to add/edit local host:", SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
+			log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
 			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
 			return
 		}
@@ -6600,7 +6581,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	if err := ui.uiTemplates.Execute(&buf, data); err != nil {
 		log.Error("template_render_failed",
 			slog.String("page", pageName),
-			SafeErr(err))
+			wincoe.SafeErr(err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -6613,7 +6594,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 		// closing the connection or refreshing the page mid-download.
 		log.Debug("client_disconnected_during_ui_write",
 			slog.String("page", pageName),
-			SafeErr(err))
+			wincoe.SafeErr(err))
 	}
 }
 
@@ -6762,7 +6743,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 	} else {
 		defer func() {
 			if closeErr := file.Close(); closeErr != nil {
-				log.Error("failed to close log file", SafeErr(closeErr), slog.String("filename", filePath))
+				log.Error("failed to close log file", wincoe.SafeErr(closeErr), slog.String("filename", filePath))
 			}
 		}()
 	}
@@ -6816,7 +6797,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 			if parseErr := scanner.Err(); parseErr != nil {
 				// Fallback: If scanning the first chunk fails, you could log it
 				// or reset, though scanner will stop execution gracefully.\
-				log.Warn("failed to read the first line after seeking in the log", slog.String("log_file", filePath), SafeErr(parseErr))
+				log.Warn("failed to read the first line after seeking in the log", slog.String("log_file", filePath), wincoe.SafeErr(parseErr))
 			}
 		}
 	}
@@ -6990,7 +6971,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		defer func() {
 			log2 := s.getLogger()
 			if err := term.Restore(fd, oldState); err != nil {
-				log2.Warn("failed to restore terminal state", SafeErr(err))
+				log2.Warn("failed to restore terminal state", wincoe.SafeErr(err))
 			}
 		}()
 	}
@@ -7033,7 +7014,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 			fmt.Print("\n")
 			log2.Info("Ctrl+X detected → clean exit")
 			if err2 := term.Restore(fd, oldState); err2 != nil {
-				log2.Warn("failed to restore terminal state", SafeErr(err2))
+				log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 			}
 			cleanExitFn()
 		}
@@ -7053,7 +7034,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 			fmt.Print("\n")
 			log2.Info("Ctrl+C detected → breaking gracefully")
 			if err2 := term.Restore(fd, oldState); err2 != nil {
-				log2.Warn("failed to restore terminal state", SafeErr(err2))
+				log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 			}
 			cleanExitFn()
 		}
@@ -7065,7 +7046,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 				fmt.Print("\n")
 				log2.Info("Alt+X detected → clean exit")
 				if err2 := term.Restore(fd, oldState); err2 != nil {
-					log2.Warn("failed to restore terminal state", SafeErr(err2))
+					log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 				}
 				cleanExitFn()
 			case 'r', 'R':
@@ -7080,7 +7061,7 @@ func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
 		_, err = term.MakeRaw(fd)
 		if err != nil {
 			fmt.Print("\n")
-			log2.Error("Failed to make the terminal raw", SafeErr(err))
+			log2.Error("Failed to make the terminal raw", wincoe.SafeErr(err))
 			return
 		}
 	}
@@ -7225,7 +7206,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 			clientIP = r.RemoteAddr
 			log.Warn("WebUI auth: could not split RemoteAddr into host:port",
 				slog.String("remoteAddr", r.RemoteAddr),
-				SafeErr(splitErr))
+				wincoe.SafeErr(splitErr))
 		}
 
 		// ── Rate-limit gate ──────────────────────────────────────────────────
@@ -7293,7 +7274,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 				slog.Int("attempts_remaining_before_lockout", remaining),
 				slog.Uint64("pid", uint64(pid)),
 				slog.String("exe", exe),
-				SafeErr2("pid_exe_lookup_err", pidExeLookupErr),
+				wincoe.SafeErr2("pid_exe_lookup_err", pidExeLookupErr),
 			}
 			if lockedOut {
 				retryAfterSecs := int(time.Until(newLockedUntil).Seconds()) + 1
@@ -7537,514 +7518,6 @@ func (s *goCacheStore) Flush()                       { s.c.Flush() }
 func (s *goCacheStore) Items() map[string]cache.Item { return s.c.Items() }
 func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
 
-// FileWriter is the persistence contract.
-// Extracted from Server so saves can be intercepted in tests without
-// touching the filesystem, and so fileWriteMu is an implementation detail
-// rather than a Server concern.
-type FileWriter interface {
-	SafeWriteFile(filename string, data []byte, perm os.FileMode) error
-	CheckPowerLossFile(filename string)
-	// SetLogger(logger *slog.Logger)
-	SetExtraSafety(enabled bool)
-}
-
-// win11SafeFileWriter is the production FileWriter.
-// It serialises all writes through its own mutex (replacing Server.fileWriteMu)
-// and conditionally uses a staging file when cfg.ExtraSafety is true.
-// cfg is a pointer to Server.config so ExtraSafety is always read at call time.
-type win11SafeFileWriter struct {
-	mu          sync.Mutex
-	extraSafety bool
-	//logger      *slog.Logger
-	liveLogger *atomic.Pointer[slog.Logger]
-}
-
-func newWin11SafeFileWriter(extraSafety bool, liveLogger *atomic.Pointer[slog.Logger]) FileWriter {
-	return &win11SafeFileWriter{
-		extraSafety: extraSafety,
-		liveLogger:  liveLogger,
-	}
-}
-
-func (fw *win11SafeFileWriter) getLogger() *slog.Logger {
-	if l := fw.liveLogger.Load(); l != nil {
-		return l
-	}
-	log := slog.Default()
-	log.Error("BUG: safeFileWriter.liveLogger wasn't inited, using default.")
-	return log
-}
-
-func (fw *win11SafeFileWriter) SetExtraSafety(enabled bool) {
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
-	fw.extraSafety = enabled
-}
-
-// CheckPowerLossFile implements FileWriter.
-// Panics if a non-empty staging file exists for filename, signalling a
-// mid-write crash on a previous run.
-// old:
-// checkPowerLossFile inspects the file system for a lingering commit file.
-// If found, it halts execution to prevent the application from overwriting
-// or loading potentially corrupted state.
-func (fw *win11SafeFileWriter) CheckPowerLossFile(filename string) {
-	if filename == "" {
-		return
-	}
-	log := fw.getLogger()
-
-	tmpName := filename + powerlossFileExtension
-	fi, err := os.Stat(tmpName)
-	if err != nil {
-		// File doesn't exist (or is completely inaccessible), safe to proceed
-		return
-	}
-	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
-
-	if fi.Size() == 0 {
-		log.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
-			"but the temporary file could not be deleted (likely due to directory permissions).",
-			slog.String("tempfilename", tmpName))
-		return
-	}
-	logmsg := fmt.Sprintf(
-		"\n========================================================================\n"+
-			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
-			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
-			"This indicates the server aborted mid-write while updating %q.\n"+
-			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
-			"ACTION REQUIRED:\n"+
-			"1. Manually inspect both files.\n"+
-			"2. The %s file contains your last valid saved data.\n"+
-			"3. Restore the data to the main file, then DELETE the %s file.\n"+
-			"========================================================================\n",
-		tmpName, fi.Size(), filename,
-		powerlossFileExtension, powerlossFileExtension,
-	)
-	log.Error(logmsg)
-	panic(logmsg) //FIXME: ? the errors/args are embedded in the msg
-}
-
-// powerlossFileExtension any saved file with this extension means power-loss (or panic in code?) occurred in a very tiny window and thus this is your potentially safe config and should be manually investigated for restoration purposes esp. if the main file is 0 bytes.
-const powerlossFileExtension string = ".powergotlost"
-
-// WriteFile implements FileWriter.
-// All writes are serialised through fw.mu (replacing the old Server.fileWriteMu).
-// When cfg.ExtraSafety is true, data is first written to a staging file
-// (filename + ".powergotlost") so a power-loss mid-write is detectable on
-// the next boot via CheckPowerLossFile.
-// old:
-// safeWriteFile attempts a crash-safe file update without using os.Rename,
-// preserving Windows ACLs and falling back gracefully if directory permissions
-// block the creation of temporary files.
-//
-// By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
-func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
-	log := fw.getLogger()
-	const tryTimesForFileOp = 6              //how many times
-	const backoffMsTimeForFileOpPerTry = 100 // ms
-
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
-
-	if fw.extraSafety {
-		tmpName := filename + powerlossFileExtension
-
-		// 1. Declare the granular error variables outside the closure
-		var createErr, writeErr, syncErr, closeErr error
-
-		// step1. Try to write to a temp file first to ensure disk space and data integrity.
-		// 2. Wrap the entire atomic file operation in the retry loop
-		stagingErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-			// Reset errors on each try so they accurately reflect the *final* attempt
-			createErr, writeErr, syncErr, closeErr = nil, nil, nil, nil
-
-			var tmpFile *os.File
-			tmpFile, createErr = os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-			if createErr != nil {
-				return fmt.Errorf("create failed: %w", createErr)
-			}
-
-			_, writeErr = tmpFile.Write(data)
-			syncErr = tmpFile.Sync()
-			closeErr = tmpFile.Close()
-
-			// If any of these fail, we return an error to trigger the next retry attempt
-			if writeErr != nil || syncErr != nil || closeErr != nil {
-				return fmt.Errorf("write/sync/close failed (write=%w sync=%w close=%w)", writeErr, syncErr, closeErr)
-			}
-			return nil
-		})
-
-		if stagingErr == nil {
-			// Temp file is safely on disk. Overwrite the target file directly
-			// so we don't alter its existing Windows permissions/ACLs.
-			//XXX: which means we fallthru here
-			// --- SUCCESS BRANCH ---
-			log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
-			// and after the below fallthru (from step2) then Clean up the temp file
-
-			// Queue cleanup. If we crash/lose power after this point,
-			// this defer never runs, leaving the safe copy intact.
-			defer func() {
-				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
-				if ondeleteErr == nil {
-					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-					// Successful deletion, nothing more to do
-					return
-				}
-				//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-				log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback",
-					SafeErr(ondeleteErr))
-
-				// Fallback: If we can't delete it, truncate it to 0 bytes.
-				// Since we already have write handle permissions to this file, this is highly likely to succeed.
-				// truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
-				if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-					return truncateStagingFileToZero(tmpName, perm)
-				}); truncErr == nil {
-					log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
-						slog.String("tempfilename", tmpName))
-				} else {
-					// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-
-					// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
-					// The file is stuck on disk with data, making a future boot panic inevitable.
-					// Crash immediately while the administrator is interacting with the system.
-					logmsg := fmt.Sprintf(
-						"\n========================================================================\n"+
-							"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
-							"The temporary staging file %q cannot be deleted or truncated.\n\n"+
-							"Delete error: %v\n"+
-							"Truncation error: %v\n\n"+
-							"Because the file contains non-zero bytes, the next server boot will panic.\n"+
-							"Halting execution immediately to prevent corrupted filesystem operation.\n"+
-							"========================================================================\n",
-						tmpName, ondeleteErr, truncErr,
-					)
-					log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
-					panic(logmsg)
-				}
-			}()
-			//continue with staging .powerloss file already having been created+sync'd successfully. and the defer to remove it being in place.
-		} else {
-			// --- FAILURE BRANCH ---
-
-			// We check the captured errors from the final retry attempt to determine exactly what to log
-			if createErr != nil {
-				log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
-					SafeErr(createErr),
-					slog.String("filename", filename),
-					slog.String("wanted_tempfilename", tmpName))
-			} else {
-				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
-				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
-				// to neutralize any partial garbage data that would trip up the next boot.
-				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
-				log.Warn("ExtraSafety: Failed to fully write or/and sync or/and close staging file",
-					slog.String("tempfilename", tmpName),
-					SafeErr2("writeErr", writeErr),
-					SafeErr2("syncErr", syncErr),
-					SafeErr2("closeErr", closeErr),
-					SafeErr2("ondelete_err", ondeleteErr))
-
-				if ondeleteErr != nil {
-					//failed to delete
-					if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-						return truncateStagingFileToZero(tmpName, perm)
-					}); truncErr == nil {
-						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
-							slog.String("tempfilename", tmpName),
-							SafeErr2("ondeleteErr", ondeleteErr),
-						)
-						//continue
-					} else {
-						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
-						// Non-zero junk data is permanently locked on disk. Panic immediately.
-						logmsg := fmt.Sprintf(
-							"\n========================================================================\n"+
-								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
-								"The temporary staging file %q failed to write, and both deletion and\n"+
-								"truncation attempts failed.\n\n"+
-								"Delete error: %v\n"+
-								"Truncation error: %v\n\n"+
-								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
-								"execution is halted immediately.\n"+
-								"========================================================================\n",
-							tmpName, ondeleteErr, truncErr,
-						)
-						log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
-						panic(logmsg)
-					}
-				} else {
-					//delete succeeded
-					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-					//continue
-				}
-			}
-		}
-	} //end 'if' extraSafety
-
-	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
-	// do a direct write but enforce a hardware sync to minimize the corruption window.
-	// step2. Overwrite the target file directly (Retains Windows ACLs)
-	if err := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-		return writeSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	}); err == nil {
-		return nil
-	} else {
-		return fmt.Errorf("failed to open/write/sync/close the file %q, err: %w", filename, err /*non-nil here*/)
-	}
-}
-
-// genericSafeFileWriter is the production FileWriter.
-// It serialises all writes through its own mutex (replacing Server.fileWriteMu)
-// and conditionally uses a staging file when cfg.ExtraSafety is true.
-// cfg is a pointer to Server.config so ExtraSafety is always read at call time.
-type genericSafeFileWriter struct {
-	mu          sync.Mutex
-	extraSafety bool
-	//logger      *slog.Logger
-	liveLogger *atomic.Pointer[slog.Logger]
-}
-
-func newGenericSafeFileWriter(extraSafety bool, liveLogger *atomic.Pointer[slog.Logger]) FileWriter {
-	return &genericSafeFileWriter{
-		extraSafety: extraSafety,
-		liveLogger:  liveLogger,
-	}
-}
-
-func (fw *genericSafeFileWriter) getLogger() *slog.Logger {
-	if l := fw.liveLogger.Load(); l != nil {
-		return l
-	}
-	log := slog.Default()
-	log.Error("BUG: safeFileWriter.liveLogger wasn't inited, using default.")
-	return log
-}
-
-func (fw *genericSafeFileWriter) SetExtraSafety(enabled bool) {
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
-	fw.extraSafety = enabled
-}
-
-// CheckPowerLossFile implements FileWriter.
-// Panics if a non-empty staging file exists for filename, signalling a
-// mid-write crash on a previous run.
-// old:
-// checkPowerLossFile inspects the file system for a lingering commit file.
-// If found, it halts execution to prevent the application from overwriting
-// or loading potentially corrupted state.
-func (fw *genericSafeFileWriter) CheckPowerLossFile(filename string) {
-	if filename == "" {
-		return
-	}
-	log := fw.getLogger()
-
-	tmpName := filename + powerlossFileExtension
-	fi, err := os.Stat(tmpName)
-	if err != nil {
-		// File doesn't exist (or is completely inaccessible), safe to proceed
-		return
-	}
-	// -> THE FIX: If the file is 0 bytes, cleanup failed on a previous successful run.
-
-	if fi.Size() == 0 {
-		log.Warn("ExtraSafety: Found an empty power-loss staging file. Previous write succeeded, "+
-			"but the temporary file could not be deleted (likely due to directory permissions).",
-			slog.String("tempfilename", tmpName))
-		return
-	}
-	logmsg := fmt.Sprintf(
-		"\n========================================================================\n"+
-			"CRITICAL SAFETY PANIC: Power loss or crash detected!\n"+
-			"The safety file %q exists and contains uncommitted data (%d bytes).\n\n"+
-			"This indicates the server aborted mid-write while updating %q.\n"+
-			"The main file may be corrupted, truncated, or empty (0 bytes).\n\n"+
-			"ACTION REQUIRED:\n"+
-			"1. Manually inspect both files.\n"+
-			"2. The %s file contains your last valid saved data.\n"+
-			"3. Restore the data to the main file, then DELETE the %s file.\n"+
-			"========================================================================\n",
-		tmpName, fi.Size(), filename,
-		powerlossFileExtension, powerlossFileExtension,
-	)
-	log.Error(logmsg)
-	panic(logmsg) //FIXME: ? the errors/args are embedded in the msg
-}
-
-// WriteFile implements FileWriter.
-// All writes are serialised through fw.mu (replacing the old Server.fileWriteMu).
-// When cfg.ExtraSafety is true, data is first written to a staging file
-// (filename + ".powergotlost") so a power-loss mid-write is detectable on
-// the next boot via CheckPowerLossFile.
-// old:
-// safeWriteFile attempts a crash-safe file update without using os.Rename,
-// preserving Windows ACLs and falling back gracefully if directory permissions
-// block the creation of temporary files.
-//
-// By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
-func (fw *genericSafeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
-	log := fw.getLogger()
-	const tryTimesForFileOp = 6              //how many times
-	const backoffMsTimeForFileOpPerTry = 100 // ms
-
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
-
-	if fw.extraSafety {
-		tmpName := filename + powerlossFileExtension
-
-		// 1. Declare the granular error variables outside the closure
-		var createErr, writeErr, syncErr, closeErr error
-
-		// step1. Try to write to a temp file first to ensure disk space and data integrity.
-		// 2. Wrap the entire atomic file operation in the retry loop
-		stagingErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-			// Reset errors on each try so they accurately reflect the *final* attempt
-			createErr, writeErr, syncErr, closeErr = nil, nil, nil, nil
-
-			var tmpFile *os.File
-			tmpFile, createErr = os.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-			if createErr != nil {
-				return fmt.Errorf("create failed: %w", createErr)
-			}
-
-			_, writeErr = tmpFile.Write(data)
-			syncErr = tmpFile.Sync()
-			closeErr = tmpFile.Close()
-
-			// If any of these fail, we return an error to trigger the next retry attempt
-			if writeErr != nil || syncErr != nil || closeErr != nil {
-				return fmt.Errorf("write/sync/close failed (write=%w sync=%w close=%w)", writeErr, syncErr, closeErr)
-			}
-			return nil
-		})
-
-		if stagingErr == nil {
-			// Temp file is safely on disk. Overwrite the target file directly
-			// so we don't alter its existing Windows permissions/ACLs.
-			//XXX: which means we fallthru here
-			// --- SUCCESS BRANCH ---
-			log.Debug("ExtraSafety: Staged recovery file on disk", slog.String("tempfilename", tmpName))
-			// and after the below fallthru (from step2) then Clean up the temp file
-
-			// Queue cleanup. If we crash/lose power after this point,
-			// this defer never runs, leaving the safe copy intact.
-			defer func() {
-				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
-				if ondeleteErr == nil {
-					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-					// Successful deletion, nothing more to do
-					return
-				}
-				//aside: Trying to rename the file as an intermediary step (e.g., trying to rename file.json.powergotlost to file.json.trash) usually fails under the exact same security context as a deletion. In almost all operating systems and file systems (including Windows NTFS), a Rename operation requires delete/modify privileges on the source file to un-link it from its original name. Wiping it to 0 bytes bypasses the directory management layer entirely and works purely on file-level write access, making it the most robust fallback option available.
-				log.Warn("ExtraSafety: failed to delete staging file(possibly due to directory permissions?), attempting truncation fallback",
-					SafeErr(ondeleteErr))
-
-				// Fallback: If we can't delete it, truncate it to 0 bytes.
-				// Since we already have write handle permissions to this file, this is highly likely to succeed.
-				// truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
-				if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-					return truncateStagingFileToZero(tmpName, perm)
-				}); truncErr == nil {
-					log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
-						slog.String("tempfilename", tmpName))
-				} else {
-					// Absolute worst case scenario: Can't delete AND can't write/truncate an open file.
-
-					// CRITICAL ESCALATION: We can't delete it AND we can't truncate it.
-					// The file is stuck on disk with data, making a future boot panic inevitable.
-					// Crash immediately while the administrator is interacting with the system.
-					logmsg := fmt.Sprintf(
-						"\n========================================================================\n"+
-							"CRITICAL SAFETY PANIC: Staging file cleanup failed completely!\n"+
-							"The temporary staging file %q cannot be deleted or truncated.\n\n"+
-							"Delete error: %v\n"+
-							"Truncation error: %v\n\n"+
-							"Because the file contains non-zero bytes, the next server boot will panic.\n"+
-							"Halting execution immediately to prevent corrupted filesystem operation.\n"+
-							"========================================================================\n",
-						tmpName, ondeleteErr, truncErr,
-					)
-					log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
-					panic(logmsg)
-				}
-			}()
-			//continue with staging .powerloss file already having been created+sync'd successfully. and the defer to remove it being in place.
-		} else {
-			// --- FAILURE BRANCH ---
-
-			// We check the captured errors from the final retry attempt to determine exactly what to log
-			if createErr != nil {
-				log.Warn("ExtraSafety: Can't create temp staging file before writing the actual file(lacking directory write permissions?), using fallback which means if power-loss occurs in a very tiny window here then the file is lost",
-					SafeErr(createErr),
-					slog.String("filename", filename),
-					slog.String("wanted_tempfilename", tmpName))
-			} else {
-				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
-				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
-				// to neutralize any partial garbage data that would trip up the next boot.
-				ondeleteErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error { return os.Remove(tmpName) })
-				log.Warn("ExtraSafety: Failed to fully write or/and sync or/and close staging file",
-					slog.String("tempfilename", tmpName),
-					SafeErr2("writeErr", writeErr),
-					SafeErr2("syncErr", syncErr),
-					SafeErr2("closeErr", closeErr),
-					SafeErr2("ondelete_err", ondeleteErr))
-
-				if ondeleteErr != nil {
-					//failed to delete
-					if truncErr := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-						return truncateStagingFileToZero(tmpName, perm)
-					}); truncErr == nil {
-						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
-							slog.String("tempfilename", tmpName),
-							SafeErr2("ondeleteErr", ondeleteErr),
-						)
-						//continue
-					} else {
-						// Worse-case scenario: Write failed, cannot delete, and cannot truncate.
-						// Non-zero junk data is permanently locked on disk. Panic immediately.
-						logmsg := fmt.Sprintf(
-							"\n========================================================================\n"+
-								"CRITICAL SAFETY PANIC: Failed staging write left un-neutralized garbage bytes!\n"+
-								"The temporary staging file %q failed to write, and both deletion and\n"+
-								"truncation attempts failed.\n\n"+
-								"Delete error: %v\n"+
-								"Truncation error: %v\n\n"+
-								"To prevent a false-positive crash recovery panic on the next system boot,\n"+
-								"execution is halted immediately.\n"+
-								"========================================================================\n",
-							tmpName, ondeleteErr, truncErr,
-						)
-						log.Error(logmsg) //FIXME: ? the errors/args are embedded in the msg
-						panic(logmsg)
-					}
-				} else {
-					//delete succeeded
-					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
-					//continue
-				}
-			}
-		}
-	} //end 'if' extraSafety
-
-	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
-	// do a direct write but enforce a hardware sync to minimize the corruption window.
-	// step2. Overwrite the target file directly (Retains Windows ACLs)
-	if err := retryFileOp(tryTimesForFileOp, backoffMsTimeForFileOpPerTry*time.Millisecond, func() error {
-		return writeSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	}); err == nil {
-		return nil
-	} else {
-		return fmt.Errorf("failed to open/write/sync/close the file %q, err: %w", filename, err /*non-nil here*/)
-	}
-}
-
 func (ui *AdminUI) getLogger() *slog.Logger {
 	if ui.liveLogger != nil {
 		if l := ui.liveLogger.Load(); l != nil {
@@ -8216,7 +7689,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 	reqBytes, err := req.Pack()
 	if err != nil {
-		log.Error("doh_prepost_pack_failed", SafeErr(err))
+		log.Error("doh_prepost_pack_failed", wincoe.SafeErr(err))
 		return nil, upstreamState1
 	}
 
@@ -8273,7 +7746,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 			if res.err != nil || res.msg == nil {
 				log.Error("upstream failed or returned nil",
 					slog.String("url", strURL), // um.upstreamURLs[i].String()),
-					SafeErr(res.err),
+					wincoe.SafeErr(res.err),
 				)
 				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
 				return nil, upstreamState1 // Refuse to resolve if any upstream completely fails
@@ -8315,7 +7788,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 		upstreamState1.UpstreamUsed = used
 		upstreamState1.FailedUpstreams = failed
 		if err != nil {
-			log.Error("failover selection failed", SafeErr(err))
+			log.Error("failover selection failed", wincoe.SafeErr(err))
 			return nil, upstreamState1
 		}
 		return resp, upstreamState1
@@ -8363,7 +7836,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 		// If we reach here, every single upstream request failed
 		log.Error("all upstreams failed to provide a valid response",
-			SafeErr2("last_err", lastErr),
+			wincoe.SafeErr2("last_err", lastErr),
 		)
 		return nil, upstreamState1
 	}
@@ -8421,7 +7894,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 
 	cfg := um.getConfig()
 	if err := um.updateInnerState(); err != nil {
-		log.Error("Upstream validation failed:", SafeErr(err))
+		log.Error("Upstream validation failed:", wincoe.SafeErr(err))
 		// 2. Trigger the application shutdown if the callback is wired
 		if um.OnShutdown != nil {
 			um.OnShutdown(1) // Exit code 1 for crashes/errors
@@ -8724,7 +8197,7 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 				log3.Debug("UDP DNS listener is quitting due to shutdown/rebind...")
 				return // Quit on shutdown
 			default:
-				log3.Warn("UDP DNS listener udp_read_error", SafeErr(err2))
+				log3.Warn("UDP DNS listener udp_read_error", wincoe.SafeErr(err2))
 				continue // Real network error, keep trying
 			}
 		}
@@ -8793,7 +8266,7 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 			default:
 				// non-temporary error: log, backoff a bit to avoid hot loop, continue
 
-				log3.Warn("tcp_accept_error", SafeErr(err))
+				log3.Warn("tcp_accept_error", wincoe.SafeErr(err))
 				continue
 			}
 		}
@@ -9019,7 +8492,7 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), time.Duration(cfg.ServerGracefulShutdownSec)*time.Second)
 		defer cancelDown()
 		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && !errors.Is(err, context.Canceled) {
-			log.Warn("DoH server shutdown error", SafeErr(err))
+			log.Warn("DoH server shutdown error", wincoe.SafeErr(err))
 		}
 	}()
 
@@ -9031,7 +8504,7 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		// Graceful close on shutdown
 		defer listener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.getLogger().Error("doh_serve_failed", SafeErr(err), slog.String("addr", addr))
+			s.getLogger().Error("doh_serve_failed", wincoe.SafeErr(err), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("DoH server failed on %q: %w", addr, err)
 		}
 	}()
@@ -9232,7 +8705,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancelDown()
 		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && !errors.Is(err2, context.Canceled) {
-			log.Warn("webUI server shutdown error", SafeErr(err2))
+			log.Warn("webUI server shutdown error", wincoe.SafeErr(err2))
 		}
 	}()
 
@@ -9245,7 +8718,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		defer finalListener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err2 := srv.Serve(finalListener); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
 			log := s.getLogger()
-			log.Error("ui_serve_failed", SafeErr(err2), slog.String("addr", addr))
+			log.Error("ui_serve_failed", wincoe.SafeErr(err2), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("webUI server failed on %q: %w", addr, err2)
 		}
 	}()
@@ -9436,7 +8909,7 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 
 	// 1. Close the current file so Windows doesn't block the rename
 	if err := w.file.Close(); err != nil {
-		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), SafeErr(err))
+		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), wincoe.SafeErr(err))
 		w.file = nil // clear stale handle so reopenOriginal() starts from a known state
 		w.reopenOriginal()
 		return
@@ -9452,7 +8925,7 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 
 	// 3. Rename the file
 	if err := os.Rename(w.path, backupPath); err != nil {
-		w.logger.Error("Log rotation failed: rename error", slog.String("path", w.path), slog.String("backup", backupPath), SafeErr(err))
+		w.logger.Error("Log rotation failed: rename error", slog.String("path", w.path), slog.String("backup", backupPath), wincoe.SafeErr(err))
 		w.reopenOriginal()
 		return
 	}
@@ -9460,11 +8933,11 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 	// 4. Attempt to create the fresh log file
 	newFile, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		w.logger.Warn("Log rotation failed to create new file; rolling back to previous log", slog.String("path", w.path), SafeErr(err))
+		w.logger.Warn("Log rotation failed to create new file; rolling back to previous log", slog.String("path", w.path), wincoe.SafeErr(err))
 
 		// 5. ROLLBACK: Rename it back if creating the new one failed
 		if rbErr := os.Rename(backupPath, w.path); rbErr != nil {
-			w.logger.Error("CRITICAL: Log rotation rollback failed! Logs may be detached.", slog.String("from", backupPath), slog.String("to", w.path), SafeErr(rbErr))
+			w.logger.Error("CRITICAL: Log rotation rollback failed! Logs may be detached.", slog.String("from", backupPath), slog.String("to", w.path), wincoe.SafeErr(rbErr))
 		}
 
 		w.reopenOriginal()
@@ -9482,7 +8955,7 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 func (w *rotatingLogWriter) reopenOriginal() {
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		w.logger.Error("CRITICAL: Failed to reopen original log file after rotation failure", slog.String("path", w.path), SafeErr(err))
+		w.logger.Error("CRITICAL: Failed to reopen original log file after rotation failure", slog.String("path", w.path), wincoe.SafeErr(err))
 	} else {
 		w.file = f
 	}
@@ -9619,7 +9092,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 		} else if os.IsNotExist(statErr) {
 			configVersion = "0" // file not yet created — first-time setup
 		} else {
-			log.Warn("configHandler: could not stat config file for version token", SafeErr(statErr))
+			log.Warn("configHandler: could not stat config file for version token", wincoe.SafeErr(statErr))
 			configVersion = "0"
 		}
 
@@ -9670,7 +9143,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 
 			var changes map[string]any
 			if err := json.Unmarshal([]byte(payload), &changes); err != nil {
-				log.Warn("Invalid JSON in config apply", SafeErr(err))
+				log.Warn("Invalid JSON in config apply", wincoe.SafeErr(err))
 				http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 				return
 			}
@@ -9705,7 +9178,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				} else if !os.IsNotExist(statErr) {
 					// stat failed for an unexpected reason — fail safe rather than
 					// silently allowing a potentially conflicting write.
-					log.Error("configHandler: stat failed during conflict check", SafeErr(statErr))
+					log.Error("configHandler: stat failed during conflict check", wincoe.SafeErr(statErr))
 					http.Error(w, "Internal error: could not verify config file version.", http.StatusInternalServerError)
 					return
 				}
@@ -9751,7 +9224,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
 					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), cost)
 					if hashErr != nil {
-						log.Error("Failed to hash new webui password", SafeErr(hashErr), slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
+						log.Error("Failed to hash new webui password", wincoe.SafeErr(hashErr), slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
 						http.Error(w, "failed to hash new password", http.StatusInternalServerError)
 						return
 					}
@@ -9773,7 +9246,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// XXX: Parse existing file to preserve unknown keys and overall structure
 			data, err11 := os.ReadFile(configFileName)
 			if err11 != nil {
-				log.Error("Failed to read config file for update", SafeErr(err11))
+				log.Error("Failed to read config file for update", wincoe.SafeErr(err11))
 				http.Error(w, "failed to read existing config", http.StatusInternalServerError)
 				return
 			}
@@ -9781,7 +9254,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			var stripErr error
 			data, stripErr = stripConfigDescriptionKeys(data)
 			if stripErr != nil {
-				log.Error("failed to strip description keys from config file before WebUI update", SafeErr(stripErr))
+				log.Error("failed to strip description keys from config file before WebUI update", wincoe.SafeErr(stripErr))
 				http.Error(w, "failed to process config file (strip descriptions)", http.StatusInternalServerError)
 				return
 			}
@@ -9789,7 +9262,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// but it's not strictly required since we're about to re-validate anyway.
 			var raw map[string]any
 			if err2 := json.Unmarshal(data, &raw); err2 != nil {
-				log.Error("Failed to parse existing config file", SafeErr(err2))
+				log.Error("Failed to parse existing config file", wincoe.SafeErr(err2))
 				http.Error(w, "failed to parse existing config", http.StatusInternalServerError)
 				return
 			}
@@ -9804,7 +9277,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			rawCfg := ui.getRawConfig().Clone()
 
 			if err := applyConfigChangesToStruct(&rawCfg, raw); err != nil {
-				log.Warn("Failed to apply config changes", SafeErr(err))
+				log.Warn("Failed to apply config changes", wincoe.SafeErr(err))
 				http.Error(w, "invalid field value: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -9812,7 +9285,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// Marshal the struct — field order follows Config declaration, not A-Z.
 			newData, err12 := json.MarshalIndent(rawCfg, "", "  ")
 			if err12 != nil {
-				log.Error("Failed to marshal updated config", SafeErr(err12))
+				log.Error("Failed to marshal updated config", wincoe.SafeErr(err12))
 				http.Error(w, "failed to marshal updated config", http.StatusInternalServerError)
 				return
 			}
@@ -9823,7 +9296,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			dec.DisallowUnknownFields()
 			if err6 := dec.Decode(&testCfg); err6 != nil {
 				//TODO: needs better validation here! but I guess Reload() is doing the proper validation!
-				log.Warn("Validation failed for new config", SafeErr(err6))
+				log.Warn("Validation failed for new config", wincoe.SafeErr(err6))
 				http.Error(w, "Validation failed (check format/types): "+err6.Error(), http.StatusBadRequest)
 				return
 			}
@@ -9846,7 +9319,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// Commit to disk and trigger hot-reload
 			if ui.OnApplyConfig != nil {
 				if err7 := ui.OnApplyConfig(&rawCfg); err7 != nil {
-					log.Error("Failed to apply config (that is: save&reload)", SafeErr(err7))
+					log.Error("Failed to apply config (that is: save&reload)", wincoe.SafeErr(err7))
 					http.Error(w, "Failed to save/reload config: "+err7.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -9873,81 +9346,6 @@ func isLoopbackBindHost(listenAddr string) bool {
 		return ip.IsLoopback()
 	}
 	return strings.EqualFold(host, "localhost")
-}
-
-// retryFileOp attempts fn up to maxAttempts times with a short backoff
-// between attempts, to absorb transient Windows file locks (Defender,
-// Search Indexer, backup agents) that typically release within milliseconds.
-// Returns the last error if every attempt fails.
-func retryFileOp(maxAttempts int, backoff time.Duration, fn func() error) error {
-	if maxAttempts < 1 {
-		panic2("BUG: dev fail: retryFileOp called with maxAttempts < 1")
-	}
-	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		if lastErr = fn(); lastErr == nil {
-			//succeeded
-			return nil
-		}
-		if i < maxAttempts-1 {
-			time.Sleep(backoff)
-		}
-	}
-	//failed
-	return lastErr
-}
-
-// truncateStagingFileToZero opens the staging file with O_TRUNC (destroying
-// its contents in-place, no delete/rename required), syncs the 0-byte state
-// to disk, and closes it. This is the fallback path when the staging file
-// can't be deleted outright but must not be left containing non-zero bytes,
-// since CheckPowerLossFile treats any non-empty staging file as evidence of
-// a crash mid-write on the next boot.
-func truncateStagingFileToZero(tmpName string, perm os.FileMode) error {
-	truncFile, openErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
-	if openErr != nil {
-		return fmt.Errorf("open for truncate failed: %w", openErr)
-	}
-
-	syncErr := truncFile.Sync() // Ensure the 0-byte state hits disk
-	closeErr := truncFile.Close()
-
-	if syncErr != nil && closeErr != nil {
-		return fmt.Errorf("sync after truncate failed: %w (close also failed: %w)", syncErr, closeErr)
-	}
-	if syncErr != nil {
-		return fmt.Errorf("sync after truncate failed: %w", syncErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close after truncate+sync failed: %w", closeErr)
-	}
-
-	return nil
-}
-
-// writeSyncedFile opens filename with the given flags, writes data, syncs,
-// and closes as a single retryable unit. A mid-write failure from a
-// transient Windows file lock is exactly as retryable as an open failure,
-// so this covers both together rather than only guarding OpenFile.
-func writeSyncedFile(filename string, data []byte, flags int, perm os.FileMode) error {
-	f, err := os.OpenFile(filename, flags, perm)
-	if err != nil {
-		return fmt.Errorf("open failed: %w", err)
-	}
-	n, writeErr := f.Write(data)
-	syncErr := f.Sync()
-	closeErr := f.Close()
-
-	if writeErr != nil {
-		return fmt.Errorf("write failed after %d/%d bytes: %w", n, len(data), writeErr)
-	}
-	if syncErr != nil {
-		return fmt.Errorf("sync failed: %w", syncErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close failed: %w", closeErr)
-	}
-	return nil
 }
 
 var (
@@ -10786,7 +10184,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
 		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
 		if err2 != nil {
-			log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), SafeErr(err2))
+			log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), wincoe.SafeErr(err2))
 			return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
 		}
 		rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
@@ -10800,7 +10198,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
 		if err2 != nil {
-			log.Error("invalid upstream URL", slog.Int("at_index", i), SafeErr(err2))
+			log.Error("invalid upstream URL", slog.Int("at_index", i), wincoe.SafeErr(err2))
 			return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
 		}
 		rawCfg.UpstreamSNIHostnames[i] = host

@@ -18,6 +18,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/workturnedplay/wincoe"
+
 	"log/slog"
 )
 
@@ -59,7 +61,7 @@ func TestIsLoopbackBindHost(t *testing.T) {
 
 func TestRetryFileOp_SucceedsFirstTry(t *testing.T) {
 	calls := 0
-	err := retryFileOp(3, time.Millisecond, func() error {
+	err := wincoe.RetryFileOp(3, time.Millisecond, func() error {
 		calls++
 		return nil
 	})
@@ -73,7 +75,7 @@ func TestRetryFileOp_SucceedsFirstTry(t *testing.T) {
 
 func TestRetryFileOp_SucceedsAfterRetries(t *testing.T) {
 	calls := 0
-	err := retryFileOp(5, time.Millisecond, func() error {
+	err := wincoe.RetryFileOp(5, time.Millisecond, func() error {
 		calls++
 		if calls < 3 {
 			return errors.New("transient failure")
@@ -91,7 +93,7 @@ func TestRetryFileOp_SucceedsAfterRetries(t *testing.T) {
 func TestRetryFileOp_ExhaustsAndReturnsLastError(t *testing.T) {
 	calls := 0
 	sentinel := errors.New("permanent failure")
-	err := retryFileOp(4, time.Millisecond, func() error {
+	err := wincoe.RetryFileOp(4, time.Millisecond, func() error {
 		calls++
 		return sentinel
 	})
@@ -109,7 +111,7 @@ func TestRetryFileOp_PanicsOnInvalidMaxAttempts(t *testing.T) {
 			t.Error("expected panic for maxAttempts < 1, got none")
 		}
 	}()
-	_ = retryFileOp(0, time.Millisecond, func() error { return nil })
+	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil })
 }
 
 // ── truncateStagingFileToZero ────────────────────────────────────────────────
@@ -121,7 +123,7 @@ func TestTruncateStagingFileToZero_Success(t *testing.T) {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
-	if err := truncateStagingFileToZero(path, 0644); err != nil {
+	if err := wincoe.TruncateStagingFileToZero(path, 0644); err != nil {
 		t.Fatalf("truncateStagingFileToZero failed: %v", err)
 	}
 
@@ -138,7 +140,7 @@ func TestTruncateStagingFileToZero_NonexistentFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "does-not-exist.tmp")
 
-	err := truncateStagingFileToZero(path, 0644)
+	err := wincoe.TruncateStagingFileToZero(path, 0644)
 	if err == nil {
 		t.Fatal("expected error for nonexistent staging file, got nil")
 	}
@@ -154,7 +156,7 @@ func TestWriteSyncedFile_CreatesAndWrites(t *testing.T) {
 	path := filepath.Join(dir, "out.txt")
 	data := []byte("hello synced world")
 
-	err := writeSyncedFile(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	err := wincoe.WriteSyncedFile(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		t.Fatalf("writeSyncedFile failed: %v", err)
 	}
@@ -172,10 +174,10 @@ func TestWriteSyncedFile_TruncatesExistingContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.txt")
 
-	if err := writeSyncedFile(path, []byte("first longer payload here"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
+	if err := wincoe.WriteSyncedFile(path, []byte("first longer payload here"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
 		t.Fatalf("first write failed: %v", err)
 	}
-	if err := writeSyncedFile(path, []byte("short"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
+	if err := wincoe.WriteSyncedFile(path, []byte("short"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
 		t.Fatalf("second write failed: %v", err)
 	}
 
@@ -193,7 +195,7 @@ func TestWriteSyncedFile_OpenFailure(t *testing.T) {
 	// Parent directory component doesn't exist -> OpenFile must fail.
 	path := filepath.Join(dir, "nonexistent-subdir", "out.txt")
 
-	err := writeSyncedFile(path, []byte("data"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	err := wincoe.WriteSyncedFile(path, []byte("data"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err == nil {
 		t.Fatal("expected error for missing parent directory, got nil")
 	}
@@ -345,7 +347,7 @@ func TestStripColorTags_AnyNonErrorUnaffected(t *testing.T) {
 // ── SafeErr / SafeErr2 / SafeAddr ────────────────────────────────────────────
 
 func TestSafeErr_Nil(t *testing.T) {
-	a := SafeErr(nil)
+	a := wincoe.SafeErr(nil)
 	if a.Key != "err" {
 		t.Errorf("expected key 'err', got %q", a.Key)
 	}
@@ -355,14 +357,14 @@ func TestSafeErr_Nil(t *testing.T) {
 }
 
 func TestSafeErr_NonNil(t *testing.T) {
-	a := SafeErr(errors.New("boom"))
+	a := wincoe.SafeErr(errors.New("boom"))
 	if a.Value.String() != "boom" {
 		t.Errorf("expected \"boom\", got %q", a.Value.String())
 	}
 }
 
 func TestSafeErr2_CustomKey(t *testing.T) {
-	a := SafeErr2("custom_key", errors.New("oops"))
+	a := wincoe.SafeErr2("custom_key", errors.New("oops"))
 	if a.Key != "custom_key" {
 		t.Errorf("expected key 'custom_key', got %q", a.Key)
 	}
