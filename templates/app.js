@@ -128,6 +128,39 @@
         highlightTextNodes(row.querySelector('.config-field-desc'), terms);
     }
     
+    // --- Filter Expression Parser ---
+    // Grammar: clause | clause | ...  where clause = term & term & ...
+    //          and term = word word ... (ordered substring match, existing behaviour)
+    // Examples: "foo bar" → ordered AND; "foo & bar" → unordered AND;
+    //           "foo | bar" → OR; "foo bar | baz & qux" → complex
+    function matchesFilterExpression(text, rawFilter) {
+        if (!rawFilter || rawFilter.length === 0) return true;
+        const orGroups = rawFilter.split('|').map(s => s.trim()).filter(s => s.length > 0);
+        if (orGroups.length === 0) return true;
+        return orGroups.some(orGroup => {
+            const andTerms = orGroup.split('&').map(s => s.trim()).filter(s => s.length > 0);
+            if (andTerms.length === 0) return true;
+            return andTerms.every(andTerm => {
+                const words = andTerm.split(/\s+/).filter(w => w.length > 0);
+                if (words.length === 0) return true;
+                let pos = 0;
+                for (const word of words) {
+                    const found = text.indexOf(word, pos);
+                    if (found === -1) return false;
+                    pos = found + word.length;
+                }
+                return true;
+            });
+        });
+    }
+
+    // Collects all literal word tokens from a filter expression for highlight use.
+    // Strips | and & operators, then splits on whitespace.
+    function extractHighlightTerms(rawFilter) {
+        if (!rawFilter) return [];
+        return rawFilter.replace(/[|&]/g, ' ').split(/\s+/).filter(t => t.length > 0);
+    }
+
     // --- Client-Side Table Ordered-Substring Filter Logic ---
     function applyRulesFilter(clearingInteracted = false) {
         const filterInput = document.getElementById('rulesFilter');
@@ -136,40 +169,23 @@
         const raw = filterInput.value.trim().toLowerCase();
         sessionStorage.setItem('rulesTable_filter', raw);
         
-        const terms = raw.split(/\s+/).filter(term => term.length > 0);
         const tbody = document.querySelector('#rulesTable tbody');
         if (!tbody) return;
         
         // Retrieve the item that gets a "free pass" to stay visible
         const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
         
-        function matchesOrderedTerms(text, searchTerms) {
-            let pos = 0;
-            for (const term of searchTerms) {
-                const found = text.indexOf(term, pos);
-                if (found === -1) return false;
-                pos = found + term.length;
-            }
-            return true;
-        }
-        
         Array.from(tbody.rows).forEach(row => {
             // Do not filter out or hide the inline edit row
             if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
             
-            //You no longer need .trim() because HTML dataset attributes don't inherit layout whitespace.
-            // NO MORE MAGIC INDEXES OR innerText DEPENDENCY:
             const pattern = row.dataset.rulePattern || "";
             const id = row.dataset.ruleId || "";
             const type = row.dataset.ruleType || "";
             
-            // 2. Combine the actual data fields for filtering (ignoring UI button text!)
-            // 2. Combine them using regular string concatenation
-            // Joins them with spaces, completely avoiding backticks or string quotes
             const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
             
-            // 3. Evaluate the filter terms against our clean data string
-            let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
+            let isMatch = raw.length === 0 || matchesFilterExpression(searchTargetText, raw);
             
             // FREE PASS: If this row is the one we just added/edited, force it to show!
             // 4. Free Pass logic (using our clean variable)
@@ -200,21 +216,10 @@
         const raw = filterInput.value.trim().toLowerCase();
         sessionStorage.setItem('hostsTable_filter', raw);
         
-        const terms = raw.split(/\s+/).filter(term => term.length > 0);
         const tbody = document.querySelector('#hostsTable tbody');
         if (!tbody) return;
         
         const lastInteracted = sessionStorage.getItem('hostsTable_lastInteracted');
-        
-        function matchesOrderedTerms(text, searchTerms) {
-            let pos = 0;
-            for (const term of searchTerms) {
-                const found = text.indexOf(term, pos);
-                if (found === -1) return false;
-                pos = found + term.length;
-            }
-            return true;
-        }
         
         Array.from(tbody.rows).forEach(row => {
             // Do not filter out the inline edit row
@@ -224,7 +229,7 @@
             const ips = row.dataset.hostIps || "";
             const searchTargetText = [pattern, ips].join(" ").toLowerCase();
             
-            let isMatch = terms.length === 0 || matchesOrderedTerms(searchTargetText, terms);
+            let isMatch = raw.length === 0 || matchesFilterExpression(searchTargetText, raw);
             
             // FREE PASS: keep the just-added/edited row visible even if it
             // doesn't currently match the filter text.
@@ -244,27 +249,16 @@
         const raw = filterInput.value.trim().toLowerCase();
         sessionStorage.setItem('blacklistTable_filter', raw);
         
-        const terms = raw.split(/\s+/).filter(t => t.length > 0);
         const tbody = document.querySelector('#blacklistTable tbody');
         if (!tbody) return;
         
         const lastInteracted = sessionStorage.getItem('blacklistTable_lastInteracted');
         
-        function matchesOrderedTerms(text, searchTerms) {
-            let pos = 0;
-            for (const term of searchTerms) {
-                const found = text.indexOf(term, pos);
-                if (found === -1) return false;
-                pos = found + term.length;
-            }
-            return true;
-        }
-        
         Array.from(tbody.rows).forEach(row => {
             if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
             const cidr = (row.dataset.cidr || "").toLowerCase();
             
-            let isMatch = terms.length === 0 || matchesOrderedTerms(cidr, terms);
+            let isMatch = raw.length === 0 || matchesFilterExpression(cidr, raw);
             
             // Free Pass logic: ensures added/updated item remains fully visible
             if (lastInteracted && cidr === lastInteracted) {
@@ -283,9 +277,10 @@
         const raw = filterInput.value.trim().toLowerCase();
         sessionStorage.setItem('configTable_filter', raw);
         
-        const terms = raw.split(/\s+/).filter(t => t.length > 0);
         const tbody = document.querySelector('#configTable tbody');
         if (!tbody) return;
+        
+        const highlightTerms = raw.length > 0 ? extractHighlightTerms(raw) : [];
         
         Array.from(tbody.rows).forEach(row => {
             if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
@@ -298,13 +293,13 @@
             // Include key, value, and description in the search text boundary
             const searchTarget = key + " " + val + " " + desc;
             
-            const isMatch = terms.length === 0 || terms.every(term => searchTarget.includes(term));
+            const isMatch = raw.length === 0 || matchesFilterExpression(searchTarget, raw);
             row.style.display = isMatch ? '' : 'none';
             
             // Apply or clear highlights in the three text targets.
             // Hidden rows also get their highlights cleared so stale marks don't
             // appear if the row later becomes visible due to a different filter term.
-            applyConfigRowHighlight(row, isMatch ? terms : []);
+            applyConfigRowHighlight(row, isMatch ? highlightTerms : []);
         });
     }
     
