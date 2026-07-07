@@ -147,6 +147,10 @@ type Config struct {
 	UpstreamClientTimeoutSec int `json:"upstream_client_timeout_sec"   desc:"Overall timeout (seconds) for a single upstream DoH HTTP request including dial, headers, and body. Must be >= upstream_dial_timeout_sec."`
 	UpstreamRetryBackoffMs   int `json:"upstream_retry_backoff_ms"     desc:"Milliseconds to wait between retry attempts to an upstream DoH server after a transient network failure."`
 
+	UpstreamTCPKeepAliveSec      int `json:"upstream_tcp_keepalive_sec" desc:"Interval (seconds) for OS-level TCP Keep-Alive probes to detect dead upstream connections."`
+	UpstreamH2ReadIdleTimeoutSec int `json:"upstream_h2_read_idle_timeout_sec" desc:"Time (seconds) an HTTP/2 connection must be idle before sending a health-check PING. Must be less than upstream_idle_conn_timeout_sec."`
+	UpstreamH2PingTimeoutSec     int `json:"upstream_h2_ping_timeout_sec" desc:"Timeout (seconds) waiting for an HTTP/2 PING response before closing the zombie connection. Must be less than upstream_h2_read_idle_timeout_sec."`
+
 	UpstreamIdleConnTimeoutSec  int `json:"upstream_idle_conn_timeout_sec"   desc:"Seconds to keep an idle upstream HTTP connection in the pool before closing it."`
 	UpstreamMaxIdleConns        int `json:"upstream_max_idle_conns"          desc:"Global maximum idle upstream HTTP connections kept in the pool across all upstream hosts combined."`
 	UpstreamMaxIdleConnsPerHost int `json:"upstream_max_idle_conns_per_host" desc:"Maximum idle upstream HTTP connections per upstream host. Auto-clamped to not exceed upstream_max_idle_conns."`
@@ -1347,7 +1351,10 @@ func defaultConfig() Config {
 		CertLogTimeoutSec: 5,
 
 		//Resource allocations vary heavily between environments. A low-powered embedded home router running this binary shouldn't maintain 100 idle network connections. On the other hand, heavy enterprise or multi-user environments will exhaust MaxIdleConnsPerHost: 10 instantly, resulting in severe socket thrashing and latency spikes.
-		UpstreamIdleConnTimeoutSec: 90,
+		UpstreamIdleConnTimeoutSec:   90,
+		UpstreamH2ReadIdleTimeoutSec: 5,
+		UpstreamH2PingTimeoutSec:     3,
+		UpstreamTCPKeepAliveSec:      15,
 		//UpstreamMaxIdleConns:        100,
 		UpstreamMaxIdleConnsPerHost: 10,
 		//A 100ms backoff before retrying a transient network error is standard, but on highly congested networks, a longer backoff might be necessary to let the router breathe.
@@ -8211,7 +8218,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 				d := &net.Dialer{
 					Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second,
 					// Encourages OS-level keep-alives
-					KeepAlive: 15 * time.Second, //TODO: const or configurable?
+					KeepAlive: time.Duration(cfg.UpstreamTCPKeepAliveSec) * time.Second, //doneTODO: const or configurable?
 					// doneFIXME: does this mean it will never be seen as idle conn? thus cfg.UpstreamIdleConnTimeoutSec will not be enforced?  no
 					/*
 						1. Does KeepAlive prevent IdleConnTimeout from working?
@@ -8260,9 +8267,9 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 		t2, err := http2.ConfigureTransports(t)
 		if err == nil {
 			// If the connection is idle (no reads) for 5 seconds, send an HTTP/2 PING.
-			t2.ReadIdleTimeout = 5 * time.Second //TODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
+			t2.ReadIdleTimeout = time.Duration(cfg.UpstreamH2ReadIdleTimeoutSec) * time.Second //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
 			// If the upstream doesn't ACK the PING within 2 seconds, destroy the zombie connection.
-			t2.PingTimeout = 2 * time.Second //TODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps?
+			t2.PingTimeout = time.Duration(cfg.UpstreamH2PingTimeoutSec) * time.Second //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps? Also how does this fare with the dialer's KeepAlive of 15 sec from above? do we need to change things or their timeout values to make these work well together?
 		}
 
 		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t)
@@ -10079,6 +10086,57 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		resolvedCfg.UpstreamClientTimeoutSec = fallback
 		rawCfg.UpstreamClientTimeoutSec = fallback
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")",
+			slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// 1. TCP KeepAlive (Absolute Floor)
+	tagUpstreamTCPKeepAlive := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamTCPKeepAliveSec))
+	if was := resolvedCfg.UpstreamTCPKeepAliveSec; was <= 0 {
+		fallback := defaultCfg.UpstreamTCPKeepAliveSec // e.g., 15
+		resolvedCfg.UpstreamTCPKeepAliveSec = fallback
+		rawCfg.UpstreamTCPKeepAliveSec = fallback
+		log.Warn(tagUpstreamTCPKeepAlive+" clamped (must be > 0)", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// 2. HTTP/2 Read Idle Timeout
+	tagH2ReadIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamH2ReadIdleTimeoutSec))
+	if was := resolvedCfg.UpstreamH2ReadIdleTimeoutSec; was <= 0 {
+		fallback := defaultCfg.UpstreamH2ReadIdleTimeoutSec // e.g., 5
+		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		log.Warn(tagH2ReadIdle+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+	// Constraint B: If H2 Read Idle >= Global HTTP Idle, the HTTP connection is closed
+	// before the H2 health ping ever gets a chance to fire.
+	if was := resolvedCfg.UpstreamH2ReadIdleTimeoutSec; was >= resolvedCfg.UpstreamIdleConnTimeoutSec {
+		fallback := resolvedCfg.UpstreamIdleConnTimeoutSec / 2
+		if fallback < 1 {
+			fallback = 1
+		}
+		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		log.Warn(tagH2ReadIdle+" clamped (must trigger before the connection is closed by "+
+			getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))+")",
+			slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+
+	// 3. HTTP/2 Ping Timeout
+	tagH2PingTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamH2PingTimeoutSec))
+	if was := resolvedCfg.UpstreamH2PingTimeoutSec; was <= 0 {
+		fallback := defaultCfg.UpstreamH2PingTimeoutSec // e.g., 2
+		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
+		rawCfg.UpstreamH2PingTimeoutSec = fallback
+		log.Warn(tagH2PingTimeout+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
+	}
+	// Constraint B: You don't want a ping timeout to be longer than the interval between pings
+	if was := resolvedCfg.UpstreamH2PingTimeoutSec; was >= resolvedCfg.UpstreamH2ReadIdleTimeoutSec {
+		fallback := resolvedCfg.UpstreamH2ReadIdleTimeoutSec - 1
+		if fallback < 1 {
+			fallback = 1
+		}
+		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
+		rawCfg.UpstreamH2PingTimeoutSec = fallback
+		log.Warn(tagH2PingTimeout+" clamped (cannot be >= to the H2 read idle timeout)",
 			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
