@@ -21,9 +21,10 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	// 1. Initialize a Server instance with logs discarded to keep test output clean
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	//logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	server := NewServer(logger)
-	cfg := server.getConfig()
-	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
+	cfg := defaultConfig()
+	server := NewServer(logger, &cfg, &cfg)
+	//cfg := server.getConfig()
+	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(cfg /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
 	//server.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute)
 	server.swapDNSCache(cfg.CacheJanitorIntervalMinutes, 100)
 

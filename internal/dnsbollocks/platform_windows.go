@@ -281,7 +281,8 @@ func (s *Server) getConfig() *Config {
 }
 
 // On init and every reload, swap atomically:
-func (s *Server) applyConfig(cfg Config) {
+func (s *Server) applyConfig(cfg Config, rawCfg Config) {
+	s.liveRawConfig.Store(&rawCfg)
 	s.liveConfig.Store(&cfg)
 	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
 }
@@ -314,8 +315,9 @@ func getBugLogger() *slog.Logger {
 	return def
 }
 
-// NewServer initializes a new Server instance.
-func NewServer(logger *slog.Logger) *Server {
+// NewServer initializes a new Server instance using pre-validated configurations.
+func NewServer(logger *slog.Logger, resolvedCfg *Config, rawCfg *Config) *Server {
+	//func NewServer(logger *slog.Logger) *Server {
 	s := &Server{
 		ruleStore:    newRuleStore(),
 		hostStore:    newHostStore(),
@@ -328,19 +330,28 @@ func NewServer(logger *slog.Logger) *Server {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	s.applyLogger(logger) // seed the atomic with the bootstrap logger
+
+	//s.applyConfig(defaultConfig())
+	//cfg := s.getConfig() //this is defaults here, btw!
+
+	// Apply the true configuration immediately
+
+	s.applyConfig(*resolvedCfg, *rawCfg)
+
+	// fileWriter is now initialized flawlessly with the actual configuration settings!
+	s.fileWriter = wincoe.NewWin11SafeFileWriter(
+		/*so these 3 from cfg. have actually the default value for themselves because at this point, the server itself didn't even read the config yet! FIXME: must decouple config greading with NewServer starting also this means the s.shutdown(exitCode) too! */
+		resolvedCfg.ExtraSafety,              //this is overwriten at loadMainConfig time which happens at Run() and at Ctrl+R aka reload.
+		resolvedCfg.FileWriterMaxRetries,     //doneTODO: ^
+		resolvedCfg.FileWriterRetryBackoffMs, //doneTODO: ^
+
+		&s.liveLogger)
+
 	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
 	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
 	s.dohForwarder = s.upstreamMgr
-	s.applyConfig(defaultConfig())
-	cfg := s.getConfig() //this is defaults here, btw!
-	s.fileWriter = wincoe.NewWin11SafeFileWriter(
-		/*so these 3 from cfg. have actually the default value for themselves because at this point, the server itself didn't even read the config yet! FIXME: must decouple config greading with NewServer starting also this means the s.shutdown(exitCode) too! */
-		cfg.ExtraSafety,              //this is overwriten at loadMainConfig time which happens at Run() and at Ctrl+R aka reload.
-		cfg.FileWriterMaxRetries,     //doneTODO: ^
-		cfg.FileWriterRetryBackoffMs, //doneTODO: ^
 
-		&s.liveLogger)
 	return s // yes it escapes to heap
 }
 
@@ -2179,36 +2190,68 @@ func (s *Server) Reload() {
 
 	oldCfg := s.getConfig()
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
-	if err := s.loadMainConfig(); err != nil {
-		s.logFatal("main config ("+configFileName+") reload failed:", err)
-		panic2("BUG: unreachable")
-	} else {
-		log.Debug("main config reloaded", slog.String("filename", configFileName))
+
+	// 1. Load and validate the new config cleanly from disk using our decoupled helper
+	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName)
+	if err != nil {
+		// s.logFatal("main config ("+configFileName+") reload failed:", err)
+		// panic2("BUG: unreachable")
+		// Intercept fatal strings exactly as the old code did
+		if strings.HasPrefix(err.Error(), "FATAL:") {
+			log.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
+			finalShutdownSequence(log, 1)
+			//TODO: maybe now we don't have to os.Exit ?
+		} else {
+			log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
+			return
+		}
 	}
+	log.Debug("main config reloaded", slog.String("filename", configFileName))
+
+	// Apply the new config atomically
+	s.applyConfig(*resolvedCfg, *rawCfg)
+
+	// Update the fileWriter with the newly loaded safety parameters instantly
+	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+
+	if needsSave {
+		if err := s.saveConfig(); err != nil {
+			log.Error("Failed to save config during reload", wincoe.SafeErr(err))
+		}
+	}
+
 	cfgNew := s.getConfig()
 	if !cfgNew.AllowRunAsAdmin && isAdmin {
 		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
 		panic2("BUG: unreachable")
 	}
 
-	if err := s.loadQueryWhitelist(); err != nil {
-		s.logFatal("Whitelist ("+cfgNew.WhitelistFile+") reload failed:", err)
+	// if err := s.loadQueryWhitelist(); err != nil {
+	// 	s.logFatal("Whitelist ("+cfgNew.WhitelistFile+") reload failed:", err)
+	// 	panic2("BUG: unreachable")
+	// } else {
+	// 	log.Debug("Whitelist reloaded", slog.String("filename", cfgNew.WhitelistFile))
+	// }
+	// if err := s.loadResponseBlacklist(); err != nil {
+	// 	s.logFatal("Blacklist ("+cfgNew.BlacklistFile+") reload failed:", err)
+	// 	panic2("BUG: unreachable")
+	// } else {
+	// 	log.Debug("Blacklist reloaded", slog.String("filename", cfgNew.BlacklistFile))
+	// }
+	// // Inside watchKeys, in the Ctrl+R lambda block:
+	// if err := s.loadLocalHosts(); err != nil {
+	// 	s.logFatal("Hosts ("+cfgNew.HostsFile+") reload failed:", err)
+	// 	panic2("BUG: unreachable")
+	// } else {
+	// 	log.Debug("Local hosts reloaded", slog.String("filename", cfgNew.HostsFile))
+	// }
+
+	if err := s.loadDependentStores(); err != nil {
+		s.logFatal("Dependent stores reload failed:", err)
 		panic2("BUG: unreachable")
 	} else {
-		log.Debug("Whitelist reloaded", slog.String("filename", cfgNew.WhitelistFile))
-	}
-	if err := s.loadResponseBlacklist(); err != nil {
-		s.logFatal("Blacklist ("+cfgNew.BlacklistFile+") reload failed:", err)
-		panic2("BUG: unreachable")
-	} else {
-		log.Debug("Blacklist reloaded", slog.String("filename", cfgNew.BlacklistFile))
-	}
-	// Inside watchKeys, in the Ctrl+R lambda block:
-	if err := s.loadLocalHosts(); err != nil {
-		s.logFatal("Hosts ("+cfgNew.HostsFile+") reload failed:", err)
-		panic2("BUG: unreachable")
-	} else {
-		log.Debug("Local hosts reloaded", slog.String("filename", cfgNew.HostsFile))
+		log.Debug("Dependent stores reloaded successfully")
 	}
 
 	// 2. Re-initialize logging (applies new console levels or log files)
@@ -2294,21 +2337,28 @@ func (s *Server) Run() error {
 	}
 	// --------------------------------------------
 
-	if err := s.loadConfig(); err != nil {
-		s.logFatal("Config load failed:", err)
-		panic2("BUG: unreachable")
-	}
-	cfg := s.getConfig() //XXX: after s.loadConfig() !!
-	log.Info("Config loaded", slog.String("file", configFileName))
+	// if err := s.loadConfig(); err != nil {
+	// 	s.logFatal("Config load failed:", err)
+	// 	panic2("BUG: unreachable")
+	// }
+	// Get the configuration that was injected during NewServer
+	cfg := s.getConfig() //XXX: it's way after s.loadConfig() !!
+	//log.Info("Config loaded", slog.String("file", configFileName))
 
 	if !cfg.AllowRunAsAdmin && isAdmin {
-		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
+		s.logFatal2(fmt.Sprintf("Exiting: Elevated privileges detected. Rerun without admin or change the config setting %q in file %q.", getJSONTagByOffset(unsafe.Offsetof(Config{}.AllowRunAsAdmin)), configFileName))
 		panic2("BUG: unreachable")
 	}
 	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
 	// Now we have the real config → switch to full logging
 	log = s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) doneTODO: Ctrl+R would have to run this too!
+
+	// Load dependent data stores NOW, using the correct full logger
+	if err := s.loadDependentStores(); err != nil {
+		s.logFatal("Dependent stores load failed:", err)
+		panic2("BUG: unreachable")
+	}
 
 	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
 	log.Debug("Cache initialized")
@@ -2441,7 +2491,30 @@ func OldMain() {
 		finalShutdownSequence(localLogger, 0)
 	}
 
-	srv := NewServer(localLogger)
+	// 1. Load and validate configuration decoupled from the Server struct
+	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(localLogger, configFileName)
+	if err != nil {
+		// Intercept fatal strings exactly as the old code did
+		if strings.HasPrefix(err.Error(), "FATAL:") {
+			localLogger.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
+		} else {
+			localLogger.Error("Config load failed", wincoe.SafeErr(err))
+		}
+		finalShutdownSequence(localLogger, 1)
+	} else {
+		localLogger.Info("Config loaded", slog.String("filename", configFileName))
+	}
+
+	// 2. Initialize the Server flawlessly using the resolved config
+	srv := NewServer(localLogger, resolvedCfg, rawCfg)
+	if shouldSaveConfig {
+		// saveConfig internally calls s.getConfig(), which now has the fully updated data
+		if err = srv.saveConfig(); err != nil {
+			//			return fmt.Errorf("config save failed: %w", err)
+			localLogger.Error("Failed to save initial configuration", wincoe.SafeErr(err))
+			srv.shutdown(1)
+		}
+	}
 
 	if err := srv.Run(); err != nil {
 		localLogger.Error("Server exited with error", wincoe.SafeErr(err))
@@ -2457,17 +2530,23 @@ func OldMain() {
 
 const cacheMinTTLClamp = 10 // seconds
 
-func (s *Server) loadMainConfig() error {
-	log := s.getLogger()
+// LoadAndValidateConfig reads, parses, validates, and clamps the configuration.
+// It is completely decoupled from the Server struct to allow pre-initialization.
+func LoadAndValidateConfig(log *slog.Logger, cfgFname string) (*Config, *Config, bool, error) {
+	// func (s *Server) loadMainConfig() error {
+	//log := s.getLogger()
 	//cfg := s.getConfig()
-	const cfgFname = configFileName
+	//const cfgFname = configFileName
+	if cfgFname == "" {
+		return nil, nil, false, fmt.Errorf("given config file %q is empty", cfgFname)
+	}
 	log.Info("Loading config file", slog.String("config_file", cfgFname))
 	var shouldSaveConfig = false
 	// ---> FIX: Pre-populate the global config with defaults BEFORE reading/decoding
 	// this way missing keys from config.json file will be set to default value!
 	// 1. ALWAYS start by filling the global config with defaults.
 	// This is critical because Decode only overwrites what is in the file.
-	defaultConfig := defaultConfig()
+	defaultCfg := defaultConfig()
 	// //config = defaultConfig // deep copy, presumably!(it's shallow, but strings are immutable so it's acting like a deep-copy for them) doneFIXME?
 	// //cfg = defaultConfig.Clone() // deep copy
 	//XXX: config is already set to defaultConfig() is already set from the NewServer() call! TODO: the only issue is do we want defaults if loadMainConfig is called again during Server's lifetime ie. Ctrl+R aka reload
@@ -2475,8 +2554,8 @@ func (s *Server) loadMainConfig() error {
 
 	// Create a local copy to decode into and validate.
 	// This prevents live queries from reading a half-baked config.
-	resolvedTempCfg := defaultConfig.Clone()
-	rawTempCfg := defaultConfig.Clone()
+	resolvedTempCfg := defaultCfg.Clone()
+	rawTempCfg := defaultCfg.Clone()
 	//newCfg := &tempCfg // Use a local pointer for all setup and decoding
 	//defaultCfgClone := defaultConfig.Clone()
 	//newCfg := &defaultCfgClone
@@ -2486,19 +2565,29 @@ func (s *Server) loadMainConfig() error {
 	// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
 	var rawCfg *Config = &rawTempCfg
 
-	s.fileWriter.SetExtraSafety(defaultConfig.ExtraSafety)                                                  //using default cfg.ExtraSafety until read from disk, this is already set to this default in the NewServer constructor tho
-	s.fileWriter.SetRetryParams(defaultConfig.FileWriterMaxRetries, defaultConfig.FileWriterRetryBackoffMs) //TODO: ensure defautlConfig had sanitizeAndValidateConfig run on it
+	// s.fileWriter.SetExtraSafety(defaultCfg.ExtraSafety)                                               //using default cfg.ExtraSafety until read from disk, this is already set to this default in the NewServer constructor tho
+	// s.fileWriter.SetRetryParams(defaultCfg.FileWriterMaxRetries, defaultCfg.FileWriterRetryBackoffMs) //TODO: ensure defautlConfig had sanitizeAndValidateConfig run on it
 
-	s.fileWriter.CheckPowerLossFile(cfgFname) //a default Config was already set at birth(even tho we also set it here, above, this one we set above isn't in effect yet), or kept the previously loaded one, those values are used by any child callers that use Server's Config during loadMainConfig() until the new config is atomically swapped in(at the end tho)
+	// s.fileWriter.CheckPowerLossFile(cfgFname) //a default Config was already set at birth(even tho we also set it here, above, this one we set above isn't in effect yet), or kept the previously loaded one, those values are used by any child callers that use Server's Config during loadMainConfig() until the new config is atomically swapped in(at the end tho)
+
+	// Temporarily spin up a file writer solely to check for power-loss corruption
+	// using the default safety settings before we attempt to read the file.
+	{
+		var tempLogger atomic.Pointer[slog.Logger]
+		tempLogger.Store(log)
+		tempFW := wincoe.NewWin11SafeFileWriter(defaultCfg.ExtraSafety, defaultCfg.FileWriterMaxRetries, defaultCfg.FileWriterRetryBackoffMs, &tempLogger)
+		tempFW.CheckPowerLossFile(cfgFname)
+	}
+
 	data, err := os.ReadFile(cfgFname)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			// Permission denied, locked, or other I/O error — never auto-create
-			return fmt.Errorf("config file %q exists but cannot be read: %w", cfgFname, err)
+			return nil, nil, false, fmt.Errorf("config file %q exists but cannot be read: %w", cfgFname, err)
 		}
 		// True "not found"
 		if isAdmin {
-			return fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
+			return nil, nil, false, fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
 				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
 		}
 
@@ -2518,7 +2607,7 @@ func (s *Server) loadMainConfig() error {
 		var stripErr error
 		data, stripErr = stripConfigDescriptionKeys(data)
 		if stripErr != nil {
-			return fmt.Errorf("failed to strip description keys from config file %q: %w", cfgFname, stripErr)
+			return nil, nil, false, fmt.Errorf("failed to strip description keys from config file %q: %w", cfgFname, stripErr)
 		}
 
 		// Duplicate config keys (e.g. "extra_safety" appearing twice) are silently
@@ -2527,14 +2616,14 @@ func (s *Server) loadMainConfig() error {
 		// we always treat duplicate config keys as a hard error regardless of that
 		// setting — a config with duplicate keys is unambiguously a hand-edit mistake.
 		if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
-			return fmt.Errorf("failed to scan config file %q for duplicate keys: %w", cfgFname, dupErr)
+			return nil, nil, false, fmt.Errorf("failed to scan config file %q for duplicate keys: %w", cfgFname, dupErr)
 		} else if len(dups) > 0 {
 			for _, dup := range dups {
 				log.Error("Duplicate key found in config file (JSON silently kept only the last value; fix the file manually)",
 					slog.String("duplicate_key", dup),
 					slog.String("config_file", cfgFname))
 			}
-			return fmt.Errorf("config file %q contains %d duplicate key(s); fix the file and restart", cfgFname, len(dups))
+			return nil, nil, false, fmt.Errorf("config file %q contains %d duplicate key(s); fix the file and restart", cfgFname, len(dups))
 		}
 
 		// 2. First, check for unknown fields and decode into 'config'
@@ -2549,7 +2638,7 @@ func (s *Server) loadMainConfig() error {
 		if err = dec.Decode(&rawCfg); err != nil {
 			//if err = dec.Decode(&theReadConfig); err != nil {
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), wincoe.SafeErr(err))
-			return fmt.Errorf("Config has typos or unknown fields: %w", err)
+			return nil, nil, false, fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
 
 		// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
@@ -2560,7 +2649,7 @@ func (s *Server) loadMainConfig() error {
 		resolvedCfg, err3 = resolveConfigTags(rawCfg)
 		if err3 != nil {
 			log.Error("Configuration substitution failed", slog.String("file", cfgFname), wincoe.SafeErr(err3))
-			return fmt.Errorf("config substitution failed: %w", err3)
+			return nil, nil, false, fmt.Errorf("config substitution failed: %w", err3)
 		}
 		// 3. Second, check for MISSING fields (No manual list!)
 		// We decode into a map just to see which keys exist in the JSON.
@@ -2599,30 +2688,30 @@ func (s *Server) loadMainConfig() error {
 		}
 	}
 
-	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
-	//s.fileWriter.SetRetryParams(defaultConfig.FileWriterMaxRetries, defaultConfig.FileWriterRetryBackoffMs) Can't do this here because it's not validated yet, good thing sanitizeAndValidateConfig below doesn't use this (assuming logger doesn't either)
+	//s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //uses newly loaded config settings ie. cfg.ExtraSafety
+	////s.fileWriter.SetRetryParams(defaultConfig.FileWriterMaxRetries, defaultConfig.FileWriterRetryBackoffMs) Can't do this here because it's not validated yet, good thing sanitizeAndValidateConfig below doesn't use this (assuming logger doesn't either)
 
 	//Use the unified sanitization/validation helper ---
-	changed, errVal := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultConfig, false)
+	changed, errVal := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultCfg, false)
 	if errVal != nil {
-		// Intercept fatal strings and crash exactly as the old code did
-		if strings.HasPrefix(errVal.Error(), "FATAL:") {
-			s.logFatal2(strings.TrimPrefix(errVal.Error(), "FATAL: "))
-		}
-		return errVal
+		// // Intercept fatal strings and crash exactly as the old code did
+		// if strings.HasPrefix(errVal.Error(), "FATAL:") {
+		// 	s.logFatal2(strings.TrimPrefix(errVal.Error(), "FATAL: "))
+		// }
+		return nil, nil, false, errVal
 	}
 	if changed {
 		shouldSaveConfig = true
 
 		{ //if something did change, see if it changes again, then we know defaultConfig() or conditions within sanitize*() are broken!
 			//XXX: run it again to see if the defaultConfig() was broken with respect to the conditions within sanitizeAndValidateConfig, because once it passed thru it, if u run it again it wouldn't change anything! this check for defaultConfig() only works on the settings that the prev. run changed! so it won't detect anything if they weren't changed.
-			changed2, errVal2 := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultConfig, false)
+			changed2, errVal2 := sanitizeAndValidateConfig(log, resolvedCfg, rawCfg, &defaultCfg, false)
 			if errVal2 != nil {
-				// Intercept fatal strings and crash exactly as the old code did
-				if strings.HasPrefix(errVal2.Error(), "FATAL:") {
-					s.logFatal2(strings.TrimPrefix(errVal2.Error(), "FATAL: "))
-				}
-				return errVal2
+				// // Intercept fatal strings and crash exactly as the old code did
+				// if strings.HasPrefix(errVal2.Error(), "FATAL:") {
+				// 	s.logFatal2(strings.TrimPrefix(errVal2.Error(), "FATAL: "))
+				// }
+				return nil, nil, false, errVal2
 			}
 			if changed2 {
 				panic2("BUG: defaultConfig() has values that break the conditions within sanitizeAndValidateConfig, they must be changed; or the conditions in sanitizeAndValidateConfig are inconsistent(less likely)")
@@ -2630,10 +2719,10 @@ func (s *Server) loadMainConfig() error {
 		}
 	}
 
-	//(re)apply newly loaded validated/clamped config settings for fileWriter
-	//TODO: make these 2 lines into a helper function and call that here and in another place above
-	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
-	s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+	// //(re)apply newly loaded validated/clamped config settings for fileWriter
+	// //TODO: make these 2 lines into a helper function and call that here and in another place above
+	// s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	// s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	// Enforce password setup if it's missing from the config
 	if resolvedCfg.WebUIPasswordHash == "" {
@@ -2643,8 +2732,9 @@ func (s *Server) loadMainConfig() error {
 		fmt.Println("========================================================")
 		hash, err2 := promptAndHashPassword(log, resolvedCfg.WebUIPasswordBcryptCost)
 		if err2 != nil {
-			s.logFatal2("Failed to setup password (aborted): " + err2.Error())
-			panic2("BUG: unreachable")
+			// s.logFatal2("Failed to setup password (aborted): " + err2.Error())
+			// panic2("BUG: unreachable")
+			return nil, nil, false, fmt.Errorf("FATAL: failed to setup password (aborted): %w", err2)
 		}
 
 		// Update live config instance
@@ -2657,17 +2747,17 @@ func (s *Server) loadMainConfig() error {
 		}
 	}
 
-	// Apply the fully validated config atomically
-	// 2. APPLY THE VALIDATED CONFIG ATOMICALLY
-	// From this exact microsecond, all new DNS queries will use the clamped, safe config.
-	s.liveRawConfig.Store(rawCfg)
-	s.applyConfig(*resolvedCfg)
-	if shouldSaveConfig {
-		// saveConfig internally calls s.getConfig(), which now has the fully updated data
-		if err = s.saveConfig(); err != nil {
-			return fmt.Errorf("config save failed: %w", err)
-		}
-	}
+	// // Apply the fully validated config atomically
+	// // 2. APPLY THE VALIDATED CONFIG ATOMICALLY
+	// // From this exact microsecond, all new DNS queries will use the clamped, safe config.
+	// s.liveRawConfig.Store(rawCfg)
+	// s.applyConfig(*resolvedCfg)
+	// if shouldSaveConfig {
+	// 	// saveConfig internally calls s.getConfig(), which now has the fully updated data
+	// 	if err = s.saveConfig(); err != nil {
+	// 		return fmt.Errorf("config save failed: %w", err)
+	// 	}
+	// }
 	// 4. LOG STRATEGY
 	// Add your new clear architectural description line here:
 	switch resolvedCfg.UpstreamSelectionMode {
@@ -2682,27 +2772,36 @@ func (s *Server) loadMainConfig() error {
 		log.Info("Upstream DNS strategy initialized: FASTEST WINS MODE (Racing upstreams concurrently; the first successful response is accepted immediately to optimize for CDNs, Geo-DNS, and speed).")
 	}
 	//so above was load config.json
-	return nil
+	return resolvedCfg, rawCfg, shouldSaveConfig, nil
 }
 
-func (s *Server) loadConfig() error {
-	var err error = s.loadMainConfig()
-	if err != nil {
-		return err
-	}
+// loadDependentStores loads the secondary JSON files (whitelist, blacklist, hosts).
+// It assumes the main Config is already safely loaded and applied.
+func (s *Server) loadDependentStores() error {
+	log := s.getLogger()
+	cfg := s.getConfig()
+	//func (s *Server) loadConfig() error {
+	// var err error = s.loadMainConfig()
+	// if err != nil {
+	// 	return err
+	// }
 	// After decoding and applying config, because these use it:
 	// 3. LOAD DEPENDENT FILES
 	// Now that s.getConfig() returns the NEW config, these will use the correct file paths.
-	err = s.loadQueryWhitelist()
-	if err != nil {
+	if err := s.loadQueryWhitelist(); err != nil {
 		return err
+	} else {
+		log.Debug("Whitelist reloaded", slog.String("filename", cfg.WhitelistFile))
 	}
-	err = s.loadResponseBlacklist()
-	if err != nil {
+	if err := s.loadResponseBlacklist(); err != nil {
 		return err
+	} else {
+		log.Debug("Blacklist reloaded", slog.String("filename", cfg.BlacklistFile))
 	}
-	if err2 := s.loadLocalHosts(); err2 != nil {
-		return err2
+	if err := s.loadLocalHosts(); err != nil {
+		return err
+	} else {
+		log.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
 	}
 
 	return nil
@@ -7408,7 +7507,7 @@ type ClientRateLimiter struct {
 }
 
 func newClientRateLimiter(ctx context.Context, cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
-	_ = ctx // Context is no longer needed since we dropped the background janitor
+	_ = ctx //TODO: because Context is no longer needed since we dropped the background janitor, remove it as arg?!
 	return &ClientRateLimiter{
 		global:  rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
 		cfg:     cfg,
