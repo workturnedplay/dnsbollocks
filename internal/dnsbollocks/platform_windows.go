@@ -5836,21 +5836,23 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, change
 	current := *rs.rules.Load()
 
 	for i, rule := range current[typ] {
-		if rule.Pattern == domain {
-			if rule.Enabled == enabled {
-				return true, false
-			}
-
-			// We can no longer mutate the rule in-place because readers
-			// might be actively iterating this slice lock-free!
-			next := cloneRuleMap(current)
-			updatedRule := rule
-			updatedRule.Enabled = enabled
-			next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil)
-			rs.rules.Store(&next)
-
-			return true, true
+		if rule.Pattern != domain {
+			continue
 		}
+
+		if rule.Enabled == enabled {
+			return true, false
+		}
+
+		// We can no longer mutate the rule in-place because readers
+		// might be actively iterating this slice lock-free!
+		next := cloneRuleMap(current)
+		updatedRule := rule
+		updatedRule.Enabled = enabled
+		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil)
+		rs.rules.Store(&next)
+
+		return true, true
 	}
 	return false, false
 }
