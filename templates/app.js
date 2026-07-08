@@ -943,7 +943,8 @@
                 const clone = tmpl.content.cloneNode(true);
                 
                 // Add an ID to the <tr> to make cleanup easy
-                clone.querySelector('tr').id = 'editFormRow_' + id;
+                const editRow = clone.querySelector('tr');
+                editRow.id = 'editFormRow_' + id;
                 
                 // 2. Grab references to the inputs in our clone
                 const typeSelect = clone.querySelector('.edit-type');
