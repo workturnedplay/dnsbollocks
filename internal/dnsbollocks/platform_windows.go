@@ -5585,7 +5585,8 @@ type csrfTokenKey struct{}
 func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log := ui.getLogger()
-		cfg := ui.getConfig()
+		//cfg := ui.getConfig()
+
 		// 1. Get or generate the CSRF cookie
 		cookie, err := r.Cookie("csrf_token")
 		var token string
@@ -5598,7 +5599,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 				Path:     "/",
 				HttpOnly: true, // Prevent client-side JS from reading the cookie
 				SameSite: http.SameSiteStrictMode,
-				Secure:   cfg.WebUIUseTLS, //FIXME: actually use some other thing that tells me whether we're doing this listening over https or http on the currently running server, else if I just change the config before I relisten the server this might go from true to false if i changed from https to http, even tho it's still https until the relisten happens.
+				Secure:   r.TLS != nil, // <-- Zero configuration dependency! //doneFIXME: actually use some other thing that tells me whether we're doing this listening over https or http on the currently running server, else if I just change the config before I relisten the server this might go from true to false if i changed from https to http, even tho it's still https until the relisten happens.
 			})
 		} else {
 			token = cookie.Value
