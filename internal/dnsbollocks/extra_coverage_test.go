@@ -36,7 +36,7 @@ import (
 func newBlockTestServer(cfg Config) *Server {
 	s := &Server{}
 	s.liveConfig.Store(&cfg)
-	s.logMgr = NewLoggerManager(discardLogger())
+	s.rt = newTestRuntime(discardLogger())
 	return s
 }
 

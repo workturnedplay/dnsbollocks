@@ -179,10 +179,11 @@ type Config struct {
 
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
+	rt *Runtime // owns LogMgr + FileWriter; injected by NewServer
+	// File writes are serialised through rt.FileWriter which owns its own mutex.
+
 	liveConfig    atomic.Pointer[Config] // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
 	liveRawConfig atomic.Pointer[Config] //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
-	//liveLogger    atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
-	logMgr *LoggerManager // owns liveLogger + log file handles
 
 	// Upstream state
 	upstreamMgr  *UpstreamManager
@@ -199,10 +200,6 @@ type Server struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
-
-	// fileWriteMu serialises all file-write calls across all stores.
-	fileWriter wincoe.FileWriter
-	//fileWriteMu sync.Mutex
 
 	//dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
 	dnsTCPSem atomic.Pointer[chan struct{}]
@@ -265,13 +262,13 @@ type AdminUI struct {
 	//getExpectedHost func() string // used by hostValidation
 }
 
-// pointer to live logger or default logger if uninited(bug)
+// pointer to live logger via Runtime
 func (s *Server) getLogger() *slog.Logger {
-	if s.logMgr != nil {
-		return s.logMgr.Get()
+	if s.rt != nil {
+		return s.rt.LogMgr.Get()
 	}
 	log := slog.Default()
-	log.Error("BUG: Server.liveLogger wasn't inited, using default.")
+	log.Error("BUG: Server.rt not initialized before getLogger call.")
 	return log
 }
 
@@ -289,14 +286,6 @@ func (s *Server) applyConfig(cfg, rawCfg Config) {
 	s.liveRawConfig.Store(&rawCfg)
 	s.liveConfig.Store(&cfg)
 	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
-}
-
-// On init and every reload, swap atomically:
-func (s *Server) applyLogger(l *slog.Logger) {
-	s.logMgr.Set(l)
-	// same — fileWriter reads liveLogger.Load() instead of holding its own copy
-	bugLogger.Store(l) // keep free-function fallback logger in sync too
-	wincoe.Logger = l  //and wincoe lib logger too
 }
 
 // bugLogger is a package-level fallback logger used only by free functions
@@ -319,9 +308,15 @@ func getBugLogger() *slog.Logger {
 	return def
 }
 
-// NewServer initializes a new Server instance using pre-validated configurations.
-func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config, fw wincoe.FileWriter) *Server { //func NewServer(logger *slog.Logger) *Server {
+// NewServer initializes a new Server instance using a fully configured Runtime
+// and pre-validated configurations. The Runtime (LogMgr + FileWriter) must be
+// set up by the caller (OldMain) before NewServer is called.
+func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
+	if rt == nil {
+		panic2("BUG: NewServer called with nil Runtime")
+	}
 	s := &Server{
+		rt:           rt,
 		ruleStore:    newRuleStore(),
 		hostStore:    newHostStore(),
 		blacklist:    newBlacklistStore(),
@@ -333,28 +328,11 @@ func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config, fw wincoe.FileW
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
-	s.logMgr = NewLoggerManager(logger) //TODO: this should happen in OldMain()
-	s.applyLogger(logger)               // syncs bugLogger + wincoe.Logger
-
-	//s.applyConfig(defaultConfig())
-	//cfg := s.getConfig() //this is defaults here, btw!
-
 	// Apply the true configuration immediately
-
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
-	if fw == nil {
-		fw = wincoe.NewWin11SafeFileWriter(
-			resolvedCfg.ExtraSafety,
-			resolvedCfg.FileWriterMaxRetries,
-			resolvedCfg.FileWriterRetryBackoffMs,
-			s.logMgr.Ptr())
-	}
-	s.fileWriter = fw
-
-	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
-	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.logMgr.Ptr(), s.shutdown)
+	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.rt.LogMgr.Ptr(), s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 
 	return s // yes it escapes to heap
@@ -716,7 +694,7 @@ func (s *Server) loadResponseBlacklist() error {
 		panic2("BUG: dev. didn't set the default blacklist filename!")
 	}
 	blacklistFileName = filepath.Clean(blacklistFileName)
-	s.fileWriter.CheckPowerLossFile(blacklistFileName)
+	s.rt.FileWriter.CheckPowerLossFile(blacklistFileName)
 	var shouldSave bool = false
 	var raw []string
 	data, err := os.ReadFile(blacklistFileName)
@@ -833,7 +811,7 @@ func (s *Server) saveResponseBlacklist() error {
 	if blacklistFileName == "" {
 		panic2("BUG: bad coding: dev. didn't set the default blacklist filename!")
 	}
-	if err := s.fileWriter.SafeWriteFile(blacklistFileName, data, 0600); err != nil {
+	if err := s.rt.FileWriter.SafeWriteFile(blacklistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write blacklist file %q: %w", blacklistFileName, err)
 	} else {
 		log.Info("Saved blacklist file", slog.String("file", blacklistFileName))
@@ -900,7 +878,7 @@ func (s *Server) loadLocalHosts() error {
 		panic2("BUG: didn't set the default hosts filename!")
 	}
 	hostsFileName = filepath.Clean(hostsFileName)
-	s.fileWriter.CheckPowerLossFile(hostsFileName)
+	s.rt.FileWriter.CheckPowerLossFile(hostsFileName)
 	data, err := os.ReadFile(hostsFileName)
 	if os.IsNotExist(err) {
 		log.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
@@ -1063,7 +1041,7 @@ func (s *Server) saveLocalHosts() error {
 		return fmt.Errorf("hosts file marshal failed: %w", err)
 	}
 
-	if err := s.fileWriter.SafeWriteFile(cfg.HostsFile, data, 0600); err != nil {
+	if err := s.rt.FileWriter.SafeWriteFile(cfg.HostsFile, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write hosts file %q: %w", cfg.HostsFile, err)
 	}
 	log.Info("Saved hosts file", slog.String("path", cfg.HostsFile))
@@ -1149,7 +1127,7 @@ func (s *Server) saveQueryWhitelist() error {
 	if whitelistFileName == "" {
 		panic2("BUG: bad coding: dev. didn't set the default whitelist filename!")
 	}
-	if err := s.fileWriter.SafeWriteFile(whitelistFileName, data, 0600); err != nil {
+	if err := s.rt.FileWriter.SafeWriteFile(whitelistFileName, data, 0600); err != nil {
 		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
 	}
 	log.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
@@ -1166,7 +1144,7 @@ func (s *Server) loadQueryWhitelist() error {
 		panic2("BUG: dev. didn't set the default whitelist filename!")
 	}
 	whitelistFileName = filepath.Clean(cfg.WhitelistFile)
-	s.fileWriter.CheckPowerLossFile(whitelistFileName)
+	s.rt.FileWriter.CheckPowerLossFile(whitelistFileName)
 	data, err := os.ReadFile(whitelistFileName)
 	if os.IsNotExist(err) {
 		log.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
@@ -2197,7 +2175,7 @@ func (s *Server) Reload() {
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
 
 	// 1. Load and validate the new config cleanly from disk using our decoupled helper
-	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.fileWriter)
+	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.rt.FileWriter)
 	if err != nil {
 		// s.logFatal("main config ("+configFileName+") reload failed:", err)
 		// panic2("BUG: unreachable")
@@ -2217,8 +2195,8 @@ func (s *Server) Reload() {
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
 	// Update the fileWriter with the newly loaded safety parameters instantly
-	s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
-	s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	s.rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	if needsSave {
 		if err := s.saveConfig(); err != nil {
@@ -2260,8 +2238,11 @@ func (s *Server) Reload() {
 	}
 
 	// 2. Re-initialize logging (applies new console levels or log files)
-	//We do this late here to keep same logger until reload is done-ish
-	s.initFullLogging()
+	// Done late to keep the same logger until reload is mostly complete.
+	if err := s.rt.LogMgr.ApplyConfig(resolvedCfg); err != nil {
+		log.Error("Failed to apply logging config during reload; logging may be stale", wincoe.SafeErr(err))
+		// The core config is already live; log the error but do not abort the reload.
+	}
 	log = s.getLogger() // Grab the newly initialized logger
 
 	log.Info("Configuration files reloaded successfully")
@@ -2356,8 +2337,8 @@ func (s *Server) Run() error {
 	}
 	//log.Debug("Non-elevated mode confirmed") // no good, as we can be admin here!
 
-	// Now we have the real config → switch to full logging
-	log = s.initFullLogging() // ← this replaces the logger with files + correct console level(based on freshly loaded config settings from file) doneTODO: Ctrl+R would have to run this too!
+	// Full logging is already initialized by OldMain via rt.LogMgr.ApplyConfig
+	// before NewServer and Run are called. Nothing to do here.
 
 	// Load dependent data stores NOW, using the correct full logger
 	if err := s.loadDependentStores(); err != nil {
@@ -2464,6 +2445,9 @@ func OldMain() {
 	// temporary placeholder — will be overwritten in initBootstrapLogging
 
 	localLogger = initBootstrapLogging(localLogger) // ← FIRST LINE — colored console, log now exists
+	if localLogger == nil {
+		panic2("BUG: unexpected nil return from initBootstrapLogging")
+	}
 	// go func() {
 	//     ticker := time.NewTicker(5 * time.Second)
 	//     defer ticker.Stop()
@@ -2479,6 +2463,35 @@ func OldMain() {
 	//     }
 	// }()
 
+	// ── 1. Build the Runtime (long-lived infrastructure) ──────────────────────
+	// The LogManager starts with the bootstrap logger; ApplyConfig will upgrade
+	// it once the real config is validated.
+	logMgr := NewLoggerManager(localLogger)
+	if logMgr == nil {
+		panic2("BUG: unexpected nil return from NewLoggerManager")
+	}
+
+	// Wire the global fallback logger immediately so any panic2/getBugLogger call
+	// during bootstrap uses the colored bootstrap logger, not the silent default.
+	bugLogger.Store(localLogger)
+	wincoe.Logger = localLogger
+
+	// Create a default FileWriter for the bootstrap phase (config not yet loaded).
+	// It shares the LogManager's atomic pointer so it always sees the current logger.
+	defCfg := defaultConfig()
+	fileWriter := wincoe.NewWin11SafeFileWriter(
+		defCfg.ExtraSafety,
+		defCfg.FileWriterMaxRetries,
+		defCfg.FileWriterRetryBackoffMs,
+		logMgr.Ptr(),
+	)
+
+	rt := &Runtime{
+		LogMgr:     logMgr,
+		FileWriter: fileWriter,
+	}
+
+	// ── 2. Handle CLI flags ────────────────────────────────────────────────────
 	//flag.Parse() // For future flags
 	hashCmd := flag.Bool("hash-password", false, "Securely prompt for a password, output the bcrypt hash, and exit")
 	flag.Parse()
@@ -2496,38 +2509,53 @@ func OldMain() {
 		finalShutdownSequence(localLogger, 0, os.Exit)
 	}
 
-	// 1. Load and validate configuration decoupled from the Server struct
-	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(localLogger, configFileName, nil)
+	// ── 3. Load and validate configuration ────────────────────────────────────
+	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.LogMgr.Get(), configFileName, rt.FileWriter)
 	if err != nil {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
-			localLogger.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
+			rt.LogMgr.Get().Error(strings.TrimPrefix(err.Error(), "FATAL: "))
 		} else {
-			localLogger.Error("Config load failed", wincoe.SafeErr(err))
+			rt.LogMgr.Get().Error("Config load failed", wincoe.SafeErr(err))
 		}
-		finalShutdownSequence(localLogger, 1, os.Exit)
+		finalShutdownSequence(rt.LogMgr.Get(), 1, os.Exit)
 	} else {
-		localLogger.Info("Config loaded", slog.String("filename", configFileName))
+		rt.LogMgr.Get().Info("Config loaded", slog.String("filename", configFileName))
 	}
 
-	// 2. Initialize the Server flawlessly using the resolved config
-	srv := NewServer(localLogger, resolvedCfg, rawCfg, nil)
+	// ── 4. Apply the validated config to the Runtime infrastructure ───────────
+	// Update FileWriter safety settings now that we have the real config values.
+	rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+
+	// Initialize full logging (file handlers, correct console level).
+	// After this call, bugLogger and wincoe.Logger are updated to the full logger.
+	if err2 := rt.LogMgr.ApplyConfig(resolvedCfg); err2 != nil {
+		rt.LogMgr.Get().Error("Failed to initialize full logging", wincoe.SafeErr(err2))
+		finalShutdownSequence(rt.LogMgr.Get(), 1, os.Exit)
+	}
+
+	// ── 5. Create and run the Server ──────────────────────────────────────────
+	srv := NewServer(rt, resolvedCfg, rawCfg)
+	if srv == nil {
+		panic2("BUG: unexpected NewServer returned nil Server instance")
+	}
 	if shouldSaveConfig {
 		// saveConfig internally calls s.getConfig(), which now has the fully updated data
 		if err = srv.saveConfig(); err != nil {
 			//			return fmt.Errorf("config save failed: %w", err)
-			localLogger.Error("Failed to save initial configuration", wincoe.SafeErr(err))
+			rt.LogMgr.Get().Error("Failed to save initial configuration", wincoe.SafeErr(err))
 			srv.shutdown(1)
 		}
 	}
 
-	if err := srv.Run(); err != nil {
-		localLogger.Error("Server exited with error", wincoe.SafeErr(err))
+	if err3 := srv.Run(); err3 != nil {
+		rt.LogMgr.Get().Error("Server exited with error", wincoe.SafeErr(err3))
 		srv.shutdown(1)
 		panic2("BUG: unreachable")
 	}
 
-	localLogger.Error("unreachable")
+	rt.LogMgr.Get().Error("unreachable")
 	//cancel()     // Cancel context for graceful close
 	srv.shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 	panic2("BUG: unreachable")
@@ -2842,77 +2870,6 @@ func isAdminNow() bool {
 	token := windows.GetCurrentProcessToken()
 	elevated := token.IsElevated() // Single bool return
 	return elevated
-}
-
-// initLogging creates the single log with three destinations.
-// Called once after config is loaded (files and console level are known).
-func (s *Server) initFullLogging() *slog.Logger {
-	cfg := s.getConfig()
-	log := s.getLogger()
-
-	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
-
-	var logWriters []*rotatingLogWriter // collected for Close() registration
-
-	// Simple rotation on each log line write (respects your LogMaxSizeMB)
-	openLog := func(path string) io.Writer {
-		if path == "" {
-			panic2("BUG: empty logging filename: '" + path + "'")
-		}
-		path = filepath.Clean(path)
-
-		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
-		if err != nil {
-			// We are still in bootstrap phase → use the bootstrap logger so the error is colored
-			log.Error("cannot open log file", slog.String("file", path), wincoe.SafeErr(err))
-			s.shutdown(1) // Keep your existing fatal shutdown here if the initial boot fails
-			panic2("BUG: unreachable")
-		}
-
-		// We can safely trigger a manual size check/rotation on boot here just in case!
-		// The next Write() will rotate it automatically anyway if it's over the limit.
-		writer.RotateIfNeeded()
-		logWriters = append(logWriters, writer) // register for cleanup
-		return writer
-	}
-
-	fullHandler := slog.NewJSONHandler(openLog(cfg.LogEverythingFile), &slog.HandlerOptions{
-		Level:       slog.LevelDebug, // full log gets EVERYTHING
-		ReplaceAttr: stripColorTags,  // Strips tags safely for files
-	})
-
-	consoleH := NewColoredConsoleHandler(consoleLevel, log) // now uses the real config level
-
-	queryH := queryFilterHandler{
-		Handler: slog.NewJSONHandler(openLog(cfg.LogQueriesFile), &slog.HandlerOptions{
-			ReplaceAttr: stripColorTags, // Strips tags safely for files
-		}),
-	}
-
-	improvedLogger := slog.New(multiHandler{ // <-- this REPLACES the global, but it's only used by Server struct and its children
-		handlers: []slog.Handler{fullHandler, consoleH, queryH},
-	})
-
-	// Reinit closes old rotating writers (if any) and registers the new ones.
-	closers := make([]io.Closer, len(logWriters))
-	for i, w := range logWriters {
-		closers[i] = w
-	}
-	if err := s.logMgr.Reinit(improvedLogger, closers...); err != nil {
-		s.getLogger().Warn("error closing old log files during logger reinit", wincoe.SafeErr(err))
-	}
-
-	//s.applyLogger(improvedLogger) // all consumers automatically see the new logger; Reinit now does the atomic store, pluse the 2 lines below
-	bugLogger.Store(improvedLogger)
-	wincoe.Logger = improvedLogger
-	log = s.getLogger() //to use the new logger on the below log line!
-
-	log.Info("Logging initialized",
-		slog.String("full_log", cfg.LogEverythingFile),
-		slog.String("queries_log", cfg.LogQueriesFile),
-		slog.String("console_level", cfg.ConsoleLogLevel),
-	)
-	return log
 }
 
 func getNextLogBackupName(basePath string) string {
@@ -8671,7 +8628,7 @@ func (s *Server) initAdminUI() {
 	ui := NewAdminUI(
 		&s.liveConfig,
 		&s.liveRawConfig,
-		s.logMgr.Ptr(),
+		s.rt.LogMgr.Ptr(),
 		s.ruleStore,
 		s.hostStore,
 		s.blacklist,
@@ -8687,7 +8644,9 @@ func (s *Server) initAdminUI() {
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
 	ui.OnApplyConfig = func(cfg *Config) error {
-		if err := saveConfig(s.fileWriter, s.getLogger(), cfg); err != nil {
+		//FIXME: is this taking an old FileWriter (potentially, if the impl. changes let's say and FileWriter is a new instance on each Reload rather than get itself updated with new values for retries and backoff_ms) ? the logger is current tho, since function!
+		if err := saveConfig(s.rt.FileWriter, s.getLogger(), cfg); err != nil {
+			//if err:=s.saveConfig() can't do this because it's not assigned yet, the s.Reload() below will "assign" it.
 			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
 		}
 		s.Reload()
@@ -10759,6 +10718,86 @@ func (lm *LoggerManager) Close() error {
 	return errors.Join(errs...)
 }
 
+// ApplyConfig initializes the multi-handler logger (file writers, console level,
+// query-only filter) from a validated Config, atomically swaps the active logger,
+// and closes any previously registered file handles via Reinit.
+// It also synchronises the package-level bugLogger and wincoe.Logger fallbacks.
+func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
+	log := lm.Get()
+	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
+	var logWriters []*rotatingLogWriter // collected for Close() registration
+
+	// Simple rotation on each log line write (respects your LogMaxSizeMB)
+	openLog := func(path string) (io.Writer, error) {
+		if path == "" {
+			return nil, errors.New("empty logging filename")
+		}
+		path = filepath.Clean(path)
+		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
+		if err != nil {
+			return nil, fmt.Errorf("cannot open log file %q: %w", path, err)
+		}
+		// We can safely trigger a manual size check/rotation on boot here just in case!
+		// The next Write() will rotate it automatically anyway if it's over the limit.
+		writer.RotateIfNeeded()
+		logWriters = append(logWriters, writer)
+		return writer, nil
+	}
+
+	fullWriter, err := openLog(cfg.LogEverythingFile)
+	if err != nil {
+		return err
+	}
+	queriesWriter, err := openLog(cfg.LogQueriesFile)
+	if err != nil {
+		return err
+	}
+
+	fullHandler := slog.NewJSONHandler(fullWriter, &slog.HandlerOptions{
+		Level:       slog.LevelDebug, // full log gets EVERYTHING
+		ReplaceAttr: stripColorTags,  // Strips tags safely for files
+	})
+	consoleH := NewColoredConsoleHandler(consoleLevel, log) // now uses the real config level
+	queryH := queryFilterHandler{
+		Handler: slog.NewJSONHandler(queriesWriter, &slog.HandlerOptions{
+			ReplaceAttr: stripColorTags, // Strips tags safely for files
+		}),
+	}
+
+	improvedLogger := slog.New(multiHandler{
+		handlers: []slog.Handler{fullHandler, consoleH, queryH},
+	})
+
+	// Reinit closes old rotating writers (if any) and registers the new ones.
+	closers := make([]io.Closer, len(logWriters))
+	for i, w := range logWriters {
+		closers[i] = w
+	}
+	if reinitErr := lm.Reinit(improvedLogger, closers...); reinitErr != nil {
+		// The new logger is already stored by Reinit; use it for the warning.
+		improvedLogger.Warn("error closing old log files during logger reinit", wincoe.SafeErr(reinitErr))
+	}
+
+	bugLogger.Store(improvedLogger)
+	wincoe.Logger = improvedLogger
+
+	improvedLogger.Info("Logging initialized",
+		slog.String("full_log", cfg.LogEverythingFile),
+		slog.String("queries_log", cfg.LogQueriesFile),
+		slog.String("console_level", cfg.ConsoleLogLevel),
+	)
+	return nil
+}
+
+// Runtime encapsulates long-lived infrastructure dependencies (logger, file
+// writer) that persist across configuration reloads and server lifecycles.
+// OldMain creates and owns a Runtime; NewServer receives it as a dependency
+// rather than constructing these services itself.
+type Runtime struct {
+	LogMgr     *LoggerManager
+	FileWriter wincoe.FileWriter
+}
+
 // newDefaultFileWriter creates a FileWriter seeded with defaultConfig's safety
 // and retry settings. Used when no caller-supplied FileWriter is available.
 func newDefaultFileWriter(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
@@ -10800,5 +10839,5 @@ func (s *Server) saveConfig() error {
 		// Defensive: should never happen in normal operation.
 		panic2("BUG: saveConfig called before liveRawConfig was initialised")
 	}
-	return saveConfig(s.fileWriter, s.getLogger(), rawCfg)
+	return saveConfig(s.rt.FileWriter, s.getLogger(), rawCfg)
 }

@@ -23,6 +23,14 @@ import (
 	"log/slog"
 )
 
+// newTestRuntime builds a minimal Runtime for unit tests.
+// The FileWriter shares the LogManager's atomic pointer so both always see the same logger.
+func newTestRuntime(log *slog.Logger) *Runtime {
+	lm := NewLoggerManager(log)
+	fw := wincoe.NewWin11SafeFileWriter(false, 6, 100, lm.Ptr())
+	return &Runtime{LogMgr: lm, FileWriter: fw}
+}
+
 // ── isLoopbackBindHost ──────────────────────────────────────────────────────
 
 func TestIsLoopbackBindHost(t *testing.T) {
