@@ -4916,119 +4916,31 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		}
 		ui.renderTemplate(w, r, "response-blacklist", data)
 		return
-	}
+	} //end "GET"
 
 	if r.Method == http.MethodPost { //"POST" {
-		action := r.FormValue("action")
+		fields := map[string]string{
+			"action":   r.FormValue("action"),
+			"cidr":     r.FormValue("cidr"),
+			"old_cidr": r.FormValue("old_cidr"),
+		}
 
-		switch action { //doneFIXME: could use tagged switch on action QF1003 default
-		case "add":
-			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
-			if cidrStr != "" {
-				_, n, err := net.ParseCIDR(cidrStr)
-				if err != nil {
-					// Fallback: if they just enter an IP, auto-convert it to CIDR
-					ip := net.ParseIP(cidrStr)
-					if ip != nil {
-						if ip.To4() != nil {
-							_, n, _ = net.ParseCIDR(cidrStr + "/32") //nolint:errcheck // IP is already validated above
-						} else {
-							_, n, _ = net.ParseCIDR(cidrStr + "/128") //nolint:errcheck // IP is already validated above
-						}
-					}
-				}
+		status, err := ui.processBlacklistChange(fields)
+		if err != nil {
+			//log.X lines are inside processBlacklistChange()
+			http.Error(w, err.Error(), status)
+			return
+		}
 
-				if n != nil {
-					// Using the clean add helper method with natural defer unlock
-					if ui.blacklist.TryAdd(n) { //added so it didn't exist
-						log.Info("Successfully added IP/CIDR to response blacklist via WebUI", slog.String("cidr", n.String()))
-						if err := ui.OnSaveBlacklist(); err != nil {
-							ui.logFatal("failed to save response blacklist after add from webUI", err)
-							panic2("BUG: unreachable")
-						}
-						// Instantly evict cached entries that contain the newly blacklisted IP
-						ui.OnInvalidateBlacklist()
-					} else {
-						log.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
-					}
-				} else {
-					log.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
-					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
-					return
-				}
-			} else {
-				log.Warn("Failed to add IP/CIDR to blacklist: empty input")
-			}
-		case "edit":
-			oldCIDR := strings.TrimSpace(r.FormValue("old_cidr"))
-			newCIDRStr := strings.TrimSpace(r.FormValue("cidr"))
-
-			if oldCIDR == "" || newCIDRStr == "" {
-				log.Warn("Failed to edit blacklist entry: old_cidr and cidr required",
-					slog.String("old_cidr", oldCIDR), slog.String("cidr", newCIDRStr))
-				http.Error(w, "old_cidr and cidr required", http.StatusBadRequest)
-				return
-			}
-
-			_, n, err := net.ParseCIDR(newCIDRStr)
-			if err != nil {
-				ip := net.ParseIP(newCIDRStr)
-				if ip != nil {
-					var err2 error
-					if ip.To4() != nil {
-						_, n, err2 = net.ParseCIDR(newCIDRStr + "/32")
-					} else {
-						_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
-					}
-					if err2 != nil {
-						panic2("BUG: impossible" + err2.Error())
-					}
-				}
-			}
-			if n == nil {
-				log.Warn("Failed to edit blacklist entry: invalid IP/CIDR format", slog.String("input", newCIDRStr))
-				http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
-				return
-			}
-
-			// 1. Attempt to update the rule list (Source of Truth) first
-			if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
-				log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(err),
-					slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-			log.Info("Successfully edited response blacklist entry via WebUI",
-				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
-
-			// 2. Only clear the cache if the edit actually succeeded!
-			ui.OnInvalidateBlacklist()
-
-			if err := ui.OnSaveBlacklist(); err != nil {
-				ui.logFatal("failed to save response blacklist after edit from webUI", err)
-				panic2("BUG: unreachable")
-			}
-		case "delete":
-			cidrStr := strings.TrimSpace(r.FormValue("cidr"))
-			// 1. Remove the CIDR from the rules list (Source of Truth)
-			// Using the clean delete helper method with natural defer unlock
-			if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
-				log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI", slog.String("cidr", cidrStr))
-				// 2. Global flush of the cache so it re-reads the updated rules list
-				ui.OnInvalidateBlacklist()
-				if err := ui.OnSaveBlacklist(); err != nil {
-					ui.logFatal("failed to save response blacklist after delete from webUI", err)
-					panic2("BUG: unreachable")
-				}
-			} else {
-				log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
-			}
-
-		default:
-			log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
-		} //switch
+		if err := ui.OnSaveBlacklist(); err != nil {
+			ui.logFatal("failed to save response blacklist after modification from webUI", err)
+			panic2("BUG: unreachable")
+		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
-	}
+	} //end "POST"
+
+	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
 }
 
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
@@ -6212,7 +6124,6 @@ type RuleView struct {
 
 func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
-	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
 	if r.Method == http.MethodGet { //"GET" {
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
@@ -6246,112 +6157,32 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 		ui.renderTemplate(w, r, "rules", data)
 		return
-	}
+	} //end "GET"
 
 	if r.Method == http.MethodPost { //"POST"
-		// Handle delete requests
-		if r.FormValue("delete") == "1" {
-			id := r.FormValue("id")
-			typ := r.FormValue("type")
+		fields := map[string]string{
+			"delete":  r.FormValue("delete"),
+			"id":      r.FormValue("id"),
+			"type":    r.FormValue("type"),
+			"pattern": r.FormValue("pattern"),
+			"enabled": r.FormValue("enabled"),
+		}
 
-			if id == "" || typ == "" {
-				log.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
-				http.Error(w, "id and type required for delete", http.StatusBadRequest)
-				return
-			}
-			if err := validateDNSType(typ); err != nil {
-				log.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			// id is a UUID used only as a map key; sanitize it against injection just in case.
-			if _, modified := sanitizeDomainInput(id); modified {
-				log.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
-				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
-				return
-			}
-
-			pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
-			if err != nil {
-				log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			log.Info("Successfully deleted rule via WebUI", slog.String("id", id), slog.String("type", typ))
-			ui.OnInvalidatePattern(pattern)
-			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
-				ui.logFatal("failed to save whitelist after rule deletion from webUI", err)
-				panic2("BUG: unreachable")
-			}
-			http.Redirect(w, r, "/rules", http.StatusSeeOther)
-			return
-		} //end delete
-
-		patternNormalized := NormalizeDomain(r.FormValue("pattern")) //XXX: must be lowercased for matchPattern later on.
-		typ := r.FormValue("type")
-		id := r.FormValue("id")
-		enabledStr := r.FormValue("enabled")
-		enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
-
-		if patternNormalized == "" || typ == "" {
-			log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternNormalized), slog.String("type", typ))
-			http.Error(w, "Pattern and type required", http.StatusBadRequest)
+		status, err := ui.processRuleChange(fields)
+		if err != nil {
+			//log.X happens inside the process*Change() above
+			http.Error(w, err.Error(), status)
 			return
 		}
 
-		if err := validateDNSType(typ); err != nil {
-			log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := validateRulePattern(patternNormalized); err != nil {
-			log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), wincoe.SafeErr(err))
-			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// id, if present, is a UUID; guard it the same way as in the delete path.
-		if id != "" { //this is an EDIT attempt
-			//     // Edit: Find and update (search all types)
-			// --- EDIT MODE ---
-			if _, modified := sanitizeDomainInput(id); modified {
-				log.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
-				http.Error(w, "id contains illegal characters", http.StatusBadRequest)
-				return
-			}
-			_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
-			if err != nil {
-				log.Warn("Failed to edit rule", wincoe.SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-
-			ui.OnInvalidatePattern(oldPattern)
-			if oldPattern != patternNormalized {
-				ui.OnInvalidatePattern(patternNormalized)
-			}
-			log.Info("Rule edited via WebUI", slog.String("id", id), slog.String("type", typ), slog.String("new_pattern", patternNormalized), slog.Bool("enabled", enabledBool),
-				slog.String("old_pattern", oldPattern))
-		} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
-			// --- ADD MODE ---
-			// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
-
-			newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
-			if err != nil {
-				log.Warn("Failed to add rule", wincoe.SafeErr(err), slog.String("newID", newID), slog.String("type", typ), slog.String("patternLowercased", patternNormalized))
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-			ui.OnInvalidatePattern(patternNormalized)
-			log.Info("Rule added via WebUI", slog.String("patternLowercased", patternNormalized), slog.String("type", typ), slog.String("newID", newID), slog.Bool("enabled", enabledBool))
-		}
-
-		if err := /*uses lock!*/ ui.OnSaveWhitelist(); err != nil {
-			ui.logFatal("failed to save whitelist after rule add/edit from webUI", err)
+		if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
+			ui.logFatal("failed to save whitelist after rule modification from webUI", err)
 			panic2("BUG: unreachable")
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
-	}
+	} //end "POST"
+	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
 }
 
 // withRuleRemovedAt safely returns a new slice with the RuleEntry at the given index removed,
@@ -6538,122 +6369,32 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 		ui.renderTemplate(w, r, "hosts", data)
 		return
-	}
+	} //end "GET"
 
 	if r.Method == http.MethodPost { //"POST" {
-		// --- DELETE ---
-		if r.FormValue("delete") == "1" {
-			patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
-			if patternLowercased == "" {
-				log.Warn("Failed to delete local host: pattern required")
-				http.Error(w, "pattern required for delete", http.StatusBadRequest)
-				return
-			}
-
-			if err := validateRulePattern(patternLowercased); err != nil {
-				log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
-				http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			if ui.hostStore.DeleteHost(patternLowercased) {
-				log.Info("Successfully deleted local host override via WebUI", slog.String("pattern", patternLowercased))
-				// --- NEW: Invalidate the cache for the deleted pattern ---
-				ui.OnInvalidatePattern(patternLowercased)
-
-				if err := ui.OnSaveHosts(); err != nil {
-					ui.logFatal("failed to save local hosts after deletion", err)
-					panic2("BUG: unreachable")
-				}
-				http.Redirect(w, r, "/hosts", http.StatusSeeOther)
-				return
-			}
-
-			log.Warn("Failed to delete local host: host not found", slog.String("pattern", patternLowercased))
-			http.Error(w, "host not found", http.StatusNotFound)
-			return
+		fields := map[string]string{
+			"delete":      r.FormValue("delete"),
+			"pattern":     r.FormValue("pattern"),
+			"old_pattern": r.FormValue("old_pattern"),
+			"edit":        r.FormValue("edit"),
+			"ips":         r.FormValue("ips"),
 		}
 
-		// --- ADD / EDIT ---
-		patternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("pattern")))
-		oldPatternLowercased := strings.ToLower(strings.TrimSpace(r.FormValue("old_pattern")))
-		isEdit := r.FormValue("edit") == "1"
-
-		if patternLowercased == "" {
-			log.Warn("Failed to add/edit local host: hostname required")
-			http.Error(w, "hostname/pattern required", http.StatusBadRequest)
-			return
-		}
-		//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
-
-		if err := validateRulePattern(patternLowercased); err != nil {
-			log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
-			http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		// old_pattern (edit path) needs the same check.
-		if isEdit && oldPatternLowercased != "" {
-			if err := validateRulePattern(oldPatternLowercased); err != nil {
-				log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(err))
-				http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-
-		ipsRaw := strings.Split(r.FormValue("ips"), ",")
-		var netIPs []net.IP
-		for _, ipStr := range ipsRaw {
-			ipStr = strings.TrimSpace(ipStr)
-			if ipStr == "" {
-				continue
-			}
-			if ip := net.ParseIP(ipStr); ip != nil {
-				netIPs = append(netIPs, ip)
-			} else {
-				log.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
-				http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
-				return
-			}
-		}
-
-		if len(netIPs) == 0 {
-			log.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", patternLowercased))
-			http.Error(w, "at least one valid IP required", http.StatusBadRequest)
-			return
-		}
-
-		var err error = nil
-		if isEdit {
-			ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
-		} else {
-			//it's Add (Delete was handled above)
-			err = ui.hostStore.AddHost(patternLowercased, netIPs)
-		}
-
+		status, err := ui.processHostChange(fields)
 		if err != nil {
-			log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
-			http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
+			http.Error(w, err.Error(), status)
 			return
 		}
-
-		// --- NEW: Cache Invalidation ---
-		// If this was an edit, purge the old pattern's cached entries, if different than new pattern
-		if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
-			ui.OnInvalidatePattern(oldPatternLowercased)
-		}
-		// Always purge the new pattern so the local override takes immediate effect
-		// (e.g., clearing out previous NXDOMAINs or external IPs)
-		ui.OnInvalidatePattern(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
-		// -------------------------------
-		log.Info("Successfully added/edited local host override via WebUI", slog.String("pattern", patternLowercased), slog.Int("ip_count", len(netIPs)))
 
 		if err := ui.OnSaveHosts(); err != nil {
-			ui.logFatal("failed to save local hosts after add/edit", err)
+			ui.logFatal("failed to save local hosts after modification", err)
 			panic2("BUG: unreachable")
 		}
-
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
-	}
+	} // end of "POST"
+
+	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
 }
 
 // renderTemplate is a DRY helper to execute templates safely into a buffer
@@ -7849,25 +7590,23 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 				reference = res.msg
 				refIdx = i
 				upstreamState1.UpstreamUsed = strURL
-			} else {
-				if !compareDNSResponses(reference, res.msg) {
-					// Mismatch means failure to agree
-					upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
+			} else if !compareDNSResponses(reference, res.msg) {
+				// Mismatch means failure to agree
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
 
-					// Extract IPs for the log message
-					refIPs := extractIPs(reference)
-					curIPs := extractIPs(res.msg)
-					log.Warn("upstream DNS response mismatch! dropping query to protect client",
-						slog.String("query", req.Question[0].Name),
-						slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()), //um.upstreamURLs[refIdx].String()),
-						SafeStringSlice("ips_returned1", refIPs),
-						slog.String("upstream_DoH_url2", strURL),
-						SafeStringSlice("ips_returned2", curIPs),
-						slog.String("reference", reference.String()),
-						slog.String("current", res.msg.String()),
-					)
-					return nil, upstreamState1 // Drop the query because of answer discrepancy
-				}
+				// Extract IPs for the log message
+				refIPs := extractIPs(reference)
+				curIPs := extractIPs(res.msg)
+				log.Warn("upstream DNS response mismatch! dropping query to protect client",
+					slog.String("query", req.Question[0].Name),
+					slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()), //um.upstreamURLs[refIdx].String()),
+					SafeStringSlice("ips_returned1", refIPs),
+					slog.String("upstream_DoH_url2", strURL),
+					SafeStringSlice("ips_returned2", curIPs),
+					slog.String("reference", reference.String()),
+					slog.String("current", res.msg.String()),
+				)
+				return nil, upstreamState1 // Drop the query because of answer discrepancy
 			}
 		}
 
@@ -10875,222 +10614,27 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	saveBlacklist := false
 
 	for _, change := range changes {
-		fields := change.Fields
+		var status int
+		var err error
+
 		switch change.URL {
 		case "/rules":
-			if fields["delete"] == "1" {
-				id := fields["id"]
-				typ := fields["type"]
-				if id == "" || typ == "" {
-					http.Error(w, "id and type required for delete", http.StatusBadRequest)
-					return
-				}
-				if err := validateDNSType(typ); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if _, modified := sanitizeDomainInput(id); modified {
-					http.Error(w, "id contains illegal characters", http.StatusBadRequest)
-					return
-				}
-
-				pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusNotFound)
-					return
-				}
-				ui.OnInvalidatePattern(pattern)
-				saveRules = true
-			} else {
-				patternNormalized := NormalizeDomain(fields["pattern"])
-				typ := fields["type"]
-				id := fields["id"]
-				enabledStr := fields["enabled"]
-				enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
-
-				if patternNormalized == "" || typ == "" {
-					http.Error(w, "Pattern and type required", http.StatusBadRequest)
-					return
-				}
-				if err := validateDNSType(typ); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if err := validateRulePattern(patternNormalized); err != nil {
-					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-
-				if id != "" {
-					if _, modified := sanitizeDomainInput(id); modified {
-						http.Error(w, "id contains illegal characters", http.StatusBadRequest)
-						return
-					}
-					_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusConflict)
-						return
-					}
-					ui.OnInvalidatePattern(oldPattern)
-					if oldPattern != patternNormalized {
-						ui.OnInvalidatePattern(patternNormalized)
-					}
-				} else {
-					_, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusConflict)
-						return
-					}
-					ui.OnInvalidatePattern(patternNormalized)
-				}
-				saveRules = true
-			}
-
+			status, err = ui.processRuleChange(change.Fields)
+			saveRules = true
 		case "/hosts":
-			if fields["delete"] == "1" {
-				patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
-				if patternLowercased == "" {
-					http.Error(w, "pattern required for delete", http.StatusBadRequest)
-					return
-				}
-				if err := validateRulePattern(patternLowercased); err != nil {
-					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				if ui.hostStore.DeleteHost(patternLowercased) {
-					ui.OnInvalidatePattern(patternLowercased)
-					saveHosts = true
-				} else {
-					http.Error(w, "host not found", http.StatusNotFound)
-					return
-				}
-			} else {
-				patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
-				oldPatternLowercased := strings.ToLower(strings.TrimSpace(fields["old_pattern"]))
-				isEdit := fields["edit"] == "1"
-
-				if patternLowercased == "" {
-					http.Error(w, "hostname/pattern required", http.StatusBadRequest)
-					return
-				}
-				if err := validateRulePattern(patternLowercased); err != nil {
-					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				if isEdit && oldPatternLowercased != "" {
-					if err := validateRulePattern(oldPatternLowercased); err != nil {
-						http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
-						return
-					}
-				}
-
-				ipsRaw := strings.Split(fields["ips"], ",")
-				var netIPs []net.IP
-				for _, ipStr := range ipsRaw {
-					ipStr = strings.TrimSpace(ipStr)
-					if ipStr == "" {
-						continue
-					}
-					if ip := net.ParseIP(ipStr); ip != nil {
-						netIPs = append(netIPs, ip)
-					} else {
-						http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
-						return
-					}
-				}
-				if len(netIPs) == 0 {
-					http.Error(w, "at least one valid IP required", http.StatusBadRequest)
-					return
-				}
-
-				var err error = nil
-				if isEdit {
-					ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
-				} else {
-					err = ui.hostStore.AddHost(patternLowercased, netIPs)
-				}
-
-				if err != nil {
-					http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
-					return
-				}
-
-				if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
-					ui.OnInvalidatePattern(oldPatternLowercased)
-				}
-				ui.OnInvalidatePattern(patternLowercased)
-				saveHosts = true
-			}
-
+			status, err = ui.processHostChange(change.Fields)
+			saveHosts = true
 		case "/response-blacklist":
-			action := fields["action"]
-			if action == "delete" {
-				cidrStr := strings.TrimSpace(fields["cidr"])
-				if ui.tryDeleteBlacklistIP(cidrStr) {
-					ui.OnInvalidateBlacklist()
-					saveBlacklist = true
-				}
-			} else if action == "add" {
-				cidrStr := strings.TrimSpace(fields["cidr"])
-				if cidrStr != "" {
-					_, n, err := net.ParseCIDR(cidrStr)
-					if err != nil {
-						ip := net.ParseIP(cidrStr)
-						if ip != nil {
-							if ip.To4() != nil {
-								_, n, _ = net.ParseCIDR(cidrStr + "/32")
-							} else {
-								_, n, _ = net.ParseCIDR(cidrStr + "/128")
-							}
-						}
-					}
-					if n != nil {
-						if ui.blacklist.TryAdd(n) {
-							ui.OnInvalidateBlacklist()
-							saveBlacklist = true
-						}
-					} else {
-						http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
-						return
-					}
-				}
-			} else if action == "edit" {
-				oldCIDR := strings.TrimSpace(fields["old_cidr"])
-				newCIDRStr := strings.TrimSpace(fields["cidr"])
-				if oldCIDR == "" || newCIDRStr == "" {
-					http.Error(w, "old_cidr and cidr required", http.StatusBadRequest)
-					return
-				}
-				_, n, err := net.ParseCIDR(newCIDRStr)
-				if err != nil {
-					ip := net.ParseIP(newCIDRStr)
-					if ip != nil {
-						var err2 error
-						if ip.To4() != nil {
-							_, n, err2 = net.ParseCIDR(newCIDRStr + "/32")
-						} else {
-							_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
-						}
-						if err2 != nil {
-							http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
-							return
-						}
-					}
-				}
-				if n == nil {
-					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
-					return
-				}
-				if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
-				}
-				ui.OnInvalidateBlacklist()
-				saveBlacklist = true
-			}
+			status, err = ui.processBlacklistChange(change.Fields)
+			saveBlacklist = true
 		default:
-			http.Error(w, "Unknown target URL in batch", http.StatusBadRequest)
-			return
+			status, err = http.StatusBadRequest, errors.New("unknown target URL in batch")
+		}
+
+		if err != nil {
+			log.Warn("Batch apply failed for a record", slog.String("url", change.URL), wincoe.SafeErr(err))
+			http.Error(w, err.Error(), status)
+			return // Fails the rest of the batch and surfaces the HTTP error to the frontend
 		}
 	}
 
@@ -11116,4 +10660,286 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
 	w.WriteHeader(http.StatusOK)
+}
+
+func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
+	log := ui.getLogger()
+
+	// Handle delete requests
+	if fields["delete"] == "1" {
+		id := fields["id"]
+		typ := fields["type"]
+		if id == "" || typ == "" {
+			log.Warn("Failed to delete rule: id and type required", slog.String("id", id), slog.String("type", typ))
+			return http.StatusBadRequest, errors.New("id and type required for delete")
+		}
+		if err := validateDNSType(typ); err != nil {
+			log.Warn("Failed to delete rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
+			return http.StatusBadRequest, err
+		}
+		// id is a UUID used only as a map key; sanitize it against injection just in case.
+		if _, modified := sanitizeDomainInput(id); modified {
+			log.Warn("Failed to delete rule: id contains illegal characters", slog.String("id", id))
+			return http.StatusBadRequest, errors.New("id contains illegal characters")
+		}
+		pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
+		if err != nil {
+			log.Warn("Failed to delete rule: rule not found", slog.String("id", id), slog.String("type", typ))
+			return http.StatusNotFound, err
+		}
+
+		ui.OnInvalidatePattern(pattern)
+		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ))
+		return http.StatusOK, nil
+	} //end delete
+
+	//now it's either Edit or Add, below: FIXME: needs a better way to say it's Edit or Add than comparing id!="" respectively id==""
+	patternNormalized := NormalizeDomain(fields["pattern"]) //XXX: must be lowercased for matchPattern later on.
+	typ := fields["type"]
+	id := fields["id"]
+	enabledStr := fields["enabled"]
+	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
+
+	if patternNormalized == "" || typ == "" {
+		log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternNormalized), slog.String("type", typ))
+		return http.StatusBadRequest, errors.New("pattern and type required")
+	}
+	if err := validateDNSType(typ); err != nil {
+		log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
+		return http.StatusBadRequest, err
+	}
+	if err := validateRulePattern(patternNormalized); err != nil {
+		log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), wincoe.SafeErr(err))
+		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
+	}
+
+	// id, if present, is a UUID; guard it the same way as in the delete path.
+	if id != "" { //this is an EDIT attempt
+		//     // Edit: Find and update (search all types)
+		// --- EDIT MODE ---
+		if _, modified := sanitizeDomainInput(id); modified {
+			log.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
+			return http.StatusBadRequest, errors.New("id contains illegal characters")
+		}
+		_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
+		if err != nil {
+			log.Warn("Failed to edit rule", wincoe.SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
+			return http.StatusConflict, err
+		}
+
+		ui.OnInvalidatePattern(oldPattern)
+		if oldPattern != patternNormalized {
+			ui.OnInvalidatePattern(patternNormalized)
+		}
+		log.Info("Rule edited via WebUI/Batch",
+			slog.String("id", id),
+			slog.String("type", typ),
+			slog.String("new_pattern", patternNormalized),
+			slog.Bool("enabled", enabledBool),
+			slog.String("old_pattern", oldPattern))
+	} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
+		// --- ADD MODE ---
+		// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
+
+		newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
+		if err != nil {
+			log.Warn("Failed to add rule",
+				wincoe.SafeErr(err),
+				slog.String("newID", newID),
+				slog.String("type", typ),
+				slog.String("patternLowercased", patternNormalized))
+			return http.StatusConflict, err
+		}
+
+		ui.OnInvalidatePattern(patternNormalized)
+		log.Info("Rule added via WebUI/Batch",
+			slog.String("patternLowercased", patternNormalized),
+			slog.String("type", typ),
+			slog.String("newID", newID),
+			slog.Bool("enabled", enabledBool))
+	}
+	return http.StatusOK, nil
+}
+
+func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
+	log := ui.getLogger()
+	// --- DELETE ---
+	if fields["delete"] == "1" {
+		patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
+		if patternLowercased == "" {
+			log.Warn("Failed to delete local host: pattern required")
+			return http.StatusBadRequest, errors.New("pattern required for delete")
+		}
+		if err := validateRulePattern(patternLowercased); err != nil {
+			log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
+			return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
+		}
+		if ui.hostStore.DeleteHost(patternLowercased) {
+			ui.OnInvalidatePattern(patternLowercased)
+			log.Info("Successfully deleted local host override via WebUI/Batch", slog.String("pattern", patternLowercased))
+			return http.StatusOK, nil
+		}
+		log.Warn("Failed to delete local host: host not found", slog.String("pattern", patternLowercased))
+		return http.StatusNotFound, errors.New("host not found")
+	} //end "delete"
+
+	// --- ADD / EDIT ---
+	patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
+	oldPatternLowercased := strings.ToLower(strings.TrimSpace(fields["old_pattern"]))
+	isEdit := fields["edit"] == "1"
+
+	if patternLowercased == "" {
+		log.Warn("Failed to add/edit local host: hostname required")
+		return http.StatusBadRequest, errors.New("hostname/pattern required")
+	}
+	//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
+	if err := validateRulePattern(patternLowercased); err != nil {
+		log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
+		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
+	}
+	// old_pattern (edit path) needs the same check.
+	if isEdit && oldPatternLowercased != "" {
+		if err := validateRulePattern(oldPatternLowercased); err != nil {
+			log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(err))
+			return http.StatusBadRequest, errors.New("Invalid old_pattern: " + err.Error())
+		}
+	}
+
+	ipsRaw := strings.Split(fields["ips"], ",")
+	var netIPs []net.IP
+	for _, ipStr := range ipsRaw {
+		ipStr = strings.TrimSpace(ipStr)
+		if ipStr == "" {
+			continue
+		}
+		if ip := net.ParseIP(ipStr); ip != nil {
+			netIPs = append(netIPs, ip)
+		} else {
+			log.Warn("Failed to add/edit local host: invalid IP address", slog.String("ip", ipStr))
+			return http.StatusBadRequest, errors.New("invalid IP address: " + ipStr)
+		}
+	}
+	if len(netIPs) == 0 {
+		log.Warn("Failed to add/edit local host: no valid IP required", slog.String("pattern", patternLowercased))
+		return http.StatusBadRequest, errors.New("at least one valid IP required")
+	}
+
+	var err error
+	if isEdit {
+		ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
+	} else {
+		//it's Add (Delete was handled above)
+		err = ui.hostStore.AddHost(patternLowercased, netIPs)
+	}
+
+	if err != nil {
+		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
+		return http.StatusConflict, errors.New("local host with this pattern already exists")
+	}
+
+	// --- NEW: Cache Invalidation ---
+	// If this was an edit, purge the old pattern's cached entries, if different than new pattern
+	if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
+		ui.OnInvalidatePattern(oldPatternLowercased)
+	}
+	// Always purge the new pattern so the local override takes immediate effect
+	// (e.g., clearing out previous NXDOMAINs or external IPs)
+	ui.OnInvalidatePattern(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
+	log.Info("Successfully added/edited local host override via WebUI/Batch",
+		slog.String("pattern", patternLowercased),
+		slog.Int("ip_count", len(netIPs)))
+	return http.StatusOK, nil
+}
+
+func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error) {
+	log := ui.getLogger()
+	action := fields["action"]
+
+	switch action { //doneFIXME: could use tagged switch on action QF1003 default
+	case "delete":
+		cidrStr := strings.TrimSpace(fields["cidr"])
+		// 1. Remove the CIDR from the rules list (Source of Truth)
+		// Using the clean delete helper method with natural defer unlock
+
+		if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
+			// 2. Global flush of the cache so it re-reads the updated rules list
+			ui.OnInvalidateBlacklist()
+			log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI/Batch", slog.String("cidr", cidrStr))
+			return http.StatusOK, nil
+		}
+		log.Warn("Failed to delete IP/CIDR from blacklist: not found", slog.String("cidr", cidrStr))
+		return http.StatusNotFound, errors.New("IP/CIDR not found")
+	case "add":
+		cidrStr := strings.TrimSpace(fields["cidr"])
+		if cidrStr != "" {
+			_, n, err := net.ParseCIDR(cidrStr)
+			if err != nil {
+				// Fallback: if they just enter an IP, auto-convert it to CIDR
+				ip := net.ParseIP(cidrStr)
+				if ip != nil {
+					if ip.To4() != nil {
+						_, n, _ = net.ParseCIDR(cidrStr + "/32") //nolint:errcheck // IP is already validated above
+					} else {
+						_, n, _ = net.ParseCIDR(cidrStr + "/128") //nolint:errcheck // IP is already validated above
+					}
+				}
+			}
+			if n != nil {
+				// Using the clean add helper method with natural defer unlock
+				if ui.blacklist.TryAdd(n) {
+					// Instantly evict cached entries that contain the newly blacklisted IP
+					ui.OnInvalidateBlacklist()
+					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()))
+					return http.StatusOK, nil
+				}
+				log.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
+				return http.StatusConflict, errors.New("IP/CIDR already exists")
+			}
+			log.Warn("Failed to add IP/CIDR to blacklist: invalid format", slog.String("input", cidrStr))
+			return http.StatusBadRequest, errors.New("invalid IP or CIDR format")
+		}
+		log.Warn("Failed to add IP/CIDR to blacklist: empty input")
+		return http.StatusBadRequest, errors.New("empty input")
+	case "edit":
+		oldCIDR := strings.TrimSpace(fields["old_cidr"])
+		newCIDRStr := strings.TrimSpace(fields["cidr"])
+		if oldCIDR == "" || newCIDRStr == "" {
+			log.Warn("Failed to edit blacklist entry: old_cidr and cidr required",
+				slog.String("old_cidr", oldCIDR), slog.String("cidr", newCIDRStr))
+			return http.StatusBadRequest, errors.New("old_cidr and cidr required")
+		}
+		_, n, err := net.ParseCIDR(newCIDRStr)
+		if err != nil {
+			ip := net.ParseIP(newCIDRStr)
+			if ip != nil {
+				var err2 error
+				if ip.To4() != nil {
+					_, n, err2 = net.ParseCIDR(newCIDRStr + "/32")
+				} else {
+					_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
+				}
+				if err2 != nil {
+					return http.StatusBadRequest, errors.New("invalid IP or CIDR format")
+				}
+			}
+		}
+		if n == nil {
+			log.Warn("Failed to edit blacklist entry: invalid IP/CIDR format", slog.String("input", newCIDRStr))
+			return http.StatusBadRequest, errors.New("invalid IP or CIDR format")
+		}
+		// 1. Attempt to update the rule list (Source of Truth) first
+
+		if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
+			log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(err),
+				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+
+			return http.StatusConflict, err
+		}
+		ui.OnInvalidateBlacklist()
+		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+		return http.StatusOK, nil
+	default:
+		log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
+	} //switch
+	return http.StatusBadRequest, fmt.Errorf("unknown action: %q", action)
 }
