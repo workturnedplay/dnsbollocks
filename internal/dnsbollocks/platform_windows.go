@@ -319,8 +319,7 @@ func getBugLogger() *slog.Logger {
 }
 
 // NewServer initializes a new Server instance using pre-validated configurations.
-func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config) *Server {
-	//func NewServer(logger *slog.Logger) *Server {
+func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config, fw wincoe.FileWriter) *Server { //func NewServer(logger *slog.Logger) *Server {
 	s := &Server{
 		ruleStore:    newRuleStore(),
 		hostStore:    newHostStore(),
@@ -343,14 +342,14 @@ func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config) *Server {
 
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
-	// fileWriter is now initialized flawlessly with the actual configuration settings!
-	s.fileWriter = wincoe.NewWin11SafeFileWriter(
-		/*so these 3 from cfg. have actually the default value for themselves because at this point, the server itself didn't even read the config yet! FIXME: must decouple config greading with NewServer starting also this means the s.shutdown(exitCode) too! */
-		resolvedCfg.ExtraSafety,              //this is overwriten at loadMainConfig time which happens at Run() and at Ctrl+R aka reload.
-		resolvedCfg.FileWriterMaxRetries,     //doneTODO: ^
-		resolvedCfg.FileWriterRetryBackoffMs, //doneTODO: ^
-
-		s.logMgr.Ptr())
+	if fw == nil {
+		fw = wincoe.NewWin11SafeFileWriter(
+			resolvedCfg.ExtraSafety,
+			resolvedCfg.FileWriterMaxRetries,
+			resolvedCfg.FileWriterRetryBackoffMs,
+			s.logMgr.Ptr())
+	}
+	s.fileWriter = fw
 
 	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
@@ -2197,7 +2196,7 @@ func (s *Server) Reload() {
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
 
 	// 1. Load and validate the new config cleanly from disk using our decoupled helper
-	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName)
+	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.fileWriter)
 	if err != nil {
 		// s.logFatal("main config ("+configFileName+") reload failed:", err)
 		// panic2("BUG: unreachable")
@@ -2497,7 +2496,7 @@ func OldMain() {
 	}
 
 	// 1. Load and validate configuration decoupled from the Server struct
-	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(localLogger, configFileName)
+	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(localLogger, configFileName, nil)
 	if err != nil {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
@@ -2511,7 +2510,7 @@ func OldMain() {
 	}
 
 	// 2. Initialize the Server flawlessly using the resolved config
-	srv := NewServer(localLogger, resolvedCfg, rawCfg)
+	srv := NewServer(localLogger, resolvedCfg, rawCfg, nil)
 	if shouldSaveConfig {
 		// saveConfig internally calls s.getConfig(), which now has the fully updated data
 		if err = srv.saveConfig(); err != nil {
@@ -2536,8 +2535,9 @@ func OldMain() {
 const cacheMinTTLClamp = 10 // seconds
 
 // LoadAndValidateConfig reads, parses, validates, and clamps the configuration.
-// It is completely decoupled from the Server struct to allow pre-initialization.
-func LoadAndValidateConfig(log *slog.Logger, cfgFname string) (*Config, *Config, bool, error) {
+// fw is used for CheckPowerLossFile; if nil a temporary FileWriter is created
+// with default settings (appropriate for the first call before config is loaded).
+func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWriter) (*Config, *Config, bool, error) {
 	// func (s *Server) loadMainConfig() error {
 	//log := s.getLogger()
 	//cfg := s.getConfig()
@@ -2578,10 +2578,13 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string) (*Config, *Config,
 	// Temporarily spin up a file writer solely to check for power-loss corruption
 	// using the default safety settings before we attempt to read the file.
 	{
-		var tempLogger atomic.Pointer[slog.Logger]
-		tempLogger.Store(log)
-		tempFW := wincoe.NewWin11SafeFileWriter(defaultCfg.ExtraSafety, defaultCfg.FileWriterMaxRetries, defaultCfg.FileWriterRetryBackoffMs, &tempLogger)
-		tempFW.CheckPowerLossFile(cfgFname)
+		checkFW := fw
+		if checkFW == nil {
+			var lp atomic.Pointer[slog.Logger]
+			lp.Store(log)
+			checkFW = newDefaultFileWriter(&lp)
+		}
+		checkFW.CheckPowerLossFile(cfgFname)
 	}
 
 	data, err := os.ReadFile(cfgFname)
@@ -2823,30 +2826,6 @@ func hostFromURL(raw string) (string, error) {
 		return "", fmt.Errorf("hostname/IP is empty for %q", raw)
 	}
 	return host, nil
-}
-
-// // SaveConfig safely marshals and writes the configuration to disk.
-// // It is completely decoupled from the Server struct.
-// func SaveConfig(log *slog.Logger, rawCfg *Config) error {
-func (s *Server) saveConfig() error {
-	log := s.getLogger()
-	//log.Debug("saving config...")
-
-	rawCfg := s.liveRawConfig.Load()
-	if rawCfg == nil {
-		// Defensive: should never happen in normal operation.
-		panic2("BUG: saveConfig called before liveRawConfig was initialised")
-	}
-
-	data, err := marshalConfigWithDescriptions(rawCfg)
-	if err != nil {
-		return fmt.Errorf("config marshal failed: %w", err)
-	}
-	if err := s.fileWriter.SafeWriteFile(configFileName, data, 0600); err != nil {
-		return fmt.Errorf("config write failed: %w", err)
-	}
-	log.Info("Saved config file", slog.String("config_file", configFileName))
-	return nil
 }
 
 var isAdmin bool // Package level
@@ -8699,18 +8678,9 @@ func (s *Server) initAdminUI() {
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
 	ui.OnApplyConfig = func(cfg *Config) error {
-		// 1. Convert struct to JSON with inline documentation descriptions
-		newData, err := marshalConfigWithDescriptions(cfg)
-		if err != nil {
-			return fmt.Errorf("marshal error: %w", err)
-		}
-
-		// 2. Commit to disk
-		if err := s.fileWriter.SafeWriteFile(configFileName, newData, 0600); err != nil {
+		if err := saveConfig(s.fileWriter, s.getLogger(), cfg); err != nil {
 			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
 		}
-
-		// 3. Trigger hot-reload logic here...
 		s.Reload()
 		return nil
 	}
@@ -10778,4 +10748,48 @@ func (lm *LoggerManager) Close() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// newDefaultFileWriter creates a FileWriter seeded with defaultConfig's safety
+// and retry settings. Used when no caller-supplied FileWriter is available.
+func newDefaultFileWriter(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
+	def := defaultConfig()
+	return wincoe.NewWin11SafeFileWriter(
+		def.ExtraSafety,
+		def.FileWriterMaxRetries,
+		def.FileWriterRetryBackoffMs,
+		lp,
+	)
+}
+
+// saveConfig marshals rawCfg and writes it to configFileName via fw.
+// If fw is nil a temporary FileWriter is created with default settings.
+func saveConfig(fw wincoe.FileWriter, log *slog.Logger, rawCfg *Config) error {
+	if rawCfg == nil {
+		panic2("BUG: saveConfig called with nil rawCfg")
+	}
+	if fw == nil {
+		var lp atomic.Pointer[slog.Logger]
+		lp.Store(log)
+		fw = newDefaultFileWriter(&lp)
+	}
+	data, err := marshalConfigWithDescriptions(rawCfg)
+	if err != nil {
+		return fmt.Errorf("config marshal failed: %w", err)
+	}
+	if err := fw.SafeWriteFile(configFileName, data, 0600); err != nil {
+		return fmt.Errorf("config write failed: %w", err)
+	}
+	log.Info("Saved config file", slog.String("config_file", configFileName))
+	return nil
+}
+
+// saveConfig is the Server method wrapper around the free function.
+func (s *Server) saveConfig() error {
+	rawCfg := s.liveRawConfig.Load()
+	if rawCfg == nil {
+		// Defensive: should never happen in normal operation.
+		panic2("BUG: saveConfig called before liveRawConfig was initialised")
+	}
+	return saveConfig(s.fileWriter, s.getLogger(), rawCfg)
 }

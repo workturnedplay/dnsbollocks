@@ -22,7 +22,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	//logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := defaultConfig()
-	server := NewServer(logger, &cfg, &cfg)
+	server := NewServer(logger, &cfg, &cfg, nil)
 	server.exitFn = func(code int) { panic(fmt.Sprintf("exit:%d", code)) }
 	// now server.shutdown(N) panics instead of calling os.Exit
 	//cfg := server.getConfig()
