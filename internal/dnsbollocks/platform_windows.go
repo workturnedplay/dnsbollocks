@@ -7421,7 +7421,7 @@ type UpstreamManager struct {
 
 	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
 	//upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
-	activeSet atomic.Pointer[upstreamSet] // ← the atomic pair
+	activeSet atomic.Pointer[UpstreamSet] // ← the atomic pair
 	buildMu   sync.Mutex                  // prevents concurrent builds only
 	// dohMu     sync.Mutex                  // Only used for initialization/reloads
 
@@ -7674,10 +7674,10 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 	}
 }
 
-// upstreamSet is an immutable snapshot of clients + their failover selector.
+// UpstreamSet is an immutable snapshot of clients + their failover selector.
 // It is replaced atomically on reload, so ForwardToDoH always sees a
 // consistent pair — never new clients with stale failover or vice versa.
-type upstreamSet struct {
+type UpstreamSet struct {
 	upstreams []Upstream
 	failover  *FailoverSelector
 }
@@ -7696,7 +7696,7 @@ func (um *UpstreamManager) ReInitDoHClients() {
 
 // GetOrBuildSet will init if not already done so
 // can panic/shutdown
-func (um *UpstreamManager) GetOrBuildSet() *upstreamSet {
+func (um *UpstreamManager) GetOrBuildSet() *UpstreamSet {
 	set := um.activeSet.Load()
 	if set == nil {
 		set = um.buildSet(false)
@@ -7705,7 +7705,7 @@ func (um *UpstreamManager) GetOrBuildSet() *upstreamSet {
 }
 
 // can panic/shutdown
-func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
+func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 	log := um.getLogger()
 	log.Debug("starting UpstreamManager.buildSet()")
 	// 3. LOCK (Slow path, ensures only one goroutine builds the client)
@@ -7853,7 +7853,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *upstreamSet {
 		})
 	}
 
-	newSet := &upstreamSet{
+	newSet := &UpstreamSet{
 		upstreams: newUpstreams,
 		failover:  NewFailoverSelector(um.liveLogger), // fresh: activeIndex=0, allFailed=false
 	}
