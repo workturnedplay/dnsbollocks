@@ -400,6 +400,7 @@
             eSubmit.preventDefault();
             
             const newPattern = patternInput.value.trim().toLowerCase();
+            const newIPs = ipsInput.value.trim();
             sessionStorage.setItem('hostsTable_lastInteracted', newPattern);
             
             // Let the browser gather all form-linked inputs automatically!

@@ -1,4 +1,10 @@
 todo:
+* on /rules page the Stage button will create a new non-editing line and still remain itself in Edit mode! also doesn't show the banner that there are staged things and how many, so no Apply or Discard
+
+
+* find out why say on /response-blacklist page if I Edit, Stage, Discard All it won't reload page (since it does that location.reload()) at all, not even in Console (F12 in firefox) running "location.reload()" doesn't reload page, says undefined (return value? possibly normal) - might be a firefox 152.0.5 bug?
+
+* make Discard All button in /config also ask for confirmation before navigating away (aka location.reload()) just like say /response-blacklist page does.
 
 * make Add/Delete to also stage? for the 3 pages (not for /config): /rules /hosts /response-blacklist
 
@@ -22,6 +28,7 @@ no:
 
 
 done:
+//* on /hosts Stage button does nothing, i forgot a line
 //* make the applying of all staged changes happen in 1 POST not 1 per each change and if any fails stop.
 //* allow multiple rows(like from /rules /hosts and /response-blacklist but not /config which already has this feature) to be in Edit mode and if more than one, the Save button should transform into Stage and thus don't apply immediately when pressed (just like in /config page), the Apply should happen only when the global Apply button (which would appear, similar to how /config does it) is pressed (or Cancel if cancelled).
 //* also decouple NewServer and config.json loading so that when NewServer is called the config is already not the defaults which affects the in-NewServer inits like: s.fileWriter = wincoe.NewWin11SafeFileWriter(...)
