@@ -50,6 +50,16 @@
     <script src="/static/app.js?v={{.Version}}" defer></script>
 </body></html>
 
+{{define "staged-table-banner"}}
+<div class="staged-table-banner staged-changes-banner">
+    <strong>Unsaved Changes!</strong> You have staged <span class="staged-table-count">0</span> modification(s).
+    <div class="config-banner-actions">
+        <button type="button" class="btn-save btn-padded js-apply-table-btn">Apply &amp; Reload</button>
+        <button type="button" class="btn-discard-all js-discard-table-btn">Discard All</button>
+    </div>
+</div>
+{{end}}
+
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <h2>Add New Rule</h2>
@@ -75,6 +85,7 @@
 </div>
 
 <h2>Whitelist Rules</h2>
+{{template "staged-table-banner" .}}
 <table id="rulesTable">
     <colgroup>
         <col class="col-12">
@@ -130,7 +141,7 @@
             <form method="post" action="/rules" class="edit-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="id" class="edit-id-input">
-                <button type="submit" class="btn-save">Save</button>
+                <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
             </form>
         </td>
@@ -210,6 +221,7 @@
 </div>
 
 <h2>Local Hosts</h2>
+{{template "staged-table-banner" .}}
 <table id="hostsTable">
     <colgroup>
         <col class="col-35">
@@ -260,7 +272,7 @@
             <form method="post" action="/hosts" class="edit-host-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
-                <button type="submit" class="btn-save">Save</button>
+                <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
             </form>
         </td>
@@ -289,6 +301,7 @@
     The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
 </p>
 
+<h2>Add New Blacklisted IP or CIDR</h2>
 <div class="mb-20">
     <form id="add-blacklist-form" method="POST" action="/response-blacklist" class="d-flex gap-10">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -307,6 +320,8 @@
     >
 </div>
 
+<h2>Blacklisted IPs/CIDRs (in DNS replies)</h2>
+{{template "staged-table-banner" .}}
 <table id="blacklistTable">
     <colgroup>
         <col class="col-70">
@@ -354,7 +369,7 @@
             <form method="POST" action="/response-blacklist" class="edit-blacklist-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="action" value="edit">
-                <button type="submit" class="btn-save">Save</button>
+                <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
             </form>
         </td>

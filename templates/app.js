@@ -40,6 +40,20 @@
         optsBlockMode:             (_cfgKeysEl.dataset.optsBlockMode             || '').split(',').filter(Boolean),
     } : {};
     
+    // --- Table-edit staging queue (rules / hosts / blacklist) ---
+    // Works identically to the /config page staging system: edits are queued
+    // locally and applied in a single Apply run, never sent one-by-one.
+    let stagedTableChanges = [];
+
+    function updateTableBanner() {
+        const count = stagedTableChanges.length;
+        document.querySelectorAll('.staged-table-banner').forEach(banner => {
+            banner.style.display = count > 0 ? 'block' : 'none';
+            const countEl = banner.querySelector('.staged-table-count');
+            if (countEl) countEl.textContent = count;
+        });
+    }
+
     // postAdminForm sends a POST with fields, injecting csrf_token automatically,
     // and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
     async function postAdminForm(action, fields, errorPrefix) {
@@ -394,10 +408,21 @@
             // Add the 'edit' flag that your backend expects
             fields.edit = '1';
             
-            const success = await postAdminForm('/hosts', fields, 'Failed to save host edits');
-            if (success) {
-                location.reload();
-            }
+            stagedTableChanges.push({ url: '/hosts', fields: fields });
+
+            // Optimistically update the visible row and its dataset
+            row.dataset.hostPattern = newPattern;
+            row.dataset.hostIps = newIPs;
+            row.cells[0].textContent = newPattern;
+            row.cells[0].title = newPattern;
+            row.cells[1].textContent = newIPs;
+            row.cells[1].title = newIPs;
+            row.classList.add('staged');
+            row.style.display = '';
+
+            editRow.remove();
+            applyHostsFilter();
+            updateTableBanner();
         });
         // 5. Setup cancel button
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelHostEdit(index), { once: true });
@@ -459,10 +484,18 @@
             // Add the 'action' flag that your backend expects
             fields.action = 'edit';
             
-            const success = await postAdminForm('/response-blacklist', fields, 'Failed to save blacklist edits');
-            if (success) {
-                location.reload();
-            }
+            stagedTableChanges.push({ url: '/response-blacklist', fields: fields });
+
+            // Optimistically update the visible row and its dataset
+            row.dataset.cidr = newCidr;
+            row.cells[0].textContent = newCidr;
+            row.cells[0].title = newCidr;
+            row.classList.add('staged');
+            row.style.display = '';
+
+            editRow.remove();
+            applyBlacklistFilter();
+            updateTableBanner();
         });
         
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelBlacklistEdit(index), { once: true });
@@ -856,9 +889,34 @@
                 }
             }
         });
+
+        // Warn before navigating away while table edits are staged
+        window.addEventListener('beforeunload', function(e) {
+            if (stagedTableChanges.length > 0) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
         
         // Global Rules Table Event Delegation (Interceptors for Edit and Delete Actions)
         document.addEventListener('click', function(e) {
+            // Table-staging Apply / Discard buttons
+            if (e.target.closest('.js-discard-table-btn')) {
+                location.reload();
+                return;
+            }
+            if (e.target.closest('.js-apply-table-btn')) {
+                if (!confirm('Apply all staged changes?')) return;
+                (async () => {
+                    for (const change of stagedTableChanges) {
+                        const success = await postAdminForm(change.url, change.fields, 'Failed to save a staged edit');
+                        if (!success) return; // stop on first error
+                    }
+                    location.reload();
+                })();
+                return;
+            }
+
             // 1. Check if the element clicked (or its nested contents) matches our class
             const editBtn = e.target.closest('.btn-edit');
             if (editBtn) {
@@ -922,17 +980,33 @@
                     const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
                     sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
                     
-                    // --- DRY FETCH ---
-                    const success = await postAdminForm('/rules', {
-                        'id': id,
-                        'pattern': newPattern,
-                        'type': newType,
-                        'enabled': enabledChecked ? 'true' : 'false'
-                    }, 'Failed to save edits');
-                    
-                    if (success) {
-                        location.reload();
-                    }
+                    stagedTableChanges.push({
+                        url: '/rules',
+                        fields: { 'id': id, 'pattern': newPattern, 'type': newType, 'enabled': enabledChecked ? 'true' : 'false' }
+                    });
+
+                    // Optimistically update the visible row and its dataset so
+                    // re-opening the edit form shows the new values.
+                    row.dataset.ruleType = newType;
+                    row.dataset.rulePattern = newPattern;
+                    row.dataset.ruleEnabled = enabledChecked ? 'true' : 'false';
+                    row.cells[0].textContent = newType;
+                    // cells[1] = ID, unchanged
+                    row.cells[2].textContent = newPattern;
+                    row.cells[2].title = newPattern;
+                    const enabledCell = row.cells[3];
+                    enabledCell.textContent = '';
+                    const enabledSpan = document.createElement('span');
+                    enabledSpan.className = enabledChecked ? 'tag-enabled' : 'tag-disabled';
+                    enabledSpan.textContent = enabledChecked ? 'Active' : 'Paused';
+                    enabledCell.appendChild(enabledSpan);
+                    row.classList.add('staged');
+                    row.classList.remove('being-edited');
+                    row.style.display = '';
+
+                    editRow.remove();
+                    applyRulesFilter();
+                    updateTableBanner();
                 });
                 
                 // 6. Insert cleanly next to the original row
@@ -952,6 +1026,8 @@
                 const typ = row.dataset.ruleType;
                 const pattern = row.dataset.rulePattern;
                 
+                // Warn if staged edits would be discarded by the reload
+                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
                 // Native confirmation dialog
                 if (!confirm('Delete rule: ' + pattern + '?')) return;
                 
@@ -1004,7 +1080,8 @@
         if (addForm) {
             addForm.addEventListener('submit', async function(e) {
                 e.preventDefault(); // Stop native browser submission
-                
+                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
+
                 const patternInput = addForm.querySelector('[name="pattern"]');
                 const typeSelect = addForm.querySelector('[name="type"]');
                 if (!patternInput || !typeSelect) return;
@@ -1054,6 +1131,7 @@
         // avoids adding any new data attributes to the HTML.
         document.querySelectorAll('.js-host-delete-form').forEach(form => {
             form.addEventListener('submit', function(e) {
+                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
                 if (!confirm('Delete local host override?')) {
                     e.preventDefault();
                     return;
@@ -1078,6 +1156,7 @@
         // Records the pattern being added so the new row stays visible after
         // reload even if it doesn't currently match the active filter text.
         document.getElementById('addHostForm')?.addEventListener('submit', function() {
+            if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
             const patternInput = this.querySelector('[name="pattern"]');
             if (patternInput) {
                 sessionStorage.setItem('hostsTable_lastInteracted', patternInput.value.trim().toLowerCase());
@@ -1104,6 +1183,7 @@
         // meaning a cancel would still clear it. Fixed here: confirm first, clean after.
         document.querySelectorAll('.js-blacklist-delete-form').forEach(form => {
             form.addEventListener('submit', function(e) {
+                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
                 const cidrInput = form.querySelector('[name="cidr"]');
                 if (!cidrInput) {
                     console.error('js-blacklist-delete-form: missing [name="cidr"] input');
@@ -1135,7 +1215,7 @@
         // --- Existing "check for overlapping filters before add" validation ---
         document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
             e.preventDefault(); // Stop form from auto-posting immediately
-            
+            if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
             const form = this;
             const cidrInput = form.querySelector('input[name="cidr"]');
             const cidrValue = cidrInput.value.trim().toLowerCase();
