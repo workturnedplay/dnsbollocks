@@ -5142,6 +5142,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
 	innerMux.HandleFunc("/response-blacklist", ui.responseBlacklistHandler)
 	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
+	innerMux.HandleFunc("/apply-tables", ui.applyTablesHandler)
 	innerMux.HandleFunc("/logs", ui.logsHandler)
 	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
 	innerMux.HandleFunc("/config", ui.configHandler)
@@ -6211,7 +6212,7 @@ type RuleView struct {
 
 func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
-
+	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
 	if r.Method == http.MethodGet { //"GET" {
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
@@ -10840,4 +10841,279 @@ func (s *Server) saveConfig() error {
 		panic2("BUG: saveConfig called before liveRawConfig was initialised")
 	}
 	return saveConfig(s.rt.FileWriter, s.getLogger(), rawCfg)
+}
+
+func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
+	log := ui.getLogger()
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	payload := r.FormValue("payload")
+	if payload == "" {
+		http.Error(w, "empty payload", http.StatusBadRequest)
+		return
+	}
+
+	type TableChange struct {
+		URL    string            `json:"url"`
+		Fields map[string]string `json:"fields"`
+	}
+
+	var changes []TableChange
+	if err := json.Unmarshal([]byte(payload), &changes); err != nil {
+		log.Warn("Invalid JSON in batch apply", wincoe.SafeErr(err))
+		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// Track which files got dirtied so we only incur disk I/O once per file
+	saveRules := false
+	saveHosts := false
+	saveBlacklist := false
+
+	for _, change := range changes {
+		fields := change.Fields
+		switch change.URL {
+		case "/rules":
+			if fields["delete"] == "1" {
+				id := fields["id"]
+				typ := fields["type"]
+				if id == "" || typ == "" {
+					http.Error(w, "id and type required for delete", http.StatusBadRequest)
+					return
+				}
+				if err := validateDNSType(typ); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if _, modified := sanitizeDomainInput(id); modified {
+					http.Error(w, "id contains illegal characters", http.StatusBadRequest)
+					return
+				}
+
+				pattern, err := ui.ruleStore.DeleteRule(typ, id, log)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				ui.OnInvalidatePattern(pattern)
+				saveRules = true
+			} else {
+				patternNormalized := NormalizeDomain(fields["pattern"])
+				typ := fields["type"]
+				id := fields["id"]
+				enabledStr := fields["enabled"]
+				enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
+
+				if patternNormalized == "" || typ == "" {
+					http.Error(w, "Pattern and type required", http.StatusBadRequest)
+					return
+				}
+				if err := validateDNSType(typ); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if err := validateRulePattern(patternNormalized); err != nil {
+					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				if id != "" {
+					if _, modified := sanitizeDomainInput(id); modified {
+						http.Error(w, "id contains illegal characters", http.StatusBadRequest)
+						return
+					}
+					_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusConflict)
+						return
+					}
+					ui.OnInvalidatePattern(oldPattern)
+					if oldPattern != patternNormalized {
+						ui.OnInvalidatePattern(patternNormalized)
+					}
+				} else {
+					_, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusConflict)
+						return
+					}
+					ui.OnInvalidatePattern(patternNormalized)
+				}
+				saveRules = true
+			}
+
+		case "/hosts":
+			if fields["delete"] == "1" {
+				patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
+				if patternLowercased == "" {
+					http.Error(w, "pattern required for delete", http.StatusBadRequest)
+					return
+				}
+				if err := validateRulePattern(patternLowercased); err != nil {
+					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				if ui.hostStore.DeleteHost(patternLowercased) {
+					ui.OnInvalidatePattern(patternLowercased)
+					saveHosts = true
+				} else {
+					http.Error(w, "host not found", http.StatusNotFound)
+					return
+				}
+			} else {
+				patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
+				oldPatternLowercased := strings.ToLower(strings.TrimSpace(fields["old_pattern"]))
+				isEdit := fields["edit"] == "1"
+
+				if patternLowercased == "" {
+					http.Error(w, "hostname/pattern required", http.StatusBadRequest)
+					return
+				}
+				if err := validateRulePattern(patternLowercased); err != nil {
+					http.Error(w, "Invalid pattern: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				if isEdit && oldPatternLowercased != "" {
+					if err := validateRulePattern(oldPatternLowercased); err != nil {
+						http.Error(w, "Invalid old_pattern: "+err.Error(), http.StatusBadRequest)
+						return
+					}
+				}
+
+				ipsRaw := strings.Split(fields["ips"], ",")
+				var netIPs []net.IP
+				for _, ipStr := range ipsRaw {
+					ipStr = strings.TrimSpace(ipStr)
+					if ipStr == "" {
+						continue
+					}
+					if ip := net.ParseIP(ipStr); ip != nil {
+						netIPs = append(netIPs, ip)
+					} else {
+						http.Error(w, "invalid IP address: "+ipStr, http.StatusBadRequest)
+						return
+					}
+				}
+				if len(netIPs) == 0 {
+					http.Error(w, "at least one valid IP required", http.StatusBadRequest)
+					return
+				}
+
+				var err error = nil
+				if isEdit {
+					ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
+				} else {
+					err = ui.hostStore.AddHost(patternLowercased, netIPs)
+				}
+
+				if err != nil {
+					http.Error(w, "Local host with this pattern already exists", http.StatusConflict)
+					return
+				}
+
+				if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
+					ui.OnInvalidatePattern(oldPatternLowercased)
+				}
+				ui.OnInvalidatePattern(patternLowercased)
+				saveHosts = true
+			}
+
+		case "/response-blacklist":
+			action := fields["action"]
+			if action == "delete" {
+				cidrStr := strings.TrimSpace(fields["cidr"])
+				if ui.tryDeleteBlacklistIP(cidrStr) {
+					ui.OnInvalidateBlacklist()
+					saveBlacklist = true
+				}
+			} else if action == "add" {
+				cidrStr := strings.TrimSpace(fields["cidr"])
+				if cidrStr != "" {
+					_, n, err := net.ParseCIDR(cidrStr)
+					if err != nil {
+						ip := net.ParseIP(cidrStr)
+						if ip != nil {
+							if ip.To4() != nil {
+								_, n, _ = net.ParseCIDR(cidrStr + "/32")
+							} else {
+								_, n, _ = net.ParseCIDR(cidrStr + "/128")
+							}
+						}
+					}
+					if n != nil {
+						if ui.blacklist.TryAdd(n) {
+							ui.OnInvalidateBlacklist()
+							saveBlacklist = true
+						}
+					} else {
+						http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
+						return
+					}
+				}
+			} else if action == "edit" {
+				oldCIDR := strings.TrimSpace(fields["old_cidr"])
+				newCIDRStr := strings.TrimSpace(fields["cidr"])
+				if oldCIDR == "" || newCIDRStr == "" {
+					http.Error(w, "old_cidr and cidr required", http.StatusBadRequest)
+					return
+				}
+				_, n, err := net.ParseCIDR(newCIDRStr)
+				if err != nil {
+					ip := net.ParseIP(newCIDRStr)
+					if ip != nil {
+						var err2 error
+						if ip.To4() != nil {
+							_, n, err2 = net.ParseCIDR(newCIDRStr + "/32")
+						} else {
+							_, n, err2 = net.ParseCIDR(newCIDRStr + "/128")
+						}
+						if err2 != nil {
+							http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
+							return
+						}
+					}
+				}
+				if n == nil {
+					http.Error(w, "Invalid IP or CIDR format", http.StatusBadRequest)
+					return
+				}
+				if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				ui.OnInvalidateBlacklist()
+				saveBlacklist = true
+			}
+		default:
+			http.Error(w, "Unknown target URL in batch", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Flush dirty files to disk, hitting the locking subsystem only once per file type
+	if saveRules {
+		if err := ui.OnSaveWhitelist(); err != nil {
+			ui.logFatal("failed to save whitelist after batch apply", err)
+			panic2("BUG: unreachable")
+		}
+	}
+	if saveHosts {
+		if err := ui.OnSaveHosts(); err != nil {
+			ui.logFatal("failed to save hosts after batch apply", err)
+			panic2("BUG: unreachable")
+		}
+	}
+	if saveBlacklist {
+		if err := ui.OnSaveBlacklist(); err != nil {
+			ui.logFatal("failed to save blacklist after batch apply", err)
+			panic2("BUG: unreachable")
+		}
+	}
+
+	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
+	w.WriteHeader(http.StatusOK)
 }

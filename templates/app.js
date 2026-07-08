@@ -908,11 +908,9 @@
             if (e.target.closest('.js-apply-table-btn')) {
                 if (!confirm('Apply all staged changes?')) return;
                 (async () => {
-                    for (const change of stagedTableChanges) {
-                        const success = await postAdminForm(change.url, change.fields, 'Failed to save a staged edit');
-                        if (!success) return; // stop on first error
-                    }
-                    location.reload();
+                    const payload = JSON.stringify(stagedTableChanges);
+                    const success = await postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged edits');
+                    if (success) location.reload();
                 })();
                 return;
             }

@@ -1,5 +1,4 @@
 todo:
-* make the applying of all staged changes happen in 1 POST not 1 per each change and if any fails stop.
 
 * make Add/Delete to also stage? for the 3 pages (not for /config): /rules /hosts /response-blacklist
 
@@ -23,6 +22,7 @@ no:
 
 
 done:
+//* make the applying of all staged changes happen in 1 POST not 1 per each change and if any fails stop.
 //* allow multiple rows(like from /rules /hosts and /response-blacklist but not /config which already has this feature) to be in Edit mode and if more than one, the Save button should transform into Stage and thus don't apply immediately when pressed (just like in /config page), the Apply should happen only when the global Apply button (which would appear, similar to how /config does it) is pressed (or Cancel if cancelled).
 //* also decouple NewServer and config.json loading so that when NewServer is called the config is already not the defaults which affects the in-NewServer inits like: s.fileWriter = wincoe.NewWin11SafeFileWriter(...)
 //* didn't I remove a janitor function recently? from what was that? it wasn't the cache store 's janitor lookslike. Was there another one then? ah yes, it was ClientRateLimiter's janitor which was set to 10 hardcoded minutes.
