@@ -7,10 +7,10 @@ package dnsbollocks
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	//"os"
 	"testing"
 	"time"
 
@@ -23,6 +23,8 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 	//logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := defaultConfig()
 	server := NewServer(logger, &cfg, &cfg)
+	server.exitFn = func(code int) { panic(fmt.Sprintf("exit:%d", code)) }
+	// now server.shutdown(N) panics instead of calling os.Exit
 	//cfg := server.getConfig()
 	server.rateLimiter = newClientRateLimiter(server.ctx, rateLimitConfigFrom(cfg /*it's a copy, not pointer to live*/), logger) //rate.Inf, 1, time.Hour)
 	//server.dnsCache = newGoCacheStore(time.Duration(cfg.CacheJanitorIntervalMinutes) * time.Minute)

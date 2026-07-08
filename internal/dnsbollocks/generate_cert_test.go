@@ -49,7 +49,7 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 
 		// Use a silent logger for tests to reduce console noise
 		nopLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-		s.liveLogger.Store(nopLogger)
+		s.logMgr = NewLoggerManager(nopLogger)
 
 		return s
 	}

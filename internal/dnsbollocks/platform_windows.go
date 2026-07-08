@@ -178,9 +178,10 @@ type Config struct {
 
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
-	liveConfig    atomic.Pointer[Config]      // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
-	liveRawConfig atomic.Pointer[Config]      //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
-	liveLogger    atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
+	liveConfig    atomic.Pointer[Config] // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
+	liveRawConfig atomic.Pointer[Config] //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
+	//liveLogger    atomic.Pointer[slog.Logger] // shared with AdminUI, fileWriter, etc.
+	logMgr *LoggerManager // owns liveLogger + log file handles
 
 	// Upstream state
 	upstreamMgr  *UpstreamManager
@@ -229,6 +230,8 @@ type Server struct {
 
 	reloadMu      sync.RWMutex
 	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
+
+	exitFn func(int) // set to os.Exit by default; override in tests
 }
 
 // AdminUI handles all the web control panel routes.
@@ -263,8 +266,8 @@ type AdminUI struct {
 
 // pointer to live logger or default logger if uninited(bug)
 func (s *Server) getLogger() *slog.Logger {
-	if l := s.liveLogger.Load(); l != nil {
-		return l
+	if s.logMgr != nil {
+		return s.logMgr.Get()
 	}
 	log := slog.Default()
 	log.Error("BUG: Server.liveLogger wasn't inited, using default.")
@@ -289,7 +292,7 @@ func (s *Server) applyConfig(cfg Config, rawCfg Config) {
 
 // On init and every reload, swap atomically:
 func (s *Server) applyLogger(l *slog.Logger) {
-	s.liveLogger.Store(l)
+	s.logMgr.Set(l)
 	// same — fileWriter reads liveLogger.Load() instead of holding its own copy
 	bugLogger.Store(l) // keep free-function fallback logger in sync too
 	wincoe.Logger = l  //and wincoe lib logger too
@@ -316,7 +319,7 @@ func getBugLogger() *slog.Logger {
 }
 
 // NewServer initializes a new Server instance using pre-validated configurations.
-func NewServer(logger *slog.Logger, resolvedCfg *Config, rawCfg *Config) *Server {
+func NewServer(logger *slog.Logger, resolvedCfg, rawCfg *Config) *Server {
 	//func NewServer(logger *slog.Logger) *Server {
 	s := &Server{
 		ruleStore:    newRuleStore(),
@@ -326,10 +329,12 @@ func NewServer(logger *slog.Logger, resolvedCfg *Config, rawCfg *Config) *Server
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
+		exitFn:  os.Exit,
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
-	s.applyLogger(logger) // seed the atomic with the bootstrap logger
+	s.logMgr = NewLoggerManager(logger) //TODO: this should happen in OldMain()
+	s.applyLogger(logger)               // syncs bugLogger + wincoe.Logger
 
 	//s.applyConfig(defaultConfig())
 	//cfg := s.getConfig() //this is defaults here, btw!
@@ -345,11 +350,11 @@ func NewServer(logger *slog.Logger, resolvedCfg *Config, rawCfg *Config) *Server
 		resolvedCfg.FileWriterMaxRetries,     //doneTODO: ^
 		resolvedCfg.FileWriterRetryBackoffMs, //doneTODO: ^
 
-		&s.liveLogger)
+		s.logMgr.Ptr())
 
 	//s.failoverSelect = NewFailoverSelector(&s.liveLogger)
 	// failoverSelect now lives inside UpstreamManager
-	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, &s.liveLogger, s.shutdown)
+	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.logMgr.Ptr(), s.shutdown)
 	s.dohForwarder = s.upstreamMgr
 
 	return s // yes it escapes to heap
@@ -2199,7 +2204,7 @@ func (s *Server) Reload() {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
 			log.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
-			finalShutdownSequence(log, 1)
+			finalShutdownSequence(log, 1, os.Exit)
 			//TODO: maybe now we don't have to os.Exit ?
 		} else {
 			log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
@@ -2481,14 +2486,14 @@ func OldMain() {
 		hash, err := promptAndHashPassword(localLogger, 12) // Hardcode safe minimum for CLI
 		if err != nil {
 			localLogger.Error("Failed to set password: ", wincoe.SafeErr(err))
-			finalShutdownSequence(localLogger, 1)
+			finalShutdownSequence(localLogger, 1, os.Exit)
 		}
 		//fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for \"webui_password_hash\":\n%s\n", configFileName, hash)
 		// Dynamic tag extraction
 		var jsonTag string = getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 		fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for %q:\n%s\n", configFileName, jsonTag, hash)
 		localLogger.Debug("Generated new hash password(not logging it) via cmd line arg, not saved in config.", slog.String("config", configFileName))
-		finalShutdownSequence(localLogger, 0)
+		finalShutdownSequence(localLogger, 0, os.Exit)
 	}
 
 	// 1. Load and validate configuration decoupled from the Server struct
@@ -2500,7 +2505,7 @@ func OldMain() {
 		} else {
 			localLogger.Error("Config load failed", wincoe.SafeErr(err))
 		}
-		finalShutdownSequence(localLogger, 1)
+		finalShutdownSequence(localLogger, 1, os.Exit)
 	} else {
 		localLogger.Info("Config loaded", slog.String("filename", configFileName))
 	}
@@ -2866,6 +2871,9 @@ func (s *Server) initFullLogging() *slog.Logger {
 	log := s.getLogger()
 
 	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
+
+	var logWriters []*rotatingLogWriter // collected for Close() registration
+
 	// Simple rotation on each log line write (respects your LogMaxSizeMB)
 	openLog := func(path string) io.Writer {
 		if path == "" {
@@ -2884,7 +2892,7 @@ func (s *Server) initFullLogging() *slog.Logger {
 		// We can safely trigger a manual size check/rotation on boot here just in case!
 		// The next Write() will rotate it automatically anyway if it's over the limit.
 		writer.RotateIfNeeded()
-
+		logWriters = append(logWriters, writer) // register for cleanup
 		return writer
 	}
 
@@ -2905,8 +2913,19 @@ func (s *Server) initFullLogging() *slog.Logger {
 		handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	})
 
-	s.applyLogger(improvedLogger) // all consumers automatically see the new logger
-	log = s.getLogger()           //to use the new logger on the below log line!
+	// Reinit closes old rotating writers (if any) and registers the new ones.
+	closers := make([]io.Closer, len(logWriters))
+	for i, w := range logWriters {
+		closers[i] = w
+	}
+	if err := s.logMgr.Reinit(improvedLogger, closers...); err != nil {
+		s.getLogger().Warn("error closing old log files during logger reinit", wincoe.SafeErr(err))
+	}
+
+	//s.applyLogger(improvedLogger) // all consumers automatically see the new logger; Reinit now does the atomic store, pluse the 2 lines below
+	bugLogger.Store(improvedLogger)
+	wincoe.Logger = improvedLogger
+	log = s.getLogger() //to use the new logger on the below log line!
 
 	log.Info("Logging initialized",
 		slog.String("full_log", cfg.LogEverythingFile),
@@ -2928,19 +2947,6 @@ func getNextLogBackupName(basePath string) string {
 		}
 	}
 }
-
-// func (s *Server) rotateIfNeeded(path string, maxMB int) {
-// 	log := s.getLogger()
-
-// 	if fi, err := os.Stat(path); err == nil && fi.Size() > int64(maxMB*1024*1024) {
-// 		old := path + ".old"
-// 		if err := os.Rename(path, old); err != nil {
-// 			log.Error("Log rotation failed", slog.String("path", path), wincoe.SafeErr(err))
-// 		} else {
-// 			log.Info("Rotated log file", slog.String("path", path), slog.String("old_path", old), slog.Int("max_size_mb", maxMB))
-// 		}
-// 	}
-// }
 
 func countRules(wl map[string][]RuleEntry) uint64 {
 	var total uint64 = 0
@@ -7048,13 +7054,13 @@ func (s *Server) shutdown(exitCode int) {
 		// //bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
 		// log.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 		// os.Exit(exitCode)
-		finalShutdownSequence(log, exitCode)
+		finalShutdownSequence(log, exitCode, s.exitFn)
 		panic2("BUG: shoulda been unreachable after finalShutdownSequence, which means it didn't os.Exit!")
 	})
 	panic2("BUG: shoulda been unreachable after s.shutdownOnce.Do")
 }
 
-func finalShutdownSequence(logger *slog.Logger, exitCode int) {
+func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int)) {
 	UnstickStdinRead(logger)
 	// NEW: Check if the OS is forcefully terminating us
 	if skipInteractivePause.Load() {
@@ -7067,7 +7073,8 @@ func finalShutdownSequence(logger *slog.Logger, exitCode int) {
 	} //ifelse
 
 	logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
-	os.Exit(exitCode)
+	//os.Exit(exitCode)
+	exitFn(exitCode)
 }
 
 // Add a global channel for fatal errors to trigger shutdown
@@ -7100,7 +7107,6 @@ func UnstickStdinRead(logger *slog.Logger) {
 }
 
 func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
-
 	fd := int(os.Stdin.Fd())
 
 	oldState, err := term.MakeRaw(fd)
@@ -8677,7 +8683,7 @@ func (s *Server) initAdminUI() {
 	ui := NewAdminUI(
 		&s.liveConfig,
 		&s.liveRawConfig,
-		&s.liveLogger,
+		s.logMgr.Ptr(),
 		s.ruleStore,
 		s.hostStore,
 		s.blacklist,
@@ -10671,4 +10677,105 @@ func stripConfigDescriptionKeys(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("stripConfigDescriptionKeys: re-marshal: %w", err)
 	}
 	return out, nil
+}
+
+// Close syncs and closes the underlying log file.
+// The writer must not be used after Close returns.
+func (w *rotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	if err := w.file.Sync(); err != nil {
+		w.logger.Warn("log file sync on close failed", wincoe.SafeErr(err))
+	}
+	err := w.file.Close()
+	w.file = nil
+	if err == nil {
+		return nil
+	} else {
+		return fmt.Errorf("rotatingLogWriter.Close() failed: %w", err)
+	}
+}
+
+// LoggerManager owns the active *slog.Logger and any underlying file handles
+// (rotatingLogWriters) so callers can reinitialise or close them cleanly.
+//
+// Child components (AdminUI, UpstreamManager, …) receive a pointer to the
+// inner atomic so they always read the latest logger without holding a
+// reference to LoggerManager itself.
+type LoggerManager struct {
+	ptr     atomic.Pointer[slog.Logger]
+	mu      sync.Mutex
+	closers []io.Closer // rotating log writers registered by Reinit
+}
+
+// NewLoggerManager creates a manager seeded with the given bootstrap logger.
+// No file handles are registered; call Reinit once real log files are open.
+func NewLoggerManager(bootstrap *slog.Logger) *LoggerManager {
+	lm := &LoggerManager{}
+	lm.ptr.Store(bootstrap)
+	return lm
+}
+
+// Get returns the current logger, falling back to slog.Default() if uninitialised
+// (should never happen in production but guards tests that build Server partially).
+func (lm *LoggerManager) Get() *slog.Logger {
+	if l := lm.ptr.Load(); l != nil {
+		return l
+	}
+	slog.Default().Error("BUG: LoggerManager.ptr is nil, using slog.Default()")
+	return slog.Default()
+}
+
+// Ptr returns a pointer to the inner atomic so child structs (AdminUI,
+// UpstreamManager, wincoe.FileWriter …) can receive a stable reference
+// that always reflects the latest logger after a Reinit.
+func (lm *LoggerManager) Ptr() *atomic.Pointer[slog.Logger] {
+	return &lm.ptr
+}
+
+// Set atomically swaps the logger without touching file handles.
+// Use Reinit when the swap accompanies new file handles.
+func (lm *LoggerManager) Set(l *slog.Logger) {
+	lm.ptr.Store(l)
+}
+
+// Reinit atomically swaps the logger, registers new closers (typically
+// *rotatingLogWriter instances), and closes the previously registered ones.
+// It is safe to call on config reload.
+func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
+	lm.mu.Lock()
+	old := lm.closers
+	lm.closers = newClosers
+	lm.mu.Unlock()
+
+	lm.ptr.Store(l) // readers see the new logger from this point
+
+	var errs []error
+	for _, c := range old {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Close closes all registered file handles. Safe to call multiple times.
+// Call this in tests after the server is done so temporary directories
+// can be deleted.
+func (lm *LoggerManager) Close() error {
+	lm.mu.Lock()
+	closers := lm.closers
+	lm.closers = nil
+	lm.mu.Unlock()
+
+	var errs []error
+	for _, c := range closers {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
