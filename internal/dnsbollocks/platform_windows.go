@@ -35,6 +35,7 @@ import (
 	"errors"
 	"expvar"
 	"maps"
+	"math"
 	"reflect"
 	"runtime"
 	"slices"
@@ -3640,9 +3641,14 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 			log.Warn("failed to pack DNS TCP packet response thus not sent", wincoe.SafeErr(err1))
 			return
 		}
+		if len(pack) > math.MaxUint16 {
+			// Handle the error appropriately for your server (e.g., logging)
+			log.Warn("packet size exceeds uint16 limit", "size", len(pack))
+			return
+		}
 		// Prepare the output (length + payload)
 		out := new(bytes.Buffer)
-		err2 := binary.Write(out, binary.BigEndian, uint16(len(pack))) // Single err return
+		err2 := binary.Write(out, binary.BigEndian, uint16(len(pack))) //nolint:gosec // G115: size validated just a few lines above
 		if err2 != nil {
 			log.Warn("failed to write-to-the-buffer the pack len (2 bytes) of the TCP DNS packet response", wincoe.SafeErr(err2))
 			return
