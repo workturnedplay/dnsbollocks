@@ -1,10 +1,9 @@
 todo:
 * maybe decouple fileWriter better, so it's inited in OldMain and everything else uses its instance, like LoadAndValidateConfig (which currently spins up a default one inside it, temporarily to check for .powerloss file) and NewServer(which currently get a nil thus spins up a new one with the loaded config's values) and that's it I guess, srv.SaveConfig does use the proper one that NewServer spun up.
-
-* allow multiple rows(like from /rules /hosts and /response-blacklist but not /config which already has this) to be in Edit mode and if more than one, the Save button should transform into Stage and thus don't apply immediately when pressed (just like in /config page), the Apply should happen only when the global Apply button (which would appear, similar to how /config does it) is pressed (or Cancel if cancelled).
-
 * ensure LoggerManager is inited outside of NewServer, so it's decoupled from it. Server can "talk" to it if it needs to log to a new file, or change to a different loglevel, but shouldn't have to worry about doing the closing of old logs for example, that's LoggerManager's business. Thus lots of logic from initFullLogging shouldn't be part of Server but part of LoggerManager perhaps.
+* (the how for the above two TODOs) Introduce a Runtime struct for long-lived process services (LoggerManager, FileWriter, etc.). OldMain should own and initialize it, Reload() should update it, and NewServer should receive it as a dependency rather than constructing those services.
 
+* allow multiple rows(like from /rules /hosts and /response-blacklist but not /config which already has this feature) to be in Edit mode and if more than one, the Save button should transform into Stage and thus don't apply immediately when pressed (just like in /config page), the Apply should happen only when the global Apply button (which would appear, similar to how /config does it) is pressed (or Cancel if cancelled).
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
