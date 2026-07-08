@@ -284,7 +284,7 @@ func (s *Server) getConfig() *Config {
 }
 
 // On init and every reload, swap atomically:
-func (s *Server) applyConfig(cfg Config, rawCfg Config) {
+func (s *Server) applyConfig(cfg, rawCfg Config) {
 	s.liveRawConfig.Store(&rawCfg)
 	s.liveConfig.Store(&cfg)
 	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
@@ -7085,7 +7085,7 @@ func UnstickStdinRead(logger *slog.Logger) {
 	}
 }
 
-func (s *Server) watchKeys(reloadFn func(), cleanExitFn func()) {
+func (s *Server) watchKeys(reloadFn, cleanExitFn func()) {
 	fd := int(os.Stdin.Fd())
 
 	oldState, err := term.MakeRaw(fd)
