@@ -849,7 +849,9 @@
     
     async function applyConfigChanges() {
         if (Object.keys(stagedChanges).length === 0) return;
-        if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners. Proceed?')) return;
+        //if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners. Proceed?')) return;
+        //FIXME: config.json is hardcoded here, if it changes in .go this is stale!
+        if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners.\n\nThe existing config.json will be safely backed up to config.json.bak first.\n\nProceed?')) return;
         
         const success = await postAdminForm('/config', {
             'action': 'apply',
@@ -923,6 +925,7 @@
         document.addEventListener('click', function(e) {
             // Table-staging Apply / Discard buttons
             if (e.target.closest('.js-discard-table-btn')) {
+                if (!confirm('Discard all staged changes?')) return;
                 stagedTableChanges = []; // Bypass the beforeunload block!
                 location.reload();
                 return;
