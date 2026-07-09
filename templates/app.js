@@ -931,10 +931,10 @@
                 return;
             }
             if (e.target.closest('.js-apply-table-btn')) {
-                if (!confirm('Apply all staged changes?')) return;
+                if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
                 (async () => {
                     const payload = JSON.stringify(stagedTableChanges);
-                    const success = await postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged edits');
+                    const success = await postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
                     if (success) {
                         stagedTableChanges = []; // Bypass the beforeunload block!
                         location.reload();

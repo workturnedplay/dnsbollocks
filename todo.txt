@@ -1,5 +1,4 @@
 todo:
-* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 * make Add/Delete to also stage changes, for the 3 pages (not for /config): /rules /hosts /response-blacklist  Currently only Edit button stages changes.
 
@@ -19,6 +18,8 @@ no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 //* sanitizeAndValidateConfig the defaultConfig() and i dno, use that or even panic2 BUG ? hmm, actually since sanitizeAndValidateConfig depends on defaultConfig() we can't do this.
 
+half-done:
+goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
 //* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...) (so a thin wrapper to it), or maybe even rt.Error(...) or nah(it implies Runtime.Error() not logger.Error(), no?), the fomer.
