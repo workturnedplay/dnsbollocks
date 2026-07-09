@@ -421,6 +421,15 @@
             row.classList.add('staged');
             row.style.display = '';
 
+            // Keep the Edit button's own dataset in sync so that if this row is
+            // edited again before Apply, old_pattern reflects the latest staged
+            // value rather than the stale original one.
+            const editBtnEl = row.querySelector('.js-host-edit');
+            if (editBtnEl) {
+                editBtnEl.dataset.pattern = newPattern;
+                editBtnEl.dataset.ips = newIPs;
+            }
+            
             editRow.remove();
             applyHostsFilter();
             updateTableBanner();
