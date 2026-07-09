@@ -1462,8 +1462,8 @@ func ReplaceFile(replaced, replacement, backup string, flags uint32) error {
 type FileWriter interface {
 	SafeWriteFile(filename string, data []byte, perm os.FileMode) error
 	CheckPowerLossFile(filename string)
-	// SetLogger(logger *slog.Logger)
 	SetExtraSafety(enabled bool)
+	SetRetryParams(maxRetries, retryBackoffMs int)
 }
 
 // GenericSafeFileWriter is the production FileWriter.
@@ -1560,13 +1560,13 @@ func (fw *GenericSafeFileWriter) CheckPowerLossFile(filename string) {
 // By writing the complete payload to [filename].powergotlost first, flushing it to hardware, and only then truncating the target file, you create a cryptographic-like commit phase.
 func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
 	log := fw.getLogger()
-	// const tryTimesForFileOp = 6              //how many times
-	// const backoffMsTimeForFileOpPerTry = 100 // ms
-
-	backoffDuration := time.Duration(fw.retryBackoffMs) * time.Millisecond
 
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
+
+	// Capture these parameters immediately AFTER taking the lock
+	maxRetries := fw.maxRetries
+	backoffDuration := time.Duration(fw.retryBackoffMs) * time.Millisecond
 
 	if fw.extraSafety {
 		tmpName := filename + PowerlossFileExtension
@@ -1576,7 +1576,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 
 		// step1. Try to write to a temp file first to ensure disk space and data integrity.
 		// 2. Wrap the entire atomic file operation in the retry loop
-		stagingErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+		stagingErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 			// Reset errors on each try so they accurately reflect the *final* attempt
 			createErr, writeErr, syncErr, closeErr = nil, nil, nil, nil
 
@@ -1608,7 +1608,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 			// Queue cleanup. If we crash/lose power after this point,
 			// this defer never runs, leaving the safe copy intact.
 			defer func() {
-				ondeleteErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
 				if ondeleteErr == nil {
 					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 					// Successful deletion, nothing more to do
@@ -1621,7 +1621,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 				// Fallback: If we can't delete it, truncate it to 0 bytes.
 				// Since we already have write handle permissions to this file, this is highly likely to succeed.
 				// truncFile, truncErr := os.OpenFile(tmpName, os.O_WRONLY|os.O_TRUNC, perm)
-				if truncErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+				if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 					return TruncateStagingFileToZero(tmpName, perm)
 				}); truncErr == nil {
 					log.Warn("ExtraSafety: successfully truncated staging file to 0 bytes as a fallback preservation step",
@@ -1661,7 +1661,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
 				// to neutralize any partial garbage data that would trip up the next boot.
-				ondeleteErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
 				log.Warn("ExtraSafety: Failed to fully write or/and sync or/and close staging file",
 					slog.String("tempfilename", tmpName),
 					SafeErr2("writeErr", writeErr),
@@ -1671,7 +1671,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 
 				if ondeleteErr != nil {
 					//failed to delete
-					if truncErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+					if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 						return TruncateStagingFileToZero(tmpName, perm)
 					}); truncErr == nil {
 						log.Warn("ExtraSafety: successfully neutralized staging file to 0 bytes to prevent false-positive reboot panics",
@@ -1709,7 +1709,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 	// 2. Fallback: If we couldn't create the .tmp file (likely folder permissions),
 	// do a direct write but enforce a hardware sync to minimize the corruption window.
 	// step2. Overwrite the target file directly (Retains Windows ACLs)
-	if err := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+	if err := RetryFileOp(maxRetries, backoffDuration, func() error {
 		return WriteSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	}); err == nil {
 		return nil
@@ -1898,13 +1898,13 @@ func (fw *win11SafeFileWriter) CheckPowerLossFile(filename string) {
 // falls back to a direct in-place truncation, preserving target security configurations.
 func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm os.FileMode) error {
 	log := fw.getLogger()
-	// const tryTimesForFileOp = 6
-	// const backoffMsTimeForFileOpPerTry = 100
-
-	backoffDuration := time.Duration(fw.retryBackoffMs) * time.Millisecond
 
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
+
+	// Capture these parameters immediately AFTER taking the lock
+	maxRetries := fw.maxRetries
+	backoffDuration := time.Duration(fw.retryBackoffMs) * time.Millisecond
 
 	tmpName := filename + PowerlossFileExtension
 	backupName := filename + BackupFileExtension
@@ -1913,7 +1913,7 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 	var createErr, writeErr, syncErr, closeErr error
 
 	// Step 1: Always try to write and flush the staging payload to disk first
-	stagingErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+	stagingErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 		createErr, writeErr, syncErr, closeErr = nil, nil, nil, nil
 
 		var tmpFile *os.File
@@ -1950,7 +1950,10 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 				return nil // Done with first-boot save
 			}
 			log.Warn("Windows FileWriter: Staging file rename failed; clearing and using truncate fallback", SafeErr(renameErr))
-			_ = os.Remove(tmpName)
+			removeErr := os.Remove(tmpName)
+			if removeErr != nil {
+				log.Error("BUG: failed to remove the staging file just failed to get renamed. Continuing anyway.", SafeErr(removeErr), slog.String("filename", tmpName))
+			}
 		} else {
 			// We intentionally omit REPLACEFILE_IGNORE_ACL_ERRORS. If Windows can't
 			// guarantee full ACL preservation, we WANT ReplaceFileW to fail so that
@@ -1962,9 +1965,16 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 				// Win32 documentation states the replacement staging file is automatically unlinked.
 				// Run a defensive validation check to guarantee it was eliminated.
 				if _, statErr := os.Stat(tmpName); statErr == nil {
-					log.Error("BUG: ReplaceFileW reported success but staging file still exists on disk. Force removing.")
-					_ = os.Remove(tmpName)
-				}
+					log.Error("BUG: ReplaceFileW reported success but staging file still exists on disk(tho it's possible something else created it this fast). Force removing.", slog.String("filename", tmpName))
+					removeErr := os.Remove(tmpName)
+					if removeErr != nil {
+						log.Error("BUG: failed to remove the staging file that somehow ReplaceFileW still left on disk just now. Continuing anyway.", SafeErr(removeErr), slog.String("filename", tmpName))
+					}
+				} //else it correctly doesn't exist
+				log.Debug("Windows FileWriter: file backed up and replaced atomically",
+					slog.String("existing_file", filename),
+					slog.String("backup_file", backupName),
+				)
 				return nil // Success! Transaction fully committed and rolled to .bak
 			}
 
@@ -1972,11 +1982,11 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 			log.Warn("Windows FileWriter: ReplaceFileW transaction aborted; clearing staging file and falling back", SafeErr(replaceErr))
 
 			// Resilience cleanup: neutralize the abandoned staging file right now so it doesn't cause a false reboot panic
-			ondeleteErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+			ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
 			if ondeleteErr != nil {
 				log.Warn("Windows FileWriter: Failed to delete staging file after transaction failure; attempting neutralization truncation", SafeErr(ondeleteErr))
 
-				if truncErr := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+				if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 					return TruncateStagingFileToZero(tmpName, perm)
 				}); truncErr == nil {
 					log.Warn("Windows FileWriter: Successfully truncated staging file to 0 bytes", slog.String("tempfilename", tmpName))
@@ -2005,11 +2015,25 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 	// This ensures the file's original explicit ACL security context is completely untouched.
 	log.Info("Windows FileWriter: Executing in-place truncation fallback write to preserve existing file ACLs", slog.String("path", filename))
 
-	if err := RetryFileOp(fw.maxRetries, backoffDuration, func() error {
+	if err := RetryFileOp(maxRetries, backoffDuration, func() error {
 		return WriteSyncedFile(filename, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	}); err == nil {
 		return nil
 	} else {
 		return fmt.Errorf("windows safe file writer completely failed: fallback open/write/sync/close on %q failed: %w", filename, err)
 	}
+}
+
+func (fw *GenericSafeFileWriter) SetRetryParams(maxRetries, retryBackoffMs int) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.maxRetries = maxRetries
+	fw.retryBackoffMs = retryBackoffMs
+}
+
+func (fw *win11SafeFileWriter) SetRetryParams(maxRetries, retryBackoffMs int) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.maxRetries = maxRetries
+	fw.retryBackoffMs = retryBackoffMs
 }
