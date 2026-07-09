@@ -1,4 +1,6 @@
 todo:
+* I need per-row Discard buttons (so Stage, Cancel, Discard) which will discard all staged edits(ie. no matter how many times I pressed Edit on this row and changed it) to the state it was before anything begun to be staged.
+* maybe detect when Staging a row that has no changes compared to unstaged variant of it and then don't mark it as staged and if it was staged(from a prev. Edit of it) and now it isn't anymore(after this Edit, due to same contents as unstaged/before one) ensure the counter is properly decremented to acount for this unstaging of it.
 
 * make Add/Delete to also stage changes, for the 3 pages (not for /config): /rules /hosts /response-blacklist  Currently only Edit button stages changes.
 
