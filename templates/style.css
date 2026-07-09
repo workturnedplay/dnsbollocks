@@ -305,6 +305,9 @@ nav a.active {
 /* Subtle highlight for modified rows before saving */
 tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
 
+/* Distinguish a staged-but-not-yet-applied "Add" row from a staged Edit */
+tr.staged-add td { border-bottom: 2px solid var(--success); background-color: #16241c; }
+
 /* Strict row-height lock to match active table rows perfectly */
 tr.edit-row, tr.edit-host-row {
     height: 64px;

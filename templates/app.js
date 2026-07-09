@@ -41,8 +41,12 @@
     } : {};
     
     // --- Table-edit staging queue (rules / hosts / blacklist) ---
-    // Works identically to the /config page staging system: edits are queued
-    // locally and applied in a single Apply run, never sent one-by-one.
+    // Works identically to the /config page staging system: Add, Edit, and Delete
+    // actions are all queued locally and applied in a single Apply run, never
+    // sent one-by-one. A staged "Add" that is itself edited or deleted again
+    // before Apply is merged/removed in place (tracked via each row's
+    // data-staged-client-id) rather than being queued as additional operations
+    // referencing an identity the server doesn't know about yet.
     let stagedTableChanges = [];
 
     function updateTableBanner() {
@@ -52,6 +56,165 @@
             const countEl = banner.querySelector('.staged-table-count');
             if (countEl) countEl.textContent = count;
         });
+    }
+
+    // generateClientId produces a short, session-unique token used to track a
+    // staged "Add" entry (rule/host/blacklist) before it has a real server-assigned
+    // identity, so a subsequent staged Edit/Delete of that same not-yet-applied
+    // row can find and mutate/remove the correct stagedTableChanges entry instead
+    // of sending a bogus reference to the server.
+    function generateClientId() {
+        return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    // buildRuleRowElement creates a <tr> for a staged (not yet applied) new rule,
+    // matching the structure of server-rendered rows in the "rules" template so
+    // filtering, sorting, and the existing Edit/Delete delegation all work on it
+    // unmodified.
+    function buildRuleRowElement(clientId, type, pattern, enabled) {
+        const row = document.createElement('tr');
+        row.dataset.ruleId = clientId;
+        row.dataset.ruleType = type;
+        row.dataset.rulePattern = pattern;
+        row.dataset.ruleEnabled = enabled ? 'true' : 'false';
+        row.dataset.stagedClientId = clientId;
+        row.classList.add('staged-add', 'staged');
+
+        const typeTd = document.createElement('td');
+        typeTd.textContent = type;
+        row.appendChild(typeTd);
+
+        const idTd = document.createElement('td');
+        idTd.textContent = '(pending)';
+        idTd.title = '(pending \u2014 assigned on Apply)';
+        row.appendChild(idTd);
+
+        const patternTd = document.createElement('td');
+        patternTd.textContent = pattern;
+        patternTd.title = pattern;
+        row.appendChild(patternTd);
+
+        const enabledTd = document.createElement('td');
+        const span = document.createElement('span');
+        span.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        span.textContent = enabled ? 'Active' : 'Paused';
+        enabledTd.appendChild(span);
+        row.appendChild(enabledTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'actions';
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn-edit';
+        editBtn.textContent = 'Edit';
+        actionsTd.appendChild(editBtn);
+        actionsTd.appendChild(document.createTextNode(' '));
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-del';
+        delBtn.textContent = 'Delete';
+        actionsTd.appendChild(delBtn);
+        row.appendChild(actionsTd);
+
+        return row;
+    }
+
+    // buildHostRowElement creates a <tr> for a staged (not yet applied) new local
+    // host override. Its Edit/Delete controls are wired directly here since,
+    // unlike the rules table, hosts Edit/Delete are bound per-element rather than
+    // via document-level delegation.
+    function buildHostRowElement(clientId, pattern, ipsDisplay) {
+        const row = document.createElement('tr');
+        row.id = 'hostRow_' + clientId;
+        row.dataset.hostPattern = pattern;
+        row.dataset.hostIps = ipsDisplay;
+        row.dataset.stagedClientId = clientId;
+        row.classList.add('staged-add', 'staged');
+
+        const patternTd = document.createElement('td');
+        patternTd.textContent = pattern;
+        patternTd.title = pattern;
+        row.appendChild(patternTd);
+
+        const ipsTd = document.createElement('td');
+        ipsTd.textContent = ipsDisplay;
+        ipsTd.title = ipsDisplay;
+        row.appendChild(ipsTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn-edit js-host-edit';
+        editBtn.textContent = 'Edit';
+        editBtn.dataset.index = clientId;
+        editBtn.dataset.pattern = pattern;
+        editBtn.dataset.ips = ipsDisplay;
+        editBtn.addEventListener('click', () => editHost(editBtn));
+        actionsTd.appendChild(editBtn);
+
+        actionsTd.appendChild(document.createTextNode(' '));
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-del';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+            if (!confirm('Remove this not-yet-applied local host: ' + pattern + '?')) return;
+            stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+            row.remove();
+            applyHostsFilter();
+            updateTableBanner();
+        });
+        actionsTd.appendChild(delBtn);
+
+        row.appendChild(actionsTd);
+        return row;
+    }
+
+    // buildBlacklistRowElement mirrors buildHostRowElement for the response-blacklist page.
+    function buildBlacklistRowElement(clientId, cidr) {
+        const row = document.createElement('tr');
+        row.id = 'blacklistRow_' + clientId;
+        row.dataset.cidr = cidr;
+        row.dataset.stagedClientId = clientId;
+        row.classList.add('staged-add', 'staged');
+
+        const cidrTd = document.createElement('td');
+        cidrTd.textContent = cidr;
+        cidrTd.title = cidr;
+        row.appendChild(cidrTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'actions text-center';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn-edit js-blacklist-edit';
+        editBtn.textContent = 'Edit';
+        editBtn.dataset.index = clientId;
+        editBtn.dataset.cidr = cidr;
+        editBtn.addEventListener('click', () => editBlacklist(editBtn));
+        actionsTd.appendChild(editBtn);
+
+        actionsTd.appendChild(document.createTextNode(' '));
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-del';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+            if (!confirm('Remove this not-yet-applied entry: ' + cidr + '?')) return;
+            stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+            row.remove();
+            applyBlacklistFilter();
+            updateTableBanner();
+        });
+        actionsTd.appendChild(delBtn);
+
+        row.appendChild(actionsTd);
+        return row;
     }
 
     // postAdminForm sends a POST with fields, injecting csrf_token automatically,
@@ -214,8 +377,8 @@
         const lastInteracted = sessionStorage.getItem('rulesTable_lastInteracted');
         
         Array.from(tbody.rows).forEach(row => {
-            // Do not filter out or hide the inline edit row
-            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
+            // Do not filter out or hide the inline edit row, nor a row staged for deletion
+            if (row.classList.contains('edit-row') || row.classList.contains('being-edited') || row.classList.contains('staged-delete')) return;
             
             const pattern = row.dataset.rulePattern || "";
             const id = row.dataset.ruleId || "";
@@ -260,8 +423,8 @@
         const lastInteracted = sessionStorage.getItem('hostsTable_lastInteracted');
         
         Array.from(tbody.rows).forEach(row => {
-            // Do not filter out the inline edit row
-            if (row.classList.contains('edit-host-row') || row.classList.contains('being-edited')) return;
+            // Do not filter out the inline edit row, nor a row staged for deletion
+            if (row.classList.contains('edit-host-row') || row.classList.contains('being-edited') || row.classList.contains('staged-delete')) return;
             
             const pattern = row.dataset.hostPattern || "";
             const ips = row.dataset.hostIps || "";
@@ -293,7 +456,7 @@
         const lastInteracted = sessionStorage.getItem('blacklistTable_lastInteracted');
         
         Array.from(tbody.rows).forEach(row => {
-            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
+            if (row.classList.contains('edit-row') || row.classList.contains('being-edited') || row.classList.contains('staged-delete')) return;
             const cidr = (row.dataset.cidr || "").toLowerCase();
             
             let isMatch = raw.length === 0 || matchesFilterExpression(cidr, raw);
@@ -366,6 +529,8 @@
         const ips = btn.dataset.ips;
         
         const row = document.getElementById('hostRow_' + index);
+        const isStagedAdd = row.classList.contains('staged-add');
+        const clientId = row.dataset.stagedClientId;
         row.style.display = 'none';
         row.classList.add('being-edited');
         
@@ -403,13 +568,24 @@
             const newIPs = ipsInput.value.trim();
             sessionStorage.setItem('hostsTable_lastInteracted', newPattern);
             
-            // Let the browser gather all form-linked inputs automatically!
-            const fields = Object.fromEntries(new FormData(form));
-            delete fields.csrf_token; 
-            // Add the 'edit' flag that your backend expects
-            fields.edit = '1';
-            
-            stagedTableChanges.push({ url: '/hosts', fields: fields });
+            if (isStagedAdd) {
+                // This row hasn't been sent to the server yet: merge the edit into
+                // the still-pending Add entry instead of staging a separate Edit
+                // that would reference a pattern the server doesn't know about yet.
+                const entry = stagedTableChanges.find(c => c.clientId === clientId);
+                if (entry) {
+                    entry.fields.pattern = newPattern;
+                    entry.fields.ips = newIPs;
+                }
+            } else {
+                // Let the browser gather all form-linked inputs automatically!
+                const fields = Object.fromEntries(new FormData(form));
+                delete fields.csrf_token; 
+                // Add the 'edit' flag that your backend expects
+                fields.edit = '1';
+                
+                stagedTableChanges.push({ url: '/hosts', fields: fields });
+            }
 
             // Optimistically update the visible row and its dataset
             row.dataset.hostPattern = newPattern;
@@ -429,7 +605,7 @@
                 editBtnEl.dataset.pattern = newPattern;
                 editBtnEl.dataset.ips = newIPs;
             }
-            
+
             editRow.remove();
             applyHostsFilter();
             updateTableBanner();
@@ -460,6 +636,8 @@
         
         const row = document.getElementById('blacklistRow_' + index);
         if (!row) return;
+        const isStagedAdd = row.classList.contains('staged-add');
+        const clientId = row.dataset.stagedClientId;
         row.style.display = 'none';
         row.classList.add('being-edited');
         
@@ -488,13 +666,23 @@
             const newCidr = cidrInput.value.trim().toLowerCase();
             sessionStorage.setItem('blacklistTable_lastInteracted', newCidr);
             
-            // Let the browser gather all form-linked inputs automatically!
-            const fields = Object.fromEntries(new FormData(form));
-            delete fields.csrf_token; // Our helper injects this automatically
-            // Add the 'action' flag that your backend expects
-            fields.action = 'edit';
-            
-            stagedTableChanges.push({ url: '/response-blacklist', fields: fields });
+            if (isStagedAdd) {
+                // This row hasn't been sent to the server yet: merge the edit into
+                // the still-pending Add entry instead of staging a separate Edit
+                // that would reference a CIDR the server doesn't know about yet.
+                const entry = stagedTableChanges.find(c => c.clientId === clientId);
+                if (entry) {
+                    entry.fields.cidr = newCidr;
+                }
+            } else {
+                // Let the browser gather all form-linked inputs automatically!
+                const fields = Object.fromEntries(new FormData(form));
+                delete fields.csrf_token; // Our helper injects this automatically
+                // Add the 'action' flag that your backend expects
+                fields.action = 'edit';
+                
+                stagedTableChanges.push({ url: '/response-blacklist', fields: fields });
+            }
 
             // Optimistically update the visible row and its dataset
             row.dataset.cidr = newCidr;
@@ -503,12 +691,14 @@
             row.classList.add('staged');
             row.style.display = '';
 
-            // Keep the Edit button's dataset in sync so subsequent edits use the staged value
+            // Keep the Edit button's own dataset in sync so that if this row is
+            // edited again before Apply, old_cidr reflects the latest staged
+            // value rather than the stale original one.
             const editBtnEl = row.querySelector('.js-blacklist-edit');
             if (editBtnEl) {
                 editBtnEl.dataset.cidr = newCidr;
             }
-            
+
             editRow.remove();
             applyBlacklistFilter();
             updateTableBanner();
@@ -965,6 +1155,8 @@
                 const typ = row.dataset.ruleType;
                 const oldPattern = row.dataset.rulePattern;
                 const enabled = row.dataset.ruleEnabled === 'true';
+                const isStagedAdd = row.classList.contains('staged-add');
+                const clientId = row.dataset.stagedClientId;
                 
                 // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
                 row.id = 'rule-row-' + id;
@@ -990,8 +1182,8 @@
                 
                 // 3. Populate values securely as object properties (no string escaping needed)
                 typeSelect.value = typ;
-                idDisplay.textContent = id;
-                idDisplay.title = id;
+                idDisplay.textContent = isStagedAdd ? '(pending)' : id;
+                idDisplay.title = isStagedAdd ? '(pending \u2014 assigned on Apply)' : id;
                 patternInput.value = oldPattern;
                 enabledCheck.checked = enabled;
                 idInput.value = id;
@@ -1013,10 +1205,22 @@
                     const ruleSignature = [id, newType, newPattern].join(" ").toLowerCase();
                     sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
                     
-                    stagedTableChanges.push({
-                        url: '/rules',
-                        fields: { 'id': id, 'pattern': newPattern, 'type': newType, 'enabled': enabledChecked ? 'true' : 'false' }
-                    });
+                    if (isStagedAdd) {
+                        // This row hasn't been sent to the server yet: merge the edit
+                        // into the still-pending Add entry instead of staging a second,
+                        // separate Edit that would reference a nonexistent rule ID.
+                        const entry = stagedTableChanges.find(c => c.clientId === clientId);
+                        if (entry) {
+                            entry.fields.pattern = newPattern;
+                            entry.fields.type = newType;
+                            entry.fields.enabled = enabledChecked ? 'true' : 'false';
+                        }
+                    } else {
+                        stagedTableChanges.push({
+                            url: '/rules',
+                            fields: { 'id': id, 'pattern': newPattern, 'type': newType, 'enabled': enabledChecked ? 'true' : 'false' }
+                        });
+                    }
 
                     // Optimistically update the visible row and its dataset so
                     // re-opening the edit form shows the new values.
@@ -1058,9 +1262,18 @@
                 const id = row.dataset.ruleId;
                 const typ = row.dataset.ruleType;
                 const pattern = row.dataset.rulePattern;
+
+                if (row.classList.contains('staged-add')) {
+                    // Never sent to the server: just drop the pending Add entry.
+                    if (!confirm('Remove this not-yet-applied rule: ' + pattern + '?')) return;
+                    const clientId = row.dataset.stagedClientId;
+                    stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+                    row.remove();
+                    applyRulesFilter();
+                    updateTableBanner();
+                    return;
+                }
                 
-                // Warn if staged edits would be discarded by the reload
-                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
                 // Native confirmation dialog
                 if (!confirm('Delete rule: ' + pattern + '?')) return;
                 
@@ -1070,30 +1283,17 @@
                     sessionStorage.removeItem('rulesTable_lastInteracted');
                 }
                 
-                // Submit in the background and reload cleanly
-                const delForm = delBtn.closest('form');
-                if (delForm) {
-                    fetch(delForm.action, {
-                        method: 'POST',
-                        body: new FormData(delForm),
-                        redirect: 'manual'
-                    })
-                    .then(async (res) => {
-                        // If the response is OK (2xx) or a manual redirect (0, 303, or opaqueredirect), it's a success
-                        const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
-                        if (!res.ok && !isSuccessRedirect) {
-                            const errMsg = await res.text();
-                            alert("Failed to delete rule:\n" + errMsg);
-                            return; // Halt here, do NOT reload
-                        }
-                        location.reload();
-                    })
-                    .catch(err => {
-                        console.error('Delete failed:', err);
-                        alert('A network error occurred while deleting the rule.');
-                    });
-                }
-            }
+                stagedTableChanges.push({
+                    url: '/rules',
+                    fields: { 'delete': '1', 'id': id, 'type': typ }
+                });
+
+                row.classList.add('staged-delete', 'staged');
+                row.style.display = 'none';
+
+                applyRulesFilter();
+                updateTableBanner();
+            } // end of 'if delBtn'
         }); // end of 'click' listener
         
         // Bind Rules filters on boot safely inside DOMContentLoaded
@@ -1111,36 +1311,53 @@
         // --- ADD RULE INTERCEPTOR ---
         const addForm = document.getElementById('addRuleForm');
         if (addForm) {
-            addForm.addEventListener('submit', async function(e) {
+            addForm.addEventListener('submit', function(e) {
                 e.preventDefault(); // Stop native browser submission
                 if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
 
                 const patternInput = addForm.querySelector('[name="pattern"]');
                 const typeSelect = addForm.querySelector('[name="type"]');
+                const enabledCheckbox = addForm.querySelector('[name="enabled"]');
                 if (!patternInput || !typeSelect) return;
-                
+
                 const pattern = patternInput.value.trim().toLowerCase();
-                const type = typeSelect.value.toLowerCase();
+                const type = typeSelect.value; // keep original case; matches dnsTypes option values
                 if (pattern === '') return;
-                
-                // Generate signature with an empty string for the missing ID
+                const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
+
+                const alreadyStaged = stagedTableChanges.some(c =>
+                    c.url === '/rules' && !c.fields.id && !c.fields.delete &&
+                    c.fields.type === type && c.fields.pattern === pattern);
+                if (alreadyStaged) {
+                    alert('A staged (not yet applied) rule with this type and pattern already exists.');
+                    return;
+                }
+
+                // Generate signature with an empty string for the missing ID, matching
+                // the free-pass format applyRulesFilter() expects for a just-added rule.
                 const ruleSignature = ["", type, pattern].join(" ").toLowerCase();
                 sessionStorage.setItem('rulesTable_lastInteracted', ruleSignature);
-                
-                // 1. Gather all inputs from the HTML form cleanly into an object
-                const fields = Object.fromEntries(new FormData(addForm));
-                // 2. Remove csrf_token from the object so postAdminForm doesn't duplicate it
-                delete fields.csrf_token;
-                
-                // 3. Submit via our DRY helper function
-                const success = await postAdminForm(addForm.action, fields, 'Failed to add rule');
-                if (success) {
-                    location.reload();
+
+                const clientId = generateClientId();
+                stagedTableChanges.push({
+                    url: '/rules',
+                    fields: { pattern: pattern, type: type, enabled: enabled ? 'true' : 'false' },
+                    clientId: clientId
+                });
+
+                const row = buildRuleRowElement(clientId, type, pattern, enabled);
+                const tbody = document.querySelector('#rulesTable tbody');
+                if (tbody) {
+                    tbody.insertBefore(row, tbody.firstChild); // newest first, mirrors server-side prepend
                 }
+
+                patternInput.value = '';
+                if (enabledCheckbox) enabledCheckbox.checked = true;
+
+                applyRulesFilter();
+                updateTableBanner();
             });
         }
-        
-        
         
         // ── Blocks page ───────────────────────────────────────────────────────────
         // Refresh button navigates to /blocks via GET, bypassing any cached POST state.
@@ -1164,36 +1381,81 @@
         // avoids adding any new data attributes to the HTML.
         document.querySelectorAll('.js-host-delete-form').forEach(form => {
             form.addEventListener('submit', function(e) {
-                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
-                if (!confirm('Delete local host override?')) {
-                    e.preventDefault();
-                    return;
-                }
+                e.preventDefault();
+
                 const patternInput = form.querySelector('[name="pattern"]');
                 if (!patternInput) {
                     // Defensive: form structure invariant violated; block submission rather
                     // than silently deleting without the sessionStorage cleanup.
                     console.error('js-host-delete-form: missing [name="pattern"] input');
-                    e.preventDefault();
                     return;
                 }
                 const pattern = patternInput.value.toLowerCase();
+
+                if (!confirm('Delete local host override: ' + pattern + '?')) {
+                    return;
+                }
+
                 if (sessionStorage.getItem('hostsTable_lastInteracted') === pattern) {
                     sessionStorage.removeItem('hostsTable_lastInteracted');
                 }
-                // Fall through: browser performs the native POST submission.
+
+                stagedTableChanges.push({
+                    url: '/hosts',
+                    fields: { delete: '1', pattern: pattern }
+                });
+
+                const row = form.closest('tr');
+                if (row) {
+                    row.classList.add('staged-delete', 'staged');
+                    row.style.display = 'none';
+                }
+
+                applyHostsFilter();
+                updateTableBanner();
             });
         });
         
-        // --- ADD HOST FREE-PASS TRACKING ---
-        // Records the pattern being added so the new row stays visible after
-        // reload even if it doesn't currently match the active filter text.
-        document.getElementById('addHostForm')?.addEventListener('submit', function() {
-            if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
+        // --- ADD HOST: stage instead of posting immediately ---
+        document.getElementById('addHostForm')?.addEventListener('submit', function(e) {
+            e.preventDefault();
+
             const patternInput = this.querySelector('[name="pattern"]');
-            if (patternInput) {
-                sessionStorage.setItem('hostsTable_lastInteracted', patternInput.value.trim().toLowerCase());
+            const ipsInput = this.querySelector('[name="ips"]');
+            if (!patternInput || !ipsInput) return;
+
+            const pattern = patternInput.value.trim().toLowerCase();
+            const ips = ipsInput.value.trim();
+            if (pattern === '' || ips === '') return;
+
+            const alreadyStaged = stagedTableChanges.some(c =>
+                c.url === '/hosts' && !c.fields.edit && !c.fields.delete && c.fields.pattern === pattern);
+            if (alreadyStaged) {
+                alert('A staged (not yet applied) local host with this pattern already exists.');
+                return;
             }
+
+            sessionStorage.setItem('hostsTable_lastInteracted', pattern);
+
+            const clientId = generateClientId();
+            stagedTableChanges.push({
+                url: '/hosts',
+                fields: { pattern: pattern, ips: ips },
+                clientId: clientId
+            });
+
+            const tbody = document.querySelector('#hostsTable tbody');
+            if (tbody) {
+                const placeholder = tbody.querySelector('td[colspan]');
+                if (placeholder) placeholder.closest('tr').remove();
+                tbody.appendChild(buildHostRowElement(clientId, pattern, ips));
+            }
+
+            patternInput.value = '';
+            ipsInput.value = '';
+
+            applyHostsFilter();
+            updateTableBanner();
         });
         
         // Load filter value from persistent sessionStorage on page load
@@ -1212,25 +1474,36 @@
             btn.addEventListener('click', () => editBlacklist(btn));
         });
         
-        // Note: the original onsubmit removed from sessionStorage *before* confirming,
-        // meaning a cancel would still clear it. Fixed here: confirm first, clean after.
         document.querySelectorAll('.js-blacklist-delete-form').forEach(form => {
             form.addEventListener('submit', function(e) {
-                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) { e.preventDefault(); return; }
+                e.preventDefault();
+
                 const cidrInput = form.querySelector('[name="cidr"]');
                 if (!cidrInput) {
                     console.error('js-blacklist-delete-form: missing [name="cidr"] input');
-                    e.preventDefault();
                     return;
                 }
                 const cidr = cidrInput.value;
                 if (!confirm('Remove ' + cidr + ' from blacklist?')) {
-                    e.preventDefault();
                     return;
                 }
                 if (sessionStorage.getItem('blacklistTable_lastInteracted') === cidr.toLowerCase()) {
                     sessionStorage.removeItem('blacklistTable_lastInteracted');
                 }
+
+                stagedTableChanges.push({
+                    url: '/response-blacklist',
+                    fields: { action: 'delete', cidr: cidr }
+                });
+
+                const row = form.closest('tr');
+                if (row) {
+                    row.classList.add('staged-delete', 'staged');
+                    row.style.display = 'none';
+                }
+
+                applyBlacklistFilter();
+                updateTableBanner();
             });
         });
         
@@ -1248,14 +1521,20 @@
         // --- Existing "check for overlapping filters before add" validation ---
         document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
             e.preventDefault(); // Stop form from auto-posting immediately
-            if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
             const form = this;
             const cidrInput = form.querySelector('input[name="cidr"]');
             const cidrValue = cidrInput.value.trim().toLowerCase();
             
             if (!cidrValue) return;
+
+            const alreadyStaged = stagedTableChanges.some(c =>
+                c.url === '/response-blacklist' && c.fields.action === 'add' && c.fields.cidr === cidrValue);
+            if (alreadyStaged) {
+                alert('A staged (not yet applied) blacklist entry with this CIDR already exists.');
+                return;
+            }
             
-            // Force persistent layout memory tracking hook prior to redirect submission triggers
+            // Force persistent layout memory tracking hook prior to filter re-runs
             sessionStorage.setItem('blacklistTable_lastInteracted', cidrValue);
             try {
                 const response = await fetch(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
@@ -1278,7 +1557,6 @@
                 `Error details: ${err}\n\n` +
                 `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
                 
-                // RESTORED DIAGNOSTIC LOG AND TELEMETRY STRINGS
                 console.error(msg);
                 // If user clicks "Cancel" (No), abort form submission.
                 // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
@@ -1291,7 +1569,24 @@
                 }
             }
             
-            form.submit(); // User clicked "OK" or check passed -> fire native submission
+            const clientId = generateClientId();
+            stagedTableChanges.push({
+                url: '/response-blacklist',
+                fields: { action: 'add', cidr: cidrValue },
+                clientId: clientId
+            });
+
+            const tbody = document.querySelector('#blacklistTable tbody');
+            if (tbody) {
+                const placeholder = tbody.querySelector('td[colspan]');
+                if (placeholder) placeholder.closest('tr').remove();
+                tbody.insertBefore(buildBlacklistRowElement(clientId, cidrValue), tbody.firstChild);
+            }
+
+            cidrInput.value = '';
+
+            applyBlacklistFilter();
+            updateTableBanner();
         });
         
         // ── Config page ───────────────────────────────────────────────────────────

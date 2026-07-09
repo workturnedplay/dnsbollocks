@@ -8247,7 +8247,7 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 	}
 	newInst, err := s.startDNSListenerInstance(params)
 	if err != nil {
-		s.logFatal(fmt.Sprintf("DNS listener (re)ind to %+v failed", params), err)
+		s.logFatal(fmt.Sprintf("DNS listener (re)bind to %+v failed", params), err)
 		panic2("BUG: unreachable")
 	}
 	s.dnsListener.Store(newInst)
