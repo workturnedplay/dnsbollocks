@@ -2,8 +2,6 @@ todo:
 
 * make Add/Delete to also stage changes, for the 3 pages (not for /config): /rules /hosts /response-blacklist  Currently only Edit button stages changes.
 
-* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...) (so a thin wrapper to it), or maybe even rt.Error(...) or nah(it implies Runtime.Error() not logger.Error(), no?), the fomer.
-
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!). Since I'm hosting it on localhost IP and talking directly to in from win11, why does it take so long, does it bcrypt hash the password and compare it on every request and this is the cost that's causing such delays?
@@ -22,6 +20,7 @@ no:
 
 
 done:
+//* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...) (so a thin wrapper to it), or maybe even rt.Error(...) or nah(it implies Runtime.Error() not logger.Error(), no?), the fomer.
 //* find out why say on /response-blacklist page if I Edit, Stage, Discard All _sometimes_ won't reload page (since it does that location.reload()) at all, not even in Console (F12 in firefox) running "location.reload()" doesn't reload page, says undefined (return value? possibly normal) - might be a firefox 152.0.5 bug? there are no errors from script in Console btw.
 //* make Discard All button in /config also ask for confirmation before navigating away (aka location.reload()) just like say /response-blacklist page does.
 //* on /rules page the Stage button will create a new non-editing line and still remain itself in Edit mode! also doesn't show the banner that there are staged things and how many, so no Apply or Discard

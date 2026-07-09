@@ -265,7 +265,7 @@ type AdminUI struct {
 // pointer to live logger via Runtime
 func (s *Server) getLogger() *slog.Logger {
 	if s.rt != nil {
-		return s.rt.LogMgr.Get()
+		return s.rt.Logger()
 	}
 	log := slog.Default()
 	log.Error("BUG: Server.rt not initialized before getLogger call.")
@@ -2510,17 +2510,17 @@ func OldMain() {
 	}
 
 	// ── 3. Load and validate configuration ────────────────────────────────────
-	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.LogMgr.Get(), configFileName, rt.FileWriter)
+	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.Logger(), configFileName, rt.FileWriter)
 	if err != nil {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
-			rt.LogMgr.Get().Error(strings.TrimPrefix(err.Error(), "FATAL: "))
+			rt.Logger().Error(strings.TrimPrefix(err.Error(), "FATAL: "))
 		} else {
-			rt.LogMgr.Get().Error("Config load failed", wincoe.SafeErr(err))
+			rt.Logger().Error("Config load failed", wincoe.SafeErr(err))
 		}
-		finalShutdownSequence(rt.LogMgr.Get(), 1, os.Exit)
+		finalShutdownSequence(rt.Logger(), 1, os.Exit)
 	} else {
-		rt.LogMgr.Get().Info("Config loaded", slog.String("filename", configFileName))
+		rt.Logger().Info("Config loaded", slog.String("filename", configFileName))
 	}
 
 	// ── 4. Apply the validated config to the Runtime infrastructure ───────────
@@ -2531,8 +2531,8 @@ func OldMain() {
 	// Initialize full logging (file handlers, correct console level).
 	// After this call, bugLogger and wincoe.Logger are updated to the full logger.
 	if err2 := rt.LogMgr.ApplyConfig(resolvedCfg); err2 != nil {
-		rt.LogMgr.Get().Error("Failed to initialize full logging", wincoe.SafeErr(err2))
-		finalShutdownSequence(rt.LogMgr.Get(), 1, os.Exit)
+		rt.Logger().Error("Failed to initialize full logging", wincoe.SafeErr(err2))
+		finalShutdownSequence(rt.Logger(), 1, os.Exit)
 	}
 
 	// ── 5. Create and run the Server ──────────────────────────────────────────
@@ -2544,18 +2544,18 @@ func OldMain() {
 		// saveConfig internally calls s.getConfig(), which now has the fully updated data
 		if err = srv.saveConfig(); err != nil {
 			//			return fmt.Errorf("config save failed: %w", err)
-			rt.LogMgr.Get().Error("Failed to save initial configuration", wincoe.SafeErr(err))
+			rt.Logger().Error("Failed to save initial configuration", wincoe.SafeErr(err))
 			srv.shutdown(1)
 		}
 	}
 
 	if err3 := srv.Run(); err3 != nil {
-		rt.LogMgr.Get().Error("Server exited with error", wincoe.SafeErr(err3))
+		rt.Logger().Error("Server exited with error", wincoe.SafeErr(err3))
 		srv.shutdown(1)
 		panic2("BUG: unreachable")
 	}
 
-	rt.LogMgr.Get().Error("unreachable")
+	rt.Logger().Error("unreachable")
 	//cancel()     // Cancel context for graceful close
 	srv.shutdown(44) // impossible to reach this, unless code was added later and shutdown/exit was forgotten above.
 	panic2("BUG: unreachable")
@@ -10397,13 +10397,13 @@ func NewLoggerManager(bootstrap *slog.Logger) *LoggerManager {
 	return lm
 }
 
-// Get returns the current logger, falling back to slog.Default() if uninitialised
+// get returns the current logger, falling back to slog.Default() if uninitialised
 // (should never happen in production but guards tests that build Server partially).
-func (lm *LoggerManager) Get() *slog.Logger {
+func (lm *LoggerManager) get() *slog.Logger {
 	if l := lm.ptr.Load(); l != nil {
 		return l
 	}
-	slog.Default().Error("BUG: LoggerManager.ptr is nil, using slog.Default()")
+	slog.Default().Error("BUG: LoggerManager.ptr.Load() which is of type *slog.Logger, is nil, so using slog.Default()")
 	return slog.Default()
 }
 
@@ -10414,9 +10414,9 @@ func (lm *LoggerManager) Ptr() *atomic.Pointer[slog.Logger] {
 	return &lm.ptr
 }
 
-// Set atomically swaps the logger without touching file handles.
+// set atomically swaps the logger without touching file handles.
 // Use Reinit when the swap accompanies new file handles.
-func (lm *LoggerManager) Set(l *slog.Logger) {
+func (lm *LoggerManager) set(l *slog.Logger) {
 	lm.ptr.Store(l)
 }
 
@@ -10429,7 +10429,8 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
 	lm.closers = newClosers
 	lm.mu.Unlock()
 
-	lm.ptr.Store(l) // readers see the new logger from this point
+	//lm.ptr.Store(l) // readers see the new logger from this point
+	lm.set(l) // readers see the new logger from this point
 
 	var errs []error
 	for _, c := range old {
@@ -10463,7 +10464,7 @@ func (lm *LoggerManager) Close() error {
 // and closes any previously registered file handles via Reinit.
 // It also synchronises the package-level bugLogger and wincoe.Logger fallbacks.
 func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
-	log := lm.Get()
+	log := lm.get()
 	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
 	var logWriters []*rotatingLogWriter // collected for Close() registration
 
@@ -10536,6 +10537,14 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 type Runtime struct {
 	LogMgr     *LoggerManager
 	FileWriter wincoe.FileWriter
+}
+
+// Logger is same as rt.LogMgr.Get()
+func (r *Runtime) Logger() *slog.Logger {
+	if r.LogMgr == nil {
+		panic2("BUG: uninited Runtime.LogMgr!")
+	}
+	return r.LogMgr.get()
 }
 
 // newDefaultFileWriter creates a FileWriter seeded with defaultConfig's safety
