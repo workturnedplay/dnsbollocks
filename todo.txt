@@ -1,12 +1,8 @@
 todo:
 
-* find out why say on /response-blacklist page if I Edit, Stage, Discard All _sometimes_ won't reload page (since it does that location.reload()) at all, not even in Console (F12 in firefox) running "location.reload()" doesn't reload page, says undefined (return value? possibly normal) - might be a firefox 152.0.5 bug? there are no errors from script in Console btw.
+* make Add/Delete to also stage changes, for the 3 pages (not for /config): /rules /hosts /response-blacklist  Currently only Edit button stages changes.
 
-* make Discard All button in /config also ask for confirmation before navigating away (aka location.reload()) just like say /response-blacklist page does.
-
-* make Add/Delete to also stage? for the 3 pages (not for /config): /rules /hosts /response-blacklist
-
-* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...), or maybe even rt.Error(...) or nah, the fomer.
+* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...) (so a thin wrapper to it), or maybe even rt.Error(...) or nah(it implies Runtime.Error() not logger.Error(), no?), the fomer.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
@@ -26,6 +22,8 @@ no:
 
 
 done:
+//* find out why say on /response-blacklist page if I Edit, Stage, Discard All _sometimes_ won't reload page (since it does that location.reload()) at all, not even in Console (F12 in firefox) running "location.reload()" doesn't reload page, says undefined (return value? possibly normal) - might be a firefox 152.0.5 bug? there are no errors from script in Console btw.
+//* make Discard All button in /config also ask for confirmation before navigating away (aka location.reload()) just like say /response-blacklist page does.
 //* on /rules page the Stage button will create a new non-editing line and still remain itself in Edit mode! also doesn't show the banner that there are staged things and how many, so no Apply or Discard
 //* on /hosts Stage button does nothing, i forgot a line
 //* make the applying of all staged changes happen in 1 POST not 1 per each change and if any fails stop.

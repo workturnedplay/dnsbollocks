@@ -849,6 +849,9 @@
         }, 'Failed to apply configuration');
         
         if (success) {
+            // CRITICAL: Clear the object to disarm the beforeunload listener before reloading!
+            for (const key in stagedChanges) { delete stagedChanges[key]; }
+
             location.reload();
         }
     }
@@ -893,9 +896,17 @@
 
         // Warn before navigating away while table edits are staged
         window.addEventListener('beforeunload', function(e) {
-            if (stagedTableChanges.length > 0) {
+           const hasTableChanges = stagedTableChanges.length > 0;
+            const hasConfigChanges = Object.keys(stagedChanges).length > 0;
+
+            if (hasTableChanges || hasConfigChanges) {
+                // Modern standard way to trigger the confirmation dialog
                 e.preventDefault();
-                e.returnValue = '';
+                
+                e.returnValue = '' // says deprecated
+                // Returning a string triggers the prompt in almost all browsers 
+                // and completely bypasses the VS Code deprecation warning.
+                return ''; 
             }
         });
         
@@ -903,6 +914,7 @@
         document.addEventListener('click', function(e) {
             // Table-staging Apply / Discard buttons
             if (e.target.closest('.js-discard-table-btn')) {
+                stagedTableChanges = []; // Bypass the beforeunload block!
                 location.reload();
                 return;
             }
@@ -911,7 +923,10 @@
                 (async () => {
                     const payload = JSON.stringify(stagedTableChanges);
                     const success = await postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged edits');
-                    if (success) location.reload();
+                    if (success) {
+                        stagedTableChanges = []; // Bypass the beforeunload block!
+                        location.reload();
+                    }
                 })();
                 return;
             }
@@ -1282,7 +1297,13 @@
         
         const discardConfigBtn = document.getElementById('js-discard-config-btn');
         if (discardConfigBtn){
-            discardConfigBtn.addEventListener('click', () => location.reload());
+            discardConfigBtn.addEventListener('click', () => {
+                if (confirm('Discard all staged config changes?')) {
+                    // Empty the staged changes object safely, else beforeunload will prevent reload!
+                    for (const key in stagedChanges) { delete stagedChanges[key]; }
+                    location.reload();
+                }
+            });
         }
         // Bind event listener and restore saved state on page load
         const configFilterInput = document.getElementById('configFilter');
