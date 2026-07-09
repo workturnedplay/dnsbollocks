@@ -503,6 +503,12 @@
             row.classList.add('staged');
             row.style.display = '';
 
+            // Keep the Edit button's dataset in sync so subsequent edits use the staged value
+            const editBtnEl = row.querySelector('.js-blacklist-edit');
+            if (editBtnEl) {
+                editBtnEl.dataset.cidr = newCidr;
+            }
+            
             editRow.remove();
             applyBlacklistFilter();
             updateTableBanner();
