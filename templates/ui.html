@@ -181,7 +181,7 @@
         <code>{{.Domain}}</code> <span class="tag-disabled">({{.Type}})</span>
         
         {{if .IsUnblocked}}
-        <form method="post" action="/blocks" class="d-inline">
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -189,7 +189,7 @@
             <button type="submit" class="btn-cancel">Re-block (Pause)</button>
         </form>
         {{else}}
-        <form method="post" action="/blocks" class="d-inline">
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -197,6 +197,7 @@
             <button type="submit" class="btn-edit">Unblock {{.Type}}</button>
         </form>
         {{end}}
+        <span class="block-action-feedback" aria-live="polite"></span>
     </li>
     {{end}}
 </ul>

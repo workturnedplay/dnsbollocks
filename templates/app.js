@@ -409,6 +409,38 @@
         return true;
     }
     
+    // postBlocksAction performs a background (AJAX) POST to /blocks for a
+    // single Unblock/Re-block action, without navigating or reloading the
+    // page. Unlike postAdminForm, failures are reported back to the caller
+    // instead of via alert(), since this is used for small, frequent,
+    // per-row actions where an inline status message is preferable to a
+    // blocking dialog. The server recognizes the X-DNSBollocks-Ajax header
+    // and responds with a plain status code instead of a redirect.
+    async function postBlocksAction(domain, type, action) {
+        const formData = new FormData();
+        formData.append('csrf_token', csrfToken);
+        formData.append('domain', domain);
+        formData.append('type', type);
+        formData.append('action', action);
+        
+        let res;
+        try {
+            res = await fetch('/blocks', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-DNSBollocks-Ajax': '1' },
+            });
+        } catch (err) {
+            return { ok: false, message: 'Network error: ' + err };
+        }
+        
+        const bodyText = await res.text();
+        if (res.ok) {
+            return { ok: true, message: bodyText };
+        }
+        return { ok: false, message: bodyText || ('HTTP ' + res.status) };
+    }
+    
     // --- Filter highlight helpers ---
     // Operates directly on text nodes so it is safe even when sibling elements
     // (like <br> or <small>) are present, and survives staged-value updates that
@@ -1557,6 +1589,68 @@
                 window.location.href = '/blocks';
             });
         }
+        
+        // Unblock/Re-block buttons: submit in the background via fetch() instead
+        // of a full page POST+redirect+reload, so several clicks in quick
+        // succession each resolve independently without blocking on a full page
+        // re-render. Falls back to a normal form submission (full page reload)
+        // if JavaScript is disabled, since the underlying <form> is still real.
+        document.querySelectorAll('.js-block-action-form').forEach(form => {
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const domain = form.querySelector('[name="domain"]').value;
+                const type = form.querySelector('[name="type"]').value;
+                const actionInput = form.querySelector('[name="action"]');
+                const action = actionInput.value;
+                const btn = form.querySelector('button[type="submit"]');
+                const feedback = form.parentElement.querySelector('.block-action-feedback');
+                
+                if (btn.disabled) return; // already in flight; ignore rapid double-clicks
+                
+                const originalText = btn.textContent;
+                const originalClass = btn.className;
+                
+                btn.disabled = true;
+                btn.textContent = action === 'reblock' ? 'Re-blocking\u2026' : 'Unblocking\u2026';
+                btn.classList.add('btn-action-pending');
+                if (feedback) {
+                    feedback.textContent = '';
+                    feedback.className = 'block-action-feedback';
+                }
+                
+                const result = await postBlocksAction(domain, type, action);
+                
+                if (result.ok) {
+                    // Flip the form to perform the opposite action next time, and
+                    // relabel the button to match — mirrors exactly what a full
+                    // page reload would have shown.
+                    if (action === 'unblock') {
+                        actionInput.value = 'reblock';
+                        btn.textContent = 'Re-block (Pause)';
+                        btn.className = 'btn-cancel';
+                    } else {
+                        actionInput.value = 'unblock';
+                        btn.textContent = 'Unblock ' + type;
+                        btn.className = 'btn-edit';
+                    }
+                    btn.disabled = false;
+                    if (feedback) {
+                        feedback.textContent = '\u2713 ' + (result.message || 'Done');
+                        feedback.classList.add('block-action-feedback-success');
+                    }
+                } else {
+                    // Revert to the exact original button so the user can retry.
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                    btn.className = originalClass;
+                    if (feedback) {
+                        feedback.textContent = 'Failed: ' + result.message;
+                        feedback.classList.add('block-action-feedback-error');
+                    }
+                }
+            });
+        });
         
         // ── Hosts page ────────────────────────────────────────────────────────────
         // Edit buttons: pass the button element to editHost() exactly as onclick="editHost(this)" did.

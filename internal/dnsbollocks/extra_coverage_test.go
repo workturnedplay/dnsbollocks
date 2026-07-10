@@ -850,3 +850,26 @@ func TestAdminUI_SecurityHeadersMiddleware(t *testing.T) {
 		t.Error("expected Content-Security-Policy header to be set")
 	}
 }
+
+func TestIsBlocksAjaxRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		headerVal string
+		want      bool
+	}{
+		{"header set to 1", "1", true},
+		{"header absent", "", false},
+		{"header wrong value", "true", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/blocks", http.NoBody)
+			if tt.headerVal != "" {
+				req.Header.Set(blocksAjaxHeader, tt.headerVal)
+			}
+			if got := isBlocksAjaxRequest(req); got != tt.want {
+				t.Errorf("isBlocksAjaxRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

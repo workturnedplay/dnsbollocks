@@ -436,3 +436,12 @@ tr.edit-row td.edit-id-display {
     font-family: monospace;
     color: #f43f5e; /* Subtle pink/red tint for highlights */
 }
+
+/* Blocks page: inline pending/success/failure feedback for the background
+   fetch()-based Unblock/Re-block actions (see app.js .js-block-action-form). */
+.btn-action-pending { opacity: 0.6; cursor: wait; }
+
+.block-action-feedback { margin-left: 8px; font-size: 0.85em; }
+.block-action-feedback-success { color: var(--success); font-weight: bold; }
+.block-action-feedback-error { color: var(--danger); font-weight: bold; }
+

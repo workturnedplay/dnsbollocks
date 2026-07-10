@@ -6458,6 +6458,45 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	})
 }
 
+// blocksAjaxHeader is the custom header the /blocks page's JS sets on its
+// background fetch() calls so blocksHandler can respond with a plain status
+// code instead of a redirect+querystring, avoiding a full page reload for
+// every Unblock/Re-block click.
+const blocksAjaxHeader = "X-DNSBollocks-Ajax"
+
+func isBlocksAjaxRequest(r *http.Request) bool {
+	return r.Header.Get(blocksAjaxHeader) == "1"
+}
+
+// respondBlocksResult replies to a /blocks POST either with a redirect
+// carrying success/error query params (progressive-enhancement fallback for
+// non-JS clients, preserving the existing full-page-reload behavior) or, for
+// background/AJAX requests (see isBlocksAjaxRequest), with a plain status
+// code and short text body so the caller can update the UI in place without
+// a full page reload.
+func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Request, ok bool, status int, message, enteredValue string) {
+	if isBlocksAjaxRequest(r) {
+		if ok {
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write([]byte(message)); err != nil {
+				log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
+			}
+		} else {
+			http.Error(w, message, status)
+		}
+		return
+	}
+	if ok {
+		http.Redirect(w, r, "/blocks?success="+url.QueryEscape(message), http.StatusSeeOther)
+		return
+	}
+	redirectURL := "/blocks?error=" + url.QueryEscape(message)
+	if enteredValue != "" {
+		redirectURL += "&val=" + url.QueryEscape(enteredValue)
+	}
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
 func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
@@ -6484,22 +6523,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				slog.String("sanitized", sanitized),
 				slog.Bool("modified", modified),
 			)
-
-			// // Re-render the form containing the error message and previous input
-			// data := map[string]any{
-			// 	"Page": "blocks",
-			// 	// Re-fetch the blocks copy so we can re-render the page correctly with data
-			// 	"Blocks":       getRecentBlocksCopy(),
-			// 	"ErrorMessage": "Invalid domain format. Please enter a valid domain name.",
-			// 	"EnteredValue": raw, // "Go's built-in html/template library provides context-aware contextual auto-escaping. When you write {{.EnteredValue}} inside your HTML source code, Go analyzes the context (knowing it sits inside raw text or an attribute) and automatically transforms dangerous characters like <, >, &, and " into their safe HTML entity representations."
-			// }
-
-			// renderTemplate(w, "blocks", data)
-
-			errMsg := "Invalid domain format. Please enter a valid domain name."
-			redirectURL := "/blocks?error=" + url.QueryEscape(errMsg) + "&val=" + url.QueryEscape(raw)
-			http.Redirect(w, r, redirectURL, http.StatusSeeOther)
-
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
 			return
 		}
 		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
@@ -6549,16 +6573,15 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			default:
 				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
-				// Reject any unauthorized or malformed action values
-				http.Error(w, "Invalid action specified", http.StatusBadRequest)
-				return //oh this was bugged before, it was exitting only the inner anon-func!
+				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
+				return
 			} //switch
 
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
 				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
 				panic2("BUG: unreachable")
 			}
-			http.Redirect(w, r, "/blocks?success="+url.QueryEscape(successMessage), http.StatusSeeOther)
+			respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
 			return
 		}
 
@@ -6566,13 +6589,10 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
 
-		// renderTemplate(w, "blocks", data)
-		errMsg := "Failed to process unblock request. " + payloadDetails
-		http.Redirect(w, r, "/blocks?error="+url.QueryEscape(errMsg), http.StatusSeeOther)
-
+		respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
 		return
-	}
-}
+	} // end "POST"
+} // end blocksHandler
 
 func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
 	cfg := ui.getConfig()
