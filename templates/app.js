@@ -221,7 +221,7 @@
         editBtn.className = 'btn-edit';
         editBtn.textContent = 'Edit';
         actionsTd.appendChild(editBtn);
-        actionsTd.appendChild(document.createTextNode(' '));
+        //actionsTd.appendChild(document.createTextNode(' ')); //a bit of horizontal gap
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'btn-del';
@@ -286,7 +286,7 @@
         editBtn.addEventListener('click', () => editHost(editBtn));
         actionsTd.appendChild(editBtn);
 
-        actionsTd.appendChild(document.createTextNode(' '));
+        //actionsTd.appendChild(document.createTextNode(' ')); //a bit of horizontal gap
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
@@ -347,7 +347,7 @@
         editBtn.addEventListener('click', () => editBlacklist(editBtn));
         actionsTd.appendChild(editBtn);
 
-        actionsTd.appendChild(document.createTextNode(' '));
+        //actionsTd.appendChild(document.createTextNode(' ')); //a bit of horizontal gap
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';

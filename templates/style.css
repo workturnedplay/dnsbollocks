@@ -70,7 +70,7 @@ select {
 /* Common Spacers */
 .lbl-spaced { margin: 0 10px; }
 .filter-spacer { margin-top: 25px; }
-.form-inline-action { display: inline; margin-left: 6px; }
+.form-inline-action { display: inline; margin-left: 0px; }
 .form-inline-action2 { display: inline; margin-left: 0px; }
 
 /* Reusable column tokens */
