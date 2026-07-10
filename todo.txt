@@ -1,4 +1,6 @@
 todo:
+* do 1,2,3 for v0.20.1, in this: https://gemini.google.com/app/c7c615d55ce71b2d
+
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877

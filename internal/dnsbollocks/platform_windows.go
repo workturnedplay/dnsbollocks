@@ -3082,11 +3082,21 @@ func matchPattern(pattern, name string) bool {
 	tokens := tokenizePattern(pattern)
 	numChars := len(name)
 
+	// // We only need two rows to track matching states across token iterations.
+	// // prevRow tracks matches for tokens[0...i-1]
+	// // currRow tracks matches for tokens[0...i]
+	// prevRow := make([]bool, numChars+1)
+	// currRow := make([]bool, numChars+1)
+
+	if numChars > 253 {
+		//TODO: are we making sure it's already not bigger than this somewhere in caller?!
+		panic2(fmt.Sprintf("the DNS name %q is %d chars long which is > 253", name, numChars))
+	}
 	// We only need two rows to track matching states across token iterations.
-	// prevRow tracks matches for tokens[0...i-1]
-	// currRow tracks matches for tokens[0...i]
-	prevRow := make([]bool, numChars+1)
-	currRow := make([]bool, numChars+1)
+	// Since DNS names max out at 253 chars, stack-allocate 256 to eliminate GC pressure.
+	var prevRowBuf, currRowBuf [256]bool
+	prevRow := prevRowBuf[:numChars+1]
+	currRow := currRowBuf[:numChars+1]
 
 	// Base case: An empty pattern matches an empty domain string
 	prevRow[0] = true
@@ -4214,14 +4224,17 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				log.Warn("RetryBackoffDuration is >= 5 sec", slog.Duration("retrybackoff_duration", u.RetryBackoffDuration))
 			}
 			// small backoff: sleep a bit but respect context
+			timer := time.NewTimer(u.RetryBackoffDuration)
 			select {
-			case <-time.After(u.RetryBackoffDuration):
+			case <-timer.C:
 				log.Debug("Retrying after backoff", SafeRequestAttr("query", req), slog.Duration("retrybackoff_duration", u.RetryBackoffDuration))
 				//exits select
 			case <-ctx.Done():
+				timer.Stop()
 				log.Debug("doh sensed client quit during retry backoff...")
 				return nil, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err() /*non-nil guaranteed*/)
 			case <-u.BackgroundCtx.Done():
+				timer.Stop()
 				log.Debug("doh sensed quit during retry backoff...")
 				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err() /*non-nil guaranteed*/)
 			}
@@ -4403,7 +4416,8 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// and we whitelist it in A afterwards, then dnscache might've cached the NXDOMAIN from AAAA and treat it as such for X more seconds thus
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
-	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == blockModeNXDOMAIN {
+	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && (cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {
+		//if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == blockModeNXDOMAIN {
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
 		resp.Rcode = dns.RcodeSuccess
