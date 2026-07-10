@@ -1,11 +1,11 @@
 todo:
 
 * Discard button is only available during Edit even tho that entry is Staged but not yet Apply-ed. Normally I'd want it to be there even when not in Edit mode, once it's Staged.
-* I need /config webUI page to have a Discard button too for the Staged (but not yet Apply-ed entries/rows). Also make it visible even when not in Edit mode, so it can be Discard-ed (aka reverted to original value) without the intermediate Edit button click.
+* I need /config webUI page to have a Discard button too for the Staged (but not yet Apply-ed entries/rows). Also make it visible even when not in Edit mode, so it can be Discard-ed (aka reverted to original value) without the intermediate Edit button click requirement.
+
+* ideally make the unblocks/reblocks (in "Blocks(recent)" webUI page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background(and change the Block/Unblock button to append text that says it's in progress) and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!). Since I'm hosting it on localhost IP and talking directly to in from win11, why does it take so long, does it bcrypt hash the password and compare it on every request and this is the cost that's causing such delays?
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
-
-* ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background(and change the Block/Unblock button to append text that says it's in progress) and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!). Since I'm hosting it on localhost IP and talking directly to in from win11, why does it take so long, does it bcrypt hash the password and compare it on every request and this is the cost that's causing such delays?
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
 
