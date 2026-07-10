@@ -320,6 +320,21 @@ tr.staged-delete .btn-del,
 tr.staged-delete .form-inline-action { display: none; }
 tr.staged-delete .btn-undelete { display: inline-block; }
 
+/* Inline Discard button on the base (non-edit-mode) row — shown only once a
+   row has a staged PLAIN EDIT (not a staged Add or staged Delete, which
+   already expose their own discard-equivalent action: the Delete button for
+   Adds, and the Undelete button for Deletes). Lets the user revert a staged
+   edit back to its original values in a single click, without first opening
+   Edit. Also used, unconditionally scoped to #configTable, for per-field
+   config Discard since every config row is always a "plain edit" target. */
+.inline-discard-btn { display: none; }
+#rulesTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
+#hostsTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
+#blacklistTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
+#configTable tr.staged .inline-discard-btn {
+    display: inline-block;
+}
+
 /* Strict row-height lock to match active table rows perfectly */
 tr.edit-row, tr.edit-host-row {
     height: 64px;
@@ -380,11 +395,6 @@ tr.edit-row td.edit-id-display {
     vertical-align: middle !important; /* Fixes the left column alignment */
     padding-top: 8px;
     padding-bottom: 8px;
-}
-
-/* Prevent config page action buttons from breaking/stacking vertically */
-#configTable td.actions {
-    white-space: nowrap !important;
 }
 
 /* Add a clean horizontal separation between inline action buttons */

@@ -661,6 +661,15 @@
         cancelInlineRowEdit('editFormRow_' + id, 'rule-row-' + id, true, applyRulesFilter);
     }
     
+    // discardHostEdits drops any queued staged Edit for a persisted (non-add)
+    // local host row and restores its displayed pattern/IPs to the original
+    // baseline. Shared by the inline per-row Discard button and the Discard
+    // button inside the Edit form.
+    function discardHostEdits(row, origPattern, origIps) {
+        const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
+        discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps));
+    }
+    
     function editHost(btn) {
         // 0. Extract variables from the button itself
         const index = btn.dataset.index;
@@ -751,8 +760,7 @@
                 editRow.remove();
             } else {
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
-                const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-                discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps));
+                discardHostEdits(row, origPattern, origIps);
                 row.classList.remove('being-edited');
                 row.style.display = '';
                 editRow.remove();
@@ -767,6 +775,15 @@
     
     function cancelHostEdit(index) {
         cancelInlineRowEdit('editHostRow_' + index, 'hostRow_' + index, false, applyHostsFilter);
+    }
+    
+    // discardBlacklistEdits drops any queued staged Edit for a persisted
+    // (non-add) blacklist row and restores its displayed CIDR to the
+    // original baseline. Shared by the inline per-row Discard button and the
+    // Discard button inside the Edit form.
+    function discardBlacklistEdits(row, origCidr) {
+        const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
+        discardStagedEdit(existingIdx, row, () => applyBlacklistRowDisplay(row, origCidr));
     }
     
     // --- Edit / Cancel for inline row editing ---
@@ -847,8 +864,7 @@
                 editRow.remove();
             } else {
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
-                const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-                discardStagedEdit(existingIdx, row, () => applyBlacklistRowDisplay(row, origCidr));
+                discardBlacklistEdits(row, origCidr);
                 row.classList.remove('being-edited');
                 row.style.display = '';
                 editRow.remove();
@@ -1460,6 +1476,28 @@
                     updateTableBanner();
                 }//if
             } // end of 'if delBtn'
+            
+            // --- INLINE DISCARD BUTTON INTERCEPTOR (rules only; hosts/blacklist
+            // wire their own '.js-host-discard'/'.js-blacklist-discard' listeners) ---
+            const inlineDiscardBtn = e.target.closest('.inline-discard-btn');
+            if (inlineDiscardBtn) {
+                const row = inlineDiscardBtn.closest('tr');
+                if (row && row.hasAttribute('data-rule-id') &&
+                    row.classList.contains('staged') &&
+                    !row.classList.contains('staged-add') &&
+                    !row.classList.contains('staged-delete')) {
+                    e.preventDefault();
+                    if (!confirm('Discard all staged changes for this rule and revert it to its original state?')) return;
+                    const id = row.dataset.ruleId;
+                    const origType = row.dataset.origType;
+                    const origPattern = row.dataset.origPattern;
+                    const origEnabled = row.dataset.origEnabled === 'true';
+                    const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
+                    discardStagedEdit(existingIdx, row, () => applyRuleRowDisplay(row, origType, origPattern, origEnabled));
+                    applyRulesFilter();
+                    updateTableBanner();
+                }
+            } // end of 'if inlineDiscardBtn'
         }); // end of 'click' listener
         
         // Bind Rules filters on boot safely inside DOMContentLoaded
@@ -1579,6 +1617,20 @@
             });
         });
         
+        // Inline Discard: revert a staged plain-edit row to its original
+        // pattern/IPs directly, without first opening the Edit form.
+        document.querySelectorAll('.js-host-discard').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = btn.dataset.index;
+                const row = document.getElementById('hostRow_' + index);
+                if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
+                if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
+                discardHostEdits(row, row.dataset.origPattern, row.dataset.origIps);
+                applyHostsFilter();
+                updateTableBanner();
+            });
+        });
+        
         // --- ADD HOST: stage instead of posting immediately ---
         document.getElementById('addHostForm')?.addEventListener('submit', function(e) {
             e.preventDefault();
@@ -1673,6 +1725,20 @@
             });
         });
         
+        // Inline Discard: revert a staged plain-edit row to its original
+        // CIDR directly, without first opening the Edit form.
+        document.querySelectorAll('.js-blacklist-discard').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = btn.dataset.index;
+                const row = document.getElementById('blacklistRow_' + index);
+                if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
+                if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
+                discardBlacklistEdits(row, row.dataset.origCidr);
+                applyBlacklistFilter();
+                updateTableBanner();
+            });
+        });
+        
         // Load filter values from persistent sessionStorage on load tracking configuration
         const blacklistFilterInput = document.getElementById('blacklistFilter');
         if (blacklistFilterInput) {
@@ -1756,6 +1822,31 @@
                     return;
                 }
                 editConfig(row.dataset.key);
+            });
+        });
+        
+        // Inline Discard: revert a single staged config field back to its
+        // true pristine (server-rendered) value directly, without opening
+        // the Edit form and without touching any other staged field.
+        document.querySelectorAll('.js-config-discard').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const row = btn.closest('tr[data-key]');
+                if (!row) {
+                    console.error('js-config-discard: could not find ancestor tr[data-key]');
+                    return;
+                }
+                const key = row.dataset.key;
+                if (stagedChanges[key] === undefined) return; // nothing staged; shouldn't be visible anyway
+                if (!confirm('Discard the staged change for "' + key + '" and revert it to its original value?')) return;
+                
+                delete stagedChanges[key];
+                const trueOriginal = row.dataset.trueOriginal;
+                row.querySelector('.display-value').innerText = trueOriginal;
+                row.dataset.original = trueOriginal;
+                row.classList.remove('staged');
+                
+                applyConfigFilter();
+                updateBanner();
             });
         });
         
