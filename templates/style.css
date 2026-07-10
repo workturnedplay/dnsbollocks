@@ -195,7 +195,7 @@ mark.filter-highlight {
 .btn-padded {
     padding: 8px 16px;
 }
-.btn-discard-all {
+.btn-discard-all, .btn-discard-row {
     padding: 8px 16px;
     background: #666 !important;
     color: white !important;
@@ -307,6 +307,18 @@ tr.staged td { border-bottom: 2px solid #f39c12; background-color: #2a2515; }
 
 /* Distinguish a staged-but-not-yet-applied "Add" row from a staged Edit */
 tr.staged-add td { border-bottom: 2px solid var(--success); background-color: #16241c; }
+
+/* Staged-for-deletion rows stay visible (no longer display:none) with a
+   strike-through, so the user can still find them via the filter and Undelete them. */
+tr.staged-delete td { border-bottom: 2px solid var(--danger); background-color: #241616; text-decoration: line-through; opacity: 0.7; }
+
+/* Undelete only makes sense (and is only shown) once a row is staged for deletion. */
+.btn-undelete { display: none; background-color: var(--cancel) !important; color: white !important; border: none !important; }
+.btn-undelete:hover { background-color: var(--cancel-hover) !important; }
+tr.staged-delete .btn-edit,
+tr.staged-delete .btn-del,
+tr.staged-delete .form-inline-action { display: none; }
+tr.staged-delete .btn-undelete { display: inline-block; }
 
 /* Strict row-height lock to match active table rows perfectly */
 tr.edit-row, tr.edit-host-row {

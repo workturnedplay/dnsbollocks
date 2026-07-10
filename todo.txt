@@ -2,12 +2,6 @@ todo:
 
 * the log line "Dropping IP hint from the HTTPS reply" should tell me for what DNS query/host!
 
-* currently if I Add something (like a blacklisted IP/CIDR) it's staged (good) but then I Edit an existing one and as soon as I Stage this one, the newly added staged one from before is gone because of the current filter filtering it out, it shouldn't get filtered out, none of the staged ones should.
-* currently, if i Edit the same thing multiple times(ie. Edit, change it, Stage), the number of changes increases, but shouldn't, it's same row.
-* I need per-row Discard buttons (so Stage, Cancel, Discard) which will discard all staged edits(ie. no matter how many times I pressed Edit on this row and changed it) to the state it was before anything begun to be staged.
-* maybe detect when Staging a row that has no changes compared to unstaged variant of it and then don't mark it as staged and if it was staged(from a prev. Edit of it) and now it isn't anymore(after this Edit, due to same contents as unstaged/before one) ensure the counter is properly decremented to acount for this unstaging of it.
-* also need to be able to Undelete a row that I stage-deleted, so this means the filter must still see it after deletion and it now has a button to Undelete it.
-
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * ideally make the unblocks/reblocks (in Blocks(recent) page) more instant (currently 1+ sec per click, to finish loading) on the /blocks webUI page. Maybe i dno, do the fetch in the background(and change the Block/Unblock button to append text that says it's in progress) and if it fails keep the button as it were so it can be sent again, if it succeeds change it. Currently a full page reload seems to be happening on any 1 button click. I want to can do 3 button clicks in under 1 sec and they'd all be toggling their state as their fetch or POST or wtw succeeds, if it succeeds, if it fails (somehow let me know, a small text next to the right of the button? maybe even if it does succeed a green text?!). Since I'm hosting it on localhost IP and talking directly to in from win11, why does it take so long, does it bcrypt hash the password and compare it on every request and this is the cost that's causing such delays?
@@ -20,8 +14,11 @@ todo:
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
 * link to Tinywall in readme and to Go lang to install Go.
 
-nevermind/quirks:
+nevermind/quirks(I don't wanna fix these):
 //* currently: the new CIDR is still the old CIDR, I guess the wrong one is sent to the backend? in /response-blacklist page at least(?!) Actually, my bad it only happens for old_cidr=127.0.0.0/8 new_cidr=127.0.0.0/8  when my edited was 127.0.0.20/8 but this makes sense.
+* if I Edit an entry(Stage it but not Apply it), then Delete it, the Undelete will recover the original one not the last edited value(s).
+* if I filter and put the "!" after the word (even with a space) it acts as if it's !word so it excludes it.
+
 
 no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
@@ -31,6 +28,11 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* currently if I Add something (like a blacklisted IP/CIDR) it's staged (good) but then I Edit an existing one and as soon as I Stage this one, the newly added staged one from before is gone because of the current filter filtering it out, it shouldn't get filtered out, none of the staged ones should.
+//* currently, if i Edit the same thing multiple times(ie. Edit, change it, Stage), the number of changes increases, but shouldn't, it's same row.
+//* I need per-row Discard buttons (so Stage, Cancel, Discard) which will discard all staged edits(ie. no matter how many times I pressed Edit on this row and changed it) to the state it was before anything begun to be staged.
+//* maybe detect when Staging a row that has no changes compared to unstaged variant of it and then don't mark it as staged and if it was staged(from a prev. Edit of it) and now it isn't anymore(after this Edit, due to same contents as unstaged/before one) ensure the counter is properly decremented to acount for this unstaging of it.
+//* also need to be able to Undelete a row that I stage-deleted, so this means the filter must still see it after deletion and it now has a button to Undelete it.
 //* make Add/Delete to also stage changes, for the 3 pages (not for /config): /rules /hosts /response-blacklist  Currently only Edit button stages changes.
 //* instead of rt.LogMgr.Get().Error(...) we should have rt.LogMgr.Error(...) (so a thin wrapper to it), or maybe even rt.Error(...) or nah(it implies Runtime.Error() not logger.Error(), no?), the fomer.
 //* find out why say on /response-blacklist page if I Edit, Stage, Discard All _sometimes_ won't reload page (since it does that location.reload()) at all, not even in Console (F12 in firefox) running "location.reload()" doesn't reload page, says undefined (return value? possibly normal) - might be a firefox 152.0.5 bug? there are no errors from script in Console btw.

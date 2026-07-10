@@ -105,7 +105,8 @@
     </thead>
     <tbody>
         {{range .Rules}}
-        <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}">
+        <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}"
+            data-orig-type="{{.Type}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}">
             <td>{{.Type}}</td>
             <td title="{{.ID}}">{{.ID}}</td>
             <td title="{{.Pattern}}">{{.Pattern}}</td>
@@ -119,6 +120,7 @@
                     <input type="hidden" name="type" value="{{.Type}}">
                     <button type="submit" class="btn-del">Delete</button>
                 </form>
+                <button type="button" class="btn-undelete">Undelete</button>
             </td>
         </tr>
         {{end}}
@@ -143,6 +145,7 @@
                 <input type="hidden" name="id" class="edit-id-input">
                 <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
+                <button type="button" class="btn-discard-row">Discard</button>
             </form>
         </td>
     </tr>
@@ -237,7 +240,8 @@
     </thead>
     <tbody>
         {{range .Hosts}}
-        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.Pattern}}" data-host-ips="{{.IPsDisplay}}">
+        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.Pattern}}" data-host-ips="{{.IPsDisplay}}"
+            data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}">
             <td title="{{.Pattern}}">{{.Pattern}}</td>
             <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
             <td class="actions">
@@ -253,6 +257,7 @@
                 <input type="hidden" name="pattern" value="{{.Pattern}}">
                 <button class="btn-del" type="submit">Delete</button>
             </form>
+            <button type="button" class="btn-undelete js-host-undelete" data-index="{{.Index}}">Undelete</button>
         </td>
     </tr>
     {{else}}
@@ -274,6 +279,7 @@
                 <input type="hidden" name="edit" value="1">
                 <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
+                <button type="button" class="btn-discard-row">Discard</button>
             </form>
         </td>
     </tr>
@@ -335,7 +341,7 @@
     </thead>
     <tbody>
         {{range .ResponseBlacklist}}
-        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}">
+        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-orig-cidr="{{.CIDR}}">
             <td title="{{.CIDR}}">{{.CIDR}}</td>
             <td class="actions text-center">
                 <button type="button" class="btn-edit js-blacklist-edit"
@@ -349,6 +355,7 @@
                 <input type="hidden" name="cidr" value="{{.CIDR}}">
                 <button type="submit" class="btn-del">Delete</button>
             </form>
+            <button type="button" class="btn-undelete js-blacklist-undelete" data-index="{{.Index}}">Undelete</button>
         </td>
     </tr>
     {{else}}
@@ -371,6 +378,7 @@
                 <input type="hidden" name="action" value="edit">
                 <button type="submit" class="btn-save">Stage</button>
                 <button type="button" class="btn-cancel">Cancel</button>
+                <button type="button" class="btn-discard-row">Discard</button>
             </form>
         </td>
     </tr>
