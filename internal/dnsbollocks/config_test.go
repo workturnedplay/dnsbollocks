@@ -910,3 +910,50 @@ func TestSanitizeAndValidateConfig_BlockModeCanonical(t *testing.T) {
 		t.Fatalf("raw BlockMode = %q", raw.BlockMode)
 	}
 }
+
+func TestSanitizeAndValidateConfig_UpstreamClientTimeoutMustBeAtLeastDialTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.UpstreamDialTimeoutSec = 5
+	cfg.UpstreamClientTimeoutSec = 3 // should be clamped to 5
+
+	resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resolved.UpstreamClientTimeoutSec != 5 {
+		t.Errorf("resolved.UpstreamClientTimeoutSec = %d, want 5", resolved.UpstreamClientTimeoutSec)
+	}
+	if raw.UpstreamClientTimeoutSec != 5 {
+		t.Errorf("raw.UpstreamClientTimeoutSec = %d, want 5", raw.UpstreamClientTimeoutSec)
+	}
+	if !modified {
+		t.Error("expected modified=true because clamping occurred")
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUIIdleTimeoutClampedWhenReadTimeoutChanges(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.WebUIReadTimeoutSec = 10
+	cfg.WebUIIdleTimeoutSec = 5 // should be clamped to 2x cfg.WebUIReadTimeoutSec
+	clamp := 2 * cfg.WebUIReadTimeoutSec
+
+	resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resolved.WebUIIdleTimeoutSec != clamp {
+		t.Errorf("resolved.WebUIIdleTimeoutSec = %d, want %d", resolved.WebUIIdleTimeoutSec, clamp)
+	}
+	if raw.WebUIIdleTimeoutSec != clamp {
+		t.Errorf("raw.WebUIIdleTimeoutSec = %d, want %d", raw.WebUIIdleTimeoutSec, clamp)
+	}
+	if !modified {
+		t.Error("expected modified=true because idle timeout was clamped")
+	}
+}

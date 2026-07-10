@@ -12,8 +12,13 @@ import (
 	//"os"
 
 	//"strings"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/miekg/dns"
 )
 
 // setupTestContext creates a fresh UpstreamManager with atomic pointers initialized.
@@ -310,4 +315,49 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 
 	// This triggers updateInnerState(), fails, and hits the OnShutdown branch
 	um.InitDoHClients()
+}
+
+func TestUpstreamManager_ConcurrentReInitAndForward(t *testing.T) {
+	// This test is intentionally light because Go's race detector will catch
+	// most issues when run with -race. We just exercise the hot path.
+	cfg := Config{
+		UpstreamURLs:          []string{"https://1.1.1.1/dns-query"},
+		UpstreamSNIHostnames:  []string{"cloudflare-dns.com"},
+		UpstreamSelectionMode: "failover",
+	}
+	um := setupTestContext(&cfg)
+	um.InitDoHClients()
+
+	const workers = 8
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(id int) {
+			defer wg.Done()
+			for j := range 50 {
+				q := createDummyDNSMsg(fmt.Sprintf("race%d-%d.test", id, j), "")
+				_, _ = um.ForwardToDoH(context.Background(), q)
+			}
+		}(i)
+	}
+
+	// Trigger a few rebuilds while forwarding is happening
+	for range 5 {
+		time.Sleep(10 * time.Millisecond)
+		um.ReInitDoHClients()
+	}
+
+	wg.Wait()
+}
+
+// createDummyDNSMsg creates a basic valid DNS message for testing
+func createDummyDNSMsg(domain string, answerIP string) *dns.Msg {
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+	if answerIP != "" {
+		rr, _ := dns.NewRR(fmt.Sprintf("%s A %s", dns.Fqdn(domain), answerIP))
+		msg.Answer = append(msg.Answer, rr)
+	}
+	return msg
 }

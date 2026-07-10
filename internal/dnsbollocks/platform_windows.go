@@ -9484,6 +9484,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 		resolvedCfg.WebUIPasswordBcryptCost = fallback
 		rawCfg.WebUIPasswordBcryptCost = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIPasswordBcryptCost+" clamped to secure minimum", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9495,6 +9496,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.WebUIReadHeaderTimeoutSec
 		resolvedCfg.WebUIReadHeaderTimeoutSec = fallback
 		rawCfg.WebUIReadHeaderTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIReadHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9503,6 +9505,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.WebUIReadTimeoutSec
 		resolvedCfg.WebUIReadTimeoutSec = fallback
 		rawCfg.WebUIReadTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9511,6 +9514,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.WebUIWriteTimeoutSec
 		resolvedCfg.WebUIWriteTimeoutSec = fallback
 		rawCfg.WebUIWriteTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9519,6 +9523,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.WebUIReadTimeoutSec * 2
 		resolvedCfg.WebUIIdleTimeoutSec = fallback
 		rawCfg.WebUIIdleTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIIdle+" clamped(to double the read timeout) to prevent aggressive keep-alive disconnects", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9527,6 +9532,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.WebUIMaxLoginFailures
 		resolvedCfg.WebUIMaxLoginFailures = fallback
 		rawCfg.WebUIMaxLoginFailures = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUIMaxLoginFailures+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9535,6 +9541,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.WebUILoginLockoutSec
 		resolvedCfg.WebUILoginLockoutSec = fallback
 		rawCfg.WebUILoginLockoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9546,6 +9553,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.LocalDoHReadHeaderTimeoutSec
 		resolvedCfg.LocalDoHReadHeaderTimeoutSec = fallback
 		rawCfg.LocalDoHReadHeaderTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDoHHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9554,6 +9562,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.LocalDoHReadTimeoutSec
 		resolvedCfg.LocalDoHReadTimeoutSec = fallback
 		rawCfg.LocalDoHReadTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDoHRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9562,6 +9571,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.LocalDoHWriteTimeoutSec
 		resolvedCfg.LocalDoHWriteTimeoutSec = fallback
 		rawCfg.LocalDoHWriteTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDoHWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9570,6 +9580,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.LocalDoHReadTimeoutSec * 2
 		resolvedCfg.LocalDoHIdleTimeoutSec = fallback
 		rawCfg.LocalDoHIdleTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDoHIdle+" clamped(to double the read timeout) to prevent premature keep-alive drops", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9581,6 +9592,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamDialTimeoutSec
 		resolvedCfg.UpstreamDialTimeoutSec = fallback
 		rawCfg.UpstreamDialTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamDialTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9590,6 +9602,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamClientTimeoutSec
 		resolvedCfg.UpstreamClientTimeoutSec = fallback
 		rawCfg.UpstreamClientTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (prevents infinite hanging client connections)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational validation check (Sequential, never an 'else if')
@@ -9597,6 +9610,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.UpstreamDialTimeoutSec
 		resolvedCfg.UpstreamClientTimeoutSec = fallback
 		rawCfg.UpstreamClientTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamClientTimeoutSec+" clamped (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")",
 			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -9607,6 +9621,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamTCPKeepAliveSec // e.g., 15
 		resolvedCfg.UpstreamTCPKeepAliveSec = fallback
 		rawCfg.UpstreamTCPKeepAliveSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamTCPKeepAlive+" clamped (must be > 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9616,6 +9631,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamH2ReadIdleTimeoutSec // e.g., 5
 		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
 		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagH2ReadIdle+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: If H2 Read Idle >= Global HTTP Idle, the HTTP connection is closed
@@ -9627,6 +9643,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
 		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagH2ReadIdle+" clamped (must trigger before the connection is closed by "+
 			getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))+")",
 			slog.Int("was", was), slog.Int("clamp", fallback))
@@ -9638,6 +9655,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamH2PingTimeoutSec // e.g., 2
 		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
 		rawCfg.UpstreamH2PingTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagH2PingTimeout+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: You don't want a ping timeout to be longer than the interval between pings
@@ -9648,6 +9666,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
 		rawCfg.UpstreamH2PingTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagH2PingTimeout+" clamped (cannot be >= to the H2 read idle timeout)",
 			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
@@ -9658,6 +9677,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.ServerGracefulShutdownSec // e.g., 3
 		resolvedCfg.ServerGracefulShutdownSec = fallback
 		rawCfg.ServerGracefulShutdownSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagServerShutdown+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9666,6 +9686,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.CertLogTimeoutSec
 		resolvedCfg.CertLogTimeoutSec = fallback
 		rawCfg.CertLogTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagCertLogTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9674,6 +9695,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamRetryBackoffMs
 		resolvedCfg.UpstreamRetryBackoffMs = fallback
 		rawCfg.UpstreamRetryBackoffMs = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9682,6 +9704,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamRetriesPerQuery
 		resolvedCfg.UpstreamRetriesPerQuery = fallback
 		rawCfg.UpstreamRetriesPerQuery = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamRetriesPerQuery+" clamped (cannot be negative)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9690,6 +9713,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamIdleConnTimeoutSec
 		resolvedCfg.UpstreamIdleConnTimeoutSec = fallback
 		rawCfg.UpstreamIdleConnTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamIdleConnTimeout+" clamped (connections stay open indefinitely or drop unpredictably)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9698,6 +9722,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamMaxIdleConns
 		resolvedCfg.UpstreamMaxIdleConns = fallback
 		rawCfg.UpstreamMaxIdleConns = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamMaxIdleConns+" clamped (disables global keep-alive reuse)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9707,6 +9732,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UpstreamMaxIdleConnsPerHost
 		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
 		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (Go default of 2 severely throttles throughput)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational validation check (Sequential, never an 'else if')
@@ -9715,6 +9741,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.UpstreamMaxIdleConns
 		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
 		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (cannot exceed "+tagUpstreamMaxIdleConns+")",
 			slog.Int("was", was),
 			slog.Int("clamp", fallback),
@@ -9730,6 +9757,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.MaxConcurrentDNSTCPConns
 		resolvedCfg.MaxConcurrentDNSTCPConns = fallback
 		rawCfg.MaxConcurrentDNSTCPConns = fallback
+		shouldSaveConfig = true
 		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9738,6 +9766,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.MaxConcurrentDNSUDPQueries
 		resolvedCfg.MaxConcurrentDNSUDPQueries = fallback
 		rawCfg.MaxConcurrentDNSUDPQueries = fallback
+		shouldSaveConfig = true
 		log.Warn(tagMaxConcurrentDNSUDPQueries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9746,6 +9775,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.ClientTCPTimeoutSec
 		resolvedCfg.ClientTCPTimeoutSec = fallback
 		rawCfg.ClientTCPTimeoutSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagClientTCPTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9754,6 +9784,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.DoHMaxRequestBodyBytes
 		resolvedCfg.DoHMaxRequestBodyBytes = fallback
 		rawCfg.DoHMaxRequestBodyBytes = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDoHMaxRequestBodyBytes+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9762,6 +9793,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.DNSUDPBufferSize
 		resolvedCfg.DNSUDPBufferSize = fallback
 		rawCfg.DNSUDPBufferSize = fallback
+		shouldSaveConfig = true
 		log.Warn(tagDNSUDPBufferSize+" clamped (must be within standard Ethernet bounds 512-65535)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9773,6 +9805,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.GlobalRateQPS
 		resolvedCfg.GlobalRateQPS = fallback
 		rawCfg.GlobalRateQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagGlobalRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9782,6 +9815,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.GlobalBurstQPS
 		resolvedCfg.GlobalBurstQPS = fallback
 		rawCfg.GlobalBurstQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagGlobalBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
@@ -9789,6 +9823,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.GlobalRateQPS
 		resolvedCfg.GlobalBurstQPS = fallback
 		rawCfg.GlobalBurstQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagGlobalBurstQPS+" clamped (cannot be less than "+tagGlobalRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9797,6 +9832,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.ClientRateQPS
 		resolvedCfg.ClientRateQPS = fallback
 		rawCfg.ClientRateQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagClientRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9806,6 +9842,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.ClientBurstQPS
 		resolvedCfg.ClientBurstQPS = fallback
 		rawCfg.ClientBurstQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagClientBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
@@ -9813,6 +9850,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := resolvedCfg.ClientRateQPS
 		resolvedCfg.ClientBurstQPS = fallback
 		rawCfg.ClientBurstQPS = fallback
+		shouldSaveConfig = true
 		log.Warn(tagClientBurstQPS+" clamped (cannot be less than "+tagClientRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9820,6 +9858,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if was := resolvedCfg.CacheMinTTL; was < cacheMinTTLClamp {
 		resolvedCfg.CacheMinTTL = cacheMinTTLClamp
 		rawCfg.CacheMinTTL = cacheMinTTLClamp
+		shouldSaveConfig = true
 		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
 	}
 
@@ -9828,6 +9867,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.CacheMaxEntries
 		resolvedCfg.CacheMaxEntries = fallback
 		rawCfg.CacheMaxEntries = fallback
+		shouldSaveConfig = true
 		log.Warn(tagCacheMaxEntries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9836,6 +9876,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.CacheJanitorIntervalMinutes
 		resolvedCfg.CacheJanitorIntervalMinutes = fallback
 		rawCfg.CacheJanitorIntervalMinutes = fallback
+		shouldSaveConfig = true
 		log.Warn(tagCacheJanitorIntervalMinutes+" clamped to safe minimum interval", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9844,6 +9885,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.CacheNegativeTTLSec
 		resolvedCfg.CacheNegativeTTLSec = fallback
 		rawCfg.CacheNegativeTTLSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9852,6 +9894,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.FileWriterMaxRetries
 		resolvedCfg.FileWriterMaxRetries = fallback
 		rawCfg.FileWriterMaxRetries = fallback
+		shouldSaveConfig = true
 		log.Warn(tagFileWriterMaxRetries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9860,6 +9903,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.FileWriterRetryBackoffMs
 		resolvedCfg.FileWriterRetryBackoffMs = fallback
 		rawCfg.FileWriterRetryBackoffMs = fallback
+		shouldSaveConfig = true
 		log.Warn(tagFileWriterRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9868,6 +9912,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.BlockedResponseTTLSec
 		resolvedCfg.BlockedResponseTTLSec = fallback
 		rawCfg.BlockedResponseTTLSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
@@ -9876,6 +9921,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.LocalHostsOverrideTTLSec
 		resolvedCfg.LocalHostsOverrideTTLSec = fallback
 		rawCfg.LocalHostsOverrideTTLSec = fallback
+		shouldSaveConfig = true
 		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
@@ -9884,6 +9930,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.MaxRecentBlocks
 		resolvedCfg.MaxRecentBlocks = fallback
 		rawCfg.MaxRecentBlocks = fallback
+		shouldSaveConfig = true
 		log.Warn(tagMaxRecentBlocks+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9892,6 +9939,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.UILogMaxLines
 		resolvedCfg.UILogMaxLines = fallback
 		rawCfg.UILogMaxLines = fallback
+		shouldSaveConfig = true
 		log.Warn(tagUILogMaxLines+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9900,6 +9948,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		fallback := defaultCfg.LogMaxSizeMB
 		resolvedCfg.LogMaxSizeMB = fallback
 		rawCfg.LogMaxSizeMB = fallback
+		shouldSaveConfig = true
 		log.Warn(tagLogMaxSizeMB+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
@@ -9912,6 +9961,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		If you pass it an IPv4 address like "127.0.0.1", it returns a 16-byte slice containing an IPv4-mapped IPv6 address (12 bytes of padding followed by 127, 0, 0, 1).
 	*/
 	{ // tiny scope to prevent locals from leaking
+		//TODO: should we save this back into config after ParseIP ? and set shouldSaveConfig = true
+		//TODO: do I have to set the parseds to rawCfg too?! unclear
+
 		// Validate and parse BlockIP (IPv4)
 		ipV4Raw := net.ParseIP(resolvedCfg.BlockIP)
 		ip4 := ipV4Raw.To4()
@@ -9939,30 +9991,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 	} //end tiny scope
 
-	// //TODO: do I have to set the parseds to rawCfg too?!
-	// if ip := net.ParseIP(resolvedCfg.BlockIP); ip != nil && ip.To4() != nil {
-	// 	resolvedCfg.BlockIPv4Parsed = ip.To4()
-	// 	rawCfg.BlockIPv4Parsed = ip.To4()
-	// } else {
-	// 	const IP0 = "0.0.0.0"
-	// 	const zero = 0
-	// 	resolvedCfg.BlockIP = IP0
-	// 	rawCfg.BlockIP = IP0
-	// 	resolvedCfg.BlockIPv4Parsed = net.IPv4(zero, zero, zero, zero).To4()
-	// 	rawCfg.BlockIPv4Parsed = resolvedCfg.BlockIPv4Parsed // TODO: hopefully no need to have diff. instances of this here?
-	// }
-
-	// // Clean up and pre-parse IPv6
-	// if ip := net.ParseIP(resolvedCfg.BlockIPv6); ip != nil && ip.To16() != nil {
-	// 	resolvedCfg.BlockIPv6Parsed = ip.To16()
-	// 	rawCfg.BlockIPv6Parsed = ip.To16() // TODO: do we need this to be same instance for equals to say equals anywhere?
-	// } else {
-	// 	const IPv6Zero = "::"
-	// 	resolvedCfg.BlockIPv6 = IPv6Zero
-	// 	resolvedCfg.BlockIPv6Parsed = net.ParseIP(IPv6Zero).To16()
-	// 	rawCfg.BlockIPv6Parsed = resolvedCfg.BlockIPv6Parsed // TODO: hopefully no need to have diff. instances of this here?
-	// }
-
 	// Validate ListenDoH host is a literal IP (required for TLS cert SAN)
 	tagListenDoH := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenDoH))
 	if doHHost, _, splitErr := net.SplitHostPort(resolvedCfg.ListenDoH); splitErr != nil {
@@ -9978,6 +10006,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 
 	resolvedCfg.ConsoleLogLevel = strings.ToLower(strings.TrimSpace(resolvedCfg.ConsoleLogLevel))
+	//TODO: ^ if changed, then shouldSaveConfig = true
 	switch resolvedCfg.ConsoleLogLevel {
 	case consoleLogLevelDebug, "d", consoleLogLevelInfo, "i", consoleLogLevelWarn, "warning", "w", consoleLogLevelError, "e":
 		// Valid
@@ -9992,6 +10021,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	rawCfg.ConsoleLogLevel = resolvedCfg.ConsoleLogLevel
 
 	resolvedCfg.BlockMode = strings.ToLower(resolvedCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	//TODO: ^ if changed, then shouldSaveConfig = true
 	switch resolvedCfg.BlockMode {
 	case blockModeNXDOMAIN:
 		// already canonical
@@ -10023,6 +10053,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
 	// reset to the safe default so the server starts rather than refusing to boot.
 	resolvedCfg.UpstreamSelectionMode = strings.ToLower(strings.TrimSpace(resolvedCfg.UpstreamSelectionMode))
+	//TODO: ^ if changed, then shouldSaveConfig = true
 	switch resolvedCfg.UpstreamSelectionMode {
 	case upstreamSelectionModeFastest, upstreamSelectionModeFailover, upstreamSelectionModeStrict:
 		// valid — no action required

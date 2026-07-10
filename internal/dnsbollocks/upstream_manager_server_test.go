@@ -8,13 +8,11 @@ package dnsbollocks
 import (
 	//"bytes"
 	"context"
-	"fmt"
+	//"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/miekg/dns"
 )
 
 // mockDoHServer creates an HTTPS server that returns a specific status code and optional delay.
@@ -31,17 +29,6 @@ func mockDoHServer(delay time.Duration, statusCode int, responseBody []byte) *ht
 		}
 	})
 	return httptest.NewTLSServer(handler)
-}
-
-// createDummyDNSMsg creates a basic valid DNS message for testing
-func createDummyDNSMsg(domain string, answerIP string) *dns.Msg {
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-	if answerIP != "" {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s A %s", dns.Fqdn(domain), answerIP))
-		msg.Answer = append(msg.Answer, rr)
-	}
-	return msg
 }
 
 func TestFWNeededForwardToDoH_Failover(t *testing.T) {

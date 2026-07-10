@@ -263,3 +263,26 @@ func TestSafeFileWriter_CheckPowerLossFile_EmptyFilename(t *testing.T) {
 	}()
 	fw.CheckPowerLossFile("")
 }
+
+func TestWin11SafeFileWriter_PowerLossFileWithZeroBytesIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.json")
+	staging := target + wincoe.PowerlossFileExtension
+
+	// Create a zero-byte staging file (previous cleanup succeeded but unlink failed)
+	if err := os.WriteFile(staging, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewWin11SafeFileWriter(true, 3, 50, &liveLogger)
+
+	// Must NOT panic
+	fw.CheckPowerLossFile(target)
+
+	// File should still exist (we only ignore it, don't delete)
+	if _, err := os.Stat(staging); err != nil {
+		t.Error("zero-byte staging file should still exist")
+	}
+}
