@@ -3877,7 +3877,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	originalCopy := resp.Copy()
 	originalIPs := extractIPs(originalCopy)
 	// Filter
-	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPv4Hints)), s.blacklist) // XXX: resp gets mutated here!
+	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, s.blacklist) // XXX: resp gets mutated here!
 	if filtered == nil {
 		// filterReason now holds exact info like "blockedByUpstream_ZeroIP" or "dns_rebinding_protection"
 
@@ -4517,7 +4517,7 @@ const StrippedRRSIG string = "stripped_rrsig"
 const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
 // mutates the passed arg
-func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, configKeyName string, blacklist IPChecker) (*dns.Msg, string) {
+func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, blacklist IPChecker) (*dns.Msg, string) {
 	//log := s.getLogger()
 
 	if msg == nil {
@@ -4541,7 +4541,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, c
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
 		var good []dns.RR
 		for _, rr := range records {
-			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, configKeyName, blacklist); keep {
+			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, blacklist); keep {
 				good = append(good, modifiedRR)
 			} else {
 				// Captures and mutates 'dropReasons' from the outer scope automatically
@@ -4593,7 +4593,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, c
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKeyName string, blacklist IPChecker) (bool, dns.RR, string) {
+func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist IPChecker) (bool, dns.RR, string) {
 	// cfg := s.getConfig()
 	// log := s.getLogger()
 
@@ -4618,6 +4618,17 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKey
 
 	// Look for HTTPS records (Type 65)
 	case *dns.HTTPS:
+		// 1. Defend against a typed nil pointer passing through the interface type-switch
+		if r == nil {
+			panic2("BUG: what? r is nil in switch r := rr.(type)  where rr is of type dns.RR interface")
+		}
+
+		// 2. Defend against a nil RR Header while fetching the queried domain name
+		var domain string
+		if header := r.Header(); header != nil {
+			domain = header.Name
+		}
+
 		//doneTODO: make this configurable in config.json so only if 'true' do this:
 		if removeHTTPSIPv4Hints {
 			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
@@ -4632,9 +4643,11 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, configKey
 					newParams = append(newParams, param)
 				} else {
 					log.Warn("Dropping IP hint from the HTTPS reply",
+						slog.String("domain", domain),   // if domain is "claude.ai."
+						slog.String("target", r.Target), // then target is "." here
 						slog.String("param", param.String() /*non nil*/),
 						slog.String("config_filename", configFileName),
-						slog.String("config_key_name", configKeyName),
+						slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPv4Hints))),
 					)
 				}
 			}

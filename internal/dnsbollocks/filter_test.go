@@ -106,7 +106,7 @@ func TestProcessRR(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPv4Hints, "no matter", blacklist)
+			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPv4Hints, blacklist)
 
 			if keep != tc.wantKeep {
 				t.Errorf("expected keep=%v, got %v", tc.wantKeep, keep)
@@ -117,7 +117,10 @@ func TestProcessRR(t *testing.T) {
 
 			// Specific check for HTTPS hint removal
 			if tc.name == "HTTPS Record (Hints Removed)" && keep {
-				httpsRR := modifiedRR.(*dns.HTTPS)
+				httpsRR, ok3 := modifiedRR.(*dns.HTTPS)
+				if !ok3 {
+					t.Errorf("this cast or wtw: modifiedRR.(*dns.HTTPS) , failed!")
+				}
 				for _, param := range httpsRR.Value {
 					if param.Key() == dns.SVCB_IPV4HINT || param.Key() == dns.SVCB_IPV6HINT {
 						t.Errorf("expected HTTPS hints to be removed, but found %d", param.Key())
@@ -144,7 +147,7 @@ func TestFilterResponse(t *testing.T) {
 			},
 		}
 
-		filtered, reason := filterResponse(dummyLog, msg, true, "no matter", blacklist)
+		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
 
 		if filtered != nil {
 			t.Errorf("expected filtered message to be nil, got %v", filtered)
@@ -170,7 +173,7 @@ func TestFilterResponse(t *testing.T) {
 			},
 		}
 
-		filtered, reason := filterResponse(dummyLog, msg, true, "no matter", blacklist)
+		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
 
 		if filtered == nil {
 			t.Fatalf("expected filtered message to NOT be nil")
@@ -183,7 +186,10 @@ func TestFilterResponse(t *testing.T) {
 		}
 
 		// Verify the remaining record is the good one
-		ans := filtered.Answer[0].(*dns.A)
+		ans, ok4 := filtered.Answer[0].(*dns.A)
+		if !ok4 {
+			t.Errorf("this cast or wtw: filtered.Answer[0].(*dns.A) , failed!")
+		}
 		if !ans.A.Equal(net.ParseIP("8.8.8.8")) {
 			t.Errorf("expected remaining IP to be 8.8.8.8, got %v", ans.A)
 		}

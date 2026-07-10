@@ -1,6 +1,7 @@
 todo:
 
-* the log line "Dropping IP hint from the HTTPS reply" should tell me for what DNS query/host!
+* Discard button is only available during Edit even tho that entry is Staged but not yet Apply-ed. Normally I'd want it to be there even when not in Edit mode, once it's Staged.
+* I need /config webUI page to have a Discard button too for the Staged (but not yet Apply-ed entries/rows). Also make it visible even when not in Edit mode, so it can be Discard-ed (aka reverted to original value) without the intermediate Edit button click.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
@@ -19,7 +20,6 @@ nevermind/quirks(I don't wanna fix these):
 * if I Edit an entry(Stage it but not Apply it), then Delete it, the Undelete will recover the original one not the last edited value(s).
 * if I filter and put the "!" after the word (even with a space) it acts as if it's !word so it excludes it.
 
-
 no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 //* sanitizeAndValidateConfig the defaultConfig() and i dno, use that or even panic2 BUG ? hmm, actually since sanitizeAndValidateConfig depends on defaultConfig() we can't do this.
@@ -28,6 +28,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* the log line "Dropping IP hint from the HTTPS reply" should tell me for what DNS query/host!
 //* DRY some code in app.js
 //* currently if I Add something (like a blacklisted IP/CIDR) it's staged (good) but then I Edit an existing one and as soon as I Stage this one, the newly added staged one from before is gone because of the current filter filtering it out, it shouldn't get filtered out, none of the staged ones should.
 //* currently, if i Edit the same thing multiple times(ie. Edit, change it, Stage), the number of changes increases, but shouldn't, it's same row.
