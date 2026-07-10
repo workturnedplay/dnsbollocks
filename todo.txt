@@ -28,6 +28,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* DRY some code in app.js
 //* currently if I Add something (like a blacklisted IP/CIDR) it's staged (good) but then I Edit an existing one and as soon as I Stage this one, the newly added staged one from before is gone because of the current filter filtering it out, it shouldn't get filtered out, none of the staged ones should.
 //* currently, if i Edit the same thing multiple times(ie. Edit, change it, Stage), the number of changes increases, but shouldn't, it's same row.
 //* I need per-row Discard buttons (so Stage, Cancel, Discard) which will discard all staged edits(ie. no matter how many times I pressed Edit on this row and changed it) to the state it was before anything begun to be staged.

@@ -82,6 +82,104 @@
         return stagedTableChanges.findIndex(c => c.url === url && predicate(c.fields));
     }
 
+    // stageNewEntry generates a client-side id, queues a brand-new staged
+    // "Add" entry, and returns the generated clientId so the caller can tag
+    // the newly-built row element with it. Shared by the Rules/Hosts/
+    // Blacklist "Add" form handlers.
+    function stageNewEntry(url, fields) {
+        const clientId = generateClientId();
+        stagedTableChanges.push({ url: url, fields: fields, clientId: clientId });
+        return clientId;
+    }
+
+    // removePlaceholderRow removes the "No X defined" <tr><td colspan> placeholder
+    // row from tbody, if present — used when inserting the first staged Add row
+    // into an otherwise-empty Hosts or Blacklist table.
+    function removePlaceholderRow(tbody) {
+        const placeholder = tbody.querySelector('td[colspan]');
+        if (placeholder) placeholder.closest('tr').remove();
+    }
+
+    // mergeStagedAddFields updates an already-queued (not yet applied) "Add"
+    // entry in stagedTableChanges in place with new field values — used when a
+    // row that hasn't been sent to the server yet is edited again before Apply.
+    function mergeStagedAddFields(clientId, newFieldValues) {
+        const entry = stagedTableChanges.find(c => c.clientId === clientId);
+        if (entry) {
+            Object.assign(entry.fields, newFieldValues);
+        }
+    }
+
+    // discardStagedEdit drops an already-queued staged Edit (if any) for a
+    // persisted row and reverts the row's displayed values to their original
+    // (pre-edit) baseline via applyDisplay. Shared by the Rules/Hosts/Blacklist
+    // "Discard" button and by the no-op branch of reconcileStagedEdit.
+    function discardStagedEdit(existingIdx, row, applyDisplay) {
+        if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
+        applyDisplay();
+        row.classList.remove('staged');
+    }
+
+    // reconcileStagedEdit implements the shared "merge this edit into an
+    // already-queued staged edit for the same row, or drop the staged edit
+    // entirely if the new values are identical to the row's original values
+    // (no-op)" logic used by the Rules/Hosts/Blacklist inline Edit forms.
+    //
+    //   existingIdx  - index into stagedTableChanges of an already-queued edit
+    //                  for this row, or -1
+    //   isNoOp       - true if the new values exactly match the row's original values
+    //   url          - the staged-change URL for a NEW queued entry (only used
+    //                  when existingIdx === -1 and !isNoOp)
+    //   fields       - the fields object to stage (only relevant when !isNoOp)
+    //   row          - the <tr> whose 'staged' class should be toggled
+    //   applyDisplay - () => void; updates the row's visible cells. Caller must
+    //                  pass the ORIGINAL values when isNoOp is true, and the NEW
+    //                  values otherwise.
+    function reconcileStagedEdit(existingIdx, isNoOp, url, fields, row, applyDisplay) {
+        if (isNoOp) {
+            discardStagedEdit(existingIdx, row, applyDisplay);
+            return;
+        }
+        if (existingIdx !== -1) {
+            stagedTableChanges[existingIdx].fields = fields;
+        } else {
+            stagedTableChanges.push({ url: url, fields: fields });
+        }
+        applyDisplay();
+        row.classList.add('staged');
+    }
+
+    // stageRowDeletion queues a Delete for an already-persisted (non-staged-add)
+    // row: drops any stale queued Edit for the same identity, pushes the delete
+    // entry, and (if the row element is available) marks it as staged-delete
+    // (struck-through but still visible/undeletable) instead of removing it
+    // from the DOM outright.
+    function stageRowDeletion(url, staleEditIdx, deleteFields, row, restoreDisplay) {
+        if (staleEditIdx !== -1) stagedTableChanges.splice(staleEditIdx, 1);
+        stagedTableChanges.push({ url: url, fields: deleteFields });
+        if (row) {
+            restoreDisplay();
+            row.classList.add('staged-delete', 'staged');
+        }
+    }
+
+    // removeStagedAddRow discards a not-yet-applied "Add" entry (identified by
+    // clientId) from stagedTableChanges and removes its row from the DOM.
+    // Shared by the Rules/Hosts/Blacklist Delete and Discard controls for rows
+    // that were never sent to the server.
+    function removeStagedAddRow(clientId, row) {
+        stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+        row.remove();
+    }
+
+    // undoStagedDeletion removes a previously staged Delete entry matching
+    // predicate and restores the row's normal (non-struck-through) appearance.
+    // Used by the Rules/Hosts/Blacklist "Undelete" controls.
+    function undoStagedDeletion(row, predicate) {
+        stagedTableChanges = stagedTableChanges.filter(c => !predicate(c));
+        row.classList.remove('staged-delete', 'staged');
+    }
+
     // buildRuleRowElement creates a <tr> for a staged (not yet applied) new rule,
     // matching the structure of server-rendered rows in the "rules" template so
     // filtering, sorting, and the existing Edit/Delete delegation all work on it
@@ -196,8 +294,7 @@
         delBtn.textContent = 'Delete';
         delBtn.addEventListener('click', () => {
             if (!confirm('Remove this not-yet-applied local host: ' + pattern + '?')) return;
-            stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
-            row.remove();
+            removeStagedAddRow(clientId, row);
             applyHostsFilter();
             updateTableBanner();
         });
@@ -258,8 +355,7 @@
         delBtn.textContent = 'Delete';
         delBtn.addEventListener('click', () => {
             if (!confirm('Remove this not-yet-applied entry: ' + cidr + '?')) return;
-            stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
-            row.remove();
+            removeStagedAddRow(clientId, row);
             applyBlacklistFilter();
             updateTableBanner();
         });
@@ -429,152 +525,140 @@
         return cleanedFilter.replace(/[|&]/g, ' ').split(/\s+/).filter(t => t.length > 0);
     }
 
-    // --- Client-Side Table Ordered-Substring Filter Logic ---
-    function applyRulesFilter() {
-        const filterInput = document.getElementById('rulesFilter');
+    // applyTableFilter is a shared, config-driven implementation of the
+    // per-page filter functions (Rules/Hosts/Blacklist/Config). Behavior is
+    // parameterized via opts so each page's quirks (staged-row visibility,
+    // highlighting) are preserved exactly.
+    //
+    // opts:
+    //   filterInputId    - id of the <input> holding the filter text
+    //   storageKey       - sessionStorage key used to persist the filter text
+    //   tbodySelector    - CSS selector for the table's <tbody>
+    //   editRowClasses   - array of class names identifying an inline-edit <tr>
+    //                      to always skip (in addition to 'being-edited')
+    //   getSearchText    - function(row) => string to match against (matching
+    //                      is case-insensitive; lowercasing is handled here)
+    //   alwaysShowStaged - if true, rows with class 'staged' are always shown
+    //                      and skipped from matching (Rules/Hosts/Blacklist)
+    //   highlightTerms   - optional function(row, terms) => void; if provided,
+    //                      called on every non-skipped row with the matched
+    //                      terms (or an empty array to clear) — used by /config
+    function applyTableFilter(opts) {
+        const filterInput = document.getElementById(opts.filterInputId);
         if (!filterInput) return;
         
         const raw = filterInput.value.trim().toLowerCase();
-        sessionStorage.setItem('rulesTable_filter', raw);
+        sessionStorage.setItem(opts.storageKey, raw);
         
-        const tbody = document.querySelector('#rulesTable tbody');
+        const tbody = document.querySelector(opts.tbodySelector);
         if (!tbody) return;
         
+        const terms = (opts.highlightTerms && raw.length > 0) ? extractHighlightTerms(raw) : [];
+        
         Array.from(tbody.rows).forEach(row => {
-            // Do not filter out or hide the inline edit row
-            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
+            if (opts.editRowClasses.some(c => row.classList.contains(c)) || row.classList.contains('being-edited')) return;
             
             // Any row with a pending staged change (Add/Edit/Delete) must always
             // stay visible regardless of the current filter text, so the user
             // never loses track of what they've queued up.
-            if (row.classList.contains('staged')) {
+            if (opts.alwaysShowStaged && row.classList.contains('staged')) {
                 row.style.display = '';
                 return;
             }
             
-            const pattern = row.dataset.rulePattern || "";
-            const id = row.dataset.ruleId || "";
-            const type = row.dataset.ruleType || "";
-            
-            const searchTargetText = [id, type, pattern].join(" ").toLowerCase();
-            
+            const searchTargetText = opts.getSearchText(row).toLowerCase();
             const isMatch = raw.length === 0 || matchesFilterExpression(searchTargetText, raw);
-            
             row.style.display = isMatch ? '' : 'none';
+            
+            if (opts.highlightTerms) {
+                opts.highlightTerms(row, isMatch ? terms : []);
+            }
+        });
+    }
+    
+    // --- Client-Side Table Ordered-Substring Filter Logic ---
+    function applyRulesFilter() {
+        applyTableFilter({
+            filterInputId: 'rulesFilter',
+            storageKey: 'rulesTable_filter',
+            tbodySelector: '#rulesTable tbody',
+            editRowClasses: ['edit-row'],
+            alwaysShowStaged: true,
+            getSearchText: row => [row.dataset.ruleId || "", row.dataset.ruleType || "", row.dataset.rulePattern || ""].join(" "),
         });
     }
     
     // --- Client-side ordered-substring filter, mirrors /rules and /response-blacklist ---
     function applyHostsFilter() {
-        const filterInput = document.getElementById('hostsFilter');
-        if (!filterInput) return;
-        
-        const raw = filterInput.value.trim().toLowerCase();
-        sessionStorage.setItem('hostsTable_filter', raw);
-        
-        const tbody = document.querySelector('#hostsTable tbody');
-        if (!tbody) return;
-        
-        Array.from(tbody.rows).forEach(row => {
-            // Do not filter out the inline edit row
-            if (row.classList.contains('edit-host-row') || row.classList.contains('being-edited')) return;
-            
-            // Any row with a pending staged change (Add/Edit/Delete) must always
-            // stay visible regardless of the current filter text.
-            if (row.classList.contains('staged')) {
-                row.style.display = '';
-                return;
-            }
-            
-            const pattern = row.dataset.hostPattern || "";
-            const ips = row.dataset.hostIps || "";
-            const searchTargetText = [pattern, ips].join(" ").toLowerCase();
-            
-            const isMatch = raw.length === 0 || matchesFilterExpression(searchTargetText, raw);
-            
-            row.style.display = isMatch ? '' : 'none';
+        applyTableFilter({
+            filterInputId: 'hostsFilter',
+            storageKey: 'hostsTable_filter',
+            tbodySelector: '#hostsTable tbody',
+            editRowClasses: ['edit-host-row'],
+            alwaysShowStaged: true,
+            getSearchText: row => [row.dataset.hostPattern || "", row.dataset.hostIps || ""].join(" "),
         });
     }
     
     // --- Client-side ordered-substring filter, mirrors /rules' filter ---
     function applyBlacklistFilter() {
-        const filterInput = document.getElementById('blacklistFilter');
-        if (!filterInput) return;
-        
-        const raw = filterInput.value.trim().toLowerCase();
-        sessionStorage.setItem('blacklistTable_filter', raw);
-        
-        const tbody = document.querySelector('#blacklistTable tbody');
-        if (!tbody) return;
-        
-        Array.from(tbody.rows).forEach(row => {
-            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
-            
-            // Any row with a pending staged change (Add/Edit/Delete) must always
-            // stay visible regardless of the current filter text.
-            if (row.classList.contains('staged')) {
-                row.style.display = '';
-                return;
-            }
-            
-            const cidr = (row.dataset.cidr || "").toLowerCase();
-            
-            const isMatch = raw.length === 0 || matchesFilterExpression(cidr, raw);
-            
-            row.style.display = isMatch ? '' : 'none';
+        applyTableFilter({
+            filterInputId: 'blacklistFilter',
+            storageKey: 'blacklistTable_filter',
+            tbodySelector: '#blacklistTable tbody',
+            editRowClasses: ['edit-row'],
+            alwaysShowStaged: true,
+            getSearchText: row => row.dataset.cidr || "",
         });
     }
     
     // --- Client-side Config Filter Logic (with persistent storage and highlight) ---
     function applyConfigFilter() {
-        const filterInput = document.getElementById('configFilter');
-        if (!filterInput) return;
-        
-        const raw = filterInput.value.trim().toLowerCase();
-        sessionStorage.setItem('configTable_filter', raw);
-        
-        const tbody = document.querySelector('#configTable tbody');
-        if (!tbody) return;
-        
-        const highlightTerms = raw.length > 0 ? extractHighlightTerms(raw) : [];
-        
-        Array.from(tbody.rows).forEach(row => {
-            if (row.classList.contains('edit-row') || row.classList.contains('being-edited')) return;
-            const key = (row.dataset.key || "").toLowerCase();
-            const val = (row.dataset.original || "").toLowerCase();
-            // Safely grab the text contents of the inline description field if it exists
-            const descElem = row.querySelector('.config-field-desc');
-            const desc = descElem ? descElem.textContent.toLowerCase() : "";
-            
-            // Include key, value, and description in the search text boundary
-            const searchTarget = key + " " + val + " " + desc;
-            
-            const isMatch = raw.length === 0 || matchesFilterExpression(searchTarget, raw);
-            row.style.display = isMatch ? '' : 'none';
-            
-            // Apply or clear highlights in the three text targets.
+        applyTableFilter({
+            filterInputId: 'configFilter',
+            storageKey: 'configTable_filter',
+            tbodySelector: '#configTable tbody',
+            editRowClasses: ['edit-row'],
+            alwaysShowStaged: false,
+            getSearchText: row => {
+                const key = row.dataset.key || "";
+                const val = row.dataset.original || "";
+                // Safely grab the text contents of the inline description field if it exists
+                const descElem = row.querySelector('.config-field-desc');
+                const desc = descElem ? descElem.textContent : "";
+                return key + " " + val + " " + desc;
+            },
             // Hidden rows also get their highlights cleared so stale marks don't
             // appear if the row later becomes visible due to a different filter term.
-            applyConfigRowHighlight(row, isMatch ? highlightTerms : []);
+            highlightTerms: (row, terms) => applyConfigRowHighlight(row, terms),
         });
     }
     
     // --- Inline Cancel & Editing Clones ---
-    function cancelEdit(id) {
-        // 1. Find and remove the temporary edit row via the TR id
-        const editRow = document.getElementById('editFormRow_' + id);
+    
+    // cancelInlineRowEdit removes the inline-edit <tr> (identified by editRowId)
+    // and restores the original row (identified by rowId) to its normal,
+    // non-edit-mode appearance, then re-applies the page's active filter.
+    // resetRowId, if true, additionally strips the temporary 'id' attribute the
+    // Rules table assigns to the original row while editing (Hosts/Blacklist
+    // rows already have stable, permanent ids and don't need this).
+    function cancelInlineRowEdit(editRowId, rowId, resetRowId, filterFn) {
+        const editRow = document.getElementById(editRowId);
         if (editRow) editRow.remove();
         
-        // 2. Find the original row using our clean layout ID hook
-        const originalRow = document.getElementById('rule-row-' + id);
-        if (originalRow) {
-            originalRow.style.display = ''; // Bring it back into view!
-            originalRow.removeAttribute('id'); // Clean up the temporary ID
-            originalRow.classList.remove('being-edited');
+        const row = document.getElementById(rowId);
+        if (row) {
+            row.style.display = '';
+            row.classList.remove('being-edited');
+            if (resetRowId) row.removeAttribute('id'); // Clean up the temporary ID
         }
         // Re-apply the active filter now that editing has ended, so the row
         // is only shown if it still matches the current filter text.
-        applyRulesFilter();
+        filterFn();
+    }
+    
+    function cancelEdit(id) {
+        cancelInlineRowEdit('editFormRow_' + id, 'rule-row-' + id, true, applyRulesFilter);
     }
     
     function editHost(btn) {
@@ -631,11 +715,7 @@
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a pattern the server doesn't know about yet.
-                const entry = stagedTableChanges.find(c => c.clientId === clientId);
-                if (entry) {
-                    entry.fields.pattern = newPattern;
-                    entry.fields.ips = newIPs;
-                }
+                mergeStagedAddFields(clientId, { pattern: newPattern, ips: newIPs });
                 applyHostRowDisplay(row, newPattern, newIPs);
                 row.classList.add('staged');
             } else {
@@ -645,21 +725,10 @@
                 // back to the original values so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
                 const isNoOp = newPattern === origPattern && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
-
-                if (isNoOp) {
-                    if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                    applyHostRowDisplay(row, origPattern, origIps);
-                    row.classList.remove('staged');
-                } else {
-                    const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, edit: '1' };
-                    if (existingIdx !== -1) {
-                        stagedTableChanges[existingIdx].fields = fields;
-                    } else {
-                        stagedTableChanges.push({ url: '/hosts', fields: fields });
-                    }
-                    applyHostRowDisplay(row, newPattern, newIPs);
-                    row.classList.add('staged');
-                }
+                const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, edit: '1' };
+                const displayPattern = isNoOp ? origPattern : newPattern;
+                const displayIPs = isNoOp ? origIps : newIPs;
+                reconcileStagedEdit(existingIdx, isNoOp, '/hosts', fields, row, () => applyHostRowDisplay(row, displayPattern, displayIPs));
             }
 
             row.classList.remove('being-edited');
@@ -669,6 +738,7 @@
             applyHostsFilter();
             updateTableBanner();
         });
+
         // 5. Setup cancel button
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelHostEdit(index), { once: true });
         
@@ -677,15 +747,13 @@
         clone.querySelector('.btn-discard-row').addEventListener('click', () => {
             if (isStagedAdd) {
                 if (!confirm('Discard this not-yet-applied local host entirely?')) return;
-                stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+                removeStagedAddRow(clientId, row);
                 editRow.remove();
-                row.remove();
             } else {
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
                 const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-                if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                applyHostRowDisplay(row, origPattern, origIps);
-                row.classList.remove('staged', 'being-edited');
+                discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps));
+                row.classList.remove('being-edited');
                 row.style.display = '';
                 editRow.remove();
             }
@@ -698,16 +766,7 @@
     }
     
     function cancelHostEdit(index) {
-        const editRow = document.getElementById('editHostRow_' + index);
-        if (editRow) editRow.remove();
-        const row = document.getElementById('hostRow_' + index);
-        if (row) {
-            row.style.display = '';
-            row.classList.remove('being-edited');
-        }
-        // Re-apply the active filter now that editing has ended, so the row
-        // is only shown if it still matches the current filter text.
-        applyHostsFilter();
+        cancelInlineRowEdit('editHostRow_' + index, 'hostRow_' + index, false, applyHostsFilter);
     }
     
     // --- Edit / Cancel for inline row editing ---
@@ -754,10 +813,7 @@
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a CIDR the server doesn't know about yet.
-                const entry = stagedTableChanges.find(c => c.clientId === clientId);
-                if (entry) {
-                    entry.fields.cidr = newCidr;
-                }
+                mergeStagedAddFields(clientId, { cidr: newCidr });
                 applyBlacklistRowDisplay(row, newCidr);
                 row.classList.add('staged');
             } else {
@@ -767,21 +823,9 @@
                 // back to the original value so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
                 const isNoOp = newCidr === origCidr;
-
-                if (isNoOp) {
-                    if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                    applyBlacklistRowDisplay(row, origCidr);
-                    row.classList.remove('staged');
-                } else {
-                    const fields = { old_cidr: origCidr, cidr: newCidr, action: 'edit' };
-                    if (existingIdx !== -1) {
-                        stagedTableChanges[existingIdx].fields = fields;
-                    } else {
-                        stagedTableChanges.push({ url: '/response-blacklist', fields: fields });
-                    }
-                    applyBlacklistRowDisplay(row, newCidr);
-                    row.classList.add('staged');
-                }
+                const fields = { old_cidr: origCidr, cidr: newCidr, action: 'edit' };
+                const displayCidr = isNoOp ? origCidr : newCidr;
+                reconcileStagedEdit(existingIdx, isNoOp, '/response-blacklist', fields, row, () => applyBlacklistRowDisplay(row, displayCidr));
             }
 
             row.classList.remove('being-edited');
@@ -799,15 +843,13 @@
         clone.querySelector('.btn-discard-row').addEventListener('click', () => {
             if (isStagedAdd) {
                 if (!confirm('Discard this not-yet-applied entry entirely?')) return;
-                stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+                removeStagedAddRow(clientId, row);
                 editRow.remove();
-                row.remove();
             } else {
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
                 const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-                if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                applyBlacklistRowDisplay(row, origCidr);
-                row.classList.remove('staged', 'being-edited');
+                discardStagedEdit(existingIdx, row, () => applyBlacklistRowDisplay(row, origCidr));
+                row.classList.remove('being-edited');
                 row.style.display = '';
                 editRow.remove();
             }
@@ -819,15 +861,7 @@
     }
     
     function cancelBlacklistEdit(index) {
-        const editRow = document.getElementById('editBlacklistRow_' + index);
-        if (editRow) editRow.remove();
-        const row = document.getElementById('blacklistRow_' + index);
-        if (row) {
-            row.style.display = '';
-            row.classList.remove('being-edited'); 
-        }
-        // Discarding active inline changes cleanly respects and updates current active layout filter state
-        applyBlacklistFilter();
+        cancelInlineRowEdit('editBlacklistRow_' + index, 'blacklistRow_' + index, false, applyBlacklistFilter);
     }
     
     const stagedChanges = {};
@@ -1319,12 +1353,7 @@
                         // This row hasn't been sent to the server yet: merge the edit
                         // into the still-pending Add entry instead of staging a second,
                         // separate Edit that would reference a nonexistent rule ID.
-                        const entry = stagedTableChanges.find(c => c.clientId === clientId);
-                        if (entry) {
-                            entry.fields.pattern = newPattern;
-                            entry.fields.type = newType;
-                            entry.fields.enabled = enabledChecked ? 'true' : 'false';
-                        }
+                        mergeStagedAddFields(clientId, { pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false' });
                         applyRuleRowDisplay(row, newType, newPattern, enabledChecked);
                         row.classList.add('staged');
                     } else {
@@ -1336,21 +1365,11 @@
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
                         const isNoOp = newType === origType && newPattern === origPattern &&
                             (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
-
-                        if (isNoOp) {
-                            if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                            applyRuleRowDisplay(row, origType, origPattern, origEnabled);
-                            row.classList.remove('staged');
-                        } else {
-                            const fields = { id: id, pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false' };
-                            if (existingIdx !== -1) {
-                                stagedTableChanges[existingIdx].fields = fields;
-                            } else {
-                                stagedTableChanges.push({ url: '/rules', fields: fields });
-                            }
-                            applyRuleRowDisplay(row, newType, newPattern, enabledChecked);
-                            row.classList.add('staged');
-                        }
+                        const fields = { id: id, pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false' };
+                        const displayType = isNoOp ? origType : newType;
+                        const displayPattern = isNoOp ? origPattern : newPattern;
+                        const displayEnabled = isNoOp ? origEnabled : enabledChecked;
+                        reconcileStagedEdit(existingIdx, isNoOp, '/rules', fields, row, () => applyRuleRowDisplay(row, displayType, displayPattern, displayEnabled));
                     }
 
                     row.classList.remove('being-edited');
@@ -1366,15 +1385,13 @@
                 clone.querySelector('.btn-discard-row').addEventListener('click', () => {
                     if (isStagedAdd) {
                         if (!confirm('Discard this not-yet-applied rule entirely?')) return;
-                        stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
+                        removeStagedAddRow(clientId, row);
                         editRow.remove();
-                        row.remove();
                     } else {
                         if (!confirm('Discard all staged changes for this rule and revert it to its original state?')) return;
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
-                        if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
-                        applyRuleRowDisplay(row, origType, origPattern, origEnabled);
-                        row.classList.remove('staged', 'being-edited');
+                        discardStagedEdit(existingIdx, row, () => applyRuleRowDisplay(row, origType, origPattern, origEnabled));
+                        row.classList.remove('being-edited');
                         row.style.display = '';
                         editRow.remove();
                     }
@@ -1402,9 +1419,7 @@
                 if (row.classList.contains('staged-add')) {
                     // Never sent to the server: just drop the pending Add entry.
                     if (!confirm('Remove this not-yet-applied rule: ' + pattern + '?')) return;
-                    const clientId = row.dataset.stagedClientId;
-                    stagedTableChanges = stagedTableChanges.filter(c => c.clientId !== clientId);
-                    row.remove();
+                    removeStagedAddRow(row.dataset.stagedClientId, row);
                     applyRulesFilter();
                     updateTableBanner();
                     return;
@@ -1419,20 +1434,14 @@
                 // ORIGINAL type/ID, since the live server-side store doesn't know
                 // about any not-yet-applied staged type change.
                 const staleEditIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
-                if (staleEditIdx !== -1) stagedTableChanges.splice(staleEditIdx, 1);
-
                 const origType = row.dataset.origType;
-                stagedTableChanges.push({
-                    url: '/rules',
-                    fields: { 'delete': '1', 'id': id, 'type': origType }
-                });
 
                 // Restore the row's displayed values to their pre-edit baseline (any
                 // staged edit was just discarded above) and keep it visible — struck
                 // through via CSS — instead of hiding it, so it can still be found
                 // via the filter and Undeleted.
-                applyRuleRowDisplay(row, origType, row.dataset.origPattern, row.dataset.origEnabled === 'true');
-                row.classList.add('staged-delete', 'staged');
+                stageRowDeletion('/rules', staleEditIdx, { 'delete': '1', 'id': id, 'type': origType }, row,
+                    () => applyRuleRowDisplay(row, origType, row.dataset.origPattern, row.dataset.origEnabled === 'true'));
 
                 applyRulesFilter();
                 updateTableBanner();
@@ -1446,9 +1455,7 @@
                     e.preventDefault();
                     const id = row.dataset.ruleId;
                     const origType = row.dataset.origType;
-                    stagedTableChanges = stagedTableChanges.filter(c =>
-                        !(c.url === '/rules' && c.fields.delete === '1' && c.fields.id === id && c.fields.type === origType));
-                    row.classList.remove('staged-delete', 'staged');
+                    undoStagedDeletion(row, c => c.url === '/rules' && c.fields.delete === '1' && c.fields.id === id && c.fields.type === origType);
                     applyRulesFilter();
                     updateTableBanner();
                 }//if
@@ -1482,20 +1489,13 @@
                 if (pattern === '') return;
                 const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
 
-                const alreadyStaged = stagedTableChanges.some(c =>
-                    c.url === '/rules' && !c.fields.id && !c.fields.delete &&
-                    c.fields.type === type && c.fields.pattern === pattern);
+                const alreadyStaged = findStagedEntryIndex('/rules', f => !f.id && !f.delete && f.type === type && f.pattern === pattern) !== -1;
                 if (alreadyStaged) {
                     alert('A staged (not yet applied) rule with this type and pattern already exists.');
                     return;
                 }
 
-                const clientId = generateClientId();
-                stagedTableChanges.push({
-                    url: '/rules',
-                    fields: { pattern: pattern, type: type, enabled: enabled ? 'true' : 'false' },
-                    clientId: clientId
-                });
+                const clientId = stageNewEntry('/rules', { pattern: pattern, type: type, enabled: enabled ? 'true' : 'false' });
 
                 const row = buildRuleRowElement(clientId, type, pattern, enabled);
                 const tbody = document.querySelector('#rulesTable tbody');
@@ -1554,21 +1554,13 @@
                 // A pending Delete supersedes any queued Edit for the same host;
                 // drop it so we don't try to apply a stale edit right before deleting.
                 const staleEditIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-                if (staleEditIdx !== -1) stagedTableChanges.splice(staleEditIdx, 1);
 
-                stagedTableChanges.push({
-                    url: '/hosts',
-                    fields: { delete: '1', pattern: origPattern }
-                });
-
-                if (row) {
-                    // Restore the row's displayed values (any staged edit was just
-                    // discarded above) and keep it visible — struck through via CSS —
-                    // instead of hiding it, so it can still be found via the filter
-                    // and Undeleted.
-                    applyHostRowDisplay(row, origPattern, row.dataset.origIps);
-                    row.classList.add('staged-delete', 'staged');
-                }
+                // Restore the row's displayed values (any staged edit was just
+                // discarded above) and keep it visible — struck through via CSS —
+                // instead of hiding it, so it can still be found via the filter
+                // and Undeleted.
+                stageRowDeletion('/hosts', staleEditIdx, { delete: '1', pattern: origPattern }, row,
+                    () => applyHostRowDisplay(row, origPattern, row.dataset.origIps));
 
                 applyHostsFilter();
                 updateTableBanner();
@@ -1581,9 +1573,7 @@
                 const row = document.getElementById('hostRow_' + index);
                 if (!row) return;
                 const origPattern = row.dataset.origPattern;
-                stagedTableChanges = stagedTableChanges.filter(c =>
-                    !(c.url === '/hosts' && c.fields.delete === '1' && c.fields.pattern === origPattern));
-                row.classList.remove('staged-delete', 'staged');
+                undoStagedDeletion(row, c => c.url === '/hosts' && c.fields.delete === '1' && c.fields.pattern === origPattern);
                 applyHostsFilter();
                 updateTableBanner();
             });
@@ -1601,24 +1591,17 @@
             const ips = ipsInput.value.trim();
             if (pattern === '' || ips === '') return;
 
-            const alreadyStaged = stagedTableChanges.some(c =>
-                c.url === '/hosts' && !c.fields.edit && !c.fields.delete && c.fields.pattern === pattern);
+            const alreadyStaged = findStagedEntryIndex('/hosts', f => !f.edit && !f.delete && f.pattern === pattern) !== -1;
             if (alreadyStaged) {
                 alert('A staged (not yet applied) local host with this pattern already exists.');
                 return;
             }
 
-            const clientId = generateClientId();
-            stagedTableChanges.push({
-                url: '/hosts',
-                fields: { pattern: pattern, ips: ips },
-                clientId: clientId
-            });
+            const clientId = stageNewEntry('/hosts', { pattern: pattern, ips: ips });
 
             const tbody = document.querySelector('#hostsTable tbody');
             if (tbody) {
-                const placeholder = tbody.querySelector('td[colspan]');
-                if (placeholder) placeholder.closest('tr').remove();
+                removePlaceholderRow(tbody);
                 tbody.appendChild(buildHostRowElement(clientId, pattern, ips));
             }
 
@@ -1665,21 +1648,13 @@
                 // A pending Delete supersedes any queued Edit for the same entry;
                 // drop it so we don't try to apply a stale edit right before deleting.
                 const staleEditIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-                if (staleEditIdx !== -1) stagedTableChanges.splice(staleEditIdx, 1);
 
-                stagedTableChanges.push({
-                    url: '/response-blacklist',
-                    fields: { action: 'delete', cidr: origCidr }
-                });
-
-                if (row) {
-                    // Restore the row's displayed value (any staged edit was just
-                    // discarded above) and keep it visible — struck through via CSS —
-                    // instead of hiding it, so it can still be found via the filter
-                    // and Undeleted.
-                    applyBlacklistRowDisplay(row, origCidr);
-                    row.classList.add('staged-delete', 'staged');
-                }
+                // Restore the row's displayed value (any staged edit was just
+                // discarded above) and keep it visible — struck through via CSS —
+                // instead of hiding it, so it can still be found via the filter
+                // and Undeleted.
+                stageRowDeletion('/response-blacklist', staleEditIdx, { action: 'delete', cidr: origCidr }, row,
+                    () => applyBlacklistRowDisplay(row, origCidr));
 
                 applyBlacklistFilter();
                 updateTableBanner();
@@ -1692,9 +1667,7 @@
                 const row = document.getElementById('blacklistRow_' + index);
                 if (!row) return;
                 const origCidr = row.dataset.origCidr;
-                stagedTableChanges = stagedTableChanges.filter(c =>
-                    !(c.url === '/response-blacklist' && c.fields.action === 'delete' && c.fields.cidr === origCidr));
-                row.classList.remove('staged-delete', 'staged');
+                undoStagedDeletion(row, c => c.url === '/response-blacklist' && c.fields.action === 'delete' && c.fields.cidr === origCidr);
                 applyBlacklistFilter();
                 updateTableBanner();
             });
@@ -1719,8 +1692,7 @@
             
             if (!cidrValue) return;
 
-            const alreadyStaged = stagedTableChanges.some(c =>
-                c.url === '/response-blacklist' && c.fields.action === 'add' && c.fields.cidr === cidrValue);
+            const alreadyStaged = findStagedEntryIndex('/response-blacklist', f => f.action === 'add' && f.cidr === cidrValue) !== -1;
             if (alreadyStaged) {
                 alert('A staged (not yet applied) blacklist entry with this CIDR already exists.');
                 return;
@@ -1759,17 +1731,11 @@
                 }
             }
             
-            const clientId = generateClientId();
-            stagedTableChanges.push({
-                url: '/response-blacklist',
-                fields: { action: 'add', cidr: cidrValue },
-                clientId: clientId
-            });
+            const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue });
 
             const tbody = document.querySelector('#blacklistTable tbody');
             if (tbody) {
-                const placeholder = tbody.querySelector('td[colspan]');
-                if (placeholder) placeholder.closest('tr').remove();
+                removePlaceholderRow(tbody);
                 tbody.insertBefore(buildBlacklistRowElement(clientId, cidrValue), tbody.firstChild);
             }
 
