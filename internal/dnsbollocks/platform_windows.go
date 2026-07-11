@@ -7613,7 +7613,10 @@ func (um *UpstreamManager) updateInnerState() error {
 
 	for i, rawURL := range snapURL {
 		u, err := url.Parse(rawURL)
-		if err != nil || u.Scheme != "https" {
+		if err != nil {
+			return fmt.Errorf("invalid upstream URL (must be https): %s, err: %w", rawURL, err)
+		}
+		if u.Scheme != "https" {
 			return fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
 		}
 		port := u.Port()
