@@ -9278,11 +9278,13 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			// --- NEW HASHING INTERCEPTOR ---
 			// Fetch the exact tag for the password field
 			tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
+			// If it looks like a real, valid bcrypt hash, keep it as-is.
+			// Otherwise, treat it as a new plaintext password and hash it.
 			// Hash plaintext password before applying, same as before.
 			if plainPwd, ok := changes[tagWebUIPwd].(string); ok {
 				// Bcrypt hashes start with $2a$ or $2b$. If it doesn't, assume it's plaintext and hash it.
 				//doneTODO: find out why this isn't needed here: && plainPwd != placeHolderPassword  so it's due to displayed vs edited being different areas even tho they seem to be in the same place in the UI.
-				if plainPwd != "" && !strings.HasPrefix(plainPwd, "$2") {
+				if plainPwd != "" && !isValidBcryptHash(plainPwd) { //strings.HasPrefix(plainPwd, "$2") {
 					// Fetch current configured cost
 					cost := ui.getConfig().WebUIPasswordBcryptCost
 					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
@@ -9305,6 +9307,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					log.Debug("Password unchanged; retaining active memory hash", slog.String(configFileName, tagWebUIPwd))
 					changes[tagWebUIPwd] = ui.getRawConfig().WebUIPasswordHash
 				}
+				//if here, then it's isValidBcryptHash() so no need to touch it.
 			}
 			// --- END INTERCEPTOR ---
 
@@ -9395,6 +9398,23 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func isValidBcryptHash(s string) bool {
+	// A standard bcrypt string is always exactly 60 characters long
+	if len(s) != 60 {
+		return false
+	}
+	// Must start with valid bcrypt prefix: $2a$, $2b$, or $2y$ followed by cost + $
+	// Example: $2a$10$ or $2b$12$
+	if !strings.HasPrefix(s, "$2a$") && !strings.HasPrefix(s, "$2b$") && !strings.HasPrefix(s, "$2y$") {
+		return false
+	}
+	// Verify the third '$' separator is at index 6 (e.g., "$2b$10$")
+	if s[6] != '$' {
+		return false
+	}
+	return true
 }
 
 // isLoopbackBindHost reports whether the host portion of a "host:port" listen
