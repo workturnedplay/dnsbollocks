@@ -33,7 +33,10 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.
 	defer restoreHooks()
 	dir := t.TempDir()
 	targetFile := filepath.Join(dir, "config.json")
-	os.WriteFile(targetFile, []byte("old"), 0644)
+	wrErr := os.WriteFile(targetFile, []byte("old"), 0600)
+	if wrErr != nil {
+		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
+	}
 
 	// MOCK 1: ReplaceFile fails
 	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
@@ -44,7 +47,10 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.
 	wincoe.OsRemoveFunc = func(name string) error {
 		// THE FIX: Strip write permissions. When TruncateStagingFileToZero tries
 		// to open this with O_WRONLY|O_TRUNC, Windows will throw an Access Denied error.
-		os.Chmod(name, 0444)
+		chmodErr := os.Chmod(name, 0400)
+		if chmodErr != nil {
+			t.Errorf("Chmod failed so tests will fail, err: %v", chmodErr)
+		}
 		return fmt.Errorf("mock os.Remove failure")
 	}
 
@@ -60,11 +66,14 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.
 				panicked = true
 			}
 		}()
-		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0644)
+		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0644) //nolint:errcheck // on purpose
 	}()
 
 	// Reset permissions so t.TempDir() cleanup doesn't fail on a read-only file
-	os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0666)
+	chmodErr := os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0600)
+	if chmodErr != nil {
+		t.Errorf("Chmod failed so cleanup will fail, err: %v", chmodErr)
+	}
 
 	if !panicked {
 		t.Error("Expected catastrophic panic when ReplaceFile, Remove, and Truncate ALL fail")
@@ -81,7 +90,10 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *test
 	// MOCK 1: Rename fails AND sabotages the file
 	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
 		// THE FIX: Make read-only here so the subsequent truncate attempt crashes.
-		os.Chmod(oldpath, 0444)
+		chmodErr := os.Chmod(oldpath, 0400)
+		if chmodErr != nil {
+			t.Errorf("Chmod failed so tests will fail, err: %v", chmodErr)
+		}
 		return fmt.Errorf("mock os.Rename failure")
 	}
 	// MOCK 2: Remove fails
@@ -100,11 +112,14 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *test
 				panicked = true
 			}
 		}()
-		_ = fw.SafeWriteFile(targetFile, []byte("data"), 0644)
+		_ = fw.SafeWriteFile(targetFile, []byte("data"), 0600) // nolint:errcheck // on purpose, we care only about the panic
 	}()
 
 	// Reset permissions for test cleanup
-	os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0666)
+	chmodErr := os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0600)
+	if chmodErr != nil {
+		t.Errorf("Chmod failed so cleanup will fail, err: %v", chmodErr)
+	}
 
 	if !panicked {
 		t.Error("Expected catastrophic panic when Rename, Remove, and Truncate ALL fail on first boot")
@@ -117,7 +132,10 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveSucceeds(t *testing.T) 
 	targetFile := filepath.Join(dir, "config.json")
 
 	// Create the target file so os.IsNotExist returns false (triggers ReplaceFile path)
-	os.WriteFile(targetFile, []byte("old"), 0644)
+	wrErr := os.WriteFile(targetFile, []byte("old"), 0600)
+	if wrErr != nil {
+		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
+	}
 
 	// MOCK: ReplaceFile fails, simulating ACL issues or locked backups
 	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
@@ -129,13 +147,16 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveSucceeds(t *testing.T) 
 	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger) // 1 retry for speed
 
 	// This should drop down to the in-place truncate fallback and succeed
-	err := fw.SafeWriteFile(targetFile, []byte("new"), 0644)
+	err := fw.SafeWriteFile(targetFile, []byte("new"), 0600)
 	if err != nil {
 		t.Fatalf("Expected fallback to succeed, got error: %v", err)
 	}
 
 	// Verify fallback wrote the data
-	got, _ := os.ReadFile(targetFile)
+	got, rdErr := os.ReadFile(targetFile)
+	if rdErr != nil {
+		t.Errorf("ReadFile failed so tests will fail, err: %v", rdErr)
+	}
 	if string(got) != "new" {
 		t.Errorf("Fallback write failed, got %q", got)
 	}
@@ -145,7 +166,10 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveFails_TruncateSucceeds(
 	defer restoreHooks()
 	dir := t.TempDir()
 	targetFile := filepath.Join(dir, "config.json")
-	os.WriteFile(targetFile, []byte("old"), 0644)
+	wrErr := os.WriteFile(targetFile, []byte("old"), 0644)
+	if wrErr != nil {
+		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
+	}
 
 	// MOCK 1: ReplaceFile fails
 	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
@@ -198,7 +222,10 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails(t *testing.T) {
 		t.Fatalf("Expected fallback to succeed, got: %v", err)
 	}
 
-	got, _ := os.ReadFile(targetFile)
+	got, rdErr := os.ReadFile(targetFile)
+	if rdErr != nil {
+		t.Errorf("ReadFile failed so tests will fail, err: %v", rdErr)
+	}
 	if string(got) != "data" {
 		t.Errorf("Fallback write failed on first-boot path, got %q", got)
 	}
@@ -254,7 +281,7 @@ func TestSafeFileWriter(t *testing.T) {
 
 	// --- Test 3: CheckPowerLossFile (Simulated Power Loss) ---
 	// Manually create a non-empty power loss staging file
-	err = os.WriteFile(powerLossFile, []byte("interrupted partial write data"), 0644)
+	err = os.WriteFile(powerLossFile, []byte("interrupted partial write data"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to mock power loss file: %v", err)
 	}
@@ -275,7 +302,10 @@ func TestSafeFileWriter(t *testing.T) {
 
 	// --- Test 4: CheckPowerLossFile (Empty Staging File) ---
 	// Truncate to 0 bytes - it should log a warning but NOT panic
-	os.WriteFile(powerLossFile, []byte(""), 0644)
+	wrErr := os.WriteFile(powerLossFile, []byte(""), 0644)
+	if wrErr != nil {
+		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
+	}
 
 	emptyPanicked := false
 	func() {
@@ -422,7 +452,10 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
 		t.Error("staging file must be cleaned up after successful write with ExtraSafety ON")
 	}
-	got, _ := os.ReadFile(targetFile)
+	got, rdErr := os.ReadFile(targetFile)
+	if rdErr != nil {
+		t.Errorf("ReadFile failed so tests will fail, err: %v", rdErr)
+	}
 	if !bytes.Equal(got, data2) {
 		t.Errorf("content mismatch after toggle: got %q, want %q", got, data2)
 	}
@@ -457,7 +490,7 @@ func TestWin11SafeFileWriter_PowerLossFileWithZeroBytesIsIgnored(t *testing.T) {
 	staging := target + wincoe.PowerlossFileExtension
 
 	// Create a zero-byte staging file (previous cleanup succeeded but unlink failed)
-	if err := os.WriteFile(staging, nil, 0644); err != nil {
+	if err := os.WriteFile(staging, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 
