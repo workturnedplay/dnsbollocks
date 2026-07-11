@@ -109,6 +109,10 @@ type Config struct {
 	GlobalBurstQPS          int    `json:"qps_burst_globally"   desc:"Maximum burst of DNS queries allowed globally above the sustained qps_rate_globally limit."`
 	ClientRateQPS           int    `json:"qps_rate_per_client"  desc:"Maximum DNS queries per second allowed from a single client IP."`
 	ClientBurstQPS          int    `json:"qps_burst_per_client" desc:"Maximum burst of DNS queries allowed from a single client IP above qps_rate_per_client."`
+	WebUIRateQPS            int    `json:"webui_qps_rate_globally"    desc:"Maximum WebUI HTTP requests per second across all clients combined (token-bucket sustained rate). Independent of qps_rate_globally, which only governs DNS query traffic."`
+	WebUIBurstQPS           int    `json:"webui_qps_burst_globally"   desc:"Maximum burst of WebUI HTTP requests allowed globally above the sustained webui_qps_rate_globally limit."`
+	WebUIClientRateQPS      int    `json:"webui_qps_rate_per_client"  desc:"Maximum WebUI HTTP requests per second allowed from a single client IP."`
+	WebUIClientBurstQPS     int    `json:"webui_qps_burst_per_client" desc:"Maximum burst of WebUI HTTP requests allowed from a single client IP above webui_qps_rate_per_client."`
 	CacheMinTTL             int    `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. Hard floor is 10s."`
 	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
 	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
@@ -254,6 +258,13 @@ type AdminUI struct {
 	loginTracker *LoginTracker
 	recentBlocks *RecentBlocksTracker
 	stats        *expvar.Int
+
+	// rateLimiter enforces a global + per-client-IP cap on WebUI HTTP request
+	// volume, independent of loginTracker (only throttles failed logins) and
+	// independent of Server.rateLimiter (DNS query traffic). Wired up by
+	// initAdminUI(); nil is treated as "not configured yet" by
+	// webUIRateLimitMiddleware rather than causing a panic.
+	rateLimiter *ClientRateLimiter
 
 	uiTemplates *template.Template
 
@@ -1337,6 +1348,15 @@ func defaultConfig() Config {
 		ClientRateQPS:  20,
 		ClientBurstQPS: 100, //since it's portmaster.exe aka the firewall, even if it's just Firefox starting up on a previously opened page that's being reloaded(and firefox has DNS cache off), it still seems to hit this 50.
 
+		// WebUI request-rate limiting is intentionally much stricter than the
+		// DNS path above: this is a human-operated control panel plus occasional
+		// polling JS, not a high-throughput resolver, so a flood of requests is
+		// almost certainly abusive rather than legitimate traffic.
+		WebUIRateQPS:        20,
+		WebUIBurstQPS:       40,
+		WebUIClientRateQPS:  5,
+		WebUIClientBurstQPS: 20,
+
 		CacheMinTTL:     defaultCacheMinTTL, //300 sec
 		CacheMaxEntries: 10000,
 
@@ -2284,6 +2304,11 @@ func (s *Server) Reload() {
 	// 4. Update the rate limiter with new QPS settings
 	s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfgNew /*it's been updated*/))
 	log.Debug("Rate limiter reinitialized")
+
+	if s.adminUI != nil && s.adminUI.rateLimiter != nil {
+		s.adminUI.rateLimiter.UpdateConfig(webUIRateLimitConfigFrom(*cfgNew))
+		log.Debug("WebUI rate limiter reinitialized")
+	}
 
 	s.generateCertIfNeeded() // For DoH and webUI! just mutates certGeneration if needed
 
@@ -4148,6 +4173,48 @@ func init() {
 	}
 }
 
+// classifyRetryableDoHError reports whether err is one of the network-level
+// failure modes doSingleDoHRequest treats as transient/retryable, and if so,
+// a short machine-readable reason string for structured logging. This exists
+// because the raw error text alone (wincoe.SafeErr(err)) can look identical
+// for causes with very different remediation: a request that hit its own
+// upstream_client_timeout_sec budget (context.DeadlineExceeded) reads the
+// same at a glance as a genuinely slow/unreachable upstream reported as a
+// plain OS-level network timeout, even though the fix differs (raise the
+// configured timeout vs. investigate the upstream/network path). Logging the
+// specific classification alongside the error removes that ambiguity without
+// having to parse error strings by hand.
+func classifyRetryableDoHError(err error) (reason string, retryable bool) {
+	switch {
+	case errors.Is(err, io.EOF):
+		return "eof", true
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "unexpected_eof", true
+	case errors.Is(err, syscall.ECONNRESET):
+		// Since we're Windows-only, syscall.ECONNRESET is actually mapped to
+		// the Windows-specific WSAECONNRESET code internally by the Go net
+		// package, so errors.Is works correctly here.
+		return "econnreset", true
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "econnrefused", true
+	default:
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			if errors.Is(err, context.DeadlineExceeded) {
+				// The request's own context (bounded by
+				// Upstream.UpstreamClientTimeoutDuration, see below) expired
+				// before the upstream answered — a configured-timeout issue,
+				// not necessarily a dead/unreachable upstream.
+				return "context_deadline_exceeded", true
+			}
+			// A lower-level OS/network timeout (e.g. TCP dial or read/write
+			// deadline) rather than our own context budget expiring.
+			return "network_timeout", true
+		}
+		return "", false
+	}
+}
+
 func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
 	log := u.getLogger()
 
@@ -4271,14 +4338,11 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 
 		// decide if error is transient/retryable
 		// common retryable errors: temporary network errors, EOF, connection reset
-		var netErr net.Error
-		isRetryable := errors.Is(err4ClientDo, io.EOF) || errors.Is(err4ClientDo, io.ErrUnexpectedEOF) ||
-			errors.Is(err4ClientDo, syscall.ECONNRESET) || // Since you are on Windows, syscall.ECONNRESET is actually mapped to the Windows-specific WSAECONNRESET code internally by the Go net package, so errors.Is will work correctly across platforms if you ever decide to compile this for Linux/macOS too.
-			errors.Is(err4ClientDo, syscall.ECONNREFUSED) ||
-			(errors.As(err4ClientDo, &netErr) && netErr.Timeout()) //netErr.Timeout(): This is the "official" way to check for timeouts now. It covers both the network dial timing out and your http.Client.Timeout.
+		retryReason, isRetryable := classifyRetryableDoHError(err4ClientDo)
 
 		if isRetryable {
 			log.Error("doh_post_transient_error for this query", wincoe.SafeErr(err4ClientDo),
+				slog.String("retry_reason", retryReason),
 				slog.Int("current_try", attempt), slog.Int("max_tries", maxTries),
 				//slog.Any("query", req),
 				SafeRequestAttr("query", req),
@@ -5229,8 +5293,55 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	h = ui.securityHeadersMiddleware(h)
 	outerMux.Handle("/", h)
 	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
-	return outerMux
+
+	// Rate-limit absolutely everything, including the unauthenticated
+	// favicon/robots bypass routes registered above, before any other WebUI
+	// processing runs. This is deliberately the outermost layer: it must
+	// reject a flood before host validation, auth, or CSRF checks spend any
+	// CPU/log volume on it.
+	return ui.webUIRateLimitMiddleware(outerMux)
 }
+
+// webUIRateLimitMiddleware enforces a global and per-client-IP request-rate
+// cap on all WebUI traffic, independent of loginTracker (which only
+// throttles *failed* login attempts) and independent of Server.rateLimiter
+// (which governs DNS query traffic, an entirely different resource). Without
+// this, nothing bounded how many HTTP requests per second a single client —
+// or the sum of all clients — could send to the control panel: a runaway
+// script or attacker could hammer authenticated, disk-writing endpoints
+// (staging rule/host/blacklist changes, the /config apply path, etc.) as
+// fast as the network allowed.
+//
+// A nil ui.rateLimiter (e.g. a test harness that constructs AdminUI directly
+// without going through initAdminUI()'s post-construction wiring) is treated
+// as "not yet configured" and allows all requests through rather than
+// panicking, matching this codebase's general nil-safety conventions (see
+// wincoe.GetLoggerOrFallback).
+func (ui *AdminUI) webUIRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ui.rateLimiter == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		allowed, reason := ui.rateLimiter.Allow(r.RemoteAddr)
+		if !allowed {
+			log := ui.getLogger()
+			log.Warn("WebUI request rejected: rate limit exceeded",
+				slog.String("reason", reason),
+				slog.String("client", r.RemoteAddr),
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+			)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "429 Too Many Requests — WebUI request rate limit exceeded. Slow down and try again shortly.", http.StatusTooManyRequests)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (ui *AdminUI) fetchMetadataWhitelistMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		site := r.Header.Get("Sec-Fetch-Site")
@@ -7408,6 +7519,19 @@ func rateLimitConfigFrom(cfg Config) RateLimitConfig {
 	}
 }
 
+// webUIRateLimitConfigFrom extracts the WebUI-specific rate-limit settings
+// from Config. Kept separate from rateLimitConfigFrom (DNS query path) since
+// the two protect entirely different resources with very different traffic
+// volumes/defaults, and must be independently tunable.
+func webUIRateLimitConfigFrom(cfg Config) RateLimitConfig {
+	return RateLimitConfig{
+		GlobalQPS:   cfg.WebUIRateQPS,
+		GlobalBurst: cfg.WebUIBurstQPS,
+		ClientQPS:   cfg.WebUIClientRateQPS,
+		ClientBurst: cfg.WebUIClientBurstQPS,
+	}
+}
+
 // lruClientEntry wraps the limiter with the client's IP so we can
 // delete it from the map during an LRU eviction from the linked list.
 type lruClientEntry struct {
@@ -8661,6 +8785,10 @@ func (s *Server) initAdminUI() {
 		s.stats,
 		uiTemplates0,
 	)
+	// WebUI-request rate limiting, independent of the DNS-query rate limiter
+	// (s.rateLimiter) and of loginTracker (which only throttles failed logins).
+	ui.rateLimiter = newClientRateLimiter(s.ctx, webUIRateLimitConfigFrom(*s.getConfig()), s.getLogger())
+
 	// Wire up the side-effects
 	ui.OnSaveWhitelist = s.saveQueryWhitelist
 	ui.OnSaveBlacklist = s.saveResponseBlacklist
@@ -10064,6 +10192,40 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if clampIntField(log, tagClientBurstQPS, &resolvedCfg.ClientBurstQPS, &rawCfg.ClientBurstQPS,
 		func(v int) bool { return v < resolvedCfg.ClientRateQPS }, resolvedCfg.ClientRateQPS,
 		" (cannot be less than "+tagClientRateQPS+")") {
+		shouldSaveConfig = true
+	}
+
+	tagWebUIRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIRateQPS))
+	if clampIntField(log, tagWebUIRateQPS, &resolvedCfg.WebUIRateQPS, &rawCfg.WebUIRateQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIRateQPS, " (must be greater than 0)") {
+		shouldSaveConfig = true
+	}
+
+	tagWebUIBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIBurstQPS))
+	if clampIntField(log, tagWebUIBurstQPS, &resolvedCfg.WebUIBurstQPS, &rawCfg.WebUIBurstQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIBurstQPS, " (must be greater than 0)") {
+		shouldSaveConfig = true
+	}
+	if clampIntField(log, tagWebUIBurstQPS, &resolvedCfg.WebUIBurstQPS, &rawCfg.WebUIBurstQPS,
+		func(v int) bool { return v < resolvedCfg.WebUIRateQPS }, resolvedCfg.WebUIRateQPS,
+		" (cannot be less than "+tagWebUIRateQPS+")") {
+		shouldSaveConfig = true
+	}
+
+	tagWebUIClientRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIClientRateQPS))
+	if clampIntField(log, tagWebUIClientRateQPS, &resolvedCfg.WebUIClientRateQPS, &rawCfg.WebUIClientRateQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIClientRateQPS, " (must be greater than 0)") {
+		shouldSaveConfig = true
+	}
+
+	tagWebUIClientBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIClientBurstQPS))
+	if clampIntField(log, tagWebUIClientBurstQPS, &resolvedCfg.WebUIClientBurstQPS, &rawCfg.WebUIClientBurstQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIClientBurstQPS, " (must be greater than 0)") {
+		shouldSaveConfig = true
+	}
+	if clampIntField(log, tagWebUIClientBurstQPS, &resolvedCfg.WebUIClientBurstQPS, &rawCfg.WebUIClientBurstQPS,
+		func(v int) bool { return v < resolvedCfg.WebUIClientRateQPS }, resolvedCfg.WebUIClientRateQPS,
+		" (cannot be less than "+tagWebUIClientRateQPS+")") {
 		shouldSaveConfig = true
 	}
 
