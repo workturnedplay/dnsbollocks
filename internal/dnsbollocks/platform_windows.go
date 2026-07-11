@@ -8353,16 +8353,28 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 		s.getLogger().Debug("DNS rebind/relisten not done, params are same")
 		return
 	}
-	if old != nil {
+
+	// If binding to the exact same address (e.g. only non-address params changed),
+	// we MUST close the old listener first to avoid "address already in use" errors.
+	sameAddr := old != nil && old.params.Addr == params.Addr
+	if sameAddr {
 		old.cancel()
 		old.wg.Wait()
 	}
+
 	newInst, err := s.startDNSListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("DNS listener (re)bind to %+v failed", params), err)
 		panic2("BUG: unreachable")
 	}
 	s.dnsListener.Store(newInst)
+
+	// If the address changed, we kept the old listener alive during the new bind
+	// to ensure zero downtime. Close it now that the new one is active.
+	if old != nil && !sameAddr {
+		old.cancel()
+		old.wg.Wait()
+	}
 }
 
 // non-blocking!
@@ -8460,22 +8472,24 @@ func (s *Server) rebindDoHListener(params dohListenerParams) {
 		s.getLogger().Debug("DoH rebind/relisten not done, params are same")
 		return
 	}
-	// Release the old socket before binding the new one: if only a non-address
-	// parameter changed (TLS cert generation, a timeout, ...) the old listener
-	// is still bound to this exact address, so binding first would fail with
-	// "address already in use". Any bind failure below already triggers a full
-	// shutdown via logFatal, so there's no fallback benefit to preserve by
-	// binding new-before-old.
-	if old != nil {
+
+	sameAddr := old != nil && old.params.Addr == params.Addr
+	if sameAddr {
 		old.cancel()
 		old.wg.Wait()
 	}
+
 	newInst, err := s.startDoHListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("DoH listener (re)bind to %+v failed", params), err)
 		panic2("BUG: unreachable")
 	}
 	s.dohListener.Store(newInst)
+
+	if old != nil && !sameAddr {
+		old.cancel()
+		old.wg.Wait()
+	}
 }
 
 func (s *Server) initAdminUI() {
@@ -8694,16 +8708,24 @@ func (s *Server) rebindWebUIListener(params uiListenerParams) {
 		s.getLogger().Debug("webUI rebind/relisten not done, params are same")
 		return
 	}
-	if old != nil {
+
+	sameAddr := old != nil && old.params.Addr == params.Addr
+	if sameAddr {
 		old.cancel()
 		old.wg.Wait()
 	}
+
 	newInst, err := s.startWebUIListenerInstance(params)
 	if err != nil {
 		s.logFatal(fmt.Sprintf("WebUI listener (re)bind to %+v failed", params), err)
 		panic2("BUG: unreachable")
 	}
 	s.uiListener.Store(newInst)
+
+	if old != nil && !sameAddr {
+		old.cancel()
+		old.wg.Wait()
+	}
 }
 
 type dnsListenerParams struct {
