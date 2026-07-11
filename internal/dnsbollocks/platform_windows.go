@@ -6528,13 +6528,29 @@ func isBlocksAjaxRequest(r *http.Request) bool {
 // a full page reload.
 func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Request, ok bool, status int, message, enteredValue string) {
 	if isBlocksAjaxRequest(r) {
+		// Always treat AJAX block-action responses as plain text.
+		// This eliminates any XSS surface (G705) and matches what the
+		// frontend (app.js) expects in .textContent / .block-action-feedback.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
 		if ok {
 			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(message)); err != nil { //FIXME: G705: XSS via taint analysis (gosec)
-				log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
+			// message comes from server-controlled strings or safe user input
+			// that has already been validated. No HTML escaping needed for text/plain.
+			if _, err := io.WriteString(w, message); err != nil { //nolint:gosec // G705 XSS via taint analysis (gosec) // it's handled
+				// Client disconnected — common and harmless for fire-and-forget status updates.
+				log.Debug("client disconnected before AJAX status write completed",
+					wincoe.SafeErr(err))
 			}
 		} else {
-			http.Error(w, message, status)
+			//http.Error(w, message, status)
+
+			// Use our own path so we keep the Content-Type we just set and
+			// don't let http.Error force text/html.
+			w.WriteHeader(status)
+			if _, err := io.WriteString(w, message); err != nil { //nolint:gosec // G705 XSS via taint analysis (gosec) // it's handled
+				log.Debug("client disconnected before AJAX error write", wincoe.SafeErr(err))
+			}
 		}
 		return
 	}
