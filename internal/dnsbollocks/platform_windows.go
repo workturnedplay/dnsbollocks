@@ -3576,7 +3576,9 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 	var timeoutDuration time.Duration = time.Duration(cfg.ClientTCPTimeoutSec) * time.Second
-	const maxDNSTCPPacketSize = 65535 //nopeTODO: make this configurable in config.json ; It's the RFC 1035 hard limit (65535); not a tunable
+
+	//plain TCP DNS packets have a strict RFC 1035 hard limit of 65,535 bytes
+	const maxDNSTCPPacketSize = 65535 //nopeTODO: make this configurable in config.json ; It's the RFC 1035 hard limit (65535); not a tunable;
 
 	// --- 1. READ THE LENGTH HEADER ---
 	// We give the client 5 seconds to send just these 2 bytes.
@@ -3608,8 +3610,11 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	}
 
 	length := int(binary.BigEndian.Uint16(buf))
-	if length > cfg.DoHMaxRequestBodyBytes || length == 0 { // Edge: Oversize packet
-		log.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored", slog.Int("actual_bytes", length), slog.Int("max", maxDNSTCPPacketSize),
+	if length > cfg.DoHMaxRequestBodyBytes || length > maxDNSTCPPacketSize || length <= 0 { // Edge: Oversize packet
+		log.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored",
+			slog.Int("actual_length", length),
+			slog.Int("maxDNSTCPPacketSize", maxDNSTCPPacketSize),
+			slog.Int(getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS)), cfg.DoHMaxRequestBodyBytes),
 			slog.Int("min", 1))
 		return
 	}
