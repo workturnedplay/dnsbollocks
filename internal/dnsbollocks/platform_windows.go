@@ -8947,13 +8947,23 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 }
 
 // reopenOriginal is a safety net to ensure we always have an open file handle
-// to write to, even if rotation or rollback fails.
+// to write to, even if rotation or rollback fails. It also re-derives w.size
+// from the actual file on disk: a create-new-file failure followed by a failed
+// rollback-rename leaves a brand-new, empty file at w.path while w.size would
+// otherwise still reflect the old, pre-rotation size, which would make every
+// subsequent Write() believe the fresh file is still oversized and endlessly
+// reattempt rotation.
 func (w *rotatingLogWriter) reopenOriginal() {
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		w.logger.Error("CRITICAL: Failed to reopen original log file after rotation failure", slog.String("path", w.path), wincoe.SafeErr(err))
+		return
+	}
+	w.file = f
+	if stat, statErr := f.Stat(); statErr == nil {
+		w.size = stat.Size()
 	} else {
-		w.file = f
+		w.logger.Warn("Failed to stat reopened log file after rotation failure; size tracking may be stale until next successful rotation", slog.String("path", w.path), wincoe.SafeErr(statErr))
 	}
 }
 
