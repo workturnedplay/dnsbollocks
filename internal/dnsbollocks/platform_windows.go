@@ -9624,9 +9624,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 			slog.String("listen_ui", resolvedCfg.ListenUI))
 	}
 
-	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost)),
+	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
+	if clampIntField(log, tagWebUIPasswordBcryptCost,
 		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
 		func(v int) bool { return v < 12 }, max(12, defaultCfg.WebUIPasswordBcryptCost), " to secure minimum") {
+		shouldSaveConfig = true
+	}
+	if clampIntField(log, tagWebUIPasswordBcryptCost,
+		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
+		func(v int) bool { return v > bcrypt.MaxCost }, bcrypt.MaxCost, " to bcrypt's maximum allowed cost") {
 		shouldSaveConfig = true
 	}
 
