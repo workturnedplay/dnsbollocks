@@ -29,6 +29,88 @@ func restoreHooks() {
 	wincoe.ReplaceFileFunc = wincoe.ReplaceFile
 }
 
+func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.T) {
+	defer restoreHooks()
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "config.json")
+	os.WriteFile(targetFile, []byte("old"), 0644)
+
+	// MOCK 1: ReplaceFile fails
+	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
+		return fmt.Errorf("mock ReplaceFileW failure")
+	}
+
+	// MOCK 2: Remove fails AND sabotages the file so Truncate fails too
+	wincoe.OsRemoveFunc = func(name string) error {
+		// THE FIX: Strip write permissions. When TruncateStagingFileToZero tries
+		// to open this with O_WRONLY|O_TRUNC, Windows will throw an Access Denied error.
+		os.Chmod(name, 0444)
+		return fmt.Errorf("mock os.Remove failure")
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
+
+	// Catch the expected safety panic
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0644)
+	}()
+
+	// Reset permissions so t.TempDir() cleanup doesn't fail on a read-only file
+	os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0666)
+
+	if !panicked {
+		t.Error("Expected catastrophic panic when ReplaceFile, Remove, and Truncate ALL fail")
+	}
+}
+
+func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *testing.T) {
+	defer restoreHooks()
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "new_config.json")
+
+	// Target does NOT exist -> triggers initial os.Rename path
+
+	// MOCK 1: Rename fails AND sabotages the file
+	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
+		// THE FIX: Make read-only here so the subsequent truncate attempt crashes.
+		os.Chmod(oldpath, 0444)
+		return fmt.Errorf("mock os.Rename failure")
+	}
+	// MOCK 2: Remove fails
+	wincoe.OsRemoveFunc = func(name string) error {
+		return fmt.Errorf("mock os.Remove failure")
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
+
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		_ = fw.SafeWriteFile(targetFile, []byte("data"), 0644)
+	}()
+
+	// Reset permissions for test cleanup
+	os.Chmod(targetFile+wincoe.PowerlossFileExtension, 0666)
+
+	if !panicked {
+		t.Error("Expected catastrophic panic when Rename, Remove, and Truncate ALL fail on first boot")
+	}
+}
+
 func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveSucceeds(t *testing.T) {
 	defer restoreHooks()
 	dir := t.TempDir()
@@ -94,52 +176,6 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveFails_TruncateSucceeds(
 	}
 }
 
-func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.T) {
-	defer restoreHooks()
-	dir := t.TempDir()
-	targetFile := filepath.Join(dir, "config.json")
-	os.WriteFile(targetFile, []byte("old"), 0644)
-
-	// MOCK 1: ReplaceFile fails
-	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
-		return fmt.Errorf("mock ReplaceFileW failure")
-	}
-	// MOCK 2: Remove fails
-	wincoe.OsRemoveFunc = func(name string) error {
-		return fmt.Errorf("mock os.Remove failure")
-	}
-
-	// To make Truncate fail without hacking the OS, we can quickly lock the file
-	// or we can just mock `RetryFileOp` or `osOpenFile`. For simplicity here,
-	// let's physically lock the staging file so truncation throws an error.
-	staging := targetFile + wincoe.PowerlossFileExtension
-	// Write and hold a read-lock that denies write access (simulating stuck process)
-	f, err := os.OpenFile(staging, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	var liveLogger atomic.Pointer[slog.Logger]
-	liveLogger.Store(discardLogger())
-	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
-
-	// Catch the expected safety panic
-	panicked := false
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked = true
-			}
-		}()
-		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0644)
-	}()
-
-	if !panicked {
-		t.Error("Expected catastrophic panic when ReplaceFile, Remove, and Truncate ALL fail")
-	}
-}
-
 func TestWin11SafeFileWriter_Mock_FirstBootRenameFails(t *testing.T) {
 	defer restoreHooks()
 	dir := t.TempDir()
@@ -165,52 +201,6 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails(t *testing.T) {
 	got, _ := os.ReadFile(targetFile)
 	if string(got) != "data" {
 		t.Errorf("Fallback write failed on first-boot path, got %q", got)
-	}
-}
-
-func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *testing.T) {
-	defer restoreHooks()
-	dir := t.TempDir()
-	targetFile := filepath.Join(dir, "new_config.json")
-
-	// Target does NOT exist -> triggers initial os.Rename path
-
-	// MOCK 1: Rename fails
-	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
-		return fmt.Errorf("mock os.Rename failure")
-	}
-	// MOCK 2: Remove fails
-	wincoe.OsRemoveFunc = func(name string) error {
-		return fmt.Errorf("mock os.Remove failure")
-	}
-
-	var liveLogger atomic.Pointer[slog.Logger]
-	liveLogger.Store(discardLogger())
-	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
-
-	// MOCK 3: Truncate fails (by physically opening the staging file and denying write sharing)
-	// We have to intercept it *after* it creates the staging file. A simple way is to
-	// launch a goroutine that locks the staging file right before rename happens, but
-	// since we mock rename, we can just lock it inside the mock itself!
-	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
-		// Lock the staging file so Truncate fails
-		f, _ := os.OpenFile(oldpath, os.O_RDWR, 0644)
-		defer f.Close() // this closure won't execute until rename returns, locking the file for the rest of SafeWriteFile
-		return fmt.Errorf("mock os.Rename failure and file lock")
-	}
-
-	panicked := false
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked = true
-			}
-		}()
-		_ = fw.SafeWriteFile(targetFile, []byte("data"), 0644)
-	}()
-
-	if !panicked {
-		t.Error("Expected catastrophic panic when Rename, Remove, and Truncate ALL fail on first boot")
 	}
 }
 
