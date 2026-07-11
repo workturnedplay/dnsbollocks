@@ -25,6 +25,10 @@
     // time. Sent back on Apply so the server can detect a stale page.
     // Falls back to '0' on pages that predate this feature or on non-config pages.
     const configVersion = _cfgKeysEl ? (_cfgKeysEl.dataset.configVersion || '0') : '0';
+    // Mirrors the Go configFileName constant / wincoe.BackupFileExtension so this
+    // confirmation dialog never goes stale if either changes.
+    const configFileName = _cfgKeysEl ? (_cfgKeysEl.dataset.configFilename || 'config.json') : 'config.json';
+    const configBackupExt = _cfgKeysEl ? (_cfgKeysEl.dataset.configBackupExt || '.bak') : '.bak';
     const CONFIG_KEYS = _cfgKeysEl ? {
         // JSON tag key names — used to identify which config row is being edited.
         upstreamSelectionMode: _cfgKeysEl.dataset.keyUpstreamSelectionMode || '',
@@ -1254,10 +1258,9 @@
     
     async function applyConfigChanges() {
         if (Object.keys(stagedChanges).length === 0) return;
-        //if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners. Proceed?')) return;
-        //FIXME: config.json is hardcoded here, if it changes in .go this is stale!
-        if (!confirm('Applying changes will overwrite config.json and gracefully restart listeners.\n\nThe existing config.json will be safely backed up to config.json.bak first.\n\nProceed?')) return;
-        
+        if (!confirm('Applying changes will overwrite ' + configFileName + ' and gracefully restart listeners.\n\n' +
+            'The existing ' + configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.\n\nProceed?')) return;
+
         const success = await postAdminForm('/config', {
             'action': 'apply',
             'payload': JSON.stringify(stagedChanges),
@@ -1430,7 +1433,7 @@
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
                         const isNoOp = newType === origType && newPattern === origPattern &&
                             (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
-                        const fields = { id: id, pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false' };
+                        const fields = { id: id, pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false', edit: '1' };
                         const displayType = isNoOp ? origType : newType;
                         const displayPattern = isNoOp ? origPattern : newPattern;
                         const displayEnabled = isNoOp ? origEnabled : enabledChecked;
@@ -1892,11 +1895,12 @@
                     }
                 }
             } catch (err) {
+                console.error('Blacklist overlap validation check failed:', err);
+
                 const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
                 `Error details: ${err}\n\n` +
                 `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
                 
-                console.error(msg);
                 // If user clicks "Cancel" (No), abort form submission.
                 // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
                 

@@ -2154,6 +2154,27 @@ func (ui *AdminUI) logFatal(msg string, err error, args ...any) {
 	}
 }
 
+// logPersistFailure logs a failure to persist an already-successfully-mutated
+// in-memory store (whitelist, local hosts, or response blacklist) to disk,
+// without crashing the process via logFatal. By the time any of
+// OnSaveWhitelist/OnSaveHosts/OnSaveBlacklist is called, the corresponding
+// in-memory store has already been updated, so DNS resolution continues
+// correctly with the new state; only the on-disk copy failed to update and
+// may therefore be stale (reverting to the pre-change value) if the process
+// restarts before the next successful save. A full process shutdown over a
+// single disk I/O hiccup would take down DNS resolution entirely, which is a
+// substantially worse outcome than a stale on-disk file — unlike logFatal,
+// which stays reserved for invariant violations where continuing to run
+// risks serving corrupted or inconsistent state.
+// Returns a wrapped error suitable for surfacing directly to the WebUI caller.
+func (ui *AdminUI) logPersistFailure(what string, err error) error {
+	log := ui.getLogger()
+	log.Error("Failed to persist "+what+" to disk; in-memory state was already updated but NOT saved — the change may be lost on restart",
+		slog.String("store", what),
+		wincoe.SafeErr(err))
+	return fmt.Errorf("failed to save %s to disk (your change was applied in memory but NOT persisted; it may be lost on restart): %w", what, err)
+}
+
 // getJSONTagByOffset finds a Config field by its memory offset and extracts its JSON key.
 // Because it uses real field selectors, it is 100% safe for VS Code automated refactoring.
 // example usage: getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
@@ -5101,8 +5122,8 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		}
 
 		if err := ui.OnSaveBlacklist(); err != nil {
-			ui.logFatal("failed to save response blacklist after modification from webUI", err)
-			panic2("BUG: unreachable")
+			http.Error(w, ui.logPersistFailure("response blacklist", err).Error(), http.StatusInternalServerError)
+			return
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 		return
@@ -6432,6 +6453,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		fields := map[string]string{
 			"delete":  r.FormValue("delete"),
 			"id":      r.FormValue("id"),
+			"edit":    r.FormValue("edit"),
 			"type":    r.FormValue("type"),
 			"pattern": r.FormValue("pattern"),
 			"enabled": r.FormValue("enabled"),
@@ -6445,8 +6467,8 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
-			ui.logFatal("failed to save whitelist after rule modification from webUI", err)
-			panic2("BUG: unreachable")
+			http.Error(w, ui.logPersistFailure("whitelist", err).Error(), http.StatusInternalServerError)
+			return
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 		return
@@ -6665,8 +6687,8 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := ui.OnSaveHosts(); err != nil {
-			ui.logFatal("failed to save local hosts after modification", err)
-			panic2("BUG: unreachable")
+			http.Error(w, ui.logPersistFailure("local hosts", err).Error(), http.StatusInternalServerError)
+			return
 		}
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 		return
@@ -6864,8 +6886,8 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			} //switch
 
 			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
-				ui.logFatal("failed to save whitelist after rule that was blocked was deleted from the blocks handler in webUI", err)
-				panic2("BUG: unreachable")
+				respondBlocksResult(log, w, r, false, http.StatusInternalServerError, ui.logPersistFailure("whitelist", err).Error(), "")
+				return
 			}
 			respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
 			return
@@ -9369,7 +9391,9 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 		data := map[string]any{
 			"Fields": ui.getConfigFields(),
 
-			"ConfigVersion": configVersion,
+			"ConfigVersion":   configVersion,
+			"ConfigFileName":  configFileName,
+			"ConfigBackupExt": wincoe.BackupFileExtension,
 
 			//Dynamically inject the UpstreamURLs JSON tag
 			"UpstreamURLsKey": getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamURLs)),
@@ -11034,29 +11058,29 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	saveHosts := false
 	saveBlacklist := false
 
-	// flushDirty persists whichever stores were actually mutated so far. Called
-	// on early-exit (partial batch failure) as well as on full success, so the
-	// live stores and their on-disk files never diverge just because a later
-	// item in the same batch failed validation.
-	flushDirty := func() {
+	// flushDirty persists whichever stores were actually mutated so far and
+	// returns the first persistence error encountered (if any). A save
+	// failure here is logged (via logPersistFailure) but does not crash the
+	// process: the in-memory stores were already mutated successfully, so
+	// DNS resolution continues correctly with the new state; only the
+	// on-disk copy may be stale until the next successful save.
+	flushDirty := func() error {
 		if saveRules {
 			if err := ui.OnSaveWhitelist(); err != nil {
-				ui.logFatal("failed to save whitelist after batch apply", err)
-				panic2("BUG: unreachable")
+				return ui.logPersistFailure("whitelist", err)
 			}
 		}
 		if saveHosts {
 			if err := ui.OnSaveHosts(); err != nil {
-				ui.logFatal("failed to save hosts after batch apply", err)
-				panic2("BUG: unreachable")
+				return ui.logPersistFailure("hosts", err)
 			}
 		}
 		if saveBlacklist {
 			if err := ui.OnSaveBlacklist(); err != nil {
-				ui.logFatal("failed to save blacklist after batch apply", err)
-				panic2("BUG: unreachable")
+				return ui.logPersistFailure("response blacklist", err)
 			}
 		}
+		return nil
 	}
 
 	for _, change := range changes {
@@ -11085,13 +11109,18 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			log.Warn("Batch apply failed for a record", slog.String("url", change.URL), wincoe.SafeErr(err))
-			flushDirty()
+			if flushErr := flushDirty(); flushErr != nil {
+				log.Error("Batch apply: also failed to persist previously-mutated stores after this error", wincoe.SafeErr(flushErr))
+			}
 			http.Error(w, err.Error(), status)
 			return // Fails the rest of the batch and surfaces the HTTP error to the frontend
 		}
-	}
+	} // for
 
-	flushDirty()
+	if flushErr := flushDirty(); flushErr != nil {
+		http.Error(w, flushErr.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
 	w.WriteHeader(http.StatusOK)
@@ -11128,7 +11157,11 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		return http.StatusOK, nil
 	} //end delete
 
-	//now it's either Edit or Add, below: FIXME: needs a better way to say it's Edit or Add than comparing id!="" respectively id==""
+	// isEdit is explicit (mirrors processHostChange's fields["edit"] flag),
+	// rather than being inferred from whether "id" happens to be non-empty,
+	// so a client bug that omits the edit flag can't silently fall through
+	// to the Add branch (or vice versa).
+	isEdit := fields["edit"] == "1"
 	patternNormalized := NormalizeDomain(fields["pattern"]) //XXX: must be lowercased for matchPattern later on.
 	typ := fields["type"]
 	id := fields["id"]
@@ -11148,10 +11181,13 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 	}
 
-	// id, if present, is a UUID; guard it the same way as in the delete path.
-	if id != "" { //this is an EDIT attempt
-		//     // Edit: Find and update (search all types)
+	if isEdit {
 		// --- EDIT MODE ---
+		if id == "" {
+			log.Warn("Failed to edit rule: edit flag set but id is empty")
+			return http.StatusBadRequest, errors.New("id required for edit")
+		}
+		// id is a UUID used only as a map key; sanitize it against injection just in case.
 		if _, modified := sanitizeDomainInput(id); modified {
 			log.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 			return http.StatusBadRequest, errors.New("id contains illegal characters")
@@ -11172,10 +11208,12 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 			slog.String("new_pattern", patternNormalized),
 			slog.Bool("enabled", enabledBool),
 			slog.String("old_pattern", oldPattern))
-	} else { // this is an ADD new rule, FIXME: it's implicit (not edit not delete, thus assuming Add!)
+	} else {
 		// --- ADD MODE ---
-		// // Add new: Prevent duplicate (same type + pattern, case-insensitive)
-
+		if id != "" {
+			log.Warn("Failed to add rule: id was unexpectedly present without the edit flag", slog.String("id", id))
+			return http.StatusBadRequest, errors.New("id must not be set when adding a new rule")
+		}
 		newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
 		if err != nil {
 			log.Warn("Failed to add rule",
