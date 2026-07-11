@@ -9567,6 +9567,42 @@ func (ui *AdminUI) getRawConfig() *Config {
 	panic(nil)
 }
 
+// clampIntField is the shared implementation behind sanitizeAndValidateConfig's many
+// "clamp this int field to a safe value and flag the config for saving" blocks. invalid
+// reports whether the field's current value is out of bounds; when it is, both resolved
+// and raw are set to fallback (so the correction is persisted to disk on the next save)
+// and a standardized warning is logged. msgSuffix is appended verbatim to the log message
+// to preserve each call site's specific human-readable explanation (pass "" for none).
+// extra lets a handful of call sites attach additional structured log fields (e.g. a
+// cross-reference to the field that produced the fallback value). Returns true if a clamp
+// was applied, so callers can fold the result straight into shouldSaveConfig.
+func clampIntField(log *slog.Logger, tag string, resolved, raw *int, invalid func(int) bool, fallback int, msgSuffix string, extra ...any) bool {
+	was := *resolved
+	if !invalid(was) {
+		return false
+	}
+	*resolved = fallback
+	*raw = fallback
+	args := append([]any{slog.Int("was", was), slog.Int("clamp", fallback)}, extra...)
+	log.Warn(tag+" clamped"+msgSuffix, args...)
+	return true
+}
+
+// clampUint32Field mirrors clampIntField for the two uint32 TTL fields
+// (BlockedResponseTTLSec, LocalHostsOverrideTTLSec).
+func clampUint32Field(log *slog.Logger, tag string, resolved, raw *uint32, invalid func(uint32) bool, fallback uint32, msgSuffix string) bool {
+	was := *resolved
+	if !invalid(was) {
+		return false
+	}
+	*resolved = fallback
+	*raw = fallback
+	log.Warn(tag+" clamped"+msgSuffix, slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
+	return true
+}
+
+// sanitizeAndValidateConfig handles validation, clamping, and cleaning of configuration fields.
+
 // sanitizeAndValidateConfig handles validation, clamping, and cleaning of configuration fields.
 // It is used by both loadMainConfig (on disk load) and configHandler (on WebUI apply) to ensure
 // identical constraint enforcement and normalization.
@@ -9600,480 +9636,314 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 			"(not encrypted) to any other local process/user that can observe loopback traffic.",
 			slog.String("listen_ui", resolvedCfg.ListenUI))
 	}
-	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
-	if was := resolvedCfg.WebUIPasswordBcryptCost; was < 12 {
-		fallback := 12
-		if defaultCfg.WebUIPasswordBcryptCost >= 12 {
-			fallback = defaultCfg.WebUIPasswordBcryptCost
-		}
-		resolvedCfg.WebUIPasswordBcryptCost = fallback
-		rawCfg.WebUIPasswordBcryptCost = fallback
+
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost)),
+		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
+		func(v int) bool { return v < 12 }, max(12, defaultCfg.WebUIPasswordBcryptCost), " to secure minimum") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIPasswordBcryptCost+" clamped to secure minimum", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================
 	// Group 1: WebUI Server Timeouts & Rate Limits
 	// =========================================================================
-	tagWebUIReadHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadHeaderTimeoutSec))
-	if was := resolvedCfg.WebUIReadHeaderTimeoutSec; was <= 0 {
-		fallback := defaultCfg.WebUIReadHeaderTimeoutSec
-		resolvedCfg.WebUIReadHeaderTimeoutSec = fallback
-		rawCfg.WebUIReadHeaderTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadHeaderTimeoutSec)),
+		&resolvedCfg.WebUIReadHeaderTimeoutSec, &rawCfg.WebUIReadHeaderTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIReadHeaderTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIReadHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagWebUIRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadTimeoutSec))
-	if was := resolvedCfg.WebUIReadTimeoutSec; was <= 0 {
-		fallback := defaultCfg.WebUIReadTimeoutSec
-		resolvedCfg.WebUIReadTimeoutSec = fallback
-		rawCfg.WebUIReadTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIReadTimeoutSec)),
+		&resolvedCfg.WebUIReadTimeoutSec, &rawCfg.WebUIReadTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIReadTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagWebUIWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIWriteTimeoutSec))
-	if was := resolvedCfg.WebUIWriteTimeoutSec; was <= 0 {
-		fallback := defaultCfg.WebUIWriteTimeoutSec
-		resolvedCfg.WebUIWriteTimeoutSec = fallback
-		rawCfg.WebUIWriteTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIWriteTimeoutSec)),
+		&resolvedCfg.WebUIWriteTimeoutSec, &rawCfg.WebUIWriteTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIWriteTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagWebUIIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec))
-	if was := resolvedCfg.WebUIIdleTimeoutSec; was <= resolvedCfg.WebUIReadTimeoutSec {
-		fallback := resolvedCfg.WebUIReadTimeoutSec * 2
-		resolvedCfg.WebUIIdleTimeoutSec = fallback
-		rawCfg.WebUIIdleTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec)),
+		&resolvedCfg.WebUIIdleTimeoutSec, &rawCfg.WebUIIdleTimeoutSec,
+		func(v int) bool { return v <= resolvedCfg.WebUIReadTimeoutSec }, resolvedCfg.WebUIReadTimeoutSec*2,
+		"(to double the read timeout) to prevent aggressive keep-alive disconnects") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIIdle+" clamped(to double the read timeout) to prevent aggressive keep-alive disconnects", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagWebUIMaxLoginFailures := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIMaxLoginFailures))
-	if was := resolvedCfg.WebUIMaxLoginFailures; was <= 0 {
-		fallback := defaultCfg.WebUIMaxLoginFailures
-		resolvedCfg.WebUIMaxLoginFailures = fallback
-		rawCfg.WebUIMaxLoginFailures = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIMaxLoginFailures)),
+		&resolvedCfg.WebUIMaxLoginFailures, &rawCfg.WebUIMaxLoginFailures,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIMaxLoginFailures, "") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUIMaxLoginFailures+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagWebUILoginLockoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUILoginLockoutSec))
-	if was := resolvedCfg.WebUILoginLockoutSec; was <= 0 {
-		fallback := defaultCfg.WebUILoginLockoutSec
-		resolvedCfg.WebUILoginLockoutSec = fallback
-		rawCfg.WebUILoginLockoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUILoginLockoutSec)),
+		&resolvedCfg.WebUILoginLockoutSec, &rawCfg.WebUILoginLockoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUILoginLockoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagWebUILoginLockoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================
 	// Group 2: Local DoH Server Timeouts
 	// =========================================================================
-	tagDoHHeader := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec))
-	if was := resolvedCfg.LocalDoHReadHeaderTimeoutSec; was <= 0 {
-		fallback := defaultCfg.LocalDoHReadHeaderTimeoutSec
-		resolvedCfg.LocalDoHReadHeaderTimeoutSec = fallback
-		rawCfg.LocalDoHReadHeaderTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadHeaderTimeoutSec)),
+		&resolvedCfg.LocalDoHReadHeaderTimeoutSec, &rawCfg.LocalDoHReadHeaderTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.LocalDoHReadHeaderTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagDoHHeader+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagDoHRead := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec))
-	if was := resolvedCfg.LocalDoHReadTimeoutSec; was <= 0 {
-		fallback := defaultCfg.LocalDoHReadTimeoutSec
-		resolvedCfg.LocalDoHReadTimeoutSec = fallback
-		rawCfg.LocalDoHReadTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHReadTimeoutSec)),
+		&resolvedCfg.LocalDoHReadTimeoutSec, &rawCfg.LocalDoHReadTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.LocalDoHReadTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagDoHRead+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagDoHWrite := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec))
-	if was := resolvedCfg.LocalDoHWriteTimeoutSec; was <= 0 {
-		fallback := defaultCfg.LocalDoHWriteTimeoutSec
-		resolvedCfg.LocalDoHWriteTimeoutSec = fallback
-		rawCfg.LocalDoHWriteTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHWriteTimeoutSec)),
+		&resolvedCfg.LocalDoHWriteTimeoutSec, &rawCfg.LocalDoHWriteTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.LocalDoHWriteTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagDoHWrite+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagDoHIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec))
-	if was := resolvedCfg.LocalDoHIdleTimeoutSec; was <= resolvedCfg.LocalDoHReadTimeoutSec {
-		fallback := resolvedCfg.LocalDoHReadTimeoutSec * 2
-		resolvedCfg.LocalDoHIdleTimeoutSec = fallback
-		rawCfg.LocalDoHIdleTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec)),
+		&resolvedCfg.LocalDoHIdleTimeoutSec, &rawCfg.LocalDoHIdleTimeoutSec,
+		func(v int) bool { return v <= resolvedCfg.LocalDoHReadTimeoutSec }, resolvedCfg.LocalDoHReadTimeoutSec*2,
+		"(to double the read timeout) to prevent premature keep-alive drops") {
 		shouldSaveConfig = true
-		log.Warn(tagDoHIdle+" clamped(to double the read timeout) to prevent premature keep-alive drops", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================
 	// Group 3: Upstream Client & Connection Pools
 	// =========================================================================
 	tagUpstreamDialTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamDialTimeoutSec))
-	if was := resolvedCfg.UpstreamDialTimeoutSec; was <= 0 {
-		fallback := defaultCfg.UpstreamDialTimeoutSec
-		resolvedCfg.UpstreamDialTimeoutSec = fallback
-		rawCfg.UpstreamDialTimeoutSec = fallback
+	if clampIntField(log, tagUpstreamDialTimeoutSec, &resolvedCfg.UpstreamDialTimeoutSec, &rawCfg.UpstreamDialTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamDialTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamDialTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamClientTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamClientTimeoutSec))
-	// Constraint A: Absolute lower bound check
-	if was := resolvedCfg.UpstreamClientTimeoutSec; was <= 0 {
-		fallback := defaultCfg.UpstreamClientTimeoutSec
-		resolvedCfg.UpstreamClientTimeoutSec = fallback
-		rawCfg.UpstreamClientTimeoutSec = fallback
+	if clampIntField(log, tagUpstreamClientTimeoutSec, &resolvedCfg.UpstreamClientTimeoutSec, &rawCfg.UpstreamClientTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamClientTimeoutSec,
+		" (prevents infinite hanging client connections)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamClientTimeoutSec+" clamped (prevents infinite hanging client connections)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: Relational validation check (Sequential, never an 'else if')
-	if was := resolvedCfg.UpstreamClientTimeoutSec; was < resolvedCfg.UpstreamDialTimeoutSec {
-		fallback := resolvedCfg.UpstreamDialTimeoutSec
-		resolvedCfg.UpstreamClientTimeoutSec = fallback
-		rawCfg.UpstreamClientTimeoutSec = fallback
+	if clampIntField(log, tagUpstreamClientTimeoutSec, &resolvedCfg.UpstreamClientTimeoutSec, &rawCfg.UpstreamClientTimeoutSec,
+		func(v int) bool { return v < resolvedCfg.UpstreamDialTimeoutSec }, resolvedCfg.UpstreamDialTimeoutSec,
+		" (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamClientTimeoutSec+" clamped (cannot be less than dial timeout "+tagUpstreamDialTimeoutSec+")",
-			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	// 1. TCP KeepAlive (Absolute Floor)
-	tagUpstreamTCPKeepAlive := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamTCPKeepAliveSec))
-	if was := resolvedCfg.UpstreamTCPKeepAliveSec; was <= 0 {
-		fallback := defaultCfg.UpstreamTCPKeepAliveSec // e.g., 15
-		resolvedCfg.UpstreamTCPKeepAliveSec = fallback
-		rawCfg.UpstreamTCPKeepAliveSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamTCPKeepAliveSec)),
+		&resolvedCfg.UpstreamTCPKeepAliveSec, &rawCfg.UpstreamTCPKeepAliveSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamTCPKeepAliveSec, " (must be > 0)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamTCPKeepAlive+" clamped (must be > 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	// 2. HTTP/2 Read Idle Timeout
 	tagH2ReadIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamH2ReadIdleTimeoutSec))
-	if was := resolvedCfg.UpstreamH2ReadIdleTimeoutSec; was <= 0 {
-		fallback := defaultCfg.UpstreamH2ReadIdleTimeoutSec // e.g., 5
-		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
-		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+	if clampIntField(log, tagH2ReadIdle, &resolvedCfg.UpstreamH2ReadIdleTimeoutSec, &rawCfg.UpstreamH2ReadIdleTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamH2ReadIdleTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagH2ReadIdle+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: If H2 Read Idle >= Global HTTP Idle, the HTTP connection is closed
-	// before the H2 health ping ever gets a chance to fire.
-	if was := resolvedCfg.UpstreamH2ReadIdleTimeoutSec; was >= resolvedCfg.UpstreamIdleConnTimeoutSec {
-		fallback := resolvedCfg.UpstreamIdleConnTimeoutSec / 2
-		if fallback < 1 {
-			fallback = 1
-		}
-		resolvedCfg.UpstreamH2ReadIdleTimeoutSec = fallback
-		rawCfg.UpstreamH2ReadIdleTimeoutSec = fallback
+	if clampIntField(log, tagH2ReadIdle, &resolvedCfg.UpstreamH2ReadIdleTimeoutSec, &rawCfg.UpstreamH2ReadIdleTimeoutSec,
+		func(v int) bool { return v >= resolvedCfg.UpstreamIdleConnTimeoutSec }, max(resolvedCfg.UpstreamIdleConnTimeoutSec/2, 1),
+		" (must trigger before the connection is closed by "+getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))+")") {
 		shouldSaveConfig = true
-		log.Warn(tagH2ReadIdle+" clamped (must trigger before the connection is closed by "+
-			getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))+")",
-			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	// 3. HTTP/2 Ping Timeout
 	tagH2PingTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamH2PingTimeoutSec))
-	if was := resolvedCfg.UpstreamH2PingTimeoutSec; was <= 0 {
-		fallback := defaultCfg.UpstreamH2PingTimeoutSec // e.g., 2
-		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
-		rawCfg.UpstreamH2PingTimeoutSec = fallback
+	if clampIntField(log, tagH2PingTimeout, &resolvedCfg.UpstreamH2PingTimeoutSec, &rawCfg.UpstreamH2PingTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamH2PingTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagH2PingTimeout+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: You don't want a ping timeout to be longer than the interval between pings
-	if was := resolvedCfg.UpstreamH2PingTimeoutSec; was >= resolvedCfg.UpstreamH2ReadIdleTimeoutSec {
-		fallback := resolvedCfg.UpstreamH2ReadIdleTimeoutSec - 1
-		if fallback < 1 {
-			fallback = 1
-		}
-		resolvedCfg.UpstreamH2PingTimeoutSec = fallback
-		rawCfg.UpstreamH2PingTimeoutSec = fallback
+	if clampIntField(log, tagH2PingTimeout, &resolvedCfg.UpstreamH2PingTimeoutSec, &rawCfg.UpstreamH2PingTimeoutSec,
+		func(v int) bool { return v >= resolvedCfg.UpstreamH2ReadIdleTimeoutSec }, max(resolvedCfg.UpstreamH2ReadIdleTimeoutSec-1, 1),
+		" (cannot be >= to the H2 read idle timeout)") {
 		shouldSaveConfig = true
-		log.Warn(tagH2PingTimeout+" clamped (cannot be >= to the H2 read idle timeout)",
-			slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagServerShutdown := getJSONTagByOffset(unsafe.Offsetof(Config{}.ServerGracefulShutdownSec))
-	if was := resolvedCfg.ServerGracefulShutdownSec; was <= 0 {
-		// No complex relational constraints needed here, just a sane floor.
-		fallback := defaultCfg.ServerGracefulShutdownSec // e.g., 3
-		resolvedCfg.ServerGracefulShutdownSec = fallback
-		rawCfg.ServerGracefulShutdownSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.ServerGracefulShutdownSec)),
+		&resolvedCfg.ServerGracefulShutdownSec, &rawCfg.ServerGracefulShutdownSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.ServerGracefulShutdownSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagServerShutdown+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagCertLogTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec))
-	if was := resolvedCfg.CertLogTimeoutSec; was <= 0 {
-		fallback := defaultCfg.CertLogTimeoutSec
-		resolvedCfg.CertLogTimeoutSec = fallback
-		rawCfg.CertLogTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CertLogTimeoutSec)),
+		&resolvedCfg.CertLogTimeoutSec, &rawCfg.CertLogTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.CertLogTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagCertLogTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagUpstreamRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetryBackoffMs))
-	if was := resolvedCfg.UpstreamRetryBackoffMs; was <= 0 {
-		fallback := defaultCfg.UpstreamRetryBackoffMs
-		resolvedCfg.UpstreamRetryBackoffMs = fallback
-		rawCfg.UpstreamRetryBackoffMs = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetryBackoffMs)),
+		&resolvedCfg.UpstreamRetryBackoffMs, &rawCfg.UpstreamRetryBackoffMs,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamRetryBackoffMs, "") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagUpstreamRetriesPerQuery := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery))
-	if was := resolvedCfg.UpstreamRetriesPerQuery; was < 0 {
-		fallback := defaultCfg.UpstreamRetriesPerQuery
-		resolvedCfg.UpstreamRetriesPerQuery = fallback
-		rawCfg.UpstreamRetriesPerQuery = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery)),
+		&resolvedCfg.UpstreamRetriesPerQuery, &rawCfg.UpstreamRetriesPerQuery,
+		func(v int) bool { return v < 0 }, defaultCfg.UpstreamRetriesPerQuery, " (cannot be negative)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamRetriesPerQuery+" clamped (cannot be negative)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagUpstreamIdleConnTimeout := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec))
-	if was := resolvedCfg.UpstreamIdleConnTimeoutSec; was <= 0 {
-		fallback := defaultCfg.UpstreamIdleConnTimeoutSec
-		resolvedCfg.UpstreamIdleConnTimeoutSec = fallback
-		rawCfg.UpstreamIdleConnTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec)),
+		&resolvedCfg.UpstreamIdleConnTimeoutSec, &rawCfg.UpstreamIdleConnTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamIdleConnTimeoutSec,
+		" (connections stay open indefinitely or drop unpredictably)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamIdleConnTimeout+" clamped (connections stay open indefinitely or drop unpredictably)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConns))
-	if was := resolvedCfg.UpstreamMaxIdleConns; was <= 0 {
-		fallback := defaultCfg.UpstreamMaxIdleConns
-		resolvedCfg.UpstreamMaxIdleConns = fallback
-		rawCfg.UpstreamMaxIdleConns = fallback
+	if clampIntField(log, tagUpstreamMaxIdleConns, &resolvedCfg.UpstreamMaxIdleConns, &rawCfg.UpstreamMaxIdleConns,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamMaxIdleConns, " (disables global keep-alive reuse)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamMaxIdleConns+" clamped (disables global keep-alive reuse)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagUpstreamMaxIdleConnsPerHost := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamMaxIdleConnsPerHost))
-	// Constraint A: Absolute lower bound check
-	if was := resolvedCfg.UpstreamMaxIdleConnsPerHost; was <= 0 {
-		fallback := defaultCfg.UpstreamMaxIdleConnsPerHost
-		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
-		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
+	if clampIntField(log, tagUpstreamMaxIdleConnsPerHost, &resolvedCfg.UpstreamMaxIdleConnsPerHost, &rawCfg.UpstreamMaxIdleConnsPerHost,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamMaxIdleConnsPerHost,
+		" (Go default of 2 severely throttles throughput)") {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (Go default of 2 severely throttles throughput)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: Relational validation check (Sequential, never an 'else if')
-	if was := resolvedCfg.UpstreamMaxIdleConnsPerHost; was > resolvedCfg.UpstreamMaxIdleConns {
-		// Defensive check: Per-host pool limit can't realistically exceed global pool limit
-		fallback := resolvedCfg.UpstreamMaxIdleConns
-		resolvedCfg.UpstreamMaxIdleConnsPerHost = fallback
-		rawCfg.UpstreamMaxIdleConnsPerHost = fallback
+	if clampIntField(log, tagUpstreamMaxIdleConnsPerHost, &resolvedCfg.UpstreamMaxIdleConnsPerHost, &rawCfg.UpstreamMaxIdleConnsPerHost,
+		func(v int) bool { return v > resolvedCfg.UpstreamMaxIdleConns }, resolvedCfg.UpstreamMaxIdleConns,
+		" (cannot exceed "+tagUpstreamMaxIdleConns+")", slog.Int(tagUpstreamMaxIdleConns, resolvedCfg.UpstreamMaxIdleConns)) {
 		shouldSaveConfig = true
-		log.Warn(tagUpstreamMaxIdleConnsPerHost+" clamped (cannot exceed "+tagUpstreamMaxIdleConns+")",
-			slog.Int("was", was),
-			slog.Int("clamp", fallback),
-			slog.Int(tagUpstreamMaxIdleConns, resolvedCfg.UpstreamMaxIdleConns),
-		)
 	}
 
 	// =========================================================================
 	// Group 4: Local Client & Server Buffer Safeguards
 	// =========================================================================
-	tagMaxConcurrentDNSTCPConns := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSTCPConns))
-	if was := resolvedCfg.MaxConcurrentDNSTCPConns; was <= 0 {
-		fallback := defaultCfg.MaxConcurrentDNSTCPConns
-		resolvedCfg.MaxConcurrentDNSTCPConns = fallback
-		rawCfg.MaxConcurrentDNSTCPConns = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSTCPConns)),
+		&resolvedCfg.MaxConcurrentDNSTCPConns, &rawCfg.MaxConcurrentDNSTCPConns,
+		func(v int) bool { return v <= 0 }, defaultCfg.MaxConcurrentDNSTCPConns, "") {
 		shouldSaveConfig = true
-		log.Warn(tagMaxConcurrentDNSTCPConns+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagMaxConcurrentDNSUDPQueries := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSUDPQueries))
-	if was := resolvedCfg.MaxConcurrentDNSUDPQueries; was <= 0 {
-		fallback := defaultCfg.MaxConcurrentDNSUDPQueries
-		resolvedCfg.MaxConcurrentDNSUDPQueries = fallback
-		rawCfg.MaxConcurrentDNSUDPQueries = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxConcurrentDNSUDPQueries)),
+		&resolvedCfg.MaxConcurrentDNSUDPQueries, &rawCfg.MaxConcurrentDNSUDPQueries,
+		func(v int) bool { return v <= 0 }, defaultCfg.MaxConcurrentDNSUDPQueries, "") {
 		shouldSaveConfig = true
-		log.Warn(tagMaxConcurrentDNSUDPQueries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagClientTCPTimeoutSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec))
-	if was := resolvedCfg.ClientTCPTimeoutSec; was <= 0 {
-		fallback := defaultCfg.ClientTCPTimeoutSec
-		resolvedCfg.ClientTCPTimeoutSec = fallback
-		rawCfg.ClientTCPTimeoutSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec)),
+		&resolvedCfg.ClientTCPTimeoutSec, &rawCfg.ClientTCPTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.ClientTCPTimeoutSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagClientTCPTimeoutSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagDoHMaxRequestBodyBytes := getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes))
-	if was := resolvedCfg.DoHMaxRequestBodyBytes; was <= 0 {
-		fallback := defaultCfg.DoHMaxRequestBodyBytes
-		resolvedCfg.DoHMaxRequestBodyBytes = fallback
-		rawCfg.DoHMaxRequestBodyBytes = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes)),
+		&resolvedCfg.DoHMaxRequestBodyBytes, &rawCfg.DoHMaxRequestBodyBytes,
+		func(v int) bool { return v <= 0 }, defaultCfg.DoHMaxRequestBodyBytes, "") {
 		shouldSaveConfig = true
-		log.Warn(tagDoHMaxRequestBodyBytes+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagDNSUDPBufferSize := getJSONTagByOffset(unsafe.Offsetof(Config{}.DNSUDPBufferSize))
-	if was := resolvedCfg.DNSUDPBufferSize; was < 512 || was > 65535 {
-		fallback := defaultCfg.DNSUDPBufferSize
-		resolvedCfg.DNSUDPBufferSize = fallback
-		rawCfg.DNSUDPBufferSize = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.DNSUDPBufferSize)),
+		&resolvedCfg.DNSUDPBufferSize, &rawCfg.DNSUDPBufferSize,
+		func(v int) bool { return v < 512 || v > 65535 }, defaultCfg.DNSUDPBufferSize,
+		" (must be within standard Ethernet bounds 512-65535)") {
 		shouldSaveConfig = true
-		log.Warn(tagDNSUDPBufferSize+" clamped (must be within standard Ethernet bounds 512-65535)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================
 	// Group 5: Core Engine Limits & Cache Operations
 	// =========================================================================
 	tagGlobalRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
-	if was := resolvedCfg.GlobalRateQPS; was <= 0 {
-		fallback := defaultCfg.GlobalRateQPS
-		resolvedCfg.GlobalRateQPS = fallback
-		rawCfg.GlobalRateQPS = fallback
+	if clampIntField(log, tagGlobalRateQPS, &resolvedCfg.GlobalRateQPS, &rawCfg.GlobalRateQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.GlobalRateQPS, " (must be greater than 0)") {
 		shouldSaveConfig = true
-		log.Warn(tagGlobalRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagGlobalBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
-	// Constraint A: Absolute lower bound check
-	if was := resolvedCfg.GlobalBurstQPS; was <= 0 {
-		fallback := defaultCfg.GlobalBurstQPS
-		resolvedCfg.GlobalBurstQPS = fallback
-		rawCfg.GlobalBurstQPS = fallback
+	if clampIntField(log, tagGlobalBurstQPS, &resolvedCfg.GlobalBurstQPS, &rawCfg.GlobalBurstQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.GlobalBurstQPS, " (must be greater than 0)") {
 		shouldSaveConfig = true
-		log.Warn(tagGlobalBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
-	if was := resolvedCfg.GlobalBurstQPS; was < resolvedCfg.GlobalRateQPS {
-		fallback := resolvedCfg.GlobalRateQPS
-		resolvedCfg.GlobalBurstQPS = fallback
-		rawCfg.GlobalBurstQPS = fallback
+	if clampIntField(log, tagGlobalBurstQPS, &resolvedCfg.GlobalBurstQPS, &rawCfg.GlobalBurstQPS,
+		func(v int) bool { return v < resolvedCfg.GlobalRateQPS }, resolvedCfg.GlobalRateQPS,
+		" (cannot be less than "+tagGlobalRateQPS+")") {
 		shouldSaveConfig = true
-		log.Warn(tagGlobalBurstQPS+" clamped (cannot be less than "+tagGlobalRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientRateQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
-	if was := resolvedCfg.ClientRateQPS; was <= 0 {
-		fallback := defaultCfg.ClientRateQPS
-		resolvedCfg.ClientRateQPS = fallback
-		rawCfg.ClientRateQPS = fallback
+	if clampIntField(log, tagClientRateQPS, &resolvedCfg.ClientRateQPS, &rawCfg.ClientRateQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.ClientRateQPS, " (must be greater than 0)") {
 		shouldSaveConfig = true
-		log.Warn(tagClientRateQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	tagClientBurstQPS := getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
-	// Constraint A: Absolute lower bound check
-	if was := resolvedCfg.ClientBurstQPS; was <= 0 {
-		fallback := defaultCfg.ClientBurstQPS
-		resolvedCfg.ClientBurstQPS = fallback
-		rawCfg.ClientBurstQPS = fallback
+	if clampIntField(log, tagClientBurstQPS, &resolvedCfg.ClientBurstQPS, &rawCfg.ClientBurstQPS,
+		func(v int) bool { return v <= 0 }, defaultCfg.ClientBurstQPS, " (must be greater than 0)") {
 		shouldSaveConfig = true
-		log.Warn(tagClientBurstQPS+" clamped (must be greater than 0)", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
-	// Constraint B: Relational check (Executed sequentially, NEVER as an 'else if')
-	if was := resolvedCfg.ClientBurstQPS; was < resolvedCfg.ClientRateQPS {
-		fallback := resolvedCfg.ClientRateQPS
-		resolvedCfg.ClientBurstQPS = fallback
-		rawCfg.ClientBurstQPS = fallback
+	if clampIntField(log, tagClientBurstQPS, &resolvedCfg.ClientBurstQPS, &rawCfg.ClientBurstQPS,
+		func(v int) bool { return v < resolvedCfg.ClientRateQPS }, resolvedCfg.ClientRateQPS,
+		" (cannot be less than "+tagClientRateQPS+")") {
 		shouldSaveConfig = true
-		log.Warn(tagClientBurstQPS+" clamped (cannot be less than "+tagClientRateQPS+")", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagCacheMinTTL := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL))
-	if was := resolvedCfg.CacheMinTTL; was < cacheMinTTLClamp {
-		resolvedCfg.CacheMinTTL = cacheMinTTLClamp
-		rawCfg.CacheMinTTL = cacheMinTTLClamp
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL)),
+		&resolvedCfg.CacheMinTTL, &rawCfg.CacheMinTTL,
+		func(v int) bool { return v < cacheMinTTLClamp }, cacheMinTTLClamp, " to safe minimum") {
 		shouldSaveConfig = true
-		log.Warn(tagCacheMinTTL+" clamped to safe minimum", slog.Int("was", was), slog.Int("clamp", cacheMinTTLClamp))
 	}
 
-	tagCacheMaxEntries := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries))
-	if was := resolvedCfg.CacheMaxEntries; was <= 0 {
-		fallback := defaultCfg.CacheMaxEntries
-		resolvedCfg.CacheMaxEntries = fallback
-		rawCfg.CacheMaxEntries = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries)),
+		&resolvedCfg.CacheMaxEntries, &rawCfg.CacheMaxEntries,
+		func(v int) bool { return v <= 0 }, defaultCfg.CacheMaxEntries, "") {
 		shouldSaveConfig = true
-		log.Warn(tagCacheMaxEntries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagCacheJanitorIntervalMinutes := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheJanitorIntervalMinutes))
-	if was := resolvedCfg.CacheJanitorIntervalMinutes; was <= 0 {
-		fallback := defaultCfg.CacheJanitorIntervalMinutes
-		resolvedCfg.CacheJanitorIntervalMinutes = fallback
-		rawCfg.CacheJanitorIntervalMinutes = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheJanitorIntervalMinutes)),
+		&resolvedCfg.CacheJanitorIntervalMinutes, &rawCfg.CacheJanitorIntervalMinutes,
+		func(v int) bool { return v <= 0 }, defaultCfg.CacheJanitorIntervalMinutes, " to safe minimum interval") {
 		shouldSaveConfig = true
-		log.Warn(tagCacheJanitorIntervalMinutes+" clamped to safe minimum interval", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagCacheNegativeTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec))
-	if was := resolvedCfg.CacheNegativeTTLSec; was < 0 {
-		fallback := defaultCfg.CacheNegativeTTLSec
-		resolvedCfg.CacheNegativeTTLSec = fallback
-		rawCfg.CacheNegativeTTLSec = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec)),
+		&resolvedCfg.CacheNegativeTTLSec, &rawCfg.CacheNegativeTTLSec,
+		func(v int) bool { return v < 0 }, defaultCfg.CacheNegativeTTLSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagCacheNegativeTTLSec+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagFileWriterMaxRetries := getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterMaxRetries))
-	if was := resolvedCfg.FileWriterMaxRetries; was <= 0 { //TODO: shouldn't we support 0 retries? aka 1 try if fails fails, no retrying!?!
-		fallback := defaultCfg.FileWriterMaxRetries
-		resolvedCfg.FileWriterMaxRetries = fallback
-		rawCfg.FileWriterMaxRetries = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterMaxRetries)),
+		&resolvedCfg.FileWriterMaxRetries, &rawCfg.FileWriterMaxRetries,
+		func(v int) bool { return v <= 0 }, defaultCfg.FileWriterMaxRetries, "") {
 		shouldSaveConfig = true
-		log.Warn(tagFileWriterMaxRetries+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagFileWriterRetryBackoffMs := getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterRetryBackoffMs))
-	if was := resolvedCfg.FileWriterRetryBackoffMs; was <= 0 {
-		fallback := defaultCfg.FileWriterRetryBackoffMs
-		resolvedCfg.FileWriterRetryBackoffMs = fallback
-		rawCfg.FileWriterRetryBackoffMs = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterRetryBackoffMs)),
+		&resolvedCfg.FileWriterRetryBackoffMs, &rawCfg.FileWriterRetryBackoffMs,
+		func(v int) bool { return v <= 0 }, defaultCfg.FileWriterRetryBackoffMs, "") {
 		shouldSaveConfig = true
-		log.Warn(tagFileWriterRetryBackoffMs+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagBlockedResponseTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec))
-	if was := resolvedCfg.BlockedResponseTTLSec; was <= 0 { // so 0 means defaults hmm... TODO: shall we do this for others too? < 0 is defaults for some others
-		fallback := defaultCfg.BlockedResponseTTLSec
-		resolvedCfg.BlockedResponseTTLSec = fallback
-		rawCfg.BlockedResponseTTLSec = fallback
+	if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec)),
+		&resolvedCfg.BlockedResponseTTLSec, &rawCfg.BlockedResponseTTLSec,
+		func(v uint32) bool { return v <= 0 }, defaultCfg.BlockedResponseTTLSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagBlockedResponseTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
-	tagLocalHostsOverrideTTLSec := getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec))
-	if was := resolvedCfg.LocalHostsOverrideTTLSec; was == 0 {
-		fallback := defaultCfg.LocalHostsOverrideTTLSec
-		resolvedCfg.LocalHostsOverrideTTLSec = fallback
-		rawCfg.LocalHostsOverrideTTLSec = fallback
+	if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec)),
+		&resolvedCfg.LocalHostsOverrideTTLSec, &rawCfg.LocalHostsOverrideTTLSec,
+		func(v uint32) bool { return v == 0 }, defaultCfg.LocalHostsOverrideTTLSec, "") {
 		shouldSaveConfig = true
-		log.Warn(tagLocalHostsOverrideTTLSec+" clamped", slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
 	}
 
-	tagMaxRecentBlocks := getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks))
-	if was := resolvedCfg.MaxRecentBlocks; was <= 0 {
-		fallback := defaultCfg.MaxRecentBlocks
-		resolvedCfg.MaxRecentBlocks = fallback
-		rawCfg.MaxRecentBlocks = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks)),
+		&resolvedCfg.MaxRecentBlocks, &rawCfg.MaxRecentBlocks,
+		func(v int) bool { return v <= 0 }, defaultCfg.MaxRecentBlocks, "") {
 		shouldSaveConfig = true
-		log.Warn(tagMaxRecentBlocks+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagUILogMaxLines := getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines))
-	if was := resolvedCfg.UILogMaxLines; was <= 0 {
-		fallback := defaultCfg.UILogMaxLines
-		resolvedCfg.UILogMaxLines = fallback
-		rawCfg.UILogMaxLines = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines)),
+		&resolvedCfg.UILogMaxLines, &rawCfg.UILogMaxLines,
+		func(v int) bool { return v <= 0 }, defaultCfg.UILogMaxLines, "") {
 		shouldSaveConfig = true
-		log.Warn(tagUILogMaxLines+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
-	tagLogMaxSizeMB := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB))
-	if was := resolvedCfg.LogMaxSizeMB; was <= 0 {
-		fallback := defaultCfg.LogMaxSizeMB
-		resolvedCfg.LogMaxSizeMB = fallback
-		rawCfg.LogMaxSizeMB = fallback
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB)),
+		&resolvedCfg.LogMaxSizeMB, &rawCfg.LogMaxSizeMB,
+		func(v int) bool { return v <= 0 }, defaultCfg.LogMaxSizeMB, "") {
 		shouldSaveConfig = true
-		log.Warn(tagLogMaxSizeMB+" clamped", slog.Int("was", was), slog.Int("clamp", fallback))
 	}
 
 	// =========================================================================
