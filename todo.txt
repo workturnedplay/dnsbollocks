@@ -1,9 +1,12 @@
 todo:
+* switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
+  * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
+
 * allow OPTIONS and HEAD just like I did in hostsHandler, for the other handlers (where applicable)
 
 * am I doing any rate limiting on webUI connections?!
 
-* fixes for v0.20.9 (donotdo: 1 todo: 2_2,3_1,3_3 done: 2_1,2_3,3_2,): https://gemini.google.com/app/4d46e89c37a67c33
+* fixes for v0.20.9 (donotdo: 1,2_2 todo: 3_1,3_3 done: 2_1,2_3,3_2,): https://gemini.google.com/app/4d46e89c37a67c33
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
