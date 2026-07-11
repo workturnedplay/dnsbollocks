@@ -1539,7 +1539,7 @@ func (fw *GenericSafeFileWriter) CheckPowerLossFile(filename string) {
 	log := fw.getLogger()
 
 	tmpName := filename + PowerlossFileExtension
-	fi, err := os.Stat(tmpName)
+	fi, err := OsStatFunc(tmpName)
 	if err != nil {
 		// File doesn't exist (or is completely inaccessible), safe to proceed
 		return
@@ -1631,7 +1631,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 			// Queue cleanup. If we crash/lose power after this point,
 			// this defer never runs, leaving the safe copy intact.
 			defer func() {
-				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return OsRemoveFunc(tmpName) })
 				if ondeleteErr == nil {
 					log.Debug("ExtraSafety: unStaged recovery file from disk", slog.String("tempfilename", tmpName))
 					// Successful deletion, nothing more to do
@@ -1684,7 +1684,7 @@ func (fw *GenericSafeFileWriter) SafeWriteFile(filename string, data []byte, per
 				// FIX FOR THE ELSE BRANCH: The staging write itself failed or was cut short.
 				// Attempt deletion. If deletion fails, force a truncation down to 0 bytes
 				// to neutralize any partial garbage data that would trip up the next boot.
-				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+				ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return OsRemoveFunc(tmpName) })
 				log.Warn("ExtraSafety: Failed to fully write or/and sync or/and close staging file",
 					slog.String("tempfilename", tmpName),
 					SafeErr2("writeErr", writeErr),
@@ -1882,7 +1882,7 @@ func (fw *win11SafeFileWriter) CheckPowerLossFile(filename string) {
 	log := fw.getLogger()
 
 	tmpName := filename + PowerlossFileExtension
-	fi, err := os.Stat(tmpName)
+	fi, err := OsStatFunc(tmpName)
 	if err != nil {
 		// File doesn't exist or is completely inaccessible, safe to proceed
 		return
@@ -1966,14 +1966,14 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 	if stagingSuccess {
 		// ReplaceFileW requires the target destination to exist. If this is a first-boot
 		// scenario and the target is missing, we bypass ReplaceFileW and perform a clean rename.
-		if _, statErr := os.Stat(filename); os.IsNotExist(statErr) {
+		if _, statErr := OsStatFunc(filename); os.IsNotExist(statErr) {
 			log.Info("Windows FileWriter: Destination file does not exist, committing via initial rename", slog.String("path", filename))
-			renameErr := os.Rename(tmpName, filename)
+			renameErr := OsRenameFunc(tmpName, filename)
 			if renameErr == nil {
 				return nil // Done with first-boot save
 			}
 			log.Warn("Windows FileWriter: Staging file rename failed; clearing and using truncate fallback", SafeErr(renameErr))
-			removeErr := os.Remove(tmpName)
+			removeErr := OsRemoveFunc(tmpName)
 			if removeErr != nil {
 				log.Warn("Windows FileWriter: Failed to delete staging file after failed rename; attempting neutralization truncation", SafeErr(removeErr))
 				if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
@@ -2002,13 +2002,13 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 			// we drop down to truncation instead of altering file permissions.
 			flags := uint32(REPLACEFILE_IGNORE_MERGE_ERRORS)
 
-			replaceErr := ReplaceFile(filename, tmpName, backupName, flags)
+			replaceErr := ReplaceFileFunc(filename, tmpName, backupName, flags)
 			if replaceErr == nil {
 				// Win32 documentation states the replacement staging file is automatically unlinked.
 				// Run a defensive validation check to guarantee it was eliminated.
-				if _, statErr := os.Stat(tmpName); statErr == nil {
+				if _, statErr := OsStatFunc(tmpName); statErr == nil {
 					log.Error("BUG: ReplaceFileW reported success but staging file still exists on disk(tho it's possible something else created it this fast). Force removing.", slog.String("filename", tmpName))
-					removeErr := os.Remove(tmpName)
+					removeErr := OsRemoveFunc(tmpName)
 					if removeErr != nil {
 						log.Error("BUG: failed to remove the staging file that somehow ReplaceFileW still left on disk just now. Continuing anyway.", SafeErr(removeErr), slog.String("filename", tmpName))
 					}
@@ -2024,7 +2024,7 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 			log.Warn("Windows FileWriter: ReplaceFileW transaction aborted; clearing staging file and falling back", SafeErr(replaceErr))
 
 			// Resilience cleanup: neutralize the abandoned staging file right now so it doesn't cause a false reboot panic
-			ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return os.Remove(tmpName) })
+			ondeleteErr := RetryFileOp(maxRetries, backoffDuration, func() error { return OsRemoveFunc(tmpName) })
 			if ondeleteErr != nil {
 				log.Warn("Windows FileWriter: Failed to delete staging file after transaction failure; attempting neutralization truncation", SafeErr(ondeleteErr))
 
@@ -2079,3 +2079,11 @@ func (fw *win11SafeFileWriter) SetRetryParams(maxRetries, retryBackoffMs int) {
 	fw.maxRetries = maxRetries
 	fw.retryBackoffMs = retryBackoffMs
 }
+
+// Hooks for testing. In production, these point to the standard OS/wincoe functions.
+var (
+	OsStatFunc      = os.Stat
+	OsRenameFunc    = os.Rename
+	OsRemoveFunc    = os.Remove
+	ReplaceFileFunc = ReplaceFile
+)
