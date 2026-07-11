@@ -10665,6 +10665,31 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	saveHosts := false
 	saveBlacklist := false
 
+	// flushDirty persists whichever stores were actually mutated so far. Called
+	// on early-exit (partial batch failure) as well as on full success, so the
+	// live stores and their on-disk files never diverge just because a later
+	// item in the same batch failed validation.
+	flushDirty := func() {
+		if saveRules {
+			if err := ui.OnSaveWhitelist(); err != nil {
+				ui.logFatal("failed to save whitelist after batch apply", err)
+				panic2("BUG: unreachable")
+			}
+		}
+		if saveHosts {
+			if err := ui.OnSaveHosts(); err != nil {
+				ui.logFatal("failed to save hosts after batch apply", err)
+				panic2("BUG: unreachable")
+			}
+		}
+		if saveBlacklist {
+			if err := ui.OnSaveBlacklist(); err != nil {
+				ui.logFatal("failed to save blacklist after batch apply", err)
+				panic2("BUG: unreachable")
+			}
+		}
+	}
+
 	for _, change := range changes {
 		var status int
 		var err error
@@ -10672,43 +10697,32 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		switch change.URL {
 		case "/rules":
 			status, err = ui.processRuleChange(change.Fields)
-			saveRules = true
+			if err == nil {
+				saveRules = true
+			}
 		case "/hosts":
 			status, err = ui.processHostChange(change.Fields)
-			saveHosts = true
+			if err == nil {
+				saveHosts = true
+			}
 		case "/response-blacklist":
 			status, err = ui.processBlacklistChange(change.Fields)
-			saveBlacklist = true
+			if err == nil {
+				saveBlacklist = true
+			}
 		default:
 			status, err = http.StatusBadRequest, errors.New("unknown target URL in batch")
 		}
 
 		if err != nil {
 			log.Warn("Batch apply failed for a record", slog.String("url", change.URL), wincoe.SafeErr(err))
+			flushDirty()
 			http.Error(w, err.Error(), status)
 			return // Fails the rest of the batch and surfaces the HTTP error to the frontend
 		}
 	}
 
-	// Flush dirty files to disk, hitting the locking subsystem only once per file type
-	if saveRules {
-		if err := ui.OnSaveWhitelist(); err != nil {
-			ui.logFatal("failed to save whitelist after batch apply", err)
-			panic2("BUG: unreachable")
-		}
-	}
-	if saveHosts {
-		if err := ui.OnSaveHosts(); err != nil {
-			ui.logFatal("failed to save hosts after batch apply", err)
-			panic2("BUG: unreachable")
-		}
-	}
-	if saveBlacklist {
-		if err := ui.OnSaveBlacklist(); err != nil {
-			ui.logFatal("failed to save blacklist after batch apply", err)
-			panic2("BUG: unreachable")
-		}
-	}
+	flushDirty()
 
 	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
 	w.WriteHeader(http.StatusOK)
