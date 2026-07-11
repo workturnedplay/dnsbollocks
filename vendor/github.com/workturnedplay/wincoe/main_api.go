@@ -1244,7 +1244,7 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 
 	buf, err := GetExtendedUDPTable(false, AF_INET)
 	if err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("GetExtendedUDPTable failed while resolving pid/exe for UDP client %s: %w", clientAddr, err)
 	}
 
 	if buf == nil {
@@ -1321,7 +1321,7 @@ func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 	// Fetch the table
 	buf, err := GetExtendedTCPTable(false, AF_INET) //FIXME: do I need here to include the AF_INET6 ?! probably, and for UDP func too!
 	if err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("GetExtendedTCPTable failed while resolving pid/exe for TCP client %s: %w", clientAddr, err)
 	}
 	if buf == nil {
 		return 0, "", errors.New("GetExtendedTcpTable returned empty buffer")
