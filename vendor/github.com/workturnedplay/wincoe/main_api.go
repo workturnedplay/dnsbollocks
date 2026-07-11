@@ -1975,7 +1975,26 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 			log.Warn("Windows FileWriter: Staging file rename failed; clearing and using truncate fallback", SafeErr(renameErr))
 			removeErr := os.Remove(tmpName)
 			if removeErr != nil {
-				log.Error("BUG: failed to remove the staging file just failed to get renamed. Continuing anyway.", SafeErr(removeErr), slog.String("filename", tmpName))
+				log.Warn("Windows FileWriter: Failed to delete staging file after failed rename; attempting neutralization truncation", SafeErr(removeErr))
+				if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
+					return TruncateStagingFileToZero(tmpName, perm)
+				}); truncErr != nil {
+					logmsg := fmt.Sprintf(
+						"\n========================================================================\n"+
+							"CRITICAL SAFETY PANIC: Staging file rename failed and cleanup failed completely!\n"+
+							"The temporary staging file %q cannot be deleted or truncated.\n\n"+
+							"Delete error: %v\n"+
+							"Truncation error: %v\n\n"+
+							"Because the file contains non-zero bytes, the next server boot will panic.\n"+
+							"Halting execution immediately to prevent corrupted filesystem operation.\n"+
+							"========================================================================\n",
+						tmpName, removeErr, truncErr,
+					)
+					log.Error(logmsg)
+					panic(logmsg)
+				} else {
+					log.Warn("Windows FileWriter: Successfully truncated staging file to 0 bytes after failed rename", slog.String("tempfilename", tmpName))
+				}
 			}
 		} else {
 			// We intentionally omit REPLACEFILE_IGNORE_ACL_ERRORS. If Windows can't
@@ -2011,9 +2030,7 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 
 				if truncErr := RetryFileOp(maxRetries, backoffDuration, func() error {
 					return TruncateStagingFileToZero(tmpName, perm)
-				}); truncErr == nil {
-					log.Warn("Windows FileWriter: Successfully truncated staging file to 0 bytes", slog.String("tempfilename", tmpName))
-				} else {
+				}); truncErr != nil {
 					// Catastrophic edge case: write failed, replace failed, file cannot be deleted or zeroed out.
 					// Junk data remains locked on disk, making a future boot panic inevitable.
 					logmsg := fmt.Sprintf(
@@ -2028,6 +2045,8 @@ func (fw *win11SafeFileWriter) SafeWriteFile(filename string, data []byte, perm 
 					)
 					log.Error(logmsg)
 					panic(logmsg)
+				} else {
+					log.Warn("Windows FileWriter: Successfully truncated staging file to 0 bytes", slog.String("tempfilename", tmpName))
 				}
 			}
 		}
