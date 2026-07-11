@@ -972,6 +972,14 @@ func (s *Server) loadLocalHosts() error {
 			continue
 		}
 
+		if len(normalizedPat) > maxRulePatternLength {
+			log.Error("Purging host pattern exceeding maximum length",
+				slog.Int("pattern_length", len(normalizedPat)),
+				slog.Int("max_length", maxRulePatternLength))
+			removed++
+			continue
+		}
+
 		if _, dup := seenPatterns[normalizedPat]; dup {
 			log.Warn("Duplicate host pattern found, skipping/purging",
 				slog.String("pattern", normalizedPat))
@@ -1245,6 +1253,16 @@ func (s *Server) loadQueryWhitelist() error {
 				)
 				removed++
 				continue // Purges/omits it from being appended to cleaned slice
+			}
+
+			if len(r.Pattern) > maxRulePatternLength {
+				log.Error("Purging/deleting whitelist rule pattern exceeding maximum length",
+					slog.String("id", r.ID),
+					slog.Int("pattern_length", len(r.Pattern)),
+					slog.Int("max_length", maxRulePatternLength),
+				)
+				removed++
+				continue
 			}
 
 			if _, dup := seenPatterns[r.Pattern]; dup {
@@ -2045,6 +2063,12 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 	return b.String(), true
 }
 
+// maxRulePatternLength bounds whitelist/host pattern length. matchPattern's DP
+// algorithm costs O(pattern_tokens * domain_length) per rule per query, so an
+// unbounded pattern would add permanent per-query CPU overhead for as long as
+// the rule exists, since it's evaluated against every DNS query.
+const maxRulePatternLength = 512
+
 // validateRulePattern returns a non-nil error if the pattern contains characters
 // outside the allowed set (as defined by sanitizeDomainInput).
 // It does NOT enforce strict DNS name rules because patterns may contain
@@ -2052,6 +2076,9 @@ func sanitizeDomainInput(input string) (sanitized string, modified bool) {
 func validateRulePattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("pattern cannot be empty")
+	}
+	if len(pattern) > maxRulePatternLength {
+		return fmt.Errorf("pattern exceeds maximum length of %d characters", maxRulePatternLength)
 	}
 	if pattern != strings.ToLower(pattern) {
 		return errors.New("pattern must be lowercase")
