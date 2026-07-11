@@ -8948,8 +8948,9 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		defer s.shutdownWG.Done()
 		<-instCtx.Done()
 		log := s.getLogger()
+		cfg := s.getConfig()
 		log.Debug("Shutting down Web UI listener instance...", slog.String("addr", addr))
-		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), 3*time.Second)
+		shutdownCtx, cancelDown := context.WithTimeout(context.Background(), time.Duration(cfg.ServerGracefulShutdownSec)*time.Second)
 		defer cancelDown()
 		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && !errors.Is(err2, context.Canceled) {
 			log.Warn("webUI server shutdown error", wincoe.SafeErr(err2))
