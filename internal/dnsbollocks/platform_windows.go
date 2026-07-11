@@ -360,24 +360,12 @@ type Upstream struct {
 
 // pointer to live logger or default logger if uninited(bug)
 func (u *Upstream) getLogger() *slog.Logger {
-	if l := u.liveLogger.Load(); l != nil {
-		return l
-	}
-	//log := slog.Default()
-	log := wincoe.GetBugLogger()
-	log.Error("BUG: Upstream.liveLogger wasn't inited, using default.")
-	return log
+	return wincoe.GetLoggerOrFallback(u.liveLogger, "Upstream.liveLogger")
 }
 
 // pointer to live logger or default logger if uninited(bug)
 func (fs *FailoverSelector) getLogger() *slog.Logger {
-	if l := fs.liveLogger.Load(); l != nil {
-		return l
-	}
-	//log := slog.Default()
-	log := wincoe.GetBugLogger()
-	log.Error("BUG: FailoverSelector.liveLogger wasn't inited, using default.")
-	return log
+	return wincoe.GetLoggerOrFallback(fs.liveLogger, "FailoverSelector.liveLogger")
 }
 
 func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, reqBytes []byte) (*dns.Msg, string, []string, error) {
@@ -7464,15 +7452,7 @@ func (s *goCacheStore) Items() map[string]cache.Item { return s.c.Items() }
 func (s *goCacheStore) ItemCount() int               { return s.c.ItemCount() }
 
 func (ui *AdminUI) getLogger() *slog.Logger {
-	if ui.liveLogger != nil {
-		if l := ui.liveLogger.Load(); l != nil {
-			return l
-		}
-	}
-	//log := slog.Default()
-	log := wincoe.GetBugLogger()
-	log.Error("BUG: AdminUI.liveLogger wasn't inited, using default.")
-	return log
+	return wincoe.GetLoggerOrFallback(ui.liveLogger, "AdminUI.liveLogger")
 }
 
 // pointer to live Server.Config via AdminUI
@@ -7564,13 +7544,7 @@ func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Co
 }
 
 func (um *UpstreamManager) getLogger() *slog.Logger {
-	if l := um.liveLogger.Load(); l != nil {
-		return l
-	}
-	//log := slog.Default()
-	log := wincoe.GetBugLogger()
-	log.Error("BUG: UpstreamManager.liveLogger wasn't inited, using default.")
-	return log
+	return wincoe.GetLoggerOrFallback(um.liveLogger, "UpstreamManager.liveLogger")
 }
 
 func (um *UpstreamManager) getConfig() *Config {
@@ -10443,12 +10417,7 @@ func NewLoggerManager(bootstrap *slog.Logger) *LoggerManager {
 // get returns the current logger, falling back to slog.Default() if uninitialised
 // (should never happen in production but guards tests that build Server partially).
 func (lm *LoggerManager) get() *slog.Logger {
-	if l := lm.ptr.Load(); l != nil {
-		return l
-	}
-	log := wincoe.GetBugLogger()
-	log.Error("BUG: LoggerManager.ptr.Load() which is of type *slog.Logger, is nil, so using bugLogger")
-	return log
+	return wincoe.GetLoggerOrFallback(&lm.ptr, "LoggerManager.ptr")
 }
 
 // Ptr returns a pointer to the inner atomic so child structs (AdminUI,

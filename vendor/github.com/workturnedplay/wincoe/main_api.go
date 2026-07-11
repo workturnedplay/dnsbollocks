@@ -982,7 +982,35 @@ func GetBugLogger() *slog.Logger {
 	return def
 }
 
-// exePathFromPID returns process image path for pid or an error.
+// GetLoggerOrFallback is the single owner of the "load the current logger
+// from a shared, hot-swappable atomic.Pointer[slog.Logger], falling back to
+// the process-wide bug logger when it hasn't been initialized yet" behavior.
+//
+// Every type that holds a live, reloadable logger reference — Server (via
+// Runtime/LoggerManager), AdminUI, UpstreamManager, Upstream,
+// FailoverSelector, LoggerManager itself, GenericSafeFileWriter, and
+// win11SafeFileWriter — used to hand-roll this exact nil-check-then-fallback
+// dance in its own getLogger() method, each with slightly different guards
+// and message text. This function is now the one place that logic lives;
+// every such getLogger() should be a one-line delegate to it.
+//
+// ptr may itself be nil (some callers hold *atomic.Pointer[slog.Logger] as
+// an optional field, e.g. before full initialization); that is treated
+// identically to a non-nil ptr that hasn't had Store() called on it yet.
+// ownerDesc identifies the calling type/field (e.g. "AdminUI.liveLogger") for
+// the diagnostic message logged through the fallback logger.
+func GetLoggerOrFallback(ptr *atomic.Pointer[slog.Logger], ownerDesc string) *slog.Logger {
+	if ptr != nil {
+		if l := ptr.Load(); l != nil {
+			return l
+		}
+	}
+	log := GetBugLogger()
+	log.Error("BUG: " + ownerDesc + " wasn't initialized before use; using fallback bug logger")
+	return log
+}
+
+// ExePathFromPID returns process image path for pid or an error.
 // Uses QueryFullProcessImageNameW. May fail if insufficient privilege.
 //
 // ExePathFromPID retrieves the full executable path of a process by PID.
@@ -1527,13 +1555,7 @@ func NewGenericSafeFileWriter(extraSafety bool, maxRetries, retryBackoffMs int, 
 }
 
 func (fw *GenericSafeFileWriter) getLogger() *slog.Logger {
-	if l := fw.liveLogger.Load(); l != nil {
-		return l
-	}
-	//log := slog.Default()
-	log := GetBugLogger()
-	log.Error("BUG: safeFileWriter.liveLogger wasn't inited, using default.")
-	return log
+	return GetLoggerOrFallback(fw.liveLogger, "GenericSafeFileWriter.liveLogger")
 }
 
 func (fw *GenericSafeFileWriter) SetExtraSafety(enabled bool) {
@@ -1875,13 +1897,7 @@ func NewWin11SafeFileWriter(extraSafety bool, maxRetries, retryBackoffMs int, li
 }
 
 func (fw *win11SafeFileWriter) getLogger() *slog.Logger {
-	if l := fw.liveLogger.Load(); l != nil {
-		return l
-	}
-	//log := slog.Default()
-	log := GetBugLogger()
-	log.Error("BUG: win11SafeFileWriter.liveLogger wasn't inited, using default.")
-	return log
+	return GetLoggerOrFallback(fw.liveLogger, "win11SafeFileWriter.liveLogger")
 }
 
 func (fw *win11SafeFileWriter) SetExtraSafety(enabled bool) {
