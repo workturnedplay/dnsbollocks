@@ -1335,7 +1335,7 @@ func defaultConfig() Config {
 		GlobalRateQPS:  100,
 		GlobalBurstQPS: 200, //100 worked for me, but heck, let's 2x it
 		ClientRateQPS:  20,
-		ClientBurstQPS: 50,
+		ClientBurstQPS: 100, //since it's portmaster.exe aka the firewall, even if it's just Firefox starting up on a previously opened page that's being reloaded(and firefox has DNS cache off), it still seems to hit this 50.
 
 		CacheMinTTL:     defaultCacheMinTTL, //300 sec
 		CacheMaxEntries: 10000,
