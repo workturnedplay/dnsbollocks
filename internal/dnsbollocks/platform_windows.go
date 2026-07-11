@@ -9906,7 +9906,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterMaxRetries)),
 		&resolvedCfg.FileWriterMaxRetries, &rawCfg.FileWriterMaxRetries,
-		func(v int) bool { return v <= 0 }, defaultCfg.FileWriterMaxRetries, "") {
+		func(v int) bool { return v < 0 }, defaultCfg.FileWriterMaxRetries, "") {
 		shouldSaveConfig = true
 	}
 

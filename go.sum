@@ -6,8 +6,8 @@ github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12 h1:sfdz2rhLlzMml8zmv3
 github.com/miekg/dns v1.1.73-0.20260402044838-d1539a788a12/go.mod h1:hBcNfObhP6OL8tg/LRRiRxqToCk64JmTahUFw2q39GM=
 github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaRUnok+kx1WdO15EQc=
 github.com/patrickmn/go-cache v2.1.0+incompatible/go.mod h1:3Qf8kWWT7OJRJbdiICTKqZju1ZixQ/KpMGzzAfe6+WQ=
-github.com/workturnedplay/wincoe v0.0.25 h1:a9VXMebdvYmOGRI79HM1FX6HbVKaXRptlXBFKWDNAVs=
-github.com/workturnedplay/wincoe v0.0.25/go.mod h1:xKAsLN9CjCr8X6dliv4oVUZuS9omWh4afgUokzRD7sY=
+github.com/workturnedplay/wincoe v0.0.26 h1:cDh6XEf1xoCge3MYAEffIp2F/QeOZ4V4DEZktzrIfb4=
+github.com/workturnedplay/wincoe v0.0.26/go.mod h1:xKAsLN9CjCr8X6dliv4oVUZuS9omWh4afgUokzRD7sY=
 golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
 golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
 golang.org/x/mod v0.38.0 h1:MECBjubtXD7yj4HrhIUcywNaGeNVUdfVnxmPajOk4yk=

@@ -122,6 +122,77 @@ func TestRetryFileOp_PanicsOnInvalidMaxAttempts(t *testing.T) {
 	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil })
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// wincoe.RetryFileOp (Attempts vs Retries)
+// ════════════════════════════════════════════════════════════════════════
+
+func TestRetryFileOp_PanicOnZeroAttempts(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when maxAttempts < 1")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "maxAttempts < 1") {
+			t.Errorf("unexpected panic value: %v", r)
+		}
+	}()
+
+	// Passing 0 should trigger the safety guardrail panic
+	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil })
+}
+
+func TestRetryFileOp_SuccessOnFirstTry(t *testing.T) {
+	calls := 0
+	err := wincoe.RetryFileOp(5, time.Millisecond, func() error {
+		calls++
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected exactly 1 call (success on first try), got %d", calls)
+	}
+}
+
+func TestRetryFileOp_SuccessAfterRetries(t *testing.T) {
+	calls := 0
+	err := wincoe.RetryFileOp(3, time.Millisecond, func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("temporary locked file error")
+		}
+		return nil // Success on the 3rd attempt (which is the 2nd retry)
+	})
+
+	if err != nil {
+		t.Fatalf("expected eventual success, got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected exactly 3 calls, got %d", calls)
+	}
+}
+
+func TestRetryFileOp_ExhaustsAllAttempts(t *testing.T) {
+	calls := 0
+	expectedErr := errors.New("persistent permission denied")
+
+	// maxAttempts = 4 means 1 initial try + 3 retries
+	err := wincoe.RetryFileOp(4, time.Millisecond, func() error {
+		calls++
+		return expectedErr
+	})
+
+	if err != expectedErr {
+		t.Fatalf("expected to return last error %v, got %v", expectedErr, err)
+	}
+	if calls != 4 {
+		t.Errorf("expected exactly 4 calls (1 try + 3 retries), got %d", calls)
+	}
+}
+
 // ── truncateStagingFileToZero ────────────────────────────────────────────────
 
 func TestTruncateStagingFileToZero_Success(t *testing.T) {
