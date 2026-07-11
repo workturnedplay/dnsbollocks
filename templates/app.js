@@ -395,7 +395,7 @@
             res = await fetch(action, { method: 'POST', body: formData, redirect: 'manual' });
         } catch (err) {
             console.error(errorPrefix + ' network error:', err);
-            alert('A network error occurred: ' + errorPrefix);
+            alert('A network error occurred: ' + errorPrefix+"\nerr: "+err);
             return false;
         }
         
