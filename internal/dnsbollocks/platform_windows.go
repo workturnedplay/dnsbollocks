@@ -272,12 +272,13 @@ type AdminUI struct {
 
 // pointer to live logger via Runtime
 func (s *Server) getLogger() *slog.Logger {
-	if s.rt != nil {
-		return s.rt.Logger()
+	if s.rt == nil {
+		log := wincoe.GetBugLogger()
+		log.Error("BUG: Server.rt not initialized")
+		return log
 	}
-	log := slog.Default()
-	log.Error("BUG: Server.rt not initialized before getLogger call.")
-	return log
+
+	return s.rt.Logger()
 }
 
 // pointer to live Server.Config
@@ -294,27 +295,6 @@ func (s *Server) applyConfig(cfg, rawCfg Config) {
 	s.liveRawConfig.Store(&rawCfg)
 	s.liveConfig.Store(&cfg)
 	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
-}
-
-// bugLogger is a package-level fallback logger used only by free functions
-// (not methods on Server/AdminUI) that need to log a BUG-class invariant
-// violation immediately before panicking, but have no logger threaded to them.
-// Kept in sync with the active logger via applyLogger. Falls back to
-// slog.Default() before logging is initialized (mirrors Server.getLogger()'s
-// own fallback behavior).
-var bugLogger atomic.Pointer[slog.Logger]
-
-func getBugLogger() *slog.Logger {
-	if l := bugLogger.Load(); l != nil {
-		return l
-	}
-	//def := slog.Default()
-	def := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	//wincoe.Logger = def //give wincoe lib a logger too
-	wincoe.Logger.Store(def) //give wincoe lib a logger too
-	return def
 }
 
 // NewServer initializes a new Server instance using a fully configured Runtime
@@ -383,7 +363,8 @@ func (u *Upstream) getLogger() *slog.Logger {
 	if l := u.liveLogger.Load(); l != nil {
 		return l
 	}
-	log := slog.Default()
+	//log := slog.Default()
+	log := wincoe.GetBugLogger()
 	log.Error("BUG: Upstream.liveLogger wasn't inited, using default.")
 	return log
 }
@@ -393,7 +374,8 @@ func (fs *FailoverSelector) getLogger() *slog.Logger {
 	if l := fs.liveLogger.Load(); l != nil {
 		return l
 	}
-	log := slog.Default()
+	//log := slog.Default()
+	log := wincoe.GetBugLogger()
 	log.Error("BUG: FailoverSelector.liveLogger wasn't inited, using default.")
 	return log
 }
@@ -2507,7 +2489,8 @@ func OldMain() {
 
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the colored bootstrap logger, not the silent default.
-	bugLogger.Store(localLogger)
+	//wincoe.bugLogger.Store(localLogger)
+	wincoe.SetBugLogger(localLogger)
 	//wincoe.Logger = localLogger
 	wincoe.Logger.Store(localLogger)
 
@@ -2939,7 +2922,7 @@ func isLowerASCII(s string) bool {
 }
 
 func panic2(msg string) {
-	getBugLogger().Error(msg)
+	wincoe.GetBugLogger().Error(msg)
 	panic(msg)
 }
 
@@ -7486,7 +7469,8 @@ func (ui *AdminUI) getLogger() *slog.Logger {
 			return l
 		}
 	}
-	log := slog.Default()
+	//log := slog.Default()
+	log := wincoe.GetBugLogger()
 	log.Error("BUG: AdminUI.liveLogger wasn't inited, using default.")
 	return log
 }
@@ -7583,7 +7567,8 @@ func (um *UpstreamManager) getLogger() *slog.Logger {
 	if l := um.liveLogger.Load(); l != nil {
 		return l
 	}
-	log := slog.Default()
+	//log := slog.Default()
+	log := wincoe.GetBugLogger()
 	log.Error("BUG: UpstreamManager.liveLogger wasn't inited, using default.")
 	return log
 }
@@ -10461,8 +10446,9 @@ func (lm *LoggerManager) get() *slog.Logger {
 	if l := lm.ptr.Load(); l != nil {
 		return l
 	}
-	slog.Default().Error("BUG: LoggerManager.ptr.Load() which is of type *slog.Logger, is nil, so using slog.Default()")
-	return slog.Default()
+	log := wincoe.GetBugLogger()
+	log.Error("BUG: LoggerManager.ptr.Load() which is of type *slog.Logger, is nil, so using bugLogger")
+	return log
 }
 
 // Ptr returns a pointer to the inner atomic so child structs (AdminUI,
@@ -10577,7 +10563,8 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		improvedLogger.Warn("error closing old log files during logger reinit", wincoe.SafeErr(reinitErr))
 	}
 
-	bugLogger.Store(improvedLogger)
+	//bugLogger.Store(improvedLogger)
+	wincoe.SetBugLogger(improvedLogger)
 	//wincoe.Logger = improvedLogger
 	wincoe.Logger.Store(improvedLogger)
 
