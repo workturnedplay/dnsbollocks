@@ -452,9 +452,34 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 			// 1. Safe, single struct resolution instead of parallel slices
 			target := upstreams[idx]
-			// --- FIX: Pass exchangeCtx instead of ctx ---
-			//By doing this, the moment your return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil executes, the defer cancel() is triggered. doSingleDoHRequest respects context cancellation under the hood (via http.NewRequestWithContext), so any active HTTP dials or reads being performed by the slower upstreams are instantly aborted, immediately returning the resources to your system.
-			resp, err := target.doSingleDoHRequest(exchangeCtx, reqBytes) //target.Client, target.URL, target.SNI, reqBytes)
+			// --- FIX: probes must outlive this specific Exchange() call ---
+			// exchangeCtx is cancelled via the deferred cancel() the instant
+			// Exchange returns (e.g. because a *different*, non-probe upstream
+			// answered first). That's exactly what we want for the "real"
+			// (non-probe) attempt at idx==currentIdx: once we have an answer
+			// there's no reason to keep that request alive.
+			//
+			// A probe (idx < currentIdx, opportunistically re-trying a
+			// previously-failed higher-priority upstream to detect recovery)
+			// is intentionally designed to keep running in the background
+			// after Exchange returns — see the healing logic below and the
+			// ctx.Done() branch further down, which both explicitly document
+			// that probes must survive past this call. If probes shared
+			// exchangeCtx, the moment Exchange returned they'd be killed
+			// instantly via context cancellation propagation, and the
+			// promotion/healing side-effect could never fire. So probes get a
+			// context that is only bounded by the upstream's own client
+			// timeout and by full server shutdown (via target.BackgroundCtx,
+			// which doSingleDoHRequest already watches internally via
+			// context.AfterFunc), never by this particular Exchange() call's
+			// lifetime.
+			var reqCtx context.Context
+			if wasProbe {
+				reqCtx = target.BackgroundCtx
+			} else {
+				reqCtx = exchangeCtx
+			}
+			resp, err := target.doSingleDoHRequest(reqCtx, reqBytes)
 
 			// 1. Do the promotion BEFORE sending to the channel
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
@@ -7362,6 +7387,14 @@ type DNSCache interface {
 type goCacheStore struct {
 	c          *cache.Cache
 	maxEntries int
+	// lastDeleteExpiredNs throttles manual DeleteExpired() sweeps (see Set) to
+	// at most once per deleteExpiredThrottle window, regardless of how many
+	// concurrent goroutines call Set while the cache is at capacity. go-cache's
+	// DeleteExpired() takes a single global lock and performs a full O(N) scan
+	// of every key; calling it unconditionally on every Set() once maxEntries
+	// is reached turns sustained high-QPS traffic at/above capacity into a
+	// full-map-lock storm on the DNS hot path.
+	lastDeleteExpiredNs atomic.Int64
 }
 
 func newGoCacheStore(janitorInterval time.Duration, maxEntries int) DNSCache {
@@ -7384,10 +7417,29 @@ func (s *goCacheStore) Get(key string) (CacheEntry, bool) {
 	panic(nil)
 }
 
+// deleteExpiredThrottle bounds how often Set() is allowed to trigger a manual,
+// full O(N) go-cache DeleteExpired() sweep once the cache is at capacity. The
+// background janitor (started via cache.New in newGoCacheStore) already runs
+// periodically at CacheJanitorIntervalMinutes, but that interval defaults to
+// 60 minutes; this throttle lets a full cache still self-heal quickly between
+// janitor sweeps without letting every single over-capacity Set() call pay for
+// its own O(N) full-map scan under sustained high QPS.
+const deleteExpiredThrottle = 1 * time.Second
+
 func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
 	if s.maxEntries > 0 && s.c.ItemCount() >= s.maxEntries {
-		s.c.DeleteExpired() // Try to make room first
+		now := time.Now().UnixNano()
+		last := s.lastDeleteExpiredNs.Load()
+		if now-last >= deleteExpiredThrottle.Nanoseconds() && s.lastDeleteExpiredNs.CompareAndSwap(last, now) {
+			// Only the single goroutine that wins this CAS performs the
+			// expensive full-map sweep for this throttle window; every other
+			// concurrent caller just falls through to the capacity re-check
+			// below instead of piling on redundant O(N) scans of its own.
+			s.c.DeleteExpired()
+			//TODO: log this
+		}
 		if s.c.ItemCount() >= s.maxEntries {
+			//TODO: log this
 			return // Cache is full, safely drop the new entry to prevent memory leaks
 		}
 	}
@@ -7517,16 +7569,30 @@ func (um *UpstreamManager) getConfig() *Config {
 
 // due to presumed config changes ie. UpstreamManager.liveConfig, update the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs
 func (um *UpstreamManager) updateInnerState() error {
-	cfg := um.getConfig()
-	//hmmokFIXME: it's not actually protected from 'cfg' being modified during this tiny 2-assignment window; "Wrong — cfg is an atomically-loaded *Config; Config is immutable once stored; snapshots are safe" -  Claude Sonnet 4.6 Low Thinking
-	snapSNI := cfg.UpstreamSNIHostnames
-	snapURL := cfg.UpstreamURLs
+	// XXX: um.getConfig() returns the LIVE, atomically-shared *Config that
+	// concurrent DNS queries (ForwardToDoH) and the WebUI /stats handler are
+	// actively reading right now via their own getConfig() calls. Mutating its
+	// fields in place (as this function used to do) is a full-blown data race:
+	// a concurrent reader could observe UpstreamURLsParsed as nil (right after
+	// the reset below) or as a half-appended slice mid-loop, leading to an
+	// index-out-of-bounds panic or silently corrupted upstream state.
+	//
+	// The fix: work on our own deep-copied clone, and only publish it via a
+	// single atomic Store once it is fully built and valid. Readers therefore
+	// always see either the complete old Config or the complete new one, never
+	// a struct caught mid-mutation. Any error return below leaves the live
+	// config completely untouched.
+	liveCfg := um.getConfig()
+	newCfg := liveCfg.Clone()
 
-	cfg.UpstreamURLsParsed = nil
-	cfg.UpstreamIPs = nil
-	cfg.UpstreamSNIs = nil
+	snapSNI := newCfg.UpstreamSNIHostnames
+	snapURL := newCfg.UpstreamURLs
 
-	if len(cfg.UpstreamURLs) == 0 {
+	newCfg.UpstreamURLsParsed = nil
+	newCfg.UpstreamIPs = nil
+	newCfg.UpstreamSNIs = nil
+
+	if len(newCfg.UpstreamURLs) == 0 {
 		return errors.New("upstream_urls list is empty")
 	}
 
@@ -7547,16 +7613,18 @@ func (um *UpstreamManager) updateInnerState() error {
 		if u.Port() == "" {
 			panic2("BUG: dev fail: port is empty")
 		}
-		cfg.UpstreamURLsParsed = append(cfg.UpstreamURLsParsed, u)
+		newCfg.UpstreamURLsParsed = append(newCfg.UpstreamURLsParsed, u)
 
 		ip := u.Hostname()
 		if net.ParseIP(ip) == nil {
 			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
 		}
-		cfg.UpstreamIPs = append(cfg.UpstreamIPs, ip)
-		cfg.UpstreamSNIs = append(cfg.UpstreamSNIs, snapSNI[i])
+		newCfg.UpstreamIPs = append(newCfg.UpstreamIPs, ip)
+		newCfg.UpstreamSNIs = append(newCfg.UpstreamSNIs, snapSNI[i])
 	}
 
+	// Publish the fully-built, validated clone atomically.
+	um.liveConfig.Store(&newCfg)
 	return nil
 }
 
@@ -7771,7 +7839,6 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 		}
 	}
 
-	cfg := um.getConfig()
 	if err := um.updateInnerState(); err != nil {
 		log.Error("Upstream validation failed:", wincoe.SafeErr(err))
 		// 2. Trigger the application shutdown if the callback is wired
@@ -7782,8 +7849,14 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 			panic2("BUG: Shutdown requested, but no shutdown handler is wired (likely in a test environment).")
 		}
 	}
+	// XXX: must re-fetch AFTER updateInnerState() succeeds, not before: since
+	// updateInnerState() now publishes a brand-new cloned *Config instead of
+	// mutating the old one in place (see its doc comment for why), a cfg
+	// fetched prior to the call would be a stale snapshot whose
+	// UpstreamURLsParsed/UpstreamIPs/UpstreamSNIs fields are still nil/outdated.
+	cfg := um.getConfig()
 	log.Debug("Upstreams (re)validated",
-		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs), //FIXME: use the one from um.
+		SafeStringSlice("upstreamURLs", cfg.UpstreamURLs),
 		SafeStringSlice("upstreamSNIs", cfg.UpstreamSNIHostnames),
 		SafeStringSlice("upstreamIPs", cfg.UpstreamIPs),
 	)
