@@ -1,4 +1,5 @@
 todo:
+* maxRetries in *FileWriter struct (in 2 places) is treated as tries in retryFileOp() !
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
