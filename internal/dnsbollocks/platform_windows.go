@@ -3811,7 +3811,38 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
-		log.Warn(reason, slog.String("client", clientAddr))
+		//log.Warn(reason, slog.String("client", clientAddr))
+		// Extract executable from context for better logging
+		var exeName string
+		if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
+			exeName = info.exe
+		} else {
+			exeName = "<unknown_exe>"
+		}
+
+		// Dynamically fetch config tags and values based on which limit was tripped
+		var rateTag, burstTag string
+		var rateVal, burstVal int
+
+		if reason == globalRateLimitExceeded {
+			rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
+			burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
+			rateVal = cfg.GlobalRateQPS
+			burstVal = cfg.GlobalBurstQPS
+		} else { // clientRateLimitExceeded
+			rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
+			burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
+			rateVal = cfg.ClientRateQPS
+			burstVal = cfg.ClientBurstQPS
+		}
+
+		log.Warn(reason,
+			slog.String("client", clientAddr),
+			slog.String("domain", domain),
+			slog.String("exe", exeName),
+			slog.Int(rateTag, rateVal),
+			slog.Int(burstTag, burstVal),
+		)
 		sfr := servfailResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
