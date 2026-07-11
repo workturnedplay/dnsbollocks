@@ -1,5 +1,5 @@
 todo:
-* do fixes for v0.20.10 (todo: I_1,I_2,I_3,I_4, III_1,III_2 done:  N/A: II_2, II_3 dontdo: II_1,) https://gemini.google.com/app/a7016fac0e489bdd
+* do fixes for v0.20.10 (todo: I_4, III_1,III_2 done: I_1,I_2, N/A: II_2, II_3 unsure: I_3, dontdo: II_1,) https://gemini.google.com/app/a7016fac0e489bdd
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
 

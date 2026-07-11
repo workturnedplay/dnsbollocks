@@ -1038,7 +1038,7 @@ func GetProcessName(pid uint32) (string, error) {
 	err = Process32First(snapshot, &entry)
 	for err == nil {
 		if count > maxProcessEntries {
-			return "", fmt.Errorf("Process32 enumeration exceeded safety limit")
+			return "", fmt.Errorf("Process32 enumeration exceeded safety limit of %d active processes currently running", maxProcessEntries)
 		}
 		count++
 		//doneTODO: make a hard limit here, so it doesn't loop infinitely just in case.
@@ -1229,102 +1229,143 @@ func GetServiceNamesFromPIDUncached(targetPID uint32) ([]string, error) {
 	return serviceNames, nil
 }
 
-// pidAndExeForUDP returns (pid, exePath_or_exeName, error).
-// clientAddr should be the remote UDP address observed on the server side (e.g., 127.0.0.1:49936).
+// PidAndExeForUDP returns (pid, exePath_or_exeName, error).
+// clientAddr should be the remote UDP address observed on the server side.
 func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	//capital P in PidAndExeForUDP means exported, apparently!
 	if clientAddr == nil {
 		return 0, "", errors.New("nil clientAddr")
 	}
-	ip4 := clientAddr.IP.To4()
-	if ip4 == nil {
-		return 0, "", errors.New("only IPv4 supported")
+
+	ip := clientAddr.IP
+	if clientAddr.Port < 0 || clientAddr.Port > 65535 {
+		return 0, "", fmt.Errorf("invalid network port: %d", clientAddr.Port)
 	}
 	port := uint16(clientAddr.Port)
 
-	buf, err := GetExtendedUDPTable(false, AF_INET)
+	isIPv4 := ip.To4() != nil
+	family := uint32(AF_INET)
+	if !isIPv4 {
+		family = AF_INET6
+	}
+
+	buf, err := GetExtendedUDPTable(false, family)
 	if err != nil {
 		return 0, "", fmt.Errorf("GetExtendedUDPTable failed while resolving pid/exe for UDP client %s: %w", clientAddr, err)
 	}
 
 	if buf == nil {
 		return 0, "", errors.New("GetExtendedUdpTable returned empty buffer which means there were no UDP entries in the table")
+
 	}
 
 	// Buffer layout: DWORD dwNumEntries; then array of MIB_UDPROW_OWNER_PID entries.
 	if len(buf) < 4 {
 		return 0, "", errors.New("GetExtendedUdpTable returned too small buffer")
 	}
+
 	num := binary.LittleEndian.Uint32(buf[:4])
-	const rowSize = 12 // MIB_UDPROW_OWNER_PID has 3 DWORDs = 12 bytes
 	offset := 4
-	//var owningPid uint32
+
 	for i := uint32(0); i < num; i++ {
-		if offset+rowSize > len(buf) {
-			panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
-			//break
-		}
-		localAddr := binary.LittleEndian.Uint32(buf[offset : offset+4])
-		localPortRaw := binary.LittleEndian.Uint32(buf[offset+4 : offset+8])
+		if isIPv4 {
+			// MIB_UDPROW_OWNER_PID (12 bytes)
+			const rowSize = 12 // MIB_UDPROW_OWNER_PID has 3 DWORDs = 12 bytes
+			if offset+rowSize > len(buf) {
+				panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+			}
+			localAddr := binary.LittleEndian.Uint32(buf[offset : offset+4])
+			localPortRaw := binary.LittleEndian.Uint32(buf[offset+4 : offset+8])
+			owningPid := binary.LittleEndian.Uint32(buf[offset+8 : offset+12])
+			//prepare for next entry
+			offset += rowSize
+			// localPortRaw stores port in network byte order in low 16 bits.
+			localPort := uint16(localPortRaw & 0xFFFF)
+			localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8 // convert to host order
 
-		// localPortRaw stores port in network byte order in low 16 bits.
-		localPort := uint16(localPortRaw & 0xFFFF)
-		localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8 // convert to host order
+			// convert DWORD IP (little-endian) to net.IP
+			ipb := []byte{
+				byte(localAddr & 0xFF),
+				byte((localAddr >> 8) & 0xFF),
+				byte((localAddr >> 16) & 0xFF),
+				byte((localAddr >> 24) & 0xFF),
+			}
+			entryIP := net.IPv4(ipb[0], ipb[1], ipb[2], ipb[3])
 
-		// convert DWORD IP (little-endian) to net.IP
-		ipb := []byte{
-			byte(localAddr & 0xFF),
-			byte((localAddr >> 8) & 0xFF),
-			byte((localAddr >> 16) & 0xFF),
-			byte((localAddr >> 24) & 0xFF),
-		}
-		entryIP := net.IPv4(ipb[0], ipb[1], ipb[2], ipb[3])
+			if localPort == port && (entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip.To4())) { // treat 0.0.0.0 as wildcard match
+				exe, err2 := ExePathFromPID(owningPid)
+				if err2 != nil {
+					var err3 error
+					exe, err3 = GetProcessName(owningPid)
+					if err3 != nil {
+						return 0, "", fmt.Errorf("pid %d not found for %s, errTransient:'%v', err:'%w'", owningPid, clientAddr.String(), err2, err3)
+					}
+				}
+				return owningPid, exe, nil
+			}
+		} else {
+			// MIB_UDP6ROW_OWNER_PID (28 bytes)
+			// ucLocalAddr[16], dwLocalScopeId, dwLocalPort, dwOwningPid
+			const rowSize = 28
+			if offset+rowSize > len(buf) {
+				panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+			}
 
-		if localPort == port {
-			// treat 0.0.0.0 as wildcard match
-			if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip4) {
-				// found PID for our IP:port tuple
-				owningPid := binary.LittleEndian.Uint32(buf[offset+8 : offset+12])
-				exe, err := ExePathFromPID(owningPid)
-				if err != nil {
-					// got error due to permissions needed for abs. path? this will work but it's just the .exe:
+			localIPBytes := buf[offset : offset+16]
+			// offset+16 to offset+20 is dwLocalScopeId (skipped)
+			localPortRaw := binary.LittleEndian.Uint32(buf[offset+20 : offset+24])
+			owningPid := binary.LittleEndian.Uint32(buf[offset+24 : offset+28])
+			offset += rowSize
 
-					var err2 error // Declare err2 so we don't have to use :=
-					exe, err2 = GetProcessName(owningPid)
+			localPort := uint16(localPortRaw & 0xFFFF)
+			localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8
 
-					if err2 != nil {
-						return 0, "", fmt.Errorf("pid %d not found for %s, errTransient:'%v', err:'%w'", owningPid, clientAddr.String(), err, err2)
+			entryIP := net.IP(localIPBytes)
+
+			if localPort == port && (entryIP.Equal(net.IPv6zero) || entryIP.Equal(ip)) {
+				exe, err2 := ExePathFromPID(owningPid)
+				if err2 != nil {
+					var err3 error
+					exe, err3 = GetProcessName(owningPid)
+					if err3 != nil {
+						return 0, "", fmt.Errorf("pid %d not found for %s, errTransient:'%v', err:'%w'", owningPid, clientAddr.String(), err2, err3)
 					}
 				}
 				return owningPid, exe, nil
 			}
 		}
-
-		//prepare for next entry
-		offset += rowSize
 	} //for
 
 	return 0, "", fmt.Errorf("no matching UDP socket entry found for %s (ephemeral port reuse or socket already closed by kernel) thus dno who sent it", clientAddr.String())
 }
 
-// clientAddr should be the remote TCP address observed on the server side (e.g., 127.0.0.1:49936).
+// PidAndExeForTCP resolves the PID/Exe for a given client TCP connection.
+// clientAddr should be the remote TCP address observed on the server side.
 func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 	if clientAddr == nil {
 		return 0, "", errors.New("nil clientAddr")
 	}
-	ip4 := clientAddr.IP.To4()
-	if ip4 == nil {
-		return 0, "", errors.New("only IPv4 supported")
+
+	ip := clientAddr.IP
+	if clientAddr.Port < 0 || clientAddr.Port > 65535 {
+		return 0, "", fmt.Errorf("invalid network port: %d", clientAddr.Port)
 	}
 	port := uint16(clientAddr.Port)
 
-	// Fetch the table
-	buf, err := GetExtendedTCPTable(false, AF_INET) //FIXME: do I need here to include the AF_INET6 ?! probably, and for UDP func too!
+	isIPv4 := ip.To4() != nil
+	family := uint32(AF_INET)
+	if !isIPv4 {
+		family = AF_INET6
+	}
+
+	// Fetch the table using the dynamic address family
+	buf, err := GetExtendedTCPTable(false, family)
 	if err != nil {
 		return 0, "", fmt.Errorf("GetExtendedTCPTable failed while resolving pid/exe for TCP client %s: %w", clientAddr, err)
 	}
 	if buf == nil {
 		return 0, "", errors.New("GetExtendedTcpTable returned empty buffer")
+
 	}
 
 	if len(buf) < 4 {
@@ -1332,55 +1373,87 @@ func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 	}
 
 	num := binary.LittleEndian.Uint32(buf[:4])
-
-	// MIB_TCPROW_OWNER_PID structure:
-	// 0: dwState (4 bytes)
-	// 4: dwLocalAddr (4 bytes)
-	// 8: dwLocalPort (4 bytes)
-	// 12: dwRemoteAddr (4 bytes)
-	// 16: dwRemotePort (4 bytes)
-	// 20: dwOwningPid (4 bytes)
-	const rowSize = 24
 	offset := 4
 
 	for i := uint32(0); i < num; i++ {
-		if offset+rowSize > len(buf) {
-			break
-		}
+		if isIPv4 {
+			// MIB_TCPROW_OWNER_PID (24 bytes)
+			// MIB_TCPROW_OWNER_PID structure:
+			// 0: dwState (4 bytes)
+			// 4: dwLocalAddr (4 bytes)
+			// 8: dwLocalPort (4 bytes)
+			// 12: dwRemoteAddr (4 bytes)
+			// 16: dwRemotePort (4 bytes)
+			// 20: dwOwningPid (4 bytes)
+			const rowSize = 24
+			if offset+rowSize > len(buf) {
+				break
+			}
 
-		// Extract fields based on the 24-byte MIB_TCPROW_OWNER_PID layout
-		localAddrRaw := binary.LittleEndian.Uint32(buf[offset+4 : offset+8])
-		localPortRaw := binary.LittleEndian.Uint32(buf[offset+8 : offset+12])
-		owningPid := binary.LittleEndian.Uint32(buf[offset+20 : offset+24])
+			// Extract fields based on the 24-byte MIB_TCPROW_OWNER_PID layout
+			localAddrRaw := binary.LittleEndian.Uint32(buf[offset+4 : offset+8])
+			localPortRaw := binary.LittleEndian.Uint32(buf[offset+8 : offset+12])
+			owningPid := binary.LittleEndian.Uint32(buf[offset+20 : offset+24])
+			// Advance offset for next iteration
+			offset += rowSize
 
-		// Advance offset for next iteration
-		offset += rowSize
+			// Port conversion (Network Byte Order in low 16 bits)
+			localPort := uint16(localPortRaw & 0xFFFF)
+			localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8
 
-		// Port conversion (Network Byte Order in low 16 bits)
-		localPort := uint16(localPortRaw & 0xFFFF)
-		localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8
-
-		if localPort == port {
-			// Convert DWORD IP (little-endian) to net.IP
-			entryIP := net.IPv4(
-				byte(localAddrRaw&0xFF),
-				byte((localAddrRaw>>8)&0xFF),
-				byte((localAddrRaw>>16)&0xFF),
-				byte((localAddrRaw>>24)&0xFF),
-			)
-
-			// Match logic (Wildcard 0.0.0.0 or specific IP)
-			if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip4) {
-				exe, err := ExePathFromPID(owningPid)
-				if err != nil {
-					// Fallback to process name if path is inaccessible
-					var err2 error
-					exe, err2 = GetProcessName(owningPid)
+			if localPort == port {
+				// Convert DWORD IP (little-endian) to net.IP
+				entryIP := net.IPv4(
+					byte(localAddrRaw&0xFF),
+					byte((localAddrRaw>>8)&0xFF),
+					byte((localAddrRaw>>16)&0xFF),
+					byte((localAddrRaw>>24)&0xFF),
+				)
+				// Match logic (Wildcard 0.0.0.0 or specific IP)
+				if entryIP.Equal(net.IPv4zero) || entryIP.Equal(ip.To4()) {
+					exe, err2 := ExePathFromPID(owningPid)
 					if err2 != nil {
-						return 0, "", fmt.Errorf("pid %d found but exe lookup failed: %w", owningPid, err2)
+						var err3 error
+						exe, err3 = GetProcessName(owningPid)
+						if err3 != nil {
+							return 0, "", fmt.Errorf("pid %d found but exe lookup failed: %w", owningPid, err3)
+						}
 					}
+					return owningPid, exe, nil
 				}
-				return owningPid, exe, nil
+			}
+		} else {
+			// MIB_TCP6ROW_OWNER_PID (56 bytes)
+			// ucLocalAddr[16], dwLocalScopeId, dwLocalPort, ucRemoteAddr[16], dwRemoteScopeId, dwRemotePort, dwState, dwOwningPid
+			const rowSize = 56
+			if offset+rowSize > len(buf) {
+				break
+			}
+
+			localIPBytes := buf[offset : offset+16]
+			// offset+16 to offset+20 is dwLocalScopeId (skipped)
+			localPortRaw := binary.LittleEndian.Uint32(buf[offset+20 : offset+24])
+			// offset+24 to offset+52 contains remote info and state (skipped)
+			owningPid := binary.LittleEndian.Uint32(buf[offset+52 : offset+56])
+			offset += rowSize
+
+			localPort := uint16(localPortRaw & 0xFFFF)
+			localPort = (localPort>>8)&0xFF | (localPort&0xFF)<<8
+
+			if localPort == port {
+				entryIP := net.IP(localIPBytes)
+
+				if entryIP.Equal(net.IPv6zero) || entryIP.Equal(ip) {
+					exe, err2 := ExePathFromPID(owningPid)
+					if err2 != nil {
+						var err3 error
+						exe, err3 = GetProcessName(owningPid)
+						if err3 != nil {
+							return 0, "", fmt.Errorf("pid %d found but exe lookup failed: %w", owningPid, err3)
+						}
+					}
+					return owningPid, exe, nil
+				}
 			}
 		}
 	}
@@ -1448,8 +1521,13 @@ func InjectConsoleEnter() error {
 
 // InjectConsoleKey synthesizes a single virtual key down event
 // and writes it directly into the system's console input buffer.
-func InjectConsoleKey(vkCode uint16, scanCode uint16, char rune) error {
+func InjectConsoleKey(vkCode, scanCode uint16, char rune) error {
 	h := syscall.Handle(os.Stdin.Fd())
+
+	// Validate that the rune fits into a single UTF-16 code unit (Basic Multilingual Plane)
+	if char < 0 || char > 65535 {
+		return fmt.Errorf("character %U cannot fit into a single uint16 code unit", char)
+	}
 
 	var rec inputRecord
 	rec.EventType = KEY_EVENT
@@ -1459,7 +1537,7 @@ func InjectConsoleKey(vkCode uint16, scanCode uint16, char rune) error {
 	ke.RepeatCount = 1
 	ke.VirtualKeyCode = vkCode
 	ke.VirtualScanCode = scanCode
-	ke.UnicodeChar = uint16(char)
+	ke.UnicodeChar = uint16(char) // Safe now, gosec will be happy
 	ke.ControlKeyState = 0
 
 	var written uint32
