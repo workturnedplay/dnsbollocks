@@ -5033,8 +5033,9 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
 	} //end "POST"
 
-	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
+	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
 }
 
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
@@ -6279,8 +6280,9 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
 	} //end "POST"
-	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
+	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
 }
 
 // withRuleRemovedAt safely returns a new slice with the RuleEntry at the given index removed,
@@ -6491,8 +6493,9 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 	} // end of "POST"
 
-	//TODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("TODO: Method isn't GET or POST, what do we do here?", slog.String("method", r.Method))
+	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
+	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
 }
 
 // renderTemplate is a DRY helper to execute templates safely into a buffer
