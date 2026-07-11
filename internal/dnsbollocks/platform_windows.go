@@ -6460,7 +6460,20 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
-	if r.Method == http.MethodGet { //"GET" {
+	// 1. Handle OPTIONS (The "What can I do here?" probe)
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Allow", "GET, HEAD, POST, OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	} // end "OPTIONS"
+
+	/*
+		(press alt+z to toggle line-wrapping to can read this, then toggle it back)
+		According to the official HTTP specifications (RFC 7231), any endpoint that supports GET is technically supposed to support HEAD as well, returning identical headers but omitting the response body.
+		If you want to be perfectly spec-compliant, Go makes it incredibly easy. You don't have to write any special code to strip the HTML layout for a HEAD request; Go's net/http server does it for you automatically. If a handler writes a body during a HEAD request, Go intercepts it, calculates the headers (like Content-Length), and drops the body before it hits the wire.
+	*/
+	// 2. Handle Read-Only requests
+	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD"
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			//"Page":  "hosts",
@@ -6469,7 +6482,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 
 		ui.renderTemplate(w, r, "hosts", data)
 		return
-	} //end "GET"
+	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST" {
 		fields := map[string]string{
