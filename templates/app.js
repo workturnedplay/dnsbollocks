@@ -1026,12 +1026,27 @@
             container.appendChild(buildSelectElement(CONFIG_KEYS.optsBlockMode, currentDisplay));
             hint.innerText = "Action taken when blocking queries";
         } else if (key === CONFIG_KEYS.webuiPasswordHash) {
+            // Both fields are type="password" (masked) rather than plain text,
+            // and the confirmation is compared directly against this second
+            // masked field instead of a native prompt() dialog -- prompt()
+            // renders the typed confirmation in plain, unmasked text on
+            // screen, visible to anyone looking at the display while it's typed.
             const pwdInput = document.createElement('input');
-            pwdInput.type = 'text';
+            pwdInput.type = 'password';
+            pwdInput.autocomplete = 'new-password';
             pwdInput.className = 'config-input monospace-code2';
             pwdInput.placeholder = 'Enter NEW password here...';
             container.appendChild(pwdInput);
-            hint.innerText = "Type a password, or paste a hash(prefixed with $2), empty means keep current pwd.";
+
+            const pwdConfirmInput = document.createElement('input');
+            pwdConfirmInput.type = 'password';
+            pwdConfirmInput.autocomplete = 'new-password';
+            pwdConfirmInput.className = 'config-input-confirm monospace-code2';
+            pwdConfirmInput.placeholder = 'Confirm new password...';
+            pwdConfirmInput.style.marginTop = '6px';
+            container.appendChild(pwdConfirmInput);
+
+            hint.innerText = "Type a password (or paste a hash prefixed with $2) in both fields above; leave both empty to keep the current password.";
         } else if (type === 'bool') {
             const boolSelect = document.createElement('select');
             boolSelect.className = 'config-input w-100';
@@ -1095,10 +1110,12 @@
             
             const rawVal = editRow.querySelector('.config-input').value;
             
-            // Password confirmation logic!
-            //&& rawVal !== '********' && rawVal !== currentDisplay) {
-            if (isPwd && rawVal !== '' ) {
-                const confirmPwd = prompt("Please confirm your new password by typing it again:");
+            // Password confirmation logic! Compared directly against a second
+            // masked (type="password") input rather than a native prompt()
+            // dialog, so the confirmation text is never shown in plaintext.
+            if (isPwd && rawVal !== '') {
+                const confirmInput = editRow.querySelector('.config-input-confirm');
+                const confirmPwd = confirmInput ? confirmInput.value : '';
                 if (confirmPwd !== rawVal) {
                     alert("Passwords do not match. Staging cancelled.");
                     return; // Abort, doneFIXME: have to re-add listener for this Stage button! ok i set once:false below

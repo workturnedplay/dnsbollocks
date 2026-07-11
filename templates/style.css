@@ -32,7 +32,7 @@ nav a { color: #0078d4; text-decoration: none; margin-right: 15px; font-weight: 
 nav a:hover { text-decoration: underline; }
 
 /* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
-input[type="text"], input[type="number"], select, button { 
+input[type="text"], input[type="number"], input[type="password"], select, button { 
     background-color: #2d2d2d !important; /* Forced Dark */
     color: #ffffff !important;           /* Forced White Text */
     border: 1px solid #444 !important; 
@@ -218,7 +218,7 @@ mark.filter-highlight {
 /* Ensure dropdown options are also dark */
 select option { background: #2d2d2d; color: white; }
 
-input[type="text"]:focus, input[type="number"]:focus, select:focus { border-color: #0078d4 !important; }
+input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, select:focus { border-color: #0078d4 !important; }
 
 button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
 button:hover { background: #3d3d3d !important; }
