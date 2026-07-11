@@ -211,7 +211,15 @@ type Server struct {
 
 	adminUI *AdminUI
 
-	dohCert        tls.Certificate // used by DoH listener AND WebUI TLS
+	dohCert tls.Certificate // used by DoH listener AND WebUI TLS
+	// dohCertMu guards dohCert. generateCertIfNeeded() (write side) isn't
+	// currently reachable concurrently with getCert()/ensureCert() (read
+	// side) given today's call graph (Reload() is single-flight and does
+	// both sequentially on one goroutine), but that's an implicit invariant
+	// of the surrounding code rather than something this field enforces
+	// itself — cheap to harden now rather than rely on nobody ever adding a
+	// per-request call site to getCert() later.
+	dohCertMu      sync.RWMutex
 	certGeneration atomic.Uint64
 
 	// Simple stats, FIXME.
@@ -304,7 +312,8 @@ func getBugLogger() *slog.Logger {
 	def := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
-	wincoe.Logger = def //give wincoe lib a logger too
+	//wincoe.Logger = def //give wincoe lib a logger too
+	wincoe.Logger.Store(def) //give wincoe lib a logger too
 	return def
 }
 
@@ -2499,7 +2508,8 @@ func OldMain() {
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the colored bootstrap logger, not the silent default.
 	bugLogger.Store(localLogger)
-	wincoe.Logger = localLogger
+	//wincoe.Logger = localLogger
+	wincoe.Logger.Store(localLogger)
 
 	// Create a default FileWriter for the bootstrap phase (config not yet loaded).
 	// It shares the LogManager's atomic pointer so it always sees the current logger.
@@ -3310,11 +3320,14 @@ func (s *Server) generateCertIfNeeded() {
 	// Load cert/key into global for reuse
 	log.Info("Loading cert/key for DoH and Web UI...")
 
-	s.dohCert, err = tls.LoadX509KeyPair(certFile, keyFile)
+	loadedCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		s.logFatal("cert_load_failed", err)
 		panic2("BUG: unreachable")
 	}
+	s.dohCertMu.Lock()
+	s.dohCert = loadedCert
+	s.dohCertMu.Unlock()
 	log.Info("Success - loaded into tls.Certificate")
 }
 
@@ -6517,7 +6530,7 @@ func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Reques
 	if isBlocksAjaxRequest(r) {
 		if ok {
 			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(message)); err != nil {
+			if _, err := w.Write([]byte(message)); err != nil { //FIXME: G705: XSS via taint analysis (gosec)
 				log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
 			}
 		} else {
@@ -8557,7 +8570,10 @@ func isCertLoaded(cert *tls.Certificate) bool {
 // a condition that should be impossible — we panic with a clear diagnosis
 // rather than proceeding into a silent SSL handshake failure.
 func (s *Server) ensureCert() {
-	if isCertLoaded(&s.dohCert) {
+	s.dohCertMu.RLock()
+	loaded := isCertLoaded(&s.dohCert)
+	s.dohCertMu.RUnlock()
+	if loaded {
 		return // normal fast path
 	}
 
@@ -8565,7 +8581,10 @@ func (s *Server) ensureCert() {
 	log.Warn("BUG: TLS cert not loaded before listener start (generateCertIfNeeded was never called or ran out of order); attempting emergency generation now")
 	s.generateCertIfNeeded()
 
-	if !isCertLoaded(&s.dohCert) {
+	s.dohCertMu.RLock()
+	loaded = isCertLoaded(&s.dohCert)
+	s.dohCertMu.RUnlock()
+	if !loaded {
 		// generateCertIfNeeded calls logFatal (→ s.shutdown + os.Exit) on any
 		// load/generation failure, so reaching here means tls.LoadX509KeyPair
 		// returned without error but produced an empty struct — impossible in
@@ -8581,6 +8600,8 @@ func (s *Server) ensureCert() {
 // returns a copy of the cert
 func (s *Server) getCert() tls.Certificate {
 	s.ensureCert()
+	s.dohCertMu.RLock()
+	defer s.dohCertMu.RUnlock()
 	return s.dohCert
 }
 
@@ -10671,7 +10692,8 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	}
 
 	bugLogger.Store(improvedLogger)
-	wincoe.Logger = improvedLogger
+	//wincoe.Logger = improvedLogger
+	wincoe.Logger.Store(improvedLogger)
 
 	improvedLogger.Info("Logging initialized",
 		slog.String("full_log", cfg.LogEverythingFile),

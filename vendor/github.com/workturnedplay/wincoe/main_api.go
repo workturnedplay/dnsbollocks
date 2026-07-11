@@ -48,7 +48,23 @@ import (
 // wincoe.Logger = slog.Default()
 //
 // this way this wincoe lib will log to where caller wants.
-var Logger *slog.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+// var Logger *slog.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+// Logger is stored behind an atomic.Pointer because it can be swapped
+// concurrently (dnsbollocks.LoggerManager.ApplyConfig does this on every
+// config Reload) while other goroutines are reading it via panic2() from
+// arbitrary wincoe call paths — DNS/UDP/TCP request handling can reach rare
+// defensive panics in this package (e.g. PidAndExeForUDP's bounds check,
+// impossibiru() inside callWithRetry) at any time. A plain *slog.Logger
+// package var here would be a genuine, -race-detectable data race between
+// Reload() and any in-flight request hitting one of those paths.
+//
+// Set via: wincoe.Logger.Store(someLogger)
+// Read via: wincoe.Logger.Load()
+var Logger atomic.Pointer[slog.Logger]
+
+func init() {
+	Logger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
 
 var (
 	procSetConsoleTextAttribute = NewBoundProc(Kernel32, "SetConsoleTextAttribute", CheckBool)
@@ -939,7 +955,14 @@ func impossibiru(msg string) {
 	panic2(msg2)
 }
 func panic2(msg string) {
-	Logger.Error(msg)
+	//Logger.Error(msg)
+	if l := Logger.Load(); l != nil {
+		l.Error(msg)
+	} else {
+		def := slog.Default()
+		def.Warn("BUG: Using slog.Default() for the next log line due to Logger.Load()==nil in wincoe, this means dev. didn't init Logger somehow!")
+		def.Error(msg)
+	}
 	panic(msg)
 }
 
