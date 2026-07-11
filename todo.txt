@@ -2,9 +2,7 @@ todo:
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
 
-* allow OPTIONS and HEAD just like I did in hostsHandler, for the other handlers (where applicable)
-
-* am I doing any rate limiting on webUI connections?!
+* am I doing any rate limiting on webUI connections?! I should.
 
 * fixes for v0.20.9 (donotdo: 1,2_2 todo: 3_1,3_3 done: 2_1,2_3,3_2,): https://gemini.google.com/app/4d46e89c37a67c33
 
@@ -31,5 +29,6 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* allow OPTIONS and HEAD just like I did in hostsHandler, for the other handlers (where applicable)
 //* maxRetries in *FileWriter struct (in 2 places) is treated as tries in retryFileOp() !
 //* Review the logger access architecture. Several types independently implement the same "load current logger with fallback" behavior. Refactor the design so the responsibility for obtaining a usable logger has a single owner, duplicated fallback logic is eliminated, ownership remains clear, and all callers share identical semantics.

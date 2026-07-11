@@ -5002,9 +5002,12 @@ func formerrResponse(msg *dns.Msg) *dns.Msg {
 }
 
 func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
-	log := ui.getLogger()
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
 
-	if r.Method == http.MethodGet { //"GET" {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD"
 		cidrs := ui.getResponseBlacklist()
 		views := make([]BlacklistView, len(cidrs))
 		for i, c := range cidrs {
@@ -5015,7 +5018,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		}
 		ui.renderTemplate(w, r, "response-blacklist", data)
 		return
-	} //end "GET"
+	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST" {
 		fields := map[string]string{
@@ -5036,11 +5039,10 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			panic2("BUG: unreachable")
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
+		return
 	} //end "POST"
 
-	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
-	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
 // tryDeleteBlacklistIP removes a CIDR string match from the blacklist slice.
@@ -5055,6 +5057,15 @@ func (ui *AdminUI) checkBlacklistMatches(n *net.IPNet) []string {
 }
 
 func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	log := ui.getLogger()
 
@@ -5615,6 +5626,15 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 }
 
 func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
 	cfg := ui.getConfig()
 	data := map[string]any{
 		"Blocks":       ui.stats.String(),
@@ -6226,9 +6246,41 @@ type RuleView struct {
 	Enabled bool
 }
 
-func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
+// writeAllowHeaderResponse responds to an HTTP OPTIONS probe with 204 No
+// Content and the given Allow header value, and reports whether it did so
+// (true means the caller should return immediately). Centralizing this in
+// one helper keeps the exact set of methods a route supports declared in a
+// single place instead of duplicated as a literal string in every handler.
+func writeAllowHeaderResponse(w http.ResponseWriter, r *http.Request, allowed string) bool {
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	w.Header().Set("Allow", allowed)
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+// rejectUnsupportedMethod logs and replies with 405 Method Not Allowed for a
+// request whose method wasn't matched by any branch earlier in the handler.
+// Per RFC 7231 §7.4.1 a 405 response should include an Allow header listing
+// the supported methods, which this also sets.
+func (ui *AdminUI) rejectUnsupportedMethod(w http.ResponseWriter, r *http.Request, allowed string) {
 	log := ui.getLogger()
-	if r.Method == http.MethodGet { //"GET" {
+	log.Warn("Unsupported HTTP method for this route",
+		slog.String("method", r.Method),
+		slog.String("URL", r.URL.String()),
+		slog.String("allowed", allowed))
+	w.Header().Set("Allow", allowed)
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+}
+
+func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
+
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD"
 		// Flatten the map into a single slice for unified table rendering
 		rulesSnapshot := ui.ruleStore.Snapshot() // Safe, independent copy
 
@@ -6261,7 +6313,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 
 		ui.renderTemplate(w, r, "rules", data)
 		return
-	} //end "GET"
+	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST"
 		fields := map[string]string{
@@ -6284,10 +6336,9 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			panic2("BUG: unreachable")
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
+		return
 	} //end "POST"
-	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
-	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
 // withRuleRemovedAt safely returns a new slice with the RuleEntry at the given index removed,
@@ -6463,14 +6514,10 @@ func (s *Server) invalidateCacheForBlacklistedIPs() {
 }
 
 func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
-	log := ui.getLogger()
-
-	// 1. Handle OPTIONS (The "What can I do here?" probe)
-	if r.Method == http.MethodOptions {
-		w.Header().Set("Allow", "GET, HEAD, POST, OPTIONS")
-		w.WriteHeader(http.StatusNoContent)
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
 		return
-	} // end "OPTIONS"
+	}
 
 	/*
 		(press alt+z to toggle line-wrapping to can read this, then toggle it back)
@@ -6509,11 +6556,10 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			panic2("BUG: unreachable")
 		}
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
+		return
 	} // end of "POST"
 
-	//okTODO: find out what happens if method isn't GET or POST since we're not stopping it here, does this mean it goes up to something else? or should we just stop it here? maybe some like HEAD make sense and we don't need to manually handle it here, letting it go up the chain is sensible?!
-	log.Warn("Method isn't GET or POST", slog.String("method", r.Method), slog.String("URL", r.URL.String()))
-	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed) //else "unsupported methods (like PUT or PATCH) will just fall through to this warning and return an empty 200 OK" - Gemini 3.1 Pro
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
 // renderTemplate is a DRY helper to execute templates safely into a buffer
@@ -6620,9 +6666,13 @@ func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Reques
 }
 
 func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
 	log := ui.getLogger()
 
-	if r.Method == http.MethodGet { //"GET" {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD" {
 		data := map[string]any{
 			//"Page":           "blocks",
 			"Blocks":         ui.getRecentBlocksCopy(),
@@ -6633,7 +6683,8 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		ui.renderTemplate(w, r, "blocks", data)
 		return
-	}
+	} //end GET HEAD
+
 	if r.Method == http.MethodPost { //"POST" {
 		raw := r.FormValue("domain")
 
@@ -6714,6 +6765,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
 		return
 	} // end "POST"
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 } // end blocksHandler
 
 func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
@@ -6851,6 +6903,15 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 }
 
 func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
 	cfg := ui.getConfig()
 
 	filter := r.URL.Query().Get("q")
@@ -6863,6 +6924,15 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
 	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
 	ui.renderLogPage(w, r, "System & Error Logs", cfg.LogEverythingFile, filter)
@@ -9146,9 +9216,13 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 const placeHolderPassword = "********"
 
 func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
 	log := ui.getLogger()
 
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		// Optimistic-concurrency version token: embed the config file's mod-time
 		// so the browser can send it back on Apply and we can detect staleness.
 		var configVersion string
@@ -9195,7 +9269,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		ui.renderTemplate(w, r, "config", data)
 		return
-	}
+	} // end GET/HEAD
 
 	if r.Method == http.MethodPost {
 		action := r.FormValue("action")
@@ -9397,7 +9471,11 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/config", http.StatusSeeOther)
 			return
 		}
+		http.Error(w, fmt.Sprintf("unknown or missing action %q", action), http.StatusBadRequest)
+		return
 	}
+
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
 func isValidBcryptHash(s string) bool {
@@ -10757,10 +10835,14 @@ func (s *Server) saveConfig() error {
 }
 
 func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
 	log := ui.getLogger()
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
 		return
 	}
 
