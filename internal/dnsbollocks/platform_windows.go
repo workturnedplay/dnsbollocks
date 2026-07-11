@@ -5320,7 +5320,11 @@ func (ui *AdminUI) originValidationMiddleware(expectedHost string, useTLS bool, 
 
 		log := ui.getLogger()
 
-		//this part is obsolete now
+		// Intentional defense-in-depth duplication: fetchMetadataWhitelistMiddleware
+		// already rejects most cross-site requests earlier in the chain (see
+		// SetupRoutes), but this check keeps originValidationMiddleware safe on
+		// its own — e.g. if it's ever reused standalone, or the middleware order
+		// in SetupRoutes changes — so it is NOT dead/obsolete code; keep it.
 		secFetchSite := r.Header.Get("Sec-Fetch-Site")
 		secFetchMode := r.Header.Get("Sec-Fetch-Mode")
 
