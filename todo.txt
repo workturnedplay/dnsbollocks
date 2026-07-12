@@ -1,5 +1,4 @@
 todo:
-* fix from here for v0.21.0 (invalid: 5 done: 1,2,3, dontdo: 4) https://gemini.google.com/app/bfc4603a97ab0fb7  Don't do 4 because https://claude.ai/chat/2a2741ca-b8f4-406e-9234-2233cad06dcc
 
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
@@ -28,6 +27,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* fix from here for v0.21.0 (invalid: 5 done: 1,2,3, dontdo: 4) https://gemini.google.com/app/bfc4603a97ab0fb7  Don't do 4 because https://claude.ai/chat/2a2741ca-b8f4-406e-9234-2233cad06dcc
 //* do fixes for v0.20.10 (todo:  done: I_1,I_2,I_3,I_4, III_1,III_2 N/A: II_2, II_3 unsure:  dontdo: II_1,) https://gemini.google.com/app/a7016fac0e489bdd
 //* fixes for v0.20.9 (donotdo: 1,2_2 todo: done: 2_1,2_3,3_1,3_2,3_3): https://gemini.google.com/app/4d46e89c37a67c33
 //* am I doing any rate limiting on webUI connections?! I should.

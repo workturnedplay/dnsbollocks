@@ -5989,7 +5989,7 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, change
 		next := cloneRuleMap(current)
 		updatedRule := rule
 		updatedRule.Enabled = enabled
-		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil)
+		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil) //TODO: use a logger not nil here!
 		rs.rules.Store(&next)
 
 		return true, true
@@ -6528,6 +6528,9 @@ func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
 // Used by loadQueryWhitelist (which works on a local copy) and by RuleStore methods
 // (which call this while holding the write lock).
 func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Logger) string {
+	if logger == nil {
+		panic2("BUG2: unexpected nil logger passed to generateUniqueRuleID")
+	}
 	existing := make(map[string]struct{})
 	for _, rules := range existingRules {
 		for _, r := range rules {
