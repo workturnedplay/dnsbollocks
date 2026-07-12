@@ -3818,6 +3818,14 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		body, err = io.ReadAll(r.Body)
 	} else {
 		encoded := r.URL.Query().Get("dns")
+		// Bound the encoded query length before decoding so a client can't force
+		// large allocations/CPU work via an oversized "dns" param; base64url needs
+		// ceil(4*N/3) chars to encode N raw bytes, so this mirrors the same cap
+		// doh_max_request_body_bytes already enforces on the POST path above.
+		if len(encoded) > base64.RawURLEncoding.EncodedLen(cfg.DoHMaxRequestBodyBytes) {
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
 		body, err = base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil {
 			http.Error(w, "Invalid GET param", http.StatusBadRequest)
@@ -4528,6 +4536,14 @@ func compareDNSResponses(a, b *dns.Msg) bool {
 		return false
 	}
 	if len(a.Answer) != len(b.Answer) {
+		return false
+	}
+	// EDNS0(OPT) presence must match too: one upstream echoing back an OPT
+	// pseudo-record while another omits it entirely means the two responses
+	// are not actually identical on the wire, even if their Answer sections
+	// happen to match byte-for-byte. Strict mode exists to catch exactly this
+	// kind of subtle inconsistency between upstreams.
+	if (a.IsEdns0() != nil) != (b.IsEdns0() != nil) {
 		return false
 	}
 
@@ -7964,6 +7980,13 @@ func (um *UpstreamManager) updateInnerState() error {
 			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
 		}
 		newCfg.UpstreamIPs = append(newCfg.UpstreamIPs, ip)
+		if i >= len(snapSNI) {
+			// sanitizeAndValidateConfig is responsible for padding UpstreamSNIHostnames
+			// out to match UpstreamURLs before this ever runs; a caller that bypasses it
+			// would otherwise panic here with an index-out-of-range instead of getting a
+			// clean, recoverable error that flows through the normal shutdown path below.
+			return fmt.Errorf("upstream_sni_hostnames has %d entries but upstream_urls has %d (index %d has no matching SNI entry); they must be padded to equal length before UpstreamManager runs", len(snapSNI), len(snapURL), i)
+		}
 		newCfg.UpstreamSNIs = append(newCfg.UpstreamSNIs, snapSNI[i])
 	}
 
@@ -8043,6 +8066,21 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 				)
 				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
 				return nil, upstreamState1 // Refuse to resolve if any upstream completely fails
+			}
+
+			// A NOERROR response with zero answer records (NODATA) can never be
+			// cross-verified: every upstream trivially "agrees" on emptiness, so
+			// reaching consensus here proves nothing about the real answer. Strict
+			// mode's whole purpose is refusing to trust an answer it can't verify,
+			// so treat this the same as an outright failure rather than as valid
+			// unanimous consensus. NXDOMAIN (and other non-success rcodes) are
+			// unaffected and still participate in normal consensus checking below.
+			// by Claude Sonnet 5 Extra Thinking
+			if res.msg.Rcode == dns.RcodeSuccess && len(res.msg.Answer) == 0 {
+				log.Warn("strict mode: treating NOERROR/no-answer (NODATA) response as an unverifiable failure",
+					slog.String("url", strURL))
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
+				return nil, upstreamState1
 			}
 
 			if reference == nil {
@@ -10655,6 +10693,19 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, err
 	}
 
+	if err := validateDistinctConfigFilePaths(map[string]string{
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):     resolvedCfg.WhitelistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):     resolvedCfg.BlacklistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):         resolvedCfg.HostsFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):    resolvedCfg.LogQueriesFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)): resolvedCfg.LogEverythingFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)):       resolvedCfg.TLSCertFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)):        resolvedCfg.TLSKeyFile,
+		"(fixed) main config file":                                      configFileName,
+	}); err != nil {
+		return shouldSaveConfig, err
+	}
+
 	if isWebUI && resolvedCfg.WebUIPasswordHash == "" {
 		//only for webUI case, non-webUI will ask for pwd to be set on startup, after this!
 		tagWebUIPwd := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
@@ -10709,6 +10760,34 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 	}
 
 	return original, false
+}
+
+// validateDistinctConfigFilePaths ensures that none of the given
+// (config-json-key -> path) entries resolve to the same file on disk.
+// Comparison is case-insensitive and via the cleaned path, because Windows
+// filesystems (NTFS/FAT) are case-insensitive — "Query_Whitelist.json" and
+// "query_whitelist.json" name the identical file even though they differ as
+// strings. Two config keys accidentally pointing at the same path would
+// silently corrupt each other at runtime: e.g. two independent
+// rotatingLogWriters both believing they exclusively own the same inode for
+// rotation purposes, or a log rotation renaming a file out from under a
+// concurrent SafeWriteFile targeting what is "coincidentally" the same file
+// via a differently-cased setting.
+func validateDistinctConfigFilePaths(paths map[string]string) error {
+	seen := make(map[string]string, len(paths))
+	keys := make([]string, 0, len(paths))
+	for k := range paths {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic error message regardless of map iteration order
+	for _, key := range keys {
+		norm := strings.ToLower(filepath.Clean(paths[key]))
+		if otherKey, dup := seen[norm]; dup {
+			return fmt.Errorf("config keys %q and %q both resolve to the same file %q; every file-path setting must point at a distinct file", otherKey, key, paths[key])
+		}
+		seen[norm] = key
+	}
+	return nil
 }
 
 // NormalizeDomain returns a clean, lowercased domain pattern suitable for rules/hosts.
