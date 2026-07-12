@@ -1,4 +1,6 @@
 todo:
+* fix from here for v0.21.0 (todo: 2,3,4,5 done: unsure: 1) https://gemini.google.com/app/bfc4603a97ab0fb7
+
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
 
@@ -6,7 +8,8 @@ todo:
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
 
-* look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix.
+* look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this: https://gemini.google.com/app/d9d0f04a416f0b41
+
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
