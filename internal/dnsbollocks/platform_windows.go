@@ -3827,8 +3827,11 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		// doh_max_request_body_bytes already enforces on the POST path above.
 		if len(encoded) > base64.RawURLEncoding.EncodedLen(cfg.DoHMaxRequestBodyBytes) {
 			log.Warn("DoH GET request rejected: Encoded query too large",
+				slog.String("client", r.RemoteAddr),
 				slog.Int("encoded_len", len(encoded)),
-				slog.String("client", r.RemoteAddr))
+				slog.Int("max", cfg.DoHMaxRequestBodyBytes),
+				slog.String("config.json", getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes))),
+			)
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
@@ -3836,7 +3839,9 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Warn("DoH GET request rejected: Invalid base64 'dns' param",
 				wincoe.SafeErr(err),
-				slog.String("client", r.RemoteAddr))
+				slog.String("client", r.RemoteAddr),
+				slog.String("base64_dns_param", encoded), //XXX: hmmm, should I not log this in case wtw prints this could be exploited by printing it?!
+			)
 			http.Error(w, "Invalid GET param", http.StatusBadRequest)
 			return
 		}
