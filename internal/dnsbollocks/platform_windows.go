@@ -4600,13 +4600,18 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 		case dns.TypeA:
 			rr := new(dns.A)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
-			rr.A = cfg.BlockIPv4Parsed // Thread-safe shared reference copy
+			// Clone rather than alias cfg.BlockIPv4Parsed: that slice is shared across every
+			// blocked query until the next Reload(). Assigning it directly would let any future
+			// code that mutates rr.A's bytes in place (rather than replacing the slice) silently
+			// corrupt the shared config value for every subsequent blocked response.
+			rr.A = append(net.IP(nil), cfg.BlockIPv4Parsed...)
 			msg.Answer = []dns.RR{rr}
 			msg.SetRcode(msg, dns.RcodeSuccess)
 		case dns.TypeAAAA:
 			rr := new(dns.AAAA)
 			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
-			rr.AAAA = cfg.BlockIPv6Parsed // Thread-safe shared reference copy
+			// See the rr.A clone comment in the TypeA case above — identical aliasing hazard.
+			rr.AAAA = append(net.IP(nil), cfg.BlockIPv6Parsed...)
 			msg.Answer = []dns.RR{rr}
 			msg.SetRcode(msg, dns.RcodeSuccess)
 		default:
@@ -10379,7 +10384,8 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		ip4 := ipV4Raw.To4()
 		if ip4 != nil {
 			resolvedCfg.BlockIPv4Parsed = ip4
-			rawCfg.BlockIPv4Parsed = ip4 // not needed/used but I do it to keep it consistent anyway
+			// Independent copy — resolvedCfg and rawCfg must never share a backing array here.
+			rawCfg.BlockIPv4Parsed = append(net.IP(nil), ip4...) // assignment is not needed/used but I do it to keep it consistent anyway
 		} else {
 			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIP))
 			msg := fmt.Sprintf("Invalid IPv4 address %q for %q in config file %q", resolvedCfg.BlockIP, tag, configFileName)
@@ -10392,7 +10398,8 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		isIPv6 := ipV6Raw != nil && ipV6Raw.To4() == nil
 		if isIPv6 {
 			resolvedCfg.BlockIPv6Parsed = ipV6Raw
-			rawCfg.BlockIPv6Parsed = ipV6Raw // not needed/used but I do it to keep it consistent anyway
+			// Independent copy — resolvedCfg and rawCfg must never share a backing array here.
+			rawCfg.BlockIPv6Parsed = append(net.IP(nil), ipV6Raw...) // assignment is not needed/used but I do it to keep it consistent anyway
 		} else {
 			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIPv6))
 			msg := fmt.Sprintf("Invalid IPv6 address %q for %q in config file %q", resolvedCfg.BlockIPv6, tag, configFileName)
