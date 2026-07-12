@@ -382,7 +382,8 @@ func IsStdinConsoleInteractive() bool {
 
 	// G115 Fix: Ensure the uintptr fits into a signed int
 	if fdPtr > math.MaxInt {
-		//TODO: should we log this? Logger.slog
+		//doneTODO: should we log this? Logger.slog
+		GetBugLogger().Warn("fdPtr exceeded math.MaxInt", slog.Uint64("fdPtr", uint64(fdPtr)))
 		return false
 	}
 
