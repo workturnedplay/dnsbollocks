@@ -10422,8 +10422,12 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, uiHost)
 	}
 
+	origLevel := resolvedCfg.ConsoleLogLevel
 	resolvedCfg.ConsoleLogLevel = strings.ToLower(strings.TrimSpace(resolvedCfg.ConsoleLogLevel))
-	//TODO: ^ if changed, then shouldSaveConfig = true
+	//doneTODO: ^ if changed, then shouldSaveConfig = true
+	if origLevel != resolvedCfg.ConsoleLogLevel {
+		shouldSaveConfig = true
+	}
 	switch resolvedCfg.ConsoleLogLevel {
 	case consoleLogLevelDebug, "d", consoleLogLevelInfo, "i", consoleLogLevelWarn, "warning", "w", consoleLogLevelError, "e":
 		// Valid
@@ -10503,29 +10507,49 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
-	for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
-		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
-		if err2 != nil {
-			log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), wincoe.SafeErr(err2))
-			return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
+
+	// for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
+	// 	host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
+	// 	if err2 != nil {
+	// 		log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), wincoe.SafeErr(err2))
+	// 		return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
+	// 	}
+	// 	rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
+	// 	resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
+	// 	shouldSaveConfig = true
+	// }
+	// //doneFIXME: this is weird, what are we doing here below vs above?!
+	// for i := range resolvedCfg.UpstreamURLs {
+	// 	if resolvedCfg.UpstreamSNIHostnames[i] != "" {
+	// 		continue
+	// 	}
+	// 	host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
+	// 	if err2 != nil {
+	// 		log.Error("invalid upstream URL", slog.Int("at_index", i), wincoe.SafeErr(err2))
+	// 		return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
+	// 	}
+	// 	rawCfg.UpstreamSNIHostnames[i] = host
+	// 	resolvedCfg.UpstreamSNIHostnames[i] = host
+	// 	shouldSaveConfig = true
+	// }
+	for i, rawURL := range resolvedCfg.UpstreamURLs {
+		host, err := hostFromURL(rawURL)
+		if err != nil {
+			log.Warn("invalid upstream URL", slog.String("url", rawURL), slog.Int("at_index", i), wincoe.SafeErr(err))
+			return shouldSaveConfig, fmt.Errorf("invalid upstream URL \"%s\" at index %d, err: %w", rawURL, i, err)
 		}
-		rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
-		resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
-		shouldSaveConfig = true
-	}
-	//FIXME: this is weird, what are we doing here below vs above?!
-	for i := range resolvedCfg.UpstreamURLs {
-		if resolvedCfg.UpstreamSNIHostnames[i] != "" {
-			continue
+
+		if i >= len(resolvedCfg.UpstreamSNIHostnames) {
+			// Slice is too short, append it
+			resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
+			rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
+			shouldSaveConfig = true
+		} else if resolvedCfg.UpstreamSNIHostnames[i] == "" {
+			// Exists but is empty, overwrite it
+			resolvedCfg.UpstreamSNIHostnames[i] = host
+			rawCfg.UpstreamSNIHostnames[i] = host
+			shouldSaveConfig = true
 		}
-		host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
-		if err2 != nil {
-			log.Error("invalid upstream URL", slog.Int("at_index", i), wincoe.SafeErr(err2))
-			return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
-		}
-		rawCfg.UpstreamSNIHostnames[i] = host
-		resolvedCfg.UpstreamSNIHostnames[i] = host
-		shouldSaveConfig = true
 	}
 	log.Debug("Using upstream SNI hostnames:",
 		SafeStringSlice("SNI_hostnames", resolvedCfg.UpstreamSNIHostnames),
