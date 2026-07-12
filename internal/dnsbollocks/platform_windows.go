@@ -8169,6 +8169,8 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 	um.dohTransportsPtrs = nil
 	// --- PRE-COMPUTE DIAL ADDRESS ONCE ---
 	var newUpstreams []Upstream
+	// Loop-invariant (same cfg for every upstream), so compute it once rather than per-iteration.
+	upstreamReadTimeout := computeUpstreamReadTimeoutDuration(cfg)
 	for i, u := range cfg.UpstreamURLsParsed {
 		ip := cfg.UpstreamIPs[i]
 		port := u.Port()
@@ -8216,17 +8218,23 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 
 				//return d.DialContext(ctx, network, dialAddr)
 
-				// Wrap the connection with a strict write deadline (e.g., 5 seconds).
-				// Match this to your cfg.UpstreamClientTimeoutSec or use a sensible default.
+				// Read/write deadlines are intentionally independent — see rwTimeoutConn's and
+				// computeUpstreamReadTimeoutDuration's doc comments for why.
 				return &rwTimeoutConn{
-					Conn:    conn,
-					timeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+					Conn:         conn,
+					readTimeout:  upstreamReadTimeout,
+					writeTimeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 				}, nil
 			},
 			TLSClientConfig: &tls.Config{
 				ServerName:         sniHost,
 				InsecureSkipVerify: false,
 			},
+			// Explicit bound on the TLS handshake phase. This used to be an incidental side
+			// effect of rwTimeoutConn sharing one timeout for both read and write; now that the
+			// read side is intentionally generous (see computeUpstreamReadTimeoutDuration), this
+			// keeps handshake time bounded on its own instead of inheriting that laxity.
+			TLSHandshakeTimeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
 			Proxy:               nil,  // avoid proxy interference
 			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
 			IdleConnTimeout:     time.Duration(cfg.UpstreamIdleConnTimeoutSec) * time.Second,
@@ -8295,17 +8303,49 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 	rl.cache = make(map[string]*list.Element)
 }
 
-// rwTimeoutConn wraps a net.Conn to enforce a strict timeout on every Read and Write call.
-// This prevents HTTP/1.1 and HTTP/2 loops from hanging indefinitely on blackholed connections.
+// computeUpstreamReadTimeoutDuration returns the raw-socket read deadline for rwTimeoutConn.
+//
+// This is deliberately NOT tied to UpstreamClientTimeoutSec (the per-request budget). HTTP/2
+// connections are pooled and sit idle between DNS queries by design — that's the whole point of
+// upstream_max_idle_conns / upstream_idle_conn_timeout_sec. A read deadline as short as the
+// per-request budget fires on every idle gap longer than that, tearing the connection down and
+// forcing a brand-new TCP+TLS+HTTP/2 handshake on the very next query, silently defeating
+// pooling. Dead/zombie connections are instead primarily detected by the HTTP/2 transport's own
+// ReadIdleTimeout+PingTimeout health check (configured via http2.ConfigureTransports below),
+// which pings after upstream_h2_read_idle_timeout_sec of silence and evicts the connection if no
+// PONG arrives within upstream_h2_ping_timeout_sec. That ping/pong traffic still flows through
+// this same wrapped Read(), so summing all three durations guarantees this raw deadline only
+// ever fires as a last-resort backstop — strictly after every h2-native mechanism has already
+// had its chance — rather than being the primary detector. A ceiling keeps that backstop
+// bounded even if an operator configures unusually large idle/ping values.
+func computeUpstreamReadTimeoutDuration(cfg *Config) time.Duration {
+	sum := time.Duration(cfg.UpstreamIdleConnTimeoutSec+cfg.UpstreamH2ReadIdleTimeoutSec+cfg.UpstreamH2PingTimeoutSec) * time.Second
+	const absoluteCeiling = 10 * time.Minute
+	if sum > absoluteCeiling {
+		return absoluteCeiling
+	}
+	return sum
+}
+
+// rwTimeoutConn wraps a net.Conn to enforce independent timeouts on Read and Write.
+//
+// The write side stays tight, tied to UpstreamClientTimeoutSec (the per-request budget): a
+// healthy connection should always be able to accept a small HTTP/2 frame quickly, so a stuck
+// Write() indicates a genuinely wedged socket (e.g. a zero TCP window against a peer that's
+// gone silent) and should fail fast.
+//
+// The read side is deliberately much more generous — see computeUpstreamReadTimeoutDuration for
+// why tying it to the per-request budget would sabotage HTTP/2 connection pooling.
 type rwTimeoutConn struct {
 	net.Conn
-	timeout time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
 }
 
 func (c *rwTimeoutConn) Read(b []byte) (int, error) {
-	if c.timeout > 0 {
-		if err := c.Conn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
-			return 0, fmt.Errorf("failed to set read deadline (%d) on upstream conn: %w", c.timeout, err)
+	if c.readTimeout > 0 {
+		if err := c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout)); err != nil {
+			return 0, fmt.Errorf("failed to set read deadline (%d) on upstream conn: %w", c.readTimeout, err)
 		}
 	}
 	n, err := c.Conn.Read(b)
@@ -8316,10 +8356,10 @@ func (c *rwTimeoutConn) Read(b []byte) (int, error) {
 }
 
 func (c *rwTimeoutConn) Write(b []byte) (int, error) {
-	if c.timeout > 0 {
-		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+	if c.writeTimeout > 0 {
+		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
 			// Return 0 bytes written and wrap the error so the caller knows exactly what failed
-			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", c.timeout, err)
+			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", c.writeTimeout, err)
 		}
 	}
 	n, err := c.Conn.Write(b)
