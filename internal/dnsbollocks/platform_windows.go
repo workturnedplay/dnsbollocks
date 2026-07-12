@@ -89,7 +89,7 @@ type Config struct {
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
 	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (actually replies with 503 Service Unavailable)."`
-	//FIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two:
+	//cantFIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two: // cantFIXME: Go struct tags must be string literals.
 	BlockIP   string `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
 	BlockIPv6 string `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
 
@@ -10331,15 +10331,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		If you pass it an IPv4 address like "127.0.0.1", it returns a 16-byte slice containing an IPv4-mapped IPv6 address (12 bytes of padding followed by 127, 0, 0, 1).
 	*/
 	{ // tiny scope to prevent locals from leaking
-		//TODO: should we save this back into config after ParseIP ? and set shouldSaveConfig = true
-		//TODO: do I have to set the parseds to rawCfg too?! unclear
+		//noTODO: should we save this back into config after ParseIP ? and set shouldSaveConfig = true
+		//doneTODO: do I have to set the parseds to rawCfg too?! unclear; doesn't seem like I should since they aren't saved due to json:"-" tag,
 
 		// Validate and parse BlockIP (IPv4)
 		ipV4Raw := net.ParseIP(resolvedCfg.BlockIP)
 		ip4 := ipV4Raw.To4()
 		if ip4 != nil {
 			resolvedCfg.BlockIPv4Parsed = ip4
-			rawCfg.BlockIPv4Parsed = ip4
+			rawCfg.BlockIPv4Parsed = ip4 // not needed/used but I do it to keep it consistent anyway
 		} else {
 			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIP))
 			msg := fmt.Sprintf("Invalid IPv4 address %q for %q in config file %q", resolvedCfg.BlockIP, tag, configFileName)
@@ -10352,7 +10352,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		isIPv6 := ipV6Raw != nil && ipV6Raw.To4() == nil
 		if isIPv6 {
 			resolvedCfg.BlockIPv6Parsed = ipV6Raw
-			rawCfg.BlockIPv6Parsed = ipV6Raw
+			rawCfg.BlockIPv6Parsed = ipV6Raw // not needed/used but I do it to keep it consistent anyway
 		} else {
 			tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockIPv6))
 			msg := fmt.Sprintf("Invalid IPv6 address %q for %q in config file %q", resolvedCfg.BlockIPv6, tag, configFileName)
