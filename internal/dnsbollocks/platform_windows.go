@@ -2501,8 +2501,21 @@ func OldMain() {
 	// log starts as a bootstrap colored console logger (Info level).
 	// It is replaced after loadConfig() with the full multi-handler (files + config level).
 	// This guarantees the very first line of OldMain already uses log.
+	envLvlStr := strings.ToLower(strings.TrimSpace(os.Getenv("DNSBOLLOCKS_BOOTSTRAP_LOG_LEVEL")))
+	var envLvl slog.Level
+	switch envLvlStr {
+	case "info", "i":
+		envLvl = slog.LevelInfo
+	case "warn", "warning", "w":
+		envLvl = slog.LevelWarn
+	case "error", "e":
+		envLvl = slog.LevelError
+	default:
+		envLvl = slog.LevelDebug
+	}
+
 	var localLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug, //TODO: allow env. var. to dictate the level? but nothing right now uses this yet because initBootstrapLogging gets hit early!
+		Level: envLvl,
 	}))
 
 	// wincoe.InstallCrashSink()
