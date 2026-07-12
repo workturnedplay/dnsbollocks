@@ -6750,39 +6750,39 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 }
 
-func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
-	snapshot := ui.ruleStore.Snapshot()
-	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
-		// Check whitelist to see if these domains are currently unblocked
-		for _, rule := range snapshot[qtype] { //cantTODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
-			if rule.Pattern == domain && rule.Enabled {
-				return true
-			}
-		}
-		return false
-	})
-}
-
-// func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery { // made by Gemini 3.1 Pro with regards to the above TODO ^
+// func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 // 	snapshot := ui.ruleStore.Snapshot()
-
-// 	//FIXME: this doesn't seem better with regards to: we're still parsing all rules
-
-// 	// Pre-build a hash set of active rules for O(1) lookups.
-// 	// Key format: "qtype:domain" to uniquely identify active rules without nested maps.
-// 	activeRules := make(map[string]bool)
-// 	for qtype, rules := range snapshot {
-// 		for _, rule := range rules {
-// 			if rule.Enabled {
-// 				activeRules[qtype+":"+rule.Pattern] = true
+// 	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
+// 		// Check whitelist to see if these domains are currently unblocked
+// 		for _, rule := range snapshot[qtype] { //doneasnewfuncTODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
+// 			if rule.Pattern == domain && rule.Enabled {
+// 				return true
 // 			}
 // 		}
-// 	}
-
-// 	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
-// 		return activeRules[qtype+":"+domain]
+// 		return false
 // 	})
 // }
+
+func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery { // made by Gemini 3.1 Pro with regards to the above TODO ^
+	snapshot := ui.ruleStore.Snapshot()
+
+	//imwrong_itisbetterFIXME: this doesn't seem better with regards to: we're still parsing all rules
+
+	// Pre-build a hash set of active rules for O(1) lookups.
+	// Key format: "qtype:domain" to uniquely identify active rules without nested maps.
+	activeRules := make(map[string]bool)
+	for qtype, rules := range snapshot {
+		for _, rule := range rules {
+			if rule.Enabled {
+				activeRules[qtype+":"+rule.Pattern] = true
+			}
+		}
+	}
+
+	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
+		return activeRules[qtype+":"+domain]
+	})
+}
 
 // blocksAjaxHeader is the custom header the /blocks page's JS sets on its
 // background fetch() calls so blocksHandler can respond with a plain status
