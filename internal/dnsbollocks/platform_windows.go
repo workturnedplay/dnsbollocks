@@ -7735,12 +7735,19 @@ type goCacheStore struct {
 	// is reached turns sustained high-QPS traffic at/above capacity into a
 	// full-map-lock storm on the DNS hot path.
 	lastDeleteExpiredNs atomic.Int64
+	liveLogger          *atomic.Pointer[slog.Logger] // <-- Uses the hot-swappable atomic pointer
 }
 
-func newGoCacheStore(janitorInterval time.Duration, maxEntries int) DNSCache {
+// pointer to live logger or default bug logger if uninited
+func (s *goCacheStore) getLogger() *slog.Logger {
+	return wincoe.GetLoggerOrFallback(s.liveLogger, "goCacheStore.liveLogger")
+}
+
+func newGoCacheStore(janitorInterval time.Duration, maxEntries int, liveLogger *atomic.Pointer[slog.Logger]) DNSCache {
 	return &goCacheStore{
 		c:          cache.New(janitorInterval, janitorInterval),
 		maxEntries: maxEntries,
+		liveLogger: liveLogger,
 	}
 }
 
@@ -7768,6 +7775,7 @@ const deleteExpiredThrottle = 1 * time.Second
 
 func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
 	if s.maxEntries > 0 && s.c.ItemCount() >= s.maxEntries {
+		log := s.getLogger()
 		now := time.Now().UnixNano()
 		last := s.lastDeleteExpiredNs.Load()
 		if now-last >= deleteExpiredThrottle.Nanoseconds() && s.lastDeleteExpiredNs.CompareAndSwap(last, now) {
@@ -7776,10 +7784,12 @@ func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
 			// concurrent caller just falls through to the capacity re-check
 			// below instead of piling on redundant O(N) scans of its own.
 			s.c.DeleteExpired()
-			//TODO: log this
+			//doneTODO: log this
+			log.Debug("Cache capacity reached; performed manual DeleteExpired sweep")
 		}
 		if s.c.ItemCount() >= s.maxEntries {
-			//TODO: log this
+			//doneTODO: log this
+			log.Warn("Cache is full after sweep; dropping new entry", slog.String("key", key))
 			return // Cache is full, safely drop the new entry to prevent memory leaks
 		}
 	}
@@ -8427,7 +8437,7 @@ func (s *Server) getCache() DNSCache {
 }
 
 func (s *Server) swapDNSCache(janitorIntervalMinutes, maxEntries int) {
-	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries)
+	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries, s.rt.LogMgr.Ptr())
 	s.liveDNSCache.Store(&newCache)
 }
 func (s *Server) flushCache() {
