@@ -1267,12 +1267,19 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 	num := binary.LittleEndian.Uint32(buf[:4])
 	offset := 4
 
-	for i := uint32(0); i < num; i++ {
+	//for i := uint32(0); i < num; i++ {
+	for i := range num {
 		if isIPv4 {
 			// MIB_UDPROW_OWNER_PID (12 bytes)
 			const rowSize = 12 // MIB_UDPROW_OWNER_PID has 3 DWORDs = 12 bytes
 			if offset+rowSize > len(buf) {
-				panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+				// Defense-in-depth: reached on every incoming UDP DNS packet(in dnsbollocks), so never panic on
+				// OS-returned telemetry here — mirrors PidAndExeForTCP's handling of the
+				// identical situation below in this same file. A transient race between the size
+				// query and the data fetch can occasionally yield a count*rowSize that doesn't
+				// fit; treat it as "no more entries to scan" instead of crashing the resolver.
+				GetBugLogger().Error(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+				break
 			}
 			localAddr := binary.LittleEndian.Uint32(buf[offset : offset+4])
 			localPortRaw := binary.LittleEndian.Uint32(buf[offset+4 : offset+8])
@@ -1308,7 +1315,11 @@ func PidAndExeForUDP(clientAddr *net.UDPAddr) (uint32, string, error) {
 			// ucLocalAddr[16], dwLocalScopeId, dwLocalPort, dwOwningPid
 			const rowSize = 28
 			if offset+rowSize > len(buf) {
-				panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+				//See the identical comment in the isIPv4 branch above.
+
+				//panic2(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+				GetBugLogger().Error(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
+				break
 			}
 
 			localIPBytes := buf[offset : offset+16]
@@ -1375,7 +1386,8 @@ func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 	num := binary.LittleEndian.Uint32(buf[:4])
 	offset := 4
 
-	for i := uint32(0); i < num; i++ {
+	//for i := uint32(0); i < num; i++ {
+	for i := range num {
 		if isIPv4 {
 			// MIB_TCPROW_OWNER_PID (24 bytes)
 			// MIB_TCPROW_OWNER_PID structure:
@@ -1387,6 +1399,7 @@ func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 			// 20: dwOwningPid (4 bytes)
 			const rowSize = 24
 			if offset+rowSize > len(buf) {
+				GetBugLogger().Error(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
 				break
 			}
 
@@ -1427,6 +1440,7 @@ func PidAndExeForTCP(clientAddr *net.TCPAddr) (uint32, string, error) {
 			// ucLocalAddr[16], dwLocalScopeId, dwLocalPort, ucRemoteAddr[16], dwRemoteScopeId, dwRemotePort, dwState, dwOwningPid
 			const rowSize = 56
 			if offset+rowSize > len(buf) {
+				GetBugLogger().Error(fmt.Sprintf("attempted to read beyond buffer in buf=%p len(buf)=%d offset=%d rowSize=%d i=%d\n", buf, len(buf), offset, rowSize, i))
 				break
 			}
 
