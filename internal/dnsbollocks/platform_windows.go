@@ -8437,7 +8437,17 @@ func (s *Server) getCache() DNSCache {
 }
 
 func (s *Server) swapDNSCache(janitorIntervalMinutes, maxEntries int) {
-	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries, s.rt.LogMgr.Ptr())
+	if s.rt == nil {
+		panic2("BUG: uninited Server.Runtime")
+	}
+	if s.rt.LogMgr == nil {
+		panic2("BUG: uninited Server.Runtime.LogMgr")
+	}
+	var logPtr *atomic.Pointer[slog.Logger] = s.rt.LogMgr.Ptr()
+	if logPtr == nil {
+		panic2("BUG: should never return nil for s.rt.LogMgr.Ptr()")
+	}
+	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries, logPtr)
 	s.liveDNSCache.Store(&newCache)
 }
 func (s *Server) flushCache() {

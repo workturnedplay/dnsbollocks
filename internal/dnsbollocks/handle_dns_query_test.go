@@ -69,9 +69,9 @@ func newQueryTestServer(t *testing.T, cfg Config, fwd DoHForwarder) *Server {
 		stats:        new(expvar.Int), // unregistered; avoids expvar duplicate-key panic
 		dohForwarder: fwd,
 	}
-	s.swapDNSCache(5, 100)
 	s.liveConfig.Store(&cfg)
 	s.rt = newTestRuntime(log)
+	s.swapDNSCache(5, 100)
 	// t.Context() is cancelled when the test ends, which cleanly stops the
 	// rate limiter's internal janitor goroutine.
 	s.rateLimiter = newClientRateLimiter(t.Context(), rateLimitConfigFrom(cfg), log)

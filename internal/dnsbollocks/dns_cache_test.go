@@ -4,6 +4,9 @@
 package dnsbollocks
 
 import (
+	"io"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,8 +14,12 @@ import (
 )
 
 func TestDNSCache(t *testing.T) {
+	// Discard logs to keep test output clean
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(logger)
 	// Initialize cache with a fast janitor interval for testing if needed
-	cache := newGoCacheStore(5*time.Minute, 100)
+	cache := newGoCacheStore(5*time.Minute, 100, &liveLogger)
 
 	msg := new(dns.Msg)
 	msg.SetQuestion("example.com.", dns.TypeA)
