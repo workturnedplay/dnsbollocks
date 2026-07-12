@@ -3807,6 +3807,9 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPost && r.Method != http.MethodGet { //"POST" "GET"
+		log.Warn("DoH request rejected: Method not allowed",
+			slog.String("method", r.Method),
+			slog.String("client", r.RemoteAddr))
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -3823,21 +3826,34 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		// ceil(4*N/3) chars to encode N raw bytes, so this mirrors the same cap
 		// doh_max_request_body_bytes already enforces on the POST path above.
 		if len(encoded) > base64.RawURLEncoding.EncodedLen(cfg.DoHMaxRequestBodyBytes) {
+			log.Warn("DoH GET request rejected: Encoded query too large",
+				slog.Int("encoded_len", len(encoded)),
+				slog.String("client", r.RemoteAddr))
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
 		body, err = base64.RawURLEncoding.DecodeString(encoded)
 		if err != nil {
+			log.Warn("DoH GET request rejected: Invalid base64 'dns' param",
+				wincoe.SafeErr(err),
+				slog.String("client", r.RemoteAddr))
 			http.Error(w, "Invalid GET param", http.StatusBadRequest)
 			return
 		}
 	}
 	if err != nil || len(body) == 0 {
+		log.Warn("DoH request rejected: Empty or unreadable body",
+			wincoe.SafeErr(err),
+			slog.Int("body_len", len(body)),
+			slog.String("client", r.RemoteAddr))
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 	msg := new(dns.Msg)
 	if err2 := msg.Unpack(body); err2 != nil {
+		log.Warn("DoH request rejected: Failed to unpack DNS query",
+			wincoe.SafeErr(err2),
+			slog.String("client", r.RemoteAddr))
 		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusBadRequest)
 		return
 	}
