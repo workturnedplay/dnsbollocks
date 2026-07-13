@@ -263,11 +263,6 @@ type keyEventRecord struct {
 	ControlKeyState uint32
 }
 
-var (
-	procReadConsoleInputW = Kernel32.NewProc("ReadConsoleInputW")
-	procPeekConsoleInputW = Kernel32.NewProc("PeekConsoleInputW")
-)
-
 const (
 	KEY_EVENT = 0x0001
 	VK_RETURN = 0x0D // Virtual Key Code for Enter/Carriage Return
@@ -276,24 +271,33 @@ const (
 // ClearStdin inspects and consumes all pending console input events.
 // Returns true if any KEY_EVENT with BKeyDown was observed.
 // It peeks first to avoid blocking reads.
+//
+// This is best-effort: failures are logged (via wincoe.Logger) but do not
+// abort the program — we still return whatever partial state we collected.
+// Thread-safety note: console handle access is inherently racy if other
+// goroutines manipulate stdin mode concurrently. Callers (WaitAnyKey etc.)
+// already wrap this in WithConsoleEventRaw which does its own mode protection.
 func ClearStdin() (hadKey bool) {
 	h := syscall.Handle(os.Stdin.Fd())
-
-	hadKey = false // be explicit
+	log := Logger.Load() // safe atomic read
 
 	for {
 		// Peek a single event (non-destructive, non-blocking).
 		var peekRec inputRecord
 		var peekCount uint32
-		r1, _, err := procPeekConsoleInputW.Call(
+
+		_, _, err := procPeekConsoleInputW.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&peekRec)),
 			uintptr(1),
 			uintptr(unsafe.Pointer(&peekCount)),
 		)
-		if r1 == 0 {
-			// syscall error — be conservative and stop looping
-			_ = err
+		if err != nil {
+			// Failure on Peek — log and stop. This is usually transient or
+			// indicates stdin is no longer a console.
+			log.Warn("ClearStdin: PeekConsoleInputW failed",
+				slog.String("operation", "PeekConsoleInputW"),
+				SafeErr(err))
 			break
 		}
 		if peekCount == 0 {
@@ -304,15 +308,17 @@ func ClearStdin() (hadKey bool) {
 		// There's at least one event, now consume one event for real.
 		var rec inputRecord
 		var read uint32
-		r1, _, err = procReadConsoleInputW.Call(
+
+		_, _, err = procReadConsoleInputW.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&rec)),
 			uintptr(1),
 			uintptr(unsafe.Pointer(&read)),
 		)
-		if r1 == 0 {
-			// read failed; stop
-			_ = err
+		if err != nil {
+			log.Warn("ClearStdin: ReadConsoleInputW failed",
+				slog.String("operation", "ReadConsoleInputW"),
+				SafeErr(err))
 			break
 		}
 		if read == 0 {
@@ -334,7 +340,7 @@ func ClearStdin() (hadKey bool) {
 		// otherwise keep looping until no events left
 	}
 
-	return hadKey
+	return hadKey // explicit return for clarity (though bare "return" also works)
 }
 
 // WithConsoleEventRaw
@@ -352,8 +358,18 @@ func WithConsoleEventRaw(fn func()) {
 	newMode &^= windows.ENABLE_LINE_INPUT
 	newMode &^= windows.ENABLE_ECHO_INPUT
 
-	_ = windows.SetConsoleMode(h, newMode)
-	defer windows.SetConsoleMode(h, oldMode)
+	if err := windows.SetConsoleMode(h, newMode); err != nil {
+		log := Logger.Load() // safe atomic read
+		log.Warn("WithConsoleEventRaw: SetConsoleMode failed to enter raw mode", SafeErr(err))
+		// still proceed — we want to run fn() even if mode change is partial
+	}
+	defer func() {
+		log := Logger.Load() // safe atomic read
+		err2 := windows.SetConsoleMode(h, oldMode)
+		if err2 != nil {
+			log.Warn("WithConsoleEventRaw: SetConsoleMode failed to restore old mode", SafeErr(err2))
+		}
+	}()
 
 	fn()
 }
@@ -715,6 +731,11 @@ var (
 
 	//procWriteConsoleInputW = Kernel32.NewProc("WriteConsoleInputW")
 	procWriteConsoleInputW = NewBoundProc(Kernel32, "WriteConsoleInputW", CheckBool)
+
+	//procReadConsoleInputW = Kernel32.NewProc("ReadConsoleInputW")
+	//procPeekConsoleInputW = Kernel32.NewProc("PeekConsoleInputW")
+	procPeekConsoleInputW = NewBoundProc(Kernel32, "PeekConsoleInputW", CheckBool)
+	procReadConsoleInputW = NewBoundProc(Kernel32, "ReadConsoleInputW", CheckBool)
 )
 
 // auto runs before main(), loads the DLLs non-lazily.
