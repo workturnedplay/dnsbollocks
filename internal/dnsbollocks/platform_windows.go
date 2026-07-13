@@ -997,16 +997,25 @@ func (s *Server) loadLocalHosts() error {
 		}
 
 		if _, modified := sanitizeDomainInput(normalizedPat); modified {
-			log.Error("Purging invalid host pattern containing illegal characters",
-				slog.String("invalid_pattern", normalizedPat))
+			attrs := []any{slog.String("invalid_pattern", normalizedPat)}
+			if wasIDN {
+				attrs = append(attrs, slog.String("invalid_pattern_idn", pat))
+			}
+			log.Error("Purging invalid host pattern containing illegal characters", attrs...)
 			removed++
 			continue
 		}
 
 		if len(normalizedPat) > maxRulePatternLength {
-			log.Error("Purging host pattern exceeding maximum length",
+			attrs := []any{
 				slog.Int("pattern_length", len(normalizedPat)),
-				slog.Int("max_length", maxRulePatternLength))
+				slog.Int("max_length", maxRulePatternLength),
+				slog.String("pattern", normalizedPat),
+			}
+			if wasIDN {
+				attrs = append(attrs, slog.String("pattern_idn", pat))
+			}
+			log.Error("Purging host pattern exceeding maximum length", attrs...)
 			removed++
 			continue
 		}
@@ -1307,20 +1316,30 @@ func (s *Server) loadQueryWhitelist() error {
 			// Validate using the allowed rule character set
 			_, modified := sanitizeDomainInput(r.Pattern)
 			if modified {
-				log.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters",
+				attrs := []any{
 					slog.String("id", r.ID),
 					slog.String("invalid_pattern", r.Pattern),
-				)
+				}
+				if wasIDN {
+					displayPat, _ := punycodeDecodePatternForDisplay(r.Pattern)
+					attrs = append(attrs, slog.String("pattern_idn", displayPat))
+				}
+				log.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters", attrs...)
 				removed++
 				continue // Purges/omits it from being appended to cleaned slice
 			}
 
 			if len(r.Pattern) > maxRulePatternLength {
-				log.Error("Purging/deleting whitelist rule pattern exceeding maximum length",
+				attrs := []any{
 					slog.String("id", r.ID),
 					slog.Int("pattern_length", len(r.Pattern)),
 					slog.Int("max_length", maxRulePatternLength),
-				)
+				}
+				if wasIDN {
+					displayPat, _ := punycodeDecodePatternForDisplay(r.Pattern)
+					attrs = append(attrs, slog.String("pattern_idn", displayPat))
+				}
+				log.Error("Purging/deleting whitelist rule pattern exceeding maximum length", attrs...)
 				removed++
 				continue
 			}
@@ -4855,9 +4874,18 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
-		log.Warn("response_filtered_all", slog.String("query_type", qtype), slog.String("domain", q.Name),
+		domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+
+		attrs := []any{
+			slog.String("query_type", qtype),
+			slog.String("domain", domain),
 			SafeStringSlice("drop_reasons", dropReasons),
-		)
+		}
+		if wasIDN {
+			attrs = append(attrs, slog.String("domain_idn", displayDomain))
+		}
+		log.Warn("response_filtered_all", attrs...)
 
 		hasZeroIP := false
 		hasBlacklistedIP := false
@@ -7099,7 +7127,11 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
 
-		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", slog.String("domain", domainLowercased), slog.String("type", typ))
+		attrs := []any{slog.String("domain", domainLowercased), slog.String("type", typ)}
+		if displayDomain != domainLowercased {
+			attrs = append(attrs, slog.String("domain_idn", displayDomain))
+		}
+		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", attrs...)
 
 		respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
 		return
@@ -8240,15 +8272,24 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 				// Extract IPs for the log message
 				refIPs := extractIPs(reference)
 				curIPs := extractIPs(res.msg)
-				log.Warn("upstream DNS response mismatch! dropping query to protect client",
+
+				domain := strings.ToLower(strings.TrimSuffix(req.Question[0].Name, "."))
+				displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+
+				attrs := []any{
 					slog.String("query", req.Question[0].Name),
-					slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()), //um.upstreamURLs[refIdx].String()),
+					slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()),
 					SafeStringSlice("ips_returned1", refIPs),
 					slog.String("upstream_DoH_url2", strURL),
 					SafeStringSlice("ips_returned2", curIPs),
 					slog.String("reference", reference.String()),
 					slog.String("current", res.msg.String()),
-				)
+				}
+				if wasIDN {
+					attrs = append(attrs, slog.String("query_idn", displayDomain))
+				}
+
+				log.Warn("upstream DNS response mismatch! dropping query to protect client", attrs...)
 				return nil, upstreamState1 // Drop the query because of answer discrepancy
 			}
 		}
@@ -11669,7 +11710,22 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		}
 		_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
 		if err != nil {
-			log.Warn("Failed to edit rule", wincoe.SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
+			displayOldPattern, oldWasIDN := punycodeDecodePatternForDisplay(oldPattern)
+			attrs := []any{
+				wincoe.SafeErr(err),
+				slog.String("id", id),
+				slog.String("type", typ),
+				slog.String("old_pattern", oldPattern),
+				slog.String("new_pattern", patternNormalized),
+			}
+			if displayPattern != patternNormalized {
+				attrs = append(attrs, slog.String("new_pattern_idn", displayPattern))
+			}
+			if oldWasIDN {
+				attrs = append(attrs, slog.String("old_pattern_idn", displayOldPattern))
+			}
+			log.Warn("Failed to edit rule", attrs...)
+
 			if displayPattern != patternNormalized {
 				return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
 			}
@@ -11790,13 +11846,22 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 
 	//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 	if err := validateRulePattern(patternLowercased); err != nil {
-		log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
+		attrs := []any{slog.String("pattern", patternLowercased), wincoe.SafeErr(err)}
+		if displayPattern != patternLowercased {
+			attrs = append(attrs, slog.String("pattern_idn", displayPattern))
+		}
+		log.Warn("Failed to add/edit local host: invalid pattern", attrs...)
 		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 	}
 	// old_pattern (edit path) needs the same check.
 	if isEdit && oldPatternLowercased != "" {
 		if err := validateRulePattern(oldPatternLowercased); err != nil {
-			log.Warn("Failed to edit local host: invalid old_pattern", slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(err))
+			displayOldPattern, wasIDN := punycodeDecodePatternForDisplay(oldPatternLowercased)
+			attrs := []any{slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(err)}
+			if wasIDN {
+				attrs = append(attrs, slog.String("old_pattern_idn", displayOldPattern))
+			}
+			log.Warn("Failed to edit local host: invalid old_pattern", attrs...)
 			return http.StatusBadRequest, errors.New("Invalid old_pattern: " + err.Error())
 		}
 	}
