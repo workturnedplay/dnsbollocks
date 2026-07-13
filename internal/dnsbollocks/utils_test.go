@@ -242,3 +242,63 @@ func TestParseConsoleLogLevel(t *testing.T) {
 		})
 	}
 }
+
+func TestPunycodeEncodePattern(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantEncoded string
+		wantWasIDN  bool
+		wantErr     bool
+	}{
+		{"plain ascii unchanged", "example.com", "example.com", false, false},
+		{"wildcard only unchanged", "*.example.com", "*.example.com", false, false},
+		{"simple idn", "café.com", "xn--caf-dma.com", true, false},
+		{"idn with wildcard label", "*.café.com", "*.xn--caf-dma.com", true, false},
+		{"idn subdomain", "www.café.com", "www.xn--caf-dma.com", true, false},
+		{"empty string", "", "", false, false},
+		{"mixed wildcard and unicode in same label", "café{*}.com", "", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, wasIDN, err := punycodeEncodePattern(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("punycodeEncodePattern(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got != tt.wantEncoded {
+				t.Errorf("punycodeEncodePattern(%q) = %q, want %q", tt.input, got, tt.wantEncoded)
+			}
+			if wasIDN != tt.wantWasIDN {
+				t.Errorf("punycodeEncodePattern(%q) wasIDN = %v, want %v", tt.input, wasIDN, tt.wantWasIDN)
+			}
+		})
+	}
+}
+
+func TestPunycodeDecodePatternForDisplay(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantDisplay string
+		wantWasIDN  bool
+	}{
+		{"plain ascii unchanged", "example.com", "example.com", false},
+		{"simple punycode decodes", "xn--caf-dma.com", "café.com", true},
+		{"wildcard label untouched", "*.xn--caf-dma.com", "*.café.com", true},
+		{"no xn-- prefix anywhere", "not-idn-example.com", "not-idn-example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, wasIDN := punycodeDecodePatternForDisplay(tt.input)
+			if got != tt.wantDisplay {
+				t.Errorf("punycodeDecodePatternForDisplay(%q) = %q, want %q", tt.input, got, tt.wantDisplay)
+			}
+			if wasIDN != tt.wantWasIDN {
+				t.Errorf("punycodeDecodePatternForDisplay(%q) wasIDN = %v, want %v", tt.input, wasIDN, tt.wantWasIDN)
+			}
+		})
+	}
+}

@@ -179,7 +179,7 @@
 <ul>
     {{range .Blocks}}
     <li>
-        <code>{{.Domain}}</code> <span class="tag-disabled">({{.Type}})</span>
+        <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
         
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -243,14 +243,14 @@
     </thead>
     <tbody>
         {{range .Hosts}}
-        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.Pattern}}" data-host-ips="{{.IPsDisplay}}"
+        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}"
             data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}">
-            <td title="{{.Pattern}}">{{.Pattern}}</td>
+            <td title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
             <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
             <td class="actions">
                 <button class="btn-edit js-host-edit" 
                 data-index="{{.Index}}" 
-                data-pattern="{{.Pattern}}" 
+                data-pattern="{{.PatternDisplay}}" 
                 data-ips="{{.IPsDisplay}}">
                 Edit
             </button>

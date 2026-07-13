@@ -67,6 +67,7 @@ import (
 	"github.com/workturnedplay/dnsbollocks/templates"
 	"github.com/workturnedplay/wincoe"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/idna"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 	"golang.org/x/time/rate"
@@ -969,6 +970,24 @@ func (s *Server) loadLocalHosts() error {
 			changed++
 		}
 
+		// Convert any hand-edited Unicode (IDN) pattern (e.g. "café.com") into
+		// punycode/ASCII so it can ever match a real (always-ASCII) DNS query,
+		// instead of being silently purged below as containing "illegal
+		// characters".
+		if idnEncoded, wasIDN, idnErr := punycodeEncodePattern(normalizedPat); idnErr != nil {
+			log.Error("Purging host pattern with invalid unicode",
+				slog.String("invalid_pattern", normalizedPat),
+				wincoe.SafeErr(idnErr))
+			removed++
+			continue
+		} else if wasIDN {
+			log.Warn("Converted unicode host pattern to punycode",
+				slog.String("unicode_pattern", normalizedPat),
+				slog.String("punycode_pattern", idnEncoded))
+			normalizedPat = idnEncoded
+			changed++
+		}
+
 		if normalizedPat == "" {
 			log.Warn("Purging host rule with empty pattern (after normalization)",
 				slog.String("original_pattern", pat))
@@ -1248,6 +1267,28 @@ func (s *Server) loadQueryWhitelist() error {
 				r.Pattern = new2
 				changed++
 			}
+
+			// Convert any hand-edited Unicode (IDN) pattern (e.g. "café.com")
+			// into punycode/ASCII so it can ever match a real (always-ASCII)
+			// DNS query, instead of being silently purged below as containing
+			// "illegal characters".
+			if idnEncoded, wasIDN, idnErr := punycodeEncodePattern(r.Pattern); idnErr != nil {
+				log.Error("Purging/deleting whitelist rule pattern with invalid unicode",
+					slog.String("id", r.ID),
+					slog.String("invalid_pattern", r.Pattern),
+					wincoe.SafeErr(idnErr),
+				)
+				removed++
+				continue
+			} else if wasIDN {
+				log.Warn("Converted unicode rule pattern to punycode",
+					slog.String("id", r.ID),
+					slog.String("unicode_pattern", r.Pattern),
+					slog.String("punycode_pattern", idnEncoded))
+				r.Pattern = idnEncoded
+				changed++
+			}
+
 			// Check for empty or entirely invalid structures
 			if r.Pattern == "" {
 				log.Warn("Purging/deleting rule with empty pattern", slog.String("id", r.ID))
@@ -1931,10 +1972,11 @@ var dnsTypeSet = func() map[string]struct{} {
 }()
 
 type BlockedQuery struct {
-	Domain      string    `json:"domain"`
-	Type        string    `json:"type"`
-	Time        time.Time `json:"time"`
-	IsUnblocked bool      `json:"-"` // dynamically set for the UI
+	Domain        string    `json:"domain"`
+	DomainDisplay string    `json:"-"` // Unicode display form for the WebUI; computed on read, same as Domain when not an IDN
+	Type          string    `json:"type"`
+	Time          time.Time `json:"time"`
+	IsUnblocked   bool      `json:"-"` // dynamically set for the UI
 }
 
 // loginRecord tracks failed WebUI login attempts for a single client IP.
@@ -5036,10 +5078,21 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 
 	var ts string = time.Now().Format(TimeStampsFormat)
 
+	// domain arrives already in wire format (ASCII/punycode for IDNs, since
+	// that's what real DNS queries always contain). Show the human-readable
+	// Unicode form as the primary "domain" log field to match what the WebUI
+	// displays, and only add "domain_punycode" when the two actually differ
+	// (i.e. this really is an IDN domain) — a plain ASCII domain has nothing
+	// extra worth logging twice.
+	displayDomain, domainIsIDN := punycodeDecodePatternForDisplay(domain)
+
 	var attrs []any = []any{
-		slog.String("domain", domain),
+		slog.String("domain", displayDomain),
 		slog.String("type", typ),
 		slog.String("action", action),
+	}
+	if domainIsIDN {
+		attrs = append(attrs, slog.String("domain_punycode", domain))
 	}
 
 	//this is Grok 4.20 code which makes it always hit "coding_fail: logQuery called without metadata in context"
@@ -6070,7 +6123,8 @@ func (hs *HostStore) Snapshot() []HostView {
 		for j, ip := range h.IPs {
 			ips[j] = ip.String()
 		}
-		out[i] = HostView{Index: i, Pattern: h.Pattern, IPsDisplay: strings.Join(ips, ", ")}
+		displayPattern, _ := punycodeDecodePatternForDisplay(h.Pattern)
+		out[i] = HostView{Index: i, Pattern: h.Pattern, PatternDisplay: displayPattern, IPsDisplay: strings.Join(ips, ", ")}
 	}
 	return out
 }
@@ -6486,10 +6540,11 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		for _, typ := range types {
 			rules := rulesSnapshot[typ]
 			for _, rule := range rules {
+				displayPattern, _ := punycodeDecodePatternForDisplay(rule.Pattern)
 				flatRules = append(flatRules, RuleView{
 					Type:    typ,
 					ID:      rule.ID,
-					Pattern: rule.Pattern,
+					Pattern: displayPattern,
 					Enabled: rule.Enabled,
 				})
 			}
@@ -6547,7 +6602,7 @@ func withRuleRemovedAt(entries []RuleEntry, index int, logger *slog.Logger) []Ru
 	// Copy everything after the index
 	copy(newEntries[index:], entries[index+1:])
 	if logger != nil { //TODO: many other places need this guard, so maybe make helper ?
-		logger.Warn("Deleted rule", slog.Any("rule", entries[index])) // XXX: slog.Any is no longer forbidden for this struct
+		logger.Debug("Deleted rule", slog.Any("rule", entries[index])) // XXX: slog.Any is no longer forbidden for this struct
 	}
 	return newEntries
 }
@@ -6624,9 +6679,10 @@ type BlacklistView struct {
 }
 
 type HostView struct {
-	Index      int
-	Pattern    string
-	IPsDisplay string // Pre-joined "1.1.1.1, 2.2.2.2"
+	Index          int
+	Pattern        string // ASCII/punycode identity — used for delete and old_pattern forms
+	PatternDisplay string // Unicode form for display/editing (same as Pattern when not an IDN)
+	IPsDisplay     string // Pre-joined "1.1.1.1, 2.2.2.2"
 }
 
 // invalidateCacheForPattern surgically removes any cached DNS responses
@@ -6790,23 +6846,8 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 }
 
-// func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
-// 	snapshot := ui.ruleStore.Snapshot()
-// 	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
-// 		// Check whitelist to see if these domains are currently unblocked
-// 		for _, rule := range snapshot[qtype] { //doneasnewfuncTODO: parsing all rules to find the matching one is ugly/slow, in theory, maybe a hash set would be better ? (or keeping it in a hashset as well? if so, keep it in an ordered list too, and appends kept at top(due to UI having Add Rule be at top of page))
-// 			if rule.Pattern == domain && rule.Enabled {
-// 				return true
-// 			}
-// 		}
-// 		return false
-// 	})
-// }
-
-func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery { // made by Gemini 3.1 Pro with regards to the above TODO ^
+func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	snapshot := ui.ruleStore.Snapshot()
-
-	//imwrong_itisbetterFIXME: this doesn't seem better with regards to: we're still parsing all rules
 
 	// Pre-build a hash set of active rules for O(1) lookups.
 	// Key format: "qtype:domain" to uniquely identify active rules without nested maps.
@@ -6819,9 +6860,13 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery { // made by Gemini 3.1 
 		}
 	}
 
-	return ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
+	blocks := ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
 		return activeRules[qtype+":"+domain]
 	})
+	for i := range blocks {
+		blocks[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(blocks[i].Domain)
+	}
+	return blocks
 }
 
 // blocksAjaxHeader is the custom header the /blocks page's JS sets on its
@@ -6902,7 +6947,22 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost { //"POST" {
 		raw := r.FormValue("domain")
 
-		sanitized, modified := sanitizeDomainInput(raw)
+		// Convert any Unicode (IDN) domain (e.g. "café.com") to punycode/ASCII
+		// before the character-set/validity checks below, exactly as a browser
+		// would before ever sending the query on the wire — otherwise it would
+		// be rejected here as "containing illegal characters".
+		encodedRaw, wasIDN, encErr := punycodeEncodePattern(NormalizeDomain(raw))
+		_ = wasIDN
+		if encErr != nil {
+			log.Warn("Invalid domain input submitted via Quick Unblock",
+				slog.String("raw", raw),
+				wincoe.SafeErr(encErr),
+			)
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
+			return
+		}
+
+		sanitized, modified := sanitizeDomainInput(encodedRaw)
 
 		if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern via Quick Unblock here, but an actual valid DNS query domain (and without ending in a dot)
 			log.Warn("Invalid domain input submitted via Quick Unblock",
@@ -6914,6 +6974,9 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
+		// Unicode form for user-facing success messages only; all store
+		// operations below keep using domainLowercased (ASCII/punycode).
+		displayDomain, _ := punycodeDecodePatternForDisplay(domainLowercased)
 
 		// accept sanitized
 		typ := r.FormValue("type")
@@ -6924,38 +6987,42 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			case "reblock":
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
 				if found && changed {
-					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", domainLowercased, typ)
+					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", displayDomain, typ)
 					log.Info("Quick re-block via WebUI: paused existing rule",
 						slog.String("domainLowercased", domainLowercased),
+						slog.String("displayDomain", displayDomain),
 						slog.String("DNSType", typ))
 					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
-					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", domainLowercased, typ)
+					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", displayDomain, typ)
 				}
 			case "unblock":
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true)
 				if found && changed {
-					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", domainLowercased, typ)
+					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", displayDomain, typ)
 					log.Info("Quick unblock via WebUI: enabled existing paused rule",
 						slog.String("domainLowercased", domainLowercased),
+						slog.String("displayDomain", displayDomain),
 						slog.String("DNSType", typ))
 					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
-					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", domainLowercased, typ)
+					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", displayDomain, typ)
 					log.Info("Quick unblock via WebUI: ignored, rule is already active",
 						slog.String("domainLowercased", domainLowercased),
+						slog.String("displayDomain", displayDomain),
 						slog.String("DNSType", typ))
 				} else {
 					newID, addErr := ui.ruleStore.AddRule(typ, domainLowercased, true, log)
 					if addErr == nil {
 						_ = newID
-						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", domainLowercased, typ)
+						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", displayDomain, typ)
 						log.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
 							slog.String("domainLowercased", domainLowercased),
+							slog.String("displayDomain", displayDomain),
 							slog.String("DNSType", typ))
 						ui.OnInvalidatePattern(domainLowercased)
 					} else {
-						panic2(fmt.Sprintf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s", typ, domainLowercased))
+						panic2(fmt.Sprintf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s, displayDomain %s", typ, domainLowercased, displayDomain))
 					}
 				}
 			default:
@@ -10812,15 +10879,117 @@ func validateDistinctConfigFilePaths(paths map[string]string) error {
 }
 
 // NormalizeDomain returns a clean, lowercased domain pattern suitable for rules/hosts.
-// Handles trailing dot, whitespace, IDN safety (future).
+// Handles trailing dot and whitespace. IDN (unicode) domains are NOT punycode-encoded
+// here — callers that accept operator-facing patterns must additionally call
+// punycodeEncodePattern afterwards; see its doc comment for why this is a separate step.
 func NormalizeDomain(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.TrimSuffix(s, ".")
-	// // Future: punycode / IDN validation here
-	// if s == "" {
-	// 	return ""
-	// }
 	return s
+}
+
+// isASCII reports whether s contains only ASCII (byte < 0x80) characters.
+// Used to fast-path skip punycode/IDNA processing for patterns/labels that
+// are already plain ASCII — the overwhelming majority of rules/hosts.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// punycodeEncodePattern converts every Unicode (non-ASCII) label of a
+// lowercased, dot-separated rule/host pattern into its ASCII "A-label" form
+// (RFC 3492 Punycode, "xn--"-prefixed) using the same UTS46 processing a
+// browser or OS stub resolver applies before a query ever reaches the wire.
+// This is what lets an operator type/see a domain like "café.com" while the
+// pattern that's actually stored — and matched against real, always-ASCII,
+// incoming DNS queries — is "xn--caf-dma.com". matchPattern itself is never
+// touched: it only ever sees ASCII, exactly as before.
+//
+// Wildcard-token characters (*, ?, !, {, }) are pattern-matching syntax, not
+// real domain content, so a label consisting solely of such tokens (e.g. the
+// "*" in "*.café.com") is passed through untouched. A label that mixes a
+// wildcard token with non-ASCII characters is rejected outright: there is no
+// unambiguous way to punycode-encode "part" of a label, so the operator is
+// asked to put the wildcard in its own label instead (e.g. "*.café.com",
+// not "café{*}.com").
+//
+// Returns the (possibly rewritten) pattern, whether anything was actually
+// IDN-encoded, and a non-nil error if a label couldn't be safely converted.
+func punycodeEncodePattern(pattern string) (encoded string, wasIDN bool, err error) {
+	if pattern == "" || isASCII(pattern) {
+		return pattern, false, nil // fast path: nothing to encode
+	}
+
+	labels := strings.Split(pattern, ".")
+	for i, label := range labels {
+		if isASCII(label) {
+			continue // nothing to do for this label
+		}
+		if strings.ContainsAny(label, "*?!{}") {
+			return pattern, false, fmt.Errorf(
+				"pattern label %q mixes a wildcard token with unicode characters; "+
+					"put the wildcard in its own label instead (e.g. *.café.com, not café{*}.com)",
+				label)
+		}
+		ascii, encErr := idna.Lookup.ToASCII(label)
+		if encErr != nil {
+			return pattern, false, fmt.Errorf("failed to convert unicode label %q to punycode: %w", label, encErr)
+		}
+		labels[i] = ascii
+		wasIDN = true
+	}
+	if !wasIDN {
+		return pattern, false, nil
+	}
+	return strings.Join(labels, "."), true, nil
+}
+
+// encodePatternOrErr is a thin wrapper around punycodeEncodePattern that
+// packages a conversion failure into a single, already-wrapped error
+// suitable for returning straight to an HTTP handler.
+func encodePatternOrErr(pattern string) (string, error) {
+	encoded, _, err := punycodeEncodePattern(pattern)
+	if err != nil {
+		return "", fmt.Errorf("invalid pattern %q: %w", pattern, err)
+	}
+	return encoded, nil
+}
+
+// punycodeDecodePatternForDisplay converts every ASCII "xn--" punycode
+// label in pattern back to its human-readable Unicode form, for display in
+// the WebUI and in logs. Labels that aren't punycode-prefixed (plain ASCII,
+// wildcard tokens, etc.) are returned unchanged. This is the inverse of
+// punycodeEncodePattern and never mutates the underlying stored pattern —
+// only display surfaces ever see the Unicode form; matching and persistence
+// always use the punycode/ASCII pattern.
+//
+// A malformed/corrupted "xn--" label is treated as non-fatal: it's left
+// exactly as stored rather than failing the whole page render or log line.
+func punycodeDecodePatternForDisplay(pattern string) (display string, wasIDN bool) {
+	if !strings.Contains(pattern, "xn--") {
+		return pattern, false // fast path: definitely nothing to decode
+	}
+
+	labels := strings.Split(pattern, ".")
+	for i, label := range labels {
+		if !strings.HasPrefix(label, "xn--") {
+			continue
+		}
+		uni, decErr := idna.Punycode.ToUnicode(label)
+		if decErr != nil || uni == "" {
+			continue // leave malformed/unconvertible labels exactly as stored
+		}
+		labels[i] = uni
+		wasIDN = true
+	}
+	if !wasIDN {
+		return pattern, false
+	}
+	return strings.Join(labels, "."), true
 }
 
 const (
@@ -11381,7 +11550,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		}
 
 		ui.OnInvalidatePattern(pattern)
-		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ))
+		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))
 		return http.StatusOK, nil
 	} //end delete
 
@@ -11400,12 +11569,26 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		log.Warn("Failed to add/edit rule: Pattern and type required", slog.String("patternLowercased", patternNormalized), slog.String("type", typ))
 		return http.StatusBadRequest, errors.New("pattern and type required")
 	}
+
+	// Convert any Unicode (IDN) labels the operator typed/edited (e.g.
+	// "café.com") into punycode/ASCII before validation and storage; real
+	// DNS queries always arrive already punycode-encoded, so patterns must
+	// be stored the same way to ever match. displayPattern is kept only for
+	// a more readable conflict/error message further below.
+	displayPattern := patternNormalized
+	encodedPattern, encErr := encodePatternOrErr(patternNormalized)
+	if encErr != nil {
+		log.Warn("Failed to add/edit rule: invalid unicode pattern", slog.String("displayPattern", displayPattern), wincoe.SafeErr(encErr))
+		return http.StatusBadRequest, encErr
+	}
+	patternNormalized = encodedPattern
+
 	if err := validateDNSType(typ); err != nil {
 		log.Warn("Failed to add/edit rule: invalid DNS type", slog.String("type", typ), wincoe.SafeErr(err))
 		return http.StatusBadRequest, err
 	}
 	if err := validateRulePattern(patternNormalized); err != nil {
-		log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), wincoe.SafeErr(err))
+		log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("displayPattern", displayPattern), wincoe.SafeErr(err))
 		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 	}
 
@@ -11423,6 +11606,9 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
 		if err != nil {
 			log.Warn("Failed to edit rule", wincoe.SafeErr(err), slog.String("id", id), slog.String("type", typ), slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
+			if displayPattern != patternNormalized {
+				return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
+			}
 			return http.StatusConflict, err
 		}
 
@@ -11434,6 +11620,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 			slog.String("id", id),
 			slog.String("type", typ),
 			slog.String("new_pattern", patternNormalized),
+			slog.String("new_displayPattern", displayPattern),
 			slog.Bool("enabled", enabledBool),
 			slog.String("old_pattern", oldPattern))
 	} else {
@@ -11448,13 +11635,19 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 				wincoe.SafeErr(err),
 				slog.String("newID", newID),
 				slog.String("type", typ),
-				slog.String("patternLowercased", patternNormalized))
+				slog.String("patternLowercased", patternNormalized),
+				slog.String("displayPattern", displayPattern),
+			)
+			if displayPattern != patternNormalized {
+				return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
+			}
 			return http.StatusConflict, err
 		}
 
 		ui.OnInvalidatePattern(patternNormalized)
 		log.Info("Rule added via WebUI/Batch",
 			slog.String("patternLowercased", patternNormalized),
+			slog.String("displayPattern", displayPattern),
 			slog.String("type", typ),
 			slog.String("newID", newID),
 			slog.Bool("enabled", enabledBool))
@@ -11470,6 +11663,15 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 		if patternLowercased == "" {
 			log.Warn("Failed to delete local host: pattern required")
 			return http.StatusBadRequest, errors.New("pattern required for delete")
+		}
+		// Encode defensively in case a Unicode pattern is submitted directly
+		// (e.g. an old cached page, or a hand-crafted API request); the
+		// hidden form field the WebUI itself submits is already ASCII.
+		if encoded, encErr := encodePatternOrErr(patternLowercased); encErr != nil {
+			log.Warn("Failed to delete local host: invalid unicode pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(encErr))
+			return http.StatusBadRequest, encErr
+		} else {
+			patternLowercased = encoded
 		}
 		if err := validateRulePattern(patternLowercased); err != nil {
 			log.Warn("Failed to delete local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
@@ -11493,6 +11695,29 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 		log.Warn("Failed to add/edit local host: hostname required")
 		return http.StatusBadRequest, errors.New("hostname/pattern required")
 	}
+
+	// Convert any Unicode (IDN) labels (e.g. "café.com") into punycode/ASCII
+	// before validation and storage; real DNS queries always arrive already
+	// punycode-encoded, so patterns must be stored the same way to ever
+	// match. displayPattern is kept only for a more readable conflict/error
+	// message further below.
+	displayPattern := patternLowercased
+	if encoded, encErr := encodePatternOrErr(patternLowercased); encErr != nil {
+		log.Warn("Failed to add/edit local host: invalid unicode pattern", slog.String("pattern", displayPattern), wincoe.SafeErr(encErr))
+		return http.StatusBadRequest, encErr
+	} else {
+		patternLowercased = encoded
+	}
+
+	if isEdit && oldPatternLowercased != "" {
+		if encodedOld, encErr := encodePatternOrErr(oldPatternLowercased); encErr != nil {
+			log.Warn("Failed to edit local host: invalid unicode old_pattern", slog.String("old_pattern", oldPatternLowercased), wincoe.SafeErr(encErr))
+			return http.StatusBadRequest, encErr
+		} else {
+			oldPatternLowercased = encodedOld
+		}
+	}
+
 	//okTODO: are we accepting a pattern like /rules does here? or is it just a hostname? it's pattern!
 	if err := validateRulePattern(patternLowercased); err != nil {
 		log.Warn("Failed to add/edit local host: invalid pattern", slog.String("pattern", patternLowercased), wincoe.SafeErr(err))
@@ -11535,7 +11760,10 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 
 	if err != nil {
 		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
-		return http.StatusConflict, errors.New("local host with this pattern already exists")
+		if displayPattern != patternLowercased {
+			return http.StatusConflict, fmt.Errorf("local host with this pattern already exists (as entered: %q): %w", displayPattern, err)
+		}
+		return http.StatusConflict, fmt.Errorf("local host with this pattern already exists: %w", err)
 	}
 
 	// --- NEW: Cache Invalidation ---

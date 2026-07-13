@@ -140,7 +140,7 @@ func TestMatchPattern(t *testing.T) {
 		{"{**}a", "ba", true},
 		{"{**}a", ".a", true},
 
-		//TODO: maybe support unicode in the rules on file but convert them to punycode on load, so they won't match here anyway
+		//doneTODO: unicode in rules is now punycode-encoded on load/add (see punycodeEncodePattern in platform_windows.go), so matchPattern itself never sees non-ASCII input; these stay commented out since matchPattern intentionally panics on non-ASCII per isLowerASCII's check.
 		//{"?bc", "ábc", true},
 		//{"??c", "ábc", true},
 		{"?bc", "abc", true},

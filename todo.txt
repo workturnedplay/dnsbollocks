@@ -1,4 +1,7 @@
 todo:
+* show the IDN of the deleted rule in log line "		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))" of processRuleChange
+
+* make the filters in webUI match chars with accents too, so "a" will match "á"
 
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
