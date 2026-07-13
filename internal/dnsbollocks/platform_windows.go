@@ -4011,13 +4011,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
 		attrs := []any{
 			slog.String("client", clientAddr),
-			slog.String("domain", domain),
+			slog.String("domain", domain), // Always ASCII/Punycode (the true wire format)
 			slog.String("exe", exeName),
 			slog.Int(rateTag, rateVal),
 			slog.Int(burstTag, burstVal),
 		}
 		if wasIDN {
-			attrs = append(attrs, slog.String("domain_idn", displayDomain))
+			attrs = append(attrs, slog.String("domain_idn", displayDomain)) // Unicode representation for logs
 		}
 		log.Warn(reason, attrs...)
 
