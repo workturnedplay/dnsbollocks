@@ -974,7 +974,8 @@ func (s *Server) loadLocalHosts() error {
 		// punycode/ASCII so it can ever match a real (always-ASCII) DNS query,
 		// instead of being silently purged below as containing "illegal
 		// characters".
-		if idnEncoded, wasIDN, idnErr := punycodeEncodePattern(normalizedPat); idnErr != nil {
+		idnEncoded, wasIDN, idnErr := punycodeEncodePattern(normalizedPat)
+		if idnErr != nil {
 			log.Error("Purging host pattern with invalid unicode",
 				slog.String("invalid_pattern", normalizedPat),
 				wincoe.SafeErr(idnErr))
@@ -1012,7 +1013,9 @@ func (s *Server) loadLocalHosts() error {
 
 		if _, dup := seenPatterns[normalizedPat]; dup {
 			log.Warn("Duplicate host pattern found, skipping/purging",
-				slog.String("pattern", normalizedPat))
+				slog.String("pattern", normalizedPat),
+				slog.String("pattern_idn", idnEncoded),
+			)
 			removed++
 			continue
 		}
@@ -1030,13 +1033,17 @@ func (s *Server) loadLocalHosts() error {
 			} else {
 				log.Warn("Invalid IP in hosts file, skipping",
 					slog.String("ip", ipStr),
-					slog.String("pattern", normalizedPat))
+					slog.String("pattern", normalizedPat),
+					slog.String("pattern_idn", idnEncoded),
+				)
 			}
 		}
 
 		if len(netIPs) == 0 {
 			log.Warn("Purging host rule with no valid IPs after filtering",
-				slog.String("pattern", normalizedPat))
+				slog.String("pattern", normalizedPat),
+				slog.String("pattern_idn", idnEncoded),
+			)
 			removed++
 			continue
 		}
@@ -1272,7 +1279,8 @@ func (s *Server) loadQueryWhitelist() error {
 			// into punycode/ASCII so it can ever match a real (always-ASCII)
 			// DNS query, instead of being silently purged below as containing
 			// "illegal characters".
-			if idnEncoded, wasIDN, idnErr := punycodeEncodePattern(r.Pattern); idnErr != nil {
+			idnEncoded, wasIDN, idnErr := punycodeEncodePattern(r.Pattern)
+			if idnErr != nil {
 				log.Error("Purging/deleting whitelist rule pattern with invalid unicode",
 					slog.String("id", r.ID),
 					slog.String("invalid_pattern", r.Pattern),
@@ -1321,6 +1329,7 @@ func (s *Server) loadQueryWhitelist() error {
 				log.Warn("Duplicate rule pattern found after normalization, skipping/purging it",
 					slog.String("id", r.ID),
 					slog.String("pattern", r.Pattern),
+					slog.String("punycode_pattern", idnEncoded),
 					slog.String("type", typ),
 				)
 				removed++
@@ -3973,13 +3982,26 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 			burstVal = cfg.ClientBurstQPS
 		}
 
-		log.Warn(reason,
+		// log.Warn(reason,
+		// 	slog.String("client", clientAddr),
+		// 	slog.String("domain", domain),
+		// 	slog.String("exe", exeName),
+		// 	slog.Int(rateTag, rateVal),
+		// 	slog.Int(burstTag, burstVal),
+		// )
+		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+		attrs := []any{
 			slog.String("client", clientAddr),
 			slog.String("domain", domain),
 			slog.String("exe", exeName),
 			slog.Int(rateTag, rateVal),
 			slog.Int(burstTag, burstVal),
-		)
+		}
+		if wasIDN {
+			attrs = append(attrs, slog.String("domain_idn", displayDomain))
+		}
+		log.Warn(reason, attrs...)
+
 		sfr := servfailResponse(msg)
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
@@ -4912,13 +4934,18 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 				if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
 					newParams = append(newParams, param)
 				} else {
-					log.Warn("Dropping IP hint from the HTTPS reply",
+					displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+					attrs := []any{
 						slog.String("domain", domain),   // if domain is "claude.ai."
 						slog.String("target", r.Target), // then target is "." here
 						slog.String("param", param.String() /*non nil*/),
 						slog.String("config_filename", configFileName),
 						slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPv4Hints))),
-					)
+					}
+					if wasIDN {
+						attrs = append(attrs, slog.String("domain_idn", displayDomain))
+					}
+					log.Warn("Dropping IP hint from the HTTPS reply", attrs...)
 				}
 			}
 			r.Value = newParams
@@ -5973,8 +6000,14 @@ func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Log
 	next[typ] = withRulePrepended(next[typ], newRule, logger)
 	rs.rules.Store(&next)
 
-	logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
-		slog.String("id", id), slog.Bool("enabled", enabled))
+	//logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
+	//slog.String("id", id), slog.Bool("enabled", enabled))
+	displayPattern, wasIDN := punycodeDecodePatternForDisplay(pattern)
+	attrs := []any{slog.String("pattern", pattern), slog.String("type", typ), slog.String("id", id), slog.Bool("enabled", enabled)}
+	if wasIDN {
+		attrs = append(attrs, slog.String("pattern_idn", displayPattern))
+	}
+	logger.Debug("Rule added", attrs...)
 	return id, nil
 }
 
@@ -6051,9 +6084,21 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	}
 	rs.rules.Store(&next)
 
-	logger.Info("Rule updated", slog.String("id", id),
-		slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
-		slog.String("old_pattern", oldPattern))
+	// logger.Info("Rule updated", slog.String("id", id),
+	// 	slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
+	// 	slog.String("old_pattern", oldPattern))
+	displayNew, newIsIDN := punycodeDecodePatternForDisplay(newPattern)
+	displayOld, oldIsIDN := punycodeDecodePatternForDisplay(oldPattern)
+
+	attrs := []any{slog.String("id", id), slog.String("new_pattern", newPattern), slog.String("old_pattern", oldPattern), slog.Bool("enabled", enabled)}
+	if newIsIDN {
+		attrs = append(attrs, slog.String("new_pattern_idn", displayNew))
+	}
+	if oldIsIDN {
+		attrs = append(attrs, slog.String("old_pattern_idn", displayOld))
+	}
+
+	logger.Info("Rule updated", attrs...)
 	return oldType, oldPattern, nil
 }
 
@@ -6702,10 +6747,23 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 			domain := parts[0]
 			if matchPattern(pattern, domain) {
 				cachee.Delete(key)
-				log.Debug("Evicted cached record due to rule change",
-					slog.String("key", key),
-					slog.String("matched_pattern", pattern),
-					slog.String("domain", domain))
+				// log.Debug("Evicted cached record due to rule change",
+				// 	slog.String("key", key),
+				// 	slog.String("matched_pattern", pattern),
+				// 	slog.String("domain", domain))
+				// Inside the eviction loop:
+				displayPattern, patIsIDN := punycodeDecodePatternForDisplay(pattern)
+				displayDomain, domIsIDN := punycodeDecodePatternForDisplay(domain)
+
+				attrs := []any{slog.String("key", key), slog.String("matched_pattern", pattern), slog.String("domain", domain)}
+				if patIsIDN {
+					attrs = append(attrs, slog.String("matched_pattern_idn", displayPattern))
+				}
+				if domIsIDN {
+					attrs = append(attrs, slog.String("domain_idn", displayDomain))
+				}
+
+				log.Debug("Evicted cached record due to rule change", attrs...)
 			}
 		}
 	}
@@ -11550,7 +11608,13 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		}
 
 		ui.OnInvalidatePattern(pattern)
-		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))
+		//log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))
+		displayPattern, wasIDN := punycodeDecodePatternForDisplay(pattern)
+		attrs := []any{slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern)}
+		if wasIDN {
+			attrs = append(attrs, slog.String("pattern_idn", displayPattern))
+		}
+		log.Info("Successfully deleted rule via WebUI/Batch", attrs...)
 		return http.StatusOK, nil
 	} //end delete
 
@@ -11578,7 +11642,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 	displayPattern := patternNormalized
 	encodedPattern, encErr := encodePatternOrErr(patternNormalized)
 	if encErr != nil {
-		log.Warn("Failed to add/edit rule: invalid unicode pattern", slog.String("displayPattern", displayPattern), wincoe.SafeErr(encErr))
+		log.Warn("Failed to add/edit rule: invalid unicode pattern", slog.String("pattern_idn", displayPattern), wincoe.SafeErr(encErr))
 		return http.StatusBadRequest, encErr
 	}
 	patternNormalized = encodedPattern
@@ -11588,7 +11652,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		return http.StatusBadRequest, err
 	}
 	if err := validateRulePattern(patternNormalized); err != nil {
-		log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("displayPattern", displayPattern), wincoe.SafeErr(err))
+		log.Warn("Failed to add/edit rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern), wincoe.SafeErr(err))
 		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 	}
 
@@ -11636,7 +11700,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 				slog.String("newID", newID),
 				slog.String("type", typ),
 				slog.String("patternLowercased", patternNormalized),
-				slog.String("displayPattern", displayPattern),
+				slog.String("pattern_idn", displayPattern),
 			)
 			if displayPattern != patternNormalized {
 				return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
@@ -11647,7 +11711,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 		ui.OnInvalidatePattern(patternNormalized)
 		log.Info("Rule added via WebUI/Batch",
 			slog.String("patternLowercased", patternNormalized),
-			slog.String("displayPattern", displayPattern),
+			slog.String("pattern_idn", displayPattern),
 			slog.String("type", typ),
 			slog.String("newID", newID),
 			slog.Bool("enabled", enabledBool))
@@ -11679,7 +11743,13 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 		}
 		if ui.hostStore.DeleteHost(patternLowercased) {
 			ui.OnInvalidatePattern(patternLowercased)
-			log.Info("Successfully deleted local host override via WebUI/Batch", slog.String("pattern", patternLowercased))
+			//log.Info("Successfully deleted local host override via WebUI/Batch", slog.String("pattern", patternLowercased))
+			displayPattern, wasIDN := punycodeDecodePatternForDisplay(patternLowercased)
+			attrs := []any{slog.String("pattern", patternLowercased)}
+			if wasIDN {
+				attrs = append(attrs, slog.String("pattern_idn", displayPattern))
+			}
+			log.Info("Successfully deleted local host override via WebUI/Batch", attrs...)
 			return http.StatusOK, nil
 		}
 		log.Warn("Failed to delete local host: host not found", slog.String("pattern", patternLowercased))
@@ -11759,7 +11829,8 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 	}
 
 	if err != nil {
-		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs))
+		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs),
+			slog.String("pattern_idn", displayPattern))
 		if displayPattern != patternLowercased {
 			return http.StatusConflict, fmt.Errorf("local host with this pattern already exists (as entered: %q): %w", displayPattern, err)
 		}
@@ -11776,6 +11847,7 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 	ui.OnInvalidatePattern(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
 	log.Info("Successfully added/edited local host override via WebUI/Batch",
 		slog.String("pattern", patternLowercased),
+		slog.String("pattern_idn", displayPattern),
 		slog.Int("ip_count", len(netIPs)))
 	return http.StatusOK, nil
 }
