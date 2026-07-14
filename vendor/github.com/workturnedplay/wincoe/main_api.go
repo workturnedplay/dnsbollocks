@@ -214,8 +214,8 @@ func GetConsoleScreenBufferAttributes(outputHandle windows.Handle) (uint16, erro
 
 // SetConsoleTextAttribute used to set the color for the text next printed on console
 func SetConsoleTextAttribute(h windows.Handle, color uint16) error {
-	_, _, err := procSetConsoleTextAttribute.Call(uintptr(h), uintptr(color))
-	return err
+	res := procSetConsoleTextAttribute.Call(uintptr(h), uintptr(color))
+	return res.Err
 }
 
 /*
@@ -286,18 +286,18 @@ func ClearStdin() (hadKey bool) {
 		var peekRec inputRecord
 		var peekCount uint32
 
-		_, _, err := procPeekConsoleInputW.Call(
+		res1 := procPeekConsoleInputW.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&peekRec)),
 			uintptr(1),
 			uintptr(unsafe.Pointer(&peekCount)),
 		)
-		if err != nil {
+		if res1.Failed() { //err != nil {
 			// Failure on Peek — log and stop. This is usually transient or
 			// indicates stdin is no longer a console.
 			log.Warn("ClearStdin: PeekConsoleInputW failed",
 				slog.String("operation", "PeekConsoleInputW"),
-				SafeErr(err))
+				SafeErr(res1.Err))
 			break
 		}
 		if peekCount == 0 {
@@ -309,16 +309,16 @@ func ClearStdin() (hadKey bool) {
 		var rec inputRecord
 		var read uint32
 
-		_, _, err = procReadConsoleInputW.Call(
+		res2 := procReadConsoleInputW.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&rec)),
 			uintptr(1),
 			uintptr(unsafe.Pointer(&read)),
 		)
-		if err != nil {
+		if res2.Failed() { // != nil {
 			log.Warn("ClearStdin: ReadConsoleInputW failed",
 				slog.String("operation", "ReadConsoleInputW"),
-				SafeErr(err))
+				SafeErr(res2.Err))
 			break
 		}
 		if read == 0 {
@@ -461,32 +461,142 @@ func Flush() {
 }
 
 // WinCheckFunc defines a predicate used to determine if a Windows API call failed
-// based on its primary return value (r1).
-type WinCheckFunc func(r1 uintptr) bool
+// based on its primary return value (r1). So true means it failed.
+type WinCheckFunc func(r1 uintptr, callErr error) bool
 
 var (
 	// CheckBool identifies a failure for functions returning a Windows BOOL in r1.
 	// In the Windows API, a 0 (FALSE) indicates that the function failed.
-	CheckBool WinCheckFunc = func(r1 uintptr) bool { return r1 == 0 }
+	CheckBool WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 == 0 }
 
 	// CheckHandle identifies a failure for functions returning a HANDLE in r1.
 	// Many Windows APIs return INVALID_HANDLE_VALUE (all bits set to 1) on failure.
 	// ^uintptr(0) is the Go-idiomatic way to represent -1 as an unsigned pointer.
-	CheckHandle WinCheckFunc = func(r1 uintptr) bool { return r1 == ^uintptr(0) }
+	CheckHandle WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 == ^uintptr(0) }
 
 	// CheckNull identifies a failure for functions returning a pointer or a handle in r1
 	// where a NULL value (0) indicates the operation could not be completed.
-	CheckNull WinCheckFunc = func(r1 uintptr) bool { return r1 == 0 }
+	CheckNull WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 == 0 }
 
 	// CheckHRESULT identifies a failure for functions that return an HRESULT in r1.
 	// An HRESULT is a 32-bit value where a negative number (high bit set)
 	// indicates an error, while 0 or positive values indicate success.
-	CheckHRESULT WinCheckFunc = func(r1 uintptr) bool { return int32(r1) < 0 }
+	/*
+			HRESULT (COM / User-mode Win32)
+
+		HRESULT is used by COM (Component Object Model) and high-level user-mode APIs. It only allocates 1 bit for Severity:
+
+		    0 (Success): S_OK (0x00000000) or S_FALSE (0x00000001)
+
+		    1 (Failure): E_FAIL (0x80004005)
+	*/
+	CheckHRESULT WinCheckFunc = func(r1 uintptr, _ error) bool { return int32(r1) < 0 }
 
 	// CheckErrno identifies a failure for Win32 APIs that return a DWORD error code in r1.
 	// In this convention, 0 (ERROR_SUCCESS) means success, any non-zero value is a failure.
-	CheckErrno WinCheckFunc = func(r1 uintptr) bool { return r1 != 0 }
+	CheckErrno WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 != 0 }
+
+	// CheckAdjustTokenPrivileges handles both FALSE returns and the partial-success
+	// state where some privileges could not be assigned (ERROR_NOT_ALL_ASSIGNED).
+	CheckAdjustTokenPrivileges WinCheckFunc = func(r1 uintptr, callErr error) bool {
+		// Layer 1: If the API returned FALSE (0), the entire call failed.
+		if r1 == 0 {
+			return true
+		}
+
+		// Layer 2: The API returned TRUE, but check if it partially failed.
+		// Go's syscall/windows wrappers always return a non-nil error tracking GetLastError().
+		if callErr != nil && errors.Is(callErr, windows.ERROR_NOT_ALL_ASSIGNED) {
+			return true // Treat partial assignment as a failure state
+		}
+
+		return false
+	}
+
+	// CheckZero indicates failure if the API returns 0 (useful for counts, lengths, IDs)
+	CheckZero WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 == 0 }
+
+	// CheckMinusOne indicates failure if the API returns -1 (specifically for GetMessage)
+	CheckMinusOne WinCheckFunc = func(r1 uintptr, _ error) bool { return r1 == ^uintptr(0) }
+
+	// CheckNone never fails. Used for VOID returns or LRESULTs that require manual checking.
+	CheckNone WinCheckFunc = func(_ uintptr, _ error) bool { return false }
+
+	// CheckNTSTATUS indicates failure if the NTSTATUS code is negative
+	/*
+			NTSTATUS (Kernel / Native API)
+
+		NTSTATUS is used by the NT Kernel and native APIs (found in ntdll.dll). Its top 2 bits represent Severity:
+
+		    00 (Success): STATUS_SUCCESS (0x00000000)
+
+		    01 (Informational): STATUS_PENDING (0x00000103)
+
+		    10 (Warning): STATUS_BUFFER_OVERFLOW (0x80000005)
+
+		    11 (Error): STATUS_ACCESS_DENIED (0xC0000022)
+
+		Because Warnings (10...) and Errors (11...) both have the highest bit (bit 31) set, they both evaluate as negative integers (< 0).
+	*/
+	//XXX: not collapsing it to same impl. as CheckHRESULT on purpose!
+	CheckNTSTATUS WinCheckFunc = func(r1 uintptr, _ error) bool { return int32(r1) < 0 }
+
+	//for GetThreadPriority which returns r1 as int,
+	CheckThreadPriority WinCheckFunc = func(r1 uintptr, _ error) bool {
+		return int32(r1) == THREAD_PRIORITY_ERROR_RETURN // aka 0x7fffffff // aka THREAD_PRIORITY_ERROR_RETURN
+	}
+
+	CheckCLRInvalid WinCheckFunc = func(r1 uintptr, _ error) bool {
+		return uint32(r1) == CLR_INVALID // aka 0xffffffff
+	}
+
+	CheckGDIError WinCheckFunc = func(r1 uintptr, _ error) bool {
+		return uint32(r1) == GDIError // aka 0xffffffff
+	}
+
+	// CheckStringLength returns true (failure) only if r1 is 0 AND an actual error is set.
+	CheckStringLength WinCheckFunc = func(r1 uintptr, callErr error) bool {
+		if r1 == 0 {
+			if callErr != nil && !errors.Is(callErr, windows.ERROR_SUCCESS) {
+				return true // It's a real failure
+			}
+		}
+		return false // It's just an empty string
+	}
 )
+
+const CLR_INVALID uint32 = 0xffffffff
+const GDIError = uint32(0xffffffff)
+
+// side effect of returning a struct like this is that we don't get warned for not handling the returned Err or CallStatus errors! in a way it's good because CallStatus is rarely checked! just Err is checked usually.
+type WinResult struct {
+	R1 uintptr
+	R2 uintptr
+	// exactly the third return value from LazyProc.Call; may contain additional status information even when Err == nil.
+	//
+	// Raw status returned by LazyProc.Call. Usually ERROR_SUCCESS
+	// on successful calls, but some Win32 APIs use it to report
+	// additional success information (e.g. ERROR_ALREADY_EXISTS).
+	CallStatus error
+
+	Err error // normalized according to the Check* function
+}
+
+func (r WinResult) Failed() bool {
+	return r.Err != nil
+}
+
+func (r WinResult) Succeeded() bool {
+	return r.Err == nil
+}
+
+func (r WinResult) ErrIs(target error) bool {
+	return errors.Is(r.Err, target)
+}
+
+func (r WinResult) CallStatusIs(target error) bool {
+	return errors.Is(r.CallStatus, target)
+}
 
 // CheckWinResult processes a Windows API result.
 //
@@ -509,7 +619,7 @@ func CheckWinResult(
 	r1 uintptr,
 	callErr error,
 ) error {
-	if !isFailure(r1) {
+	if !isFailure(r1, callErr) {
 		// Success: return nil so 'if err != nil' behaves normally.
 		return nil
 	}
@@ -555,6 +665,7 @@ func CheckWinResult(
 
 // UnspecifiedWinApi is the string used when empty op name is used
 const UnspecifiedWinApi string = "unspecified_winapi"
+const THREAD_PRIORITY_ERROR_RETURN int32 = 0x7fffffff
 
 // LazyProcish is the minimal interface that WinCall needs from a LazyProc-like object.
 //
@@ -567,6 +678,7 @@ type LazyProcish interface {
 	// Call invokes the Windows procedure with the given arguments.
 	// Signature must match windows.LazyProc.Call exactly.
 	Call(a ...uintptr) (r1, r2 uintptr, lastErr error)
+	Find() error
 }
 
 // realLazyProc wraps *windows.LazyProc to satisfy LazyProcish.
@@ -657,8 +769,14 @@ type BoundProc struct {
 // the heap, ensuring its memory address remains stable even if the stack grows.
 //
 //go:uintptrescapes
-func (b *BoundProc) Call(args ...uintptr) (uintptr, uintptr, error) {
+func (b *BoundProc) Call(args ...uintptr) WinResult {
 	return WinCall(b.Proc, b.Check, args...)
+}
+
+// Find attempts to locate the procedure in the DLL.
+// Returns nil if the procedure is successfully found, or an error if it is not.
+func (b *BoundProc) Find() error {
+	return b.Proc.Find()
 }
 
 // NewBoundProc initializes a BoundProc by resolving a procedure from the
@@ -699,7 +817,7 @@ func NewBoundProc(dll *windows.LazyDLL, name string, check WinCheckFunc) *BoundP
 // Otherwise, use BoundProc.Call for better type organization.
 //
 //go:uintptrescapes
-func WinCall(proc LazyProcish, check WinCheckFunc, args ...uintptr) (uintptr, uintptr, error) {
+func WinCall(proc LazyProcish, check WinCheckFunc, args ...uintptr) WinResult {
 	if proc == nil {
 		panic2("WinCall: nil proc")
 	}
@@ -710,9 +828,14 @@ func WinCall(proc LazyProcish, check WinCheckFunc, args ...uintptr) (uintptr, ui
 	}
 	// args is a []uintptr, but because of //go:uintptrescapes, the caller
 	// has already pinned the memory safely before we get here.
-	r1, r2, callErr := proc.Call(args...)
-	err := CheckWinResult(op, check, r1, callErr)
-	return r1, r2, err
+	r1, r2, callStatus := proc.Call(args...)
+	//XXX: don't put anything here, which might call a syscall or it might delete the last error for a potential future GetLastError() call.
+	return WinResult{
+		R1:         r1,
+		R2:         r2,
+		CallStatus: callStatus,
+		Err:        CheckWinResult(op, check, r1, callStatus),
+	}
 }
 
 var (
@@ -868,7 +991,7 @@ func boolToUintptr(b bool) uintptr {
 //     to a specific struct layout; build a typed parser on top if needed.
 func GetExtendedUDPTable(order bool, family uint32) ([]byte, error) {
 	return callWithRetry("GetExtendedUDPTable", 0, func(bufPtr *byte, s *uint32) error {
-		_, _, err := procGetExtendedUdpTable.Call(
+		res1 := procGetExtendedUdpTable.Call(
 			uintptr(unsafe.Pointer(bufPtr)),
 			uintptr(unsafe.Pointer(s)),
 			boolToUintptr(order),
@@ -876,7 +999,7 @@ func GetExtendedUDPTable(order bool, family uint32) ([]byte, error) {
 			uintptr(UDP_TABLE_OWNER_PID),
 			0,
 		)
-		return err
+		return res1.Err
 	})
 }
 
@@ -884,7 +1007,7 @@ func GetExtendedUDPTable(order bool, family uint32) ([]byte, error) {
 // It follows the same contract as GetExtendedUDPTable.
 func GetExtendedTCPTable(order bool, family uint32) ([]byte, error) {
 	return callWithRetry("GetExtendedTCPTable", 0, func(bufPtr *byte, s *uint32) error {
-		_, _, err := procGetExtendedTcpTable.Call(
+		res1 := procGetExtendedTcpTable.Call(
 			uintptr(unsafe.Pointer(bufPtr)),
 			uintptr(unsafe.Pointer(s)),
 			boolToUintptr(order),
@@ -892,7 +1015,7 @@ func GetExtendedTCPTable(order bool, family uint32) ([]byte, error) {
 			uintptr(TCP_TABLE_OWNER_PID_ALL), // Value 5: Get all states + PID
 			0,
 		)
-		return err
+		return res1.Err
 	})
 }
 
@@ -908,9 +1031,9 @@ func GetExtendedTCPTable(order bool, family uint32) ([]byte, error) {
 //
 // Returns a non-empty string and nil error on success, or an empty string with error on failure.
 func QueryFullProcessName(pid uint32) (string, error) {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return "", fmt.Errorf("OpenProcess failedfor PID %d: %w", pid, err)
+	h, err0 := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err0 != nil {
+		return "", fmt.Errorf("OpenProcess failedfor PID %d: %w", pid, err0)
 	}
 	defer windows.CloseHandle(h)
 
@@ -929,13 +1052,13 @@ func QueryFullProcessName(pid uint32) (string, error) {
 		// Note: QueryFullProcessNameW expects 'size' to include the null terminator
 		// on input, and returns the length WITHOUT the null terminator on success.
 
-		_, _, err = procQueryFullProcessName.Call(
+		res1 := procQueryFullProcessName.Call(
 			uintptr(h),
 			0,
 			uintptr(unsafe.Pointer(&buf[0])),
 			uintptr(unsafe.Pointer(&size)),
 		)
-		if err == nil {
+		if res1.Succeeded() { //err == nil {
 			// Success! Convert the returned size to string
 			//UTF16ToString is a function that looks for a 0x0000 (null).
 			//size is just a number the API handed back, so let's not trust it, thus use full 'buf'
@@ -944,8 +1067,9 @@ func QueryFullProcessName(pid uint32) (string, error) {
 
 		// Check if the error is specifically "Buffer too small"
 		// syscall.ERROR_INSUFFICIENT_BUFFER = 0x7A
-		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
-			return "", fmt.Errorf("QueryFullProcessNameW failed after %d tries, err: '%w'", tries, err)
+		//if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+		if !res1.ErrIs(windows.ERROR_INSUFFICIENT_BUFFER) {
+			return "", fmt.Errorf("QueryFullProcessNameW failed after %d tries, err: '%w'", tries, res1.Err)
 		}
 		//else the desired 'size' now includes the nul terminator, so no need to +1 it
 
@@ -1107,14 +1231,14 @@ func GetProcessName(pid uint32) (string, error) {
 // If a flag isn’t used (e.g., you don’t include TH32CS_SNAPPROCESS), CreateToolhelp32Snapshot will not include that object type in the snapshot.
 // TH32CS_SNAPPROCESS specifically tells the API to include all processes in the snapshot. Without it, Process32First/Process32Next won’t enumerate any processes.
 func CreateToolhelp32Snapshot(dwFlags, th32ProcessID uint32) (windows.Handle, error) {
-	r1, _, err := procCreateToolhelp32Snapshot.Call(
+	res1 := procCreateToolhelp32Snapshot.Call(
 		uintptr(dwFlags),
 		uintptr(th32ProcessID),
 	)
-	if err != nil {
-		return 0, err
+	if res1.Failed() { //err != nil {
+		return 0, res1.Err
 	}
-	return windows.Handle(r1), nil
+	return windows.Handle(res1.R1), nil
 }
 
 // Process32First wraps callProcess32First.
@@ -1122,8 +1246,8 @@ func Process32First(snapshot windows.Handle, entry *windows.ProcessEntry32) erro
 	if entry == nil {
 		return errors.New("Process32First: nil entry")
 	}
-	_, _, err := procProcess32First.Call(uintptr(snapshot), uintptr(unsafe.Pointer(entry)))
-	return err
+	res1 := procProcess32First.Call(uintptr(snapshot), uintptr(unsafe.Pointer(entry)))
+	return res1.Err
 }
 
 // Process32Next wraps callProcess32Next.
@@ -1131,8 +1255,8 @@ func Process32Next(snapshot windows.Handle, entry *windows.ProcessEntry32) error
 	if entry == nil {
 		return errors.New("Process32Next: nil entry")
 	}
-	_, _, err := procProcess32Next.Call(uintptr(snapshot), uintptr(unsafe.Pointer(entry)))
-	return err
+	res1 := procProcess32Next.Call(uintptr(snapshot), uintptr(unsafe.Pointer(entry)))
+	return res1.Err
 }
 
 // GetServiceNamesFromPIDUncached queries the Service Control Manager to find all service
@@ -1581,14 +1705,14 @@ func InjectConsoleKey(vkCode, scanCode uint16, char rune) error {
 	// Execute via your custom BoundProc architecture wrapper
 	// WARNING: We must do the uintptr casting explicitly right here inside
 	// the arguments list to comply with //go:uintptrescapes memory pinning safety bounds.
-	_, _, err := procWriteConsoleInputW.Call(
+	res1 := procWriteConsoleInputW.Call(
 		uintptr(h),
 		uintptr(unsafe.Pointer(&rec)),
 		uintptr(1),
 		uintptr(unsafe.Pointer(&written)),
 	)
-	if err != nil || written != 1 {
-		return fmt.Errorf("InjectConsoleKey failed, written %d, err: %w", written, err)
+	if res1.Failed() || written != 1 {
+		return fmt.Errorf("InjectConsoleKey failed, written %d, err: %w", written, res1.Err)
 	}
 
 	return nil
@@ -1625,7 +1749,7 @@ func ReplaceFile(replaced, replacement, backup string, flags uint32) error {
 	}
 
 	// Utilizing your existing //go:uintptrescapes architecture
-	_, _, callErr := procReplaceFileW.Call(
+	res1 := procReplaceFileW.Call(
 		uintptr(unsafe.Pointer(replacedPtr)),
 		uintptr(unsafe.Pointer(replacementPtr)),
 		uintptr(unsafe.Pointer(backupPtr)),
@@ -1633,7 +1757,7 @@ func ReplaceFile(replaced, replacement, backup string, flags uint32) error {
 		0,
 		0,
 	)
-	return callErr
+	return res1.Err
 }
 
 // FileWriter is the persistence contract.
