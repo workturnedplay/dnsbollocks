@@ -9647,9 +9647,13 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		default:
 			// Log it so developers know they added an unsupported config type,
 			// but safely continue so the UI doesn't crash.
+			// log.Error("BUG: Config UI generator skipped unsupported field type",
+			// 	"field", tagKey,
+			// 	"kind", kind.String()) // XXX: this works but we try to avoid this!
 			log.Error("BUG: Config UI generator skipped unsupported field type",
-				"field", tagKey,
-				"kind", kind.String())
+				slog.String("field", tagKey),
+				slog.String("kind", kind.String()),
+			)
 			panic2("BUG: dev must add some code, see the above logged error")
 			//continue
 		}
