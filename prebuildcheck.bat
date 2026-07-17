@@ -100,6 +100,10 @@ if not exist "%lintexe%" (
     )
 )
 rem pushd internal\dnsbollocks
+echo Checking if lint file .golangci.yml is valid
+"%lintexe%" config verify
+if errorlevel 1 goto :fail
+
 echo Running %lintexe% run !LINT_MOD_FLAG! ./...
 "%lintexe%" run !LINT_MOD_FLAG! ./...
 if errorlevel 1 goto :fail
