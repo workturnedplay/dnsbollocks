@@ -3085,7 +3085,7 @@ func matchPattern1(pattern, name string) bool {
 	return recursiveMatch1(pattern, name)
 }
 
-// recursiveMatch handles all tokens recursively.
+// recursiveMatch1 handles all tokens recursively.
 func recursiveMatch1(pattern, name string) bool {
 	for len(pattern) > 0 {
 		switch {
@@ -5191,7 +5191,6 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 
 	// Fire and forget logging so the DNS response isn't delayed
 	go func() {
-
 		var attrs []any = []any{
 			slog.String("domain", displayDomain),
 			slog.String("type", typ),
@@ -6626,7 +6625,6 @@ func (ui *AdminUI) rejectUnsupportedMethod(w http.ResponseWriter, r *http.Reques
 }
 
 func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
-
 	const allowedMethods = "GET, HEAD, POST, OPTIONS"
 	if writeAllowHeaderResponse(w, r, allowedMethods) {
 		return
