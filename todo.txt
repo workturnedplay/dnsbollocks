@@ -1,4 +1,5 @@
 todo:
+* see why ctrl+c and ctrl+break both exit with exitcode 0, it's from the .go code btw! yet run.bat expects 130 or something
 
 * make the filters in webUI match chars with accents too, so "a" will match "á"
 

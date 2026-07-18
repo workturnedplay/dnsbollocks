@@ -153,8 +153,9 @@ REM :wait_loop
 REM timeout /t 1 /nobreak >nul
 REM if exist "%LOCK_FILE%" goto wait_loop
 
-"!exe_name!" !SHIFTED_ARGS!
-set "ec=%ERRORLEVEL%"
+rem to handle ctrl+c without asking me "Terminate batch job (Y/N)?", we use powershell to run the .exe as follows // didn't work, doh!
+rem & means always execute, not if exit is 0
+"!exe_name!" !SHIFTED_ARGS! & set "ec=!ERRORLEVEL!" & call :ignoreCtrlC
 
 rem 1. Capture the ISO timestamp into a variable, actually this takes 0.23sec to run
 rem for /f "delims=" %%i in ('powershell -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffK'"') do set "ts=%%i"
@@ -171,7 +172,7 @@ rem set "iso_time=!TIME: =0!"
 rem set "ts=!iso_date!T!iso_time!"
 
 if "!ec!"=="130" (
-    echo time=!ts! "!exe_name!" exited with code 130 ^(sigint^) - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
+    echo time=!ts! "!exe_name!" exited with code 130 ^(sigint^) ie. via ctrl+break not ctrl+c - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
     goto run
 )
 
@@ -188,3 +189,10 @@ if "!ec!"=="0" (
     )
 )
 pause
+
+rem Prevents falling into the subroutine during a normal sequential run
+goto :eof
+
+:ignoreCtrlC
+exit /b
+
