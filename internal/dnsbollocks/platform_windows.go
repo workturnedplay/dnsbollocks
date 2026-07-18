@@ -8763,7 +8763,13 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		}
 		buf := *bufPtr
 
-		n, clientAddr, err2 := udpLn.ReadFromUDP(buf)
+		//start := time.Now()
+		n, clientAddr, err2 := udpLn.ReadFromUDP(buf) //this is blocking here until there's enough/any? data or something
+		// if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		// 	wincoe.GetBugLogger().Warn("slow ReadFromUDP in runDNSUDPLoop",
+		// 		slog.Duration("elapsed", elapsed),
+		// 	)
+		// }
 		if err2 != nil {
 			udpPool.Put(bufPtr) // Return buffer on error
 			select {
@@ -8777,10 +8783,16 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 			}
 		}
 
-		log3.Debug("client connected(early logging)",
+		start := time.Now()
+		log3.Debug("client connected(early logging)", //FIXME: this can stall for over 1 minute during AnythingLLM installation which causes 11sec avg. response time for C: disk and 100% active time for minutes!
 			slog.String("proto", "UDP"),
 			SafeAddr("clientAddr", clientAddr),
 		)
+		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+			wincoe.GetBugLogger().Warn("slow log.Debug() in runDNSUDPLoop",
+				slog.Duration("elapsed", elapsed),
+			)
+		}
 
 		if n > len(buf) {
 			udpPool.Put(bufPtr) // Clean up before panicking
@@ -8794,11 +8806,24 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		//XXX: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
 		//^ "Valid tradeoff — PID lookup must happen before the goroutine or you lose the connection from the OS table; intentional" -Claude
 
+		start = time.Now()
 		pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
+		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+			wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForUDP() in runDNSUDPLoop",
+				slog.Duration("elapsed", elapsed),
+			)
+		}
+
+		start = time.Now()
 		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
 		// query's upstream forwarding should only be cancelled by full process shutdown, not
 		// by this specific listener instance being torn down during a hot rebind.
 		udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
+		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+			wincoe.GetBugLogger().Warn("slow makeClientInfoContext() in runDNSUDPLoop",
+				slog.Duration("elapsed", elapsed),
+			)
+		}
 
 		// --- ADD SEMAPHORE CHECK HERE ---
 		release, ok := s.acquireDNSUDPSlot()
@@ -9480,19 +9505,35 @@ func newRotatingLogWriter(path string, maxMB int, logger *slog.Logger) (*rotatin
 }
 
 func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
+	start := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	lockHeld := time.Since(start)
+	if lockHeld > time.Second {
+		fmt.Fprintf(os.Stderr,
+			"rotatingLogWriter.Write() lock waited %v\n",
+			lockHeld)
+	}
+
 	if w.file == nil {
-		return 0, errors.New("log file is not open")
+		return 0, errors.New("rotatingLogWriter, log file is not open")
 	}
 	w.rotateIfNeededYouHoldLock()
 
+	start = time.Now()
 	n, err = w.file.Write(p)
+	writeTime := time.Since(start)
+	if writeTime > time.Second {
+		fmt.Fprintf(os.Stderr,
+			"rotatingLogWriter file.Write took %v\n",
+			writeTime)
+	}
+
 	w.size += int64(n)
 	if err == nil {
 		return n, nil
 	} else {
-		return n, fmt.Errorf("failed to write to the rotating logger file: %w", err)
+		return n, fmt.Errorf("rotatingLogWriter, failed to write to the rotating logger file: %w", err)
 	}
 }
 

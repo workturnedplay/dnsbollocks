@@ -4,6 +4,7 @@ todo:
 
 * switch to async logging?(huge changes), idea in general is like this(see last reply): https://gemini.google.com/app/adb35a7dee21207e
   * if we do this then we can get the PID=exe relation in a goroutine that somehow happens before logQuery (or logQuery waits for it, in a goroutine as well, so it's non-blocking logQuery)
+  * we have to do async logging because the logging of a message can take more than 1 minute during disk contention (ie. AnythingLLM installation does this on my Kingston SSD): https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a5b6a8f-ee34-83ed-b8fa-0566e640ad89?tab=sources
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
