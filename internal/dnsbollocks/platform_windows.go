@@ -11690,6 +11690,20 @@ func (lm *LoggerManager) set(l *slog.Logger) {
 	lm.ptr.Store(l)
 }
 
+// joinCloseErrors combines zero or more Close() failures into a single
+// wrapped error, or nil if errs is empty. Returning errors.Join's result
+// directly would trip wrapcheck ("error returned from external package is
+// unwrapped"), so it's always routed through fmt.Errorf here; errors.Is/As
+// still traverse into each individual closer's error afterward, since
+// errors.Join's result implements Unwrap() []error and fmt.Errorf's %w
+// wrapping doesn't hide that from the traversal.
+func joinCloseErrors(prefix string, errs []error) error {
+	if joined := errors.Join(errs...); joined != nil {
+		return fmt.Errorf("%s, joinedErrs: %w", prefix, joined)
+	}
+	return nil
+}
+
 // Reinit atomically swaps the logger, registers new closers (typically
 // *rotatingLogWriter instances), and closes the previously registered ones.
 // It is safe to call on config reload.
@@ -11708,7 +11722,7 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return joinCloseErrors("LoggerManager.Reinit(..) failed to close one or more previous log writers", errs)
 }
 
 // Close closes all registered file handles. Safe to call multiple times.
@@ -11726,7 +11740,7 @@ func (lm *LoggerManager) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return joinCloseErrors("LoggerManager.Close() failed to close one or more log writers", errs)
 }
 
 // ApplyConfig initializes the multi-handler logger (file writers, console level,
