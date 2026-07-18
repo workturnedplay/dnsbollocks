@@ -4334,6 +4334,9 @@ func init() {
 // specific classification alongside the error removes that ambiguity without
 // having to parse error strings by hand.
 func classifyRetryableDoHError(err error) (reason string, retryable bool) {
+	if err == nil {
+		panic2("BUG: unexpected err arg is nil")
+	}
 	switch {
 	case errors.Is(err, io.EOF):
 		return "eof", true
