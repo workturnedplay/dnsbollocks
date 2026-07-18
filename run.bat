@@ -172,7 +172,8 @@ rem set "iso_time=!TIME: =0!"
 rem set "ts=!iso_date!T!iso_time!"
 
 if "!ec!"=="130" (
-    echo time=!ts! "!exe_name!" exited with code 130 ^(sigint^) ie. via ctrl+break not ctrl+c - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
+    echo time=!ts! "!exe_name!" exited with code 130 ^(sigint^) ie. via ctrl+break or ctrl+c - which to this bat file means we should be restarting it... ^(use alt+x to not do this next time^)
+    pause
     goto run
 )
 

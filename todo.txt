@@ -1,5 +1,4 @@
 todo:
-* see why ctrl+c and ctrl+break both exit with exitcode 0, it's from the .go code btw! yet run.bat expects 130 or something
 
 * make the filters in webUI match chars with accents too, so "a" will match "á"
 
@@ -31,6 +30,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* see why ctrl+c and ctrl+break both exit with exitcode 0, it's from the .go code btw! yet run.bat expects 130 or something
 //* show the IDN of the deleted rule in log line "		log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))" of processRuleChange
 //* in dohHandler we should log.X() in all cases that return http.Error, before returning.
 //* fix from here for v0.21.0 (invalid: 5 done: 1,2,3, dontdo: 4) https://gemini.google.com/app/bfc4603a97ab0fb7  Don't do 4 because https://claude.ai/chat/2a2741ca-b8f4-406e-9234-2233cad06dcc

@@ -2451,12 +2451,13 @@ func (s *Server) Run() error {
 	log.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
 
 	// --- OS Console Event Handler Integration ---
-	globalConsoleEventTrigger = func(eventName string) {
+	globalConsoleEventTrigger = func(eventName string, exitCode int) {
 		logEvt := s.getLogger()
-		logEvt.Warn("OS Console Event received, overriding for safe teardown", slog.String("event", eventName))
+		logEvt.Warn("OS Console Event received, overriding for safe teardown",
+			slog.String("event", eventName), slog.Int("exitcode", exitCode))
 
 		// Triggers your exact sequence: cancels context, waits on WaitGroups, calls os.Exit()
-		s.shutdown(0)
+		s.shutdown(exitCode)
 		panic2("BUG: unreachable")
 	}
 
@@ -2518,12 +2519,12 @@ func (s *Server) Run() error {
 	go s.rebindWebUIListener(s.uiListenerParamsFrom(cfg)) //blocking but runs in goroutine so this line isn't blocking
 
 	go s.watchKeys(s.Reload, // Ctrl+R aka reloadFn
-		func() { // alt+x Ctrl+X etc. aka cleanExitFn
+		func(code int) { // alt+x Ctrl+X etc. aka cleanExitFn
 			log3 := s.getLogger()
 			log3.Debug("Shutdown signal received, clean exit.")
 			//doneFIXME: at least UDP DNS listener isn't shutdown while waiting for keypress to exit (after the shutdown(0) below) !!
 			//cancel()    //doneFIXME: this triggers the below shutdown(4) !
-			s.shutdown(0) // clean exit
+			s.shutdown(code) // clean exit
 			panic2("BUG: unreachable")
 		},
 	)
@@ -7406,7 +7407,7 @@ func UnstickStdinRead(logger *slog.Logger) {
 	}
 }
 
-func (s *Server) watchKeys(reloadFn, cleanExitFn func()) {
+func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 	fd := int(os.Stdin.Fd())
 
 	oldState, err := term.MakeRaw(fd)
@@ -7463,7 +7464,7 @@ func (s *Server) watchKeys(reloadFn, cleanExitFn func()) {
 			if err2 := term.Restore(fd, oldState); err2 != nil {
 				log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 			}
-			cleanExitFn()
+			exitFn(0)
 		}
 
 		// Ctrl+R (0x12)
@@ -7483,7 +7484,7 @@ func (s *Server) watchKeys(reloadFn, cleanExitFn func()) {
 			if err2 := term.Restore(fd, oldState); err2 != nil {
 				log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 			}
-			cleanExitFn()
+			exitFn(130)
 		}
 
 		// Alt+X / Alt+R → ESC + key
@@ -7495,7 +7496,7 @@ func (s *Server) watchKeys(reloadFn, cleanExitFn func()) {
 				if err2 := term.Restore(fd, oldState); err2 != nil {
 					log2.Warn("failed to restore terminal state", wincoe.SafeErr(err2))
 				}
-				cleanExitFn()
+				exitFn(0)
 			case 'r', 'R':
 				fmt.Print("\n")
 				log2.Info("Alt+R detected → reloading config")
@@ -10081,7 +10082,7 @@ var (
 	procSetConsoleCtrlHandler = wincoe.NewBoundProc(kernel32, "SetConsoleCtrlHandler", wincoe.CheckBool)
 
 	// Global bridge so our Win32 callback can reach your Server instance
-	globalConsoleEventTrigger func(eventName string)
+	globalConsoleEventTrigger func(eventName string, exitCode int)
 
 	// NEW: Flag to bypass the "Press any key" pause during forced teardowns
 	skipInteractivePause atomic.Bool
@@ -10097,12 +10098,16 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 		CtrlShutdownEvent = windows.CTRL_SHUTDOWN_EVENT //6
 	)
 
+	var exitCode int = 0 // Default to 0 for window-closed,logoff,shutdown
+
 	var eventName string
 	switch ctrlType {
 	case CtrlCEvent:
 		eventName = "CTRL_C_EVENT (Ctrl+C)" //it's the sigChan one that triggers tho (this one does only while in shutdown())
+		exitCode = 130
 	case CtrlBreakEvent:
 		eventName = "CTRL_BREAK_EVENT (Ctrl+Break)"
+		exitCode = 130
 	case CtrlCloseEvent:
 		skipInteractivePause.Store(true) // <-- Bypass pause! Console is closing.
 		eventName = "CTRL_CLOSE_EVENT (Console Window Closed)"
@@ -10120,7 +10125,7 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 	if globalConsoleEventTrigger != nil {
 		// This will block, eventually calling os.Exit() from inside your shutdown sequence.
 		// This is required. If we returned 1 immediately, the OS would kill the process mid-cleanup.
-		globalConsoleEventTrigger(eventName)
+		globalConsoleEventTrigger(eventName, exitCode)
 	}
 
 	return 1 // TRUE (Though os.Exit will usually fire before we ever reach this line)
