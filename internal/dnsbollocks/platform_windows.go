@@ -9536,19 +9536,39 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 	start = time.Now()
 	n, err = w.file.Write(p)
 	writeTime := time.Since(start)
-	if writeTime > time.Second {
+	w.size += int64(n)
+
+	if writeTime > DISK_STALL_DETECT_AFTER_THIS_MANY_SECONDS*time.Second {
 		fmt.Fprintf(os.Stderr,
-			"rotatingLogWriter file.Write took %v\n",
-			writeTime)
+			"rotatingLogWriter file.Write took %v for a log msg that's somewhere above\n", //can't say for which log msg or contents of it!
+			writeTime) // don't include 'p' or string(p) here because you're not allow to reuse it after the .Write(p) !
+
+		if err == nil { // if it didn't err for the above w.file.Write(p), then we attempt to write/add this, as it's guaranteed to be sequential due to caller's lock!
+			// Format your second message safely
+			warningMsg := fmt.Sprintf("rotatingLogWriter file.Write took %v for the exactly-above log msg\n", writeTime) // can't reuse 'p' here!
+
+			// Write it directly to the file while we still hold the lock
+			n2, err2 := w.file.WriteString(warningMsg) //w.file.Write([]byte(warningMsg))
+
+			w.size += int64(n2) // Track the second write so rotation stays accurate
+
+			if err2 != nil {
+				// handle error if needed
+				fmt.Fprintf(os.Stderr, "rotatingLogWriter file.Write failed to write the above 'took' msg into file, err:%v", err2)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "rotatingLogWriter file.Write skipped writing the above 'took' msg into file also, because the prev. attempt (that 'took' that much time) failed with err:%v", err)
+		}
 	}
 
-	w.size += int64(n)
 	if err == nil {
 		return n, nil
 	} else {
 		return n, fmt.Errorf("rotatingLogWriter, failed to write to the rotating logger file: %w", err)
 	}
 }
+
+const DISK_STALL_DETECT_AFTER_THIS_MANY_SECONDS = 1
 
 // must be done under lock!
 func (w *rotatingLogWriter) rotateIfNeededYouHoldLock() {
@@ -11531,7 +11551,32 @@ func (w *asyncLogWriter) DroppedCount() int64 {
 func (w *asyncLogWriter) drainLoop() {
 	defer close(w.done)
 	for p := range w.queue {
-		if _, err := w.underlying.Write(p); err != nil {
+		// 1. Safely extract an independent string copy of the log context BEFORE writing
+		// because it's a copy, it avoids holding onto 'p' after the write finishes.
+		//Converting a byte slice to a string in Go (string(p)) explicitly allocates new memory and copies the underlying bytes.
+		var logSnippet string = string(p)
+
+		// 2. Time the actual synchronous write operation
+		start := time.Now()
+		n, err := w.underlying.Write(p)
+		// At this point, 'p' is done with, and we only look at our safe 'logSnippet' copy if needed
+		elapsed := time.Since(start)
+		// 3. If it stalls, dump the independent snippet to stderr
+		if elapsed > DISK_STALL_DETECT_AFTER_THIS_MANY_SECONDS*time.Second {
+			//only log this on stderr, but there's another part that logs in-file, see: rotatingLogWriter.Write()
+			fmt.Fprintf(os.Stderr, "[asyncLogWriter %q] === DISK STALL DETECTED ===\n"+
+				"[asyncLogWriter %q] Duration: %s\n"+
+				"[asyncLogWriter %q] Attempted to write: %s\n"+
+				"[asyncLogWriter %q] Bytes written: %d | Err: %v\n"+
+				"[asyncLogWriter %q] ===========================\n",
+				w.name,
+				w.name, elapsed,
+				w.name, logSnippet,
+				w.name, n, err,
+				w.name,
+			)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "[asyncLogWriter %q] underlying write failed: %v\n", w.name, err)
 		}
 	}
