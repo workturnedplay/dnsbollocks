@@ -2324,7 +2324,7 @@ func (s *Server) Reload() {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
 			log.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
-			finalShutdownSequence(log, 1, os.Exit)
+			finalShutdownSequence(log, 1, os.Exit, s.rt.FlushLogsForShutdown)
 			//TODO: maybe now we don't have to os.Exit ?
 		} else {
 			log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
@@ -2662,14 +2662,14 @@ func OldMain() {
 		hash, err := promptAndHashPassword(localLogger, 12) // Hardcode safe minimum for CLI
 		if err != nil {
 			localLogger.Error("Failed to set password: ", wincoe.SafeErr(err))
-			finalShutdownSequence(localLogger, 1, os.Exit)
+			finalShutdownSequence(localLogger, 1, os.Exit, rt.FlushLogsForShutdown)
 		}
 		//fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for \"webui_password_hash\":\n%s\n", configFileName, hash)
 		// Dynamic tag extraction
 		var jsonTag string = getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash))
 		fmt.Printf("\nSuccess! Paste this exact string into your %s as the value for %q:\n%s\n", configFileName, jsonTag, hash)
 		localLogger.Debug("Generated new hash password(not logging it) via cmd line arg, not saved in config.", slog.String("config", configFileName))
-		finalShutdownSequence(localLogger, 0, os.Exit)
+		finalShutdownSequence(localLogger, 0, os.Exit, rt.FlushLogsForShutdown)
 	}
 
 	// ── 3. Load and validate configuration ────────────────────────────────────
@@ -2681,7 +2681,7 @@ func OldMain() {
 		} else {
 			rt.Logger().Error("Config load failed", wincoe.SafeErr(err))
 		}
-		finalShutdownSequence(rt.Logger(), 1, os.Exit)
+		finalShutdownSequence(rt.Logger(), 1, os.Exit, rt.FlushLogsForShutdown)
 	} else {
 		rt.Logger().Info("Config loaded", slog.String("filename", configFileName))
 	}
@@ -2695,7 +2695,7 @@ func OldMain() {
 	// After this call, bugLogger and wincoe.Logger are updated to the full logger.
 	if err2 := rt.LogMgr.ApplyConfig(resolvedCfg); err2 != nil {
 		rt.Logger().Error("Failed to initialize full logging", wincoe.SafeErr(err2))
-		finalShutdownSequence(rt.Logger(), 1, os.Exit)
+		finalShutdownSequence(rt.Logger(), 1, os.Exit, rt.FlushLogsForShutdown)
 	}
 
 	// ── 5. Create and run the Server ──────────────────────────────────────────
@@ -7341,13 +7341,13 @@ func (s *Server) shutdown(exitCode int) {
 		// //bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
 		// log.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 		// os.Exit(exitCode)
-		finalShutdownSequence(log, exitCode, s.exitFn)
+		finalShutdownSequence(log, exitCode, s.exitFn, s.rt.FlushLogsForShutdown)
 		panic2("BUG: shoulda been unreachable after finalShutdownSequence, which means it didn't os.Exit!")
 	})
 	panic2("BUG: shoulda been unreachable after s.shutdownOnce.Do")
 }
 
-func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int)) {
+func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int), flushLogs func()) {
 	UnstickStdinRead(logger)
 	// NEW: Check if the OS is forcefully terminating us
 	if skipInteractivePause.Load() {
@@ -7360,6 +7360,19 @@ func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int)) 
 	} //ifelse
 
 	logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
+
+	// Flush any asynchronous log writers (see asyncLogWriter) now, after the
+	// final log line above but before exitFn actually terminates the
+	// process, so buffered-but-not-yet-written log lines (including that
+	// final line) aren't silently lost. flushLogs may be nil during the
+	// very earliest bootstrap failure paths, before any log file writer
+	// exists yet. This call is itself bounded (see
+	// asyncLogWriterCloseDrainTimeout) and can never hang shutdown even if
+	// the underlying disk is currently stuck.
+	if flushLogs != nil {
+		flushLogs()
+	}
+
 	//os.Exit(exitCode)
 	exitFn(exitCode)
 }
@@ -11357,6 +11370,212 @@ func (w *rotatingLogWriter) Close() error {
 	}
 }
 
+// asyncLogWriter wraps an io.Writer (in practice, always a *rotatingLogWriter
+// pointed at dnsbollocks.log or queries.log) so that a slow or contended disk
+// can never stall the goroutine that produced the log line.
+//
+// Why this exists: every slog handler that logs to a file ends up calling
+// Write() synchronously on whatever goroutine emitted the line — including
+// the DNS UDP/TCP hot paths (runDNSUDPLoop, runDNSTCPLoop, handleDNSQuery),
+// which log on essentially every query. A single rotatingLogWriter.Write()
+// call has been observed to block for well over a minute under heavy,
+// unrelated disk contention (e.g. Defender scanning during a large install
+// on the same physical disk), which would otherwise freeze DNS resolution
+// itself for that duration — a logging concern taking down the actual
+// service.
+//
+// asyncLogWriter decouples "record the log line" from "persist the log
+// line": Write() copies the bytes (mandatory — slog recycles its formatting
+// buffer via sync.Pool the instant Write returns, so retaining a reference
+// to the original slice would race with, and could silently corrupt,
+// already-queued lines) and hands the copy to a single dedicated background
+// goroutine over a bounded channel, then returns immediately. That goroutine
+// is the only thing that ever touches the underlying writer, so per-file
+// write ordering is preserved exactly as if the writes were synchronous.
+//
+// Back-pressure policy: if the queue is full — meaning the drain goroutine
+// is currently stuck inside a slow underlying Write() — new lines are
+// DROPPED rather than blocking the caller or growing memory without bound.
+// This is the same tradeoff every async logger makes (zap's buffered
+// WriteSyncer, journald's async mode, etc.): under sustained backpressure,
+// losing some log lines is preferable to losing DNS service entirely. A
+// dropped-line counter is kept and a rate-limited notice is printed directly
+// to os.Stderr (bypassing the queue and the slog pipeline entirely, exactly
+// like rotatingLogWriter.Write's own existing slow-write diagnostic above)
+// so a stuck disk is never silently invisible to the operator.
+//
+// Known limitation: if the underlying disk never recovers, the drain
+// goroutine can remain permanently blocked inside its current Write() call
+// forever (Go has no cancellation for a plain blocking file write); Close()
+// only bounds how long *callers* wait for it, not the goroutine's own
+// lifetime. This is an inherent limitation of blocking file I/O in Go, not
+// something this type can fully close off.
+type asyncLogWriter struct {
+	underlying io.Writer
+	queue      chan []byte
+	done       chan struct{} // closed once the drain goroutine has exited
+
+	mu        sync.RWMutex // guards closed; see Write/Close for why this can never panic on a closed channel
+	closed    bool
+	closeOnce sync.Once
+
+	dropped        atomic.Int64
+	lastDropWarnNs atomic.Int64
+
+	name string // human-readable identity for diagnostics (e.g. the log file path)
+}
+
+// asyncLogWriterQueueCapacity bounds worst-case memory usage for a single
+// asyncLogWriter: capacity * (typical JSON log line size, a few hundred
+// bytes) is a few MB at most, while comfortably absorbing bursts during
+// transient disk contention — the exact scenario that motivated this type —
+// without dropping lines under normal, brief hiccups.
+const asyncLogWriterQueueCapacity = 4096
+
+// asyncLogWriterDropWarnThrottle bounds how often the "we are dropping log
+// lines" diagnostic itself is emitted, so a sustained backlog can't turn
+// into its own flood of stderr spam.
+const asyncLogWriterDropWarnThrottle = 5 * time.Second
+
+// asyncLogWriterCloseDrainTimeout bounds how long Close() waits for the
+// drain goroutine to flush whatever is still queued. Bounded so a
+// currently-stalled disk can never hang process shutdown/reload
+// indefinitely — see the type-level doc comment on why blocking is exactly
+// what this type exists to avoid.
+const asyncLogWriterCloseDrainTimeout = 5 * time.Second
+
+// newAsyncLogWriter starts the background drain goroutine and returns the
+// facade callers should pass to slog.NewJSONHandler (etc.) instead of
+// underlying directly. name is used only for diagnostic messages.
+func newAsyncLogWriter(underlying io.Writer, name string) *asyncLogWriter {
+	if underlying == nil {
+		panic2("BUG: newAsyncLogWriter called with nil underlying io.Writer")
+	}
+	w := &asyncLogWriter{
+		underlying: underlying,
+		queue:      make(chan []byte, asyncLogWriterQueueCapacity),
+		done:       make(chan struct{}),
+		name:       name,
+	}
+	go w.drainLoop()
+	return w
+}
+
+// Write implements io.Writer. It never blocks on the underlying sink.
+//
+// Per io.Writer's contract this reports success (len(p), nil) once the
+// bytes have been safely queued (or intentionally dropped), since queuing —
+// not the eventual disk write — is this method's actual job. A dropped line
+// is not surfaced as an error return either: slog's Logger.log() discards
+// Handle()'s error return entirely, so returning one here would be silently
+// swallowed anyway; the stderr fallback in recordDrop is the only path that
+// reliably reaches an operator.
+func (w *asyncLogWriter) Write(p []byte) (int, error) {
+	n := len(p)
+
+	// RLock (not a full mutex) so the common, uncontended case costs only a
+	// couple of atomic ops — negligible next to the multi-second-to-minute
+	// disk stalls this type exists to route around. Close() takes the write
+	// lock before closing w.queue, so a Write() can never be mid-select-send
+	// on a channel that Close() simultaneously closes out from under it
+	// (which would otherwise panic).
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.closed {
+		w.recordDrop()
+		return n, nil
+	}
+
+	// Defensive copy: the caller (slog's internal handler) recycles its
+	// formatting buffer via sync.Pool the instant Write returns, so we must
+	// not retain a reference to p itself once we hand it off. Only copy
+	// once we know we're actually enqueuing — no point paying the
+	// allocation cost for a line we're about to drop anyway.
+	cp := make([]byte, n)
+	copy(cp, p)
+
+	select {
+	case w.queue <- cp:
+	default:
+		w.recordDrop()
+	}
+	return n, nil
+}
+
+func (w *asyncLogWriter) recordDrop() {
+	total := w.dropped.Add(1)
+
+	now := time.Now().UnixNano()
+	last := w.lastDropWarnNs.Load()
+	if now-last < asyncLogWriterDropWarnThrottle.Nanoseconds() {
+		return
+	}
+	if !w.lastDropWarnNs.CompareAndSwap(last, now) {
+		return // another goroutine already won the throttle window
+	}
+	fmt.Fprintf(os.Stderr,
+		"[asyncLogWriter %q] WARNING: log queue full; %d line(s) dropped so far "+
+			"(underlying sink is not keeping up, e.g. due to slow/contended disk)\n",
+		w.name, total)
+}
+
+// DroppedCount returns the total number of log lines dropped so far due to
+// sustained back-pressure. Exposed for diagnostics/tests.
+func (w *asyncLogWriter) DroppedCount() int64 {
+	return w.dropped.Load()
+}
+
+// drainLoop is the single goroutine ever allowed to touch w.underlying, so
+// per-file write ordering is preserved exactly as if writes were
+// synchronous, with no additional locking required here.
+func (w *asyncLogWriter) drainLoop() {
+	defer close(w.done)
+	for p := range w.queue {
+		if _, err := w.underlying.Write(p); err != nil {
+			fmt.Fprintf(os.Stderr, "[asyncLogWriter %q] underlying write failed: %v\n", w.name, err)
+		}
+	}
+}
+
+// Close stops accepting new writes, waits (up to
+// asyncLogWriterCloseDrainTimeout) for the background goroutine to flush
+// whatever is still queued, and then closes the underlying writer if it
+// implements io.Closer. Safe to call more than once; only the first call
+// does anything.
+func (w *asyncLogWriter) Close() error {
+	var closeErr error
+	w.closeOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		close(w.queue)
+		w.mu.Unlock()
+
+		select {
+		case <-w.done:
+			// drained cleanly
+		case <-time.After(asyncLogWriterCloseDrainTimeout):
+			fmt.Fprintf(os.Stderr,
+				"[asyncLogWriter %q] WARNING: drain goroutine did not finish within %s during Close(); "+
+					"some buffered log lines may be lost (underlying sink appears stuck)\n",
+				w.name, asyncLogWriterCloseDrainTimeout)
+		}
+
+		if dropped := w.dropped.Load(); dropped > 0 {
+			fmt.Fprintf(os.Stderr, "[asyncLogWriter %q] total dropped log lines this session: %d\n", w.name, dropped)
+		}
+
+		if closer, ok := w.underlying.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				closeErr = fmt.Errorf("asyncLogWriter %q: failed to close underlying writer: %w", w.name, err)
+			}
+		}
+	})
+	return closeErr
+}
+
+var _ io.Writer = (*asyncLogWriter)(nil)
+var _ io.Closer = (*asyncLogWriter)(nil)
+
 // LoggerManager owns the active *slog.Logger and any underlying file handles
 // (rotatingLogWriters) so callers can reinitialise or close them cleanly.
 //
@@ -11442,9 +11661,30 @@ func (lm *LoggerManager) Close() error {
 func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	log := lm.get()
 	consoleLevel := parseConsoleLogLevel(cfg.ConsoleLogLevel)
-	var logWriters []*rotatingLogWriter // collected for Close() registration
+	// Collected for Reinit() registration below, and for immediate cleanup
+	// if a later openLog() call fails after an earlier one already
+	// succeeded (see closeOpenedOnFailure).
+	var asyncWriters []*asyncLogWriter
 
-	// Simple rotation on each log line write (respects your LogMaxSizeMB)
+	// closeOpenedOnFailure releases every writer opened so far in this call.
+	// Without this, a later openLog() failing (e.g. the queries log file,
+	// after the full log file already opened successfully) would silently
+	// leak the earlier writer's open file handle and background drain
+	// goroutine forever, since it would never be registered with
+	// lm.closers and thus never closed by anyone.
+	closeOpenedOnFailure := func() {
+		for _, w := range asyncWriters {
+			if err := w.Close(); err != nil {
+				log.Warn("error closing log writer while unwinding a failed ApplyConfig", wincoe.SafeErr(err))
+			}
+		}
+	}
+
+	// Simple rotation on each log line write (respects your LogMaxSizeMB).
+	// Every log line — including ones on the DNS UDP/TCP hot paths — passes
+	// through here, so the raw rotatingLogWriter (which can itself block
+	// for a long time under disk contention) is wrapped in asyncLogWriter
+	// before being handed to slog; see asyncLogWriter's doc comment for why.
 	openLog := func(path string) (io.Writer, error) {
 		if path == "" {
 			return nil, errors.New("empty logging filename")
@@ -11456,17 +11696,23 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		}
 		// We can safely trigger a manual size check/rotation on boot here just in case!
 		// The next Write() will rotate it automatically anyway if it's over the limit.
+		// This runs synchronously, once, before the writer is wrapped and its
+		// background drain goroutine starts, so blocking briefly here (unlike
+		// per-query log writes further below) is fine.
 		writer.RotateIfNeeded()
-		logWriters = append(logWriters, writer)
-		return writer, nil
+		async := newAsyncLogWriter(writer, path)
+		asyncWriters = append(asyncWriters, async)
+		return async, nil
 	}
 
 	fullWriter, err := openLog(cfg.LogEverythingFile)
 	if err != nil {
+		closeOpenedOnFailure()
 		return err
 	}
 	queriesWriter, err := openLog(cfg.LogQueriesFile)
 	if err != nil {
+		closeOpenedOnFailure()
 		return err
 	}
 
@@ -11485,9 +11731,9 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	})
 
-	// Reinit closes old rotating writers (if any) and registers the new ones.
-	closers := make([]io.Closer, len(logWriters))
-	for i, w := range logWriters {
+	// Reinit closes old async log writers (if any) and registers the new ones.
+	closers := make([]io.Closer, len(asyncWriters))
+	for i, w := range asyncWriters {
 		closers[i] = w
 	}
 	if reinitErr := lm.Reinit(improvedLogger, closers...); reinitErr != nil {
@@ -11523,6 +11769,26 @@ func (r *Runtime) Logger() *slog.Logger {
 		panic2("BUG: uninited Runtime.LogMgr!")
 	}
 	return r.LogMgr.get()
+}
+
+// FlushLogsForShutdown drains and closes every currently-registered
+// asynchronous log writer (see asyncLogWriter) via LogMgr.Close(), bounded
+// by asyncLogWriterCloseDrainTimeout so it can never itself hang process
+// shutdown even if the underlying disk is currently stuck. Safe to call
+// more than once, and safe to call even if ApplyConfig was never reached
+// yet (nothing registered to close in that case).
+//
+// Any failure is reported directly to os.Stderr rather than through
+// r.Logger(): by the time this runs we are already tearing down the very
+// log writers that logger depends on, so routing the error back through
+// them would be unreliable.
+func (r *Runtime) FlushLogsForShutdown() {
+	if r == nil || r.LogMgr == nil {
+		return
+	}
+	if err := r.LogMgr.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: error flushing/closing log writers during shutdown: %v\n", err)
+	}
 }
 
 // newDefaultFileWriter creates a FileWriter seeded with defaultConfig's safety
