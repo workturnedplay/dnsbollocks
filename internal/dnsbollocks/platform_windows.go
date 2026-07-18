@@ -3581,61 +3581,89 @@ type clientMetadata struct {
 	startTime  time.Time
 }
 
-// Listeners...
+type ClientMetadataFuture struct {
+	wg   sync.WaitGroup
+	info clientMetadata
+}
 
-func (s *Server) makeClientInfoContext(ctx context.Context, protocol string, clientAddr net.Addr, pid uint32, exe string, err error) context.Context {
-	log := s.getLogger()
+func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clientAddr net.Addr) context.Context {
+	future := &ClientMetadataFuture{}
+	future.info.protocol = protocol
+	future.info.clientAddr = clientAddr
+	future.info.startTime = time.Now() // Capture start time
+	future.wg.Add(1)
 
-	var services []string
-	var serviceInfo string
-	if err != nil {
-		log.Warn("couldn't get pid and exe name",
+	go func() {
+		defer future.wg.Done()
+		var pid uint32
+		var exe string
+		var err error
+		log := s.getLogger()
+
+		switch protocol {
+		case "UDP":
+			if udpAddr, ok := clientAddr.(*net.UDPAddr); ok {
+				start := time.Now()
+				pid, exe, err = wincoe.PidAndExeForUDP(udpAddr)
+				if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+					wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForUDP() in startMetadataLookup",
+						slog.Duration("elapsed", elapsed),
+					)
+				}
+			}
+		case "TCP", "DoH":
+			if tcpAddr, ok := clientAddr.(*net.TCPAddr); ok {
+				start := time.Now()
+				pid, exe, err = wincoe.PidAndExeForTCP(tcpAddr)
+				if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+					wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForTCP() in startMetadataLookup",
+						slog.Duration("elapsed", elapsed),
+					)
+				}
+			}
+		}
+
+		future.info.pid = pid
+		future.info.exe = exe
+		future.info.err = err
+		var serviceInfo string
+		if err != nil {
+			log.Warn("couldn't get pid and exe name",
+				slog.String("proto", protocol),
+				//slog.String("clientAddr", clientAddr.String()),
+				SafeAddr("clientAddr", clientAddr),
+				wincoe.SafeErr(err))
+			//services = []string{"<err:no_pid>"}
+			//return ctx
+			serviceInfo = "err:no_pid"
+		} else { //err==nil
+			start := time.Now()
+			services, err2 := wincoe.GetServiceNamesFromPIDCached(pid)
+			if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+				wincoe.GetBugLogger().Warn("slow wincoe.GetServiceNamesFromPIDCached() in startMetadataLookup",
+					slog.Duration("elapsed", elapsed),
+				)
+			}
+			future.info.services, future.info.err = services, err2
+			if err2 != nil {
+				serviceInfo = fmt.Sprintf("err=%v", err)
+			} else {
+				serviceInfo = fmt.Sprintf("%v", services)
+			}
+		}
+
+		log.Debug("client connected",
 			slog.String("proto", protocol),
 			//slog.String("clientAddr", clientAddr.String()),
 			SafeAddr("clientAddr", clientAddr),
-			wincoe.SafeErr(err))
-		//services = []string{"<err:no_pid>"}
-		//return ctx
-		serviceInfo = "err:no_pid"
-	} else {
-		//fmt.Println("!before")
-		//services, err := wincoe.GetServiceNamesFromPIDCached(pid) // this epic shadowing with no warnings! (golangci-lint v2 is broken when using v1.27 devel Go) and vscode didn't say anything on its own.
-		services, err = wincoe.GetServiceNamesFromPIDCached(pid)
-		//services = []string{"<service-lookup-disabled-for-debug>"}
-		//fmt.Println("!after")
-		if err != nil {
-			serviceInfo = fmt.Sprintf("err=%v", err)
-		} else {
-			serviceInfo = fmt.Sprintf("%v", services)
-			// if len(services) > 0 {
-			//     serviceInfo = fmt.Sprintf("%d services: %v", len(services), services)
-			// } else {
-			//     serviceInfo = "no services"
-			// }
-		}
-	}
+			slog.Int64("pid", int64(pid)),
+			slog.String("exe", exe),
+			slog.String("services", serviceInfo),
+			wincoe.SafeErr(err),
+		)
+	}()
 
-	log.Debug("client connected",
-		slog.String("proto", protocol),
-		//slog.String("clientAddr", clientAddr.String()),
-		SafeAddr("clientAddr", clientAddr),
-		slog.Int64("pid", int64(pid)),
-		slog.String("exe", exe),
-		slog.String("services", serviceInfo),
-		wincoe.SafeErr(err),
-	)
-
-	// Create a specific context for THIS packet
-	return context.WithValue(ctx, clientInfoKey{}, clientMetadata{
-		protocol:   protocol,
-		pid:        pid,
-		exe:        exe,
-		services:   services,
-		err:        err,
-		clientAddr: clientAddr,
-		startTime:  time.Now(), // Capture start time
-	})
-	//}
+	return context.WithValue(ctx, clientInfoKey{}, future)
 }
 
 // SafeAddr converts any net.Addr (UDP, TCP, IP, Unix, etc.) to a safe primitive string.
@@ -3651,6 +3679,8 @@ func SafeAddr(key string, addr net.Addr) slog.Attr {
 	// net.Addr natively exposes the String() method, which evaluates instantly
 	return slog.String(key, addr.String())
 }
+
+// Listeners...
 
 func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDPAddr, ln *net.UDPConn) {
 	log := s.getLogger()
@@ -3868,10 +3898,11 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 			//slog.String("clientAddr", remoteTCP.String()),
 			SafeAddr("clientAddr", remoteTCP),
 		)
-		// Use our TCP PID helper
-		pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
+		// Use our TCP PID helper, moved
+		//pid, exe, pErr := wincoe.PidAndExeForTCP(remoteTCP)
 		// wincoe.Smashy()
-		ctx = s.makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
+		//ctx = s.makeClientInfoContext(ctx, "DoH", remoteTCP, pid, exe, pErr)
+		ctx = s.startMetadataLookup(ctx, "DoH", remoteTCP)
 	} else {
 		log.Warn("DoH: could not resolve remote addr", slog.String("addr", r.RemoteAddr))
 		//FIXME: this is a bigger problem than a WARN, if it happens! but an ERROR here would make it mix with the red colored blocked requests, thus harder to be seen!
@@ -3980,11 +4011,18 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
 		//log.Warn(reason, slog.String("client", clientAddr))
 		// Extract executable from context for better logging
-		var exeName string
-		if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
-			exeName = info.exe
-		} else {
-			exeName = "<unknown_exe>"
+		// var exeName string
+		// if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
+		// 	exeName = info.exe
+		// } else {
+		// 	exeName = "<unknown_exe>"
+		// }
+		var exeName string = "<unknown_exe>"
+		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
+			future.wg.Wait() //waits for the future but only is rate limited!
+			if future.info.exe != "" {
+				exeName = future.info.exe
+			}
 		}
 
 		// Dynamically fetch config tags and values based on which limit was tripped
@@ -5146,104 +5184,96 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	// extra worth logging twice.
 	displayDomain, domainIsIDN := punycodeDecodePatternForDisplay(domain)
 
-	var attrs []any = []any{
-		slog.String("domain", displayDomain),
-		slog.String("type", typ),
-		slog.String("action", action),
-	}
-	if domainIsIDN {
-		attrs = append(attrs, slog.String("domain_punycode", domain))
+	var blockedMsgStr string
+	if blocked != nil { //XXX: must do it here, else it will race!
+		blockedMsgStr = blocked.String()
 	}
 
-	//this is Grok 4.20 code which makes it always hit "coding_fail: logQuery called without metadata in context"
-	// val := ctx.Value(clientInfoKey)
-	// var info *clientMetadata
-	// var ok bool
-	// info, ok = val.(*clientMetadata) // ← this was the bug, shouldn't have been pointer(just as I thought was the problem, initially)
-	// if !ok || info == nil {
-	//     // Epic Coding Fail tracker - this should never happen in production
-	//     // attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
-	//     // This is the "Epic Coding Fail" tracker.
-	//     // We add a field to the query log so you can find these easily.
-	//     attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+	// Fire and forget logging so the DNS response isn't delayed
+	go func() {
 
-	//     // Also, log a separate Error to your main system log/stderr
-	//     // so you get alerted that a handler is broken.
-	//     log.Warn("coding_fail: logQuery called without metadata in context",
-	//         slog.String("client", client),
-	//         slog.String("domain", domain))
-	// } else {
-	// --- NEW: Pull the PID/Exe info from the context backpack ---
-	if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
-		elapsed := time.Since(info.startTime)
-		attrs = append(attrs,
-			slog.String("exe", info.exe))
-		//To avoid cluttering the console, at least.
-		numServices := len(info.services)
-		if numServices != 0 {
+		var attrs []any = []any{
+			slog.String("domain", displayDomain),
+			slog.String("type", typ),
+			slog.String("action", action),
+		}
+		if domainIsIDN {
+			attrs = append(attrs, slog.String("domain_punycode", domain))
+		}
+
+		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
+			future.wg.Wait()
+			//if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
+			info := future.info
+			elapsed := time.Since(info.startTime)
 			attrs = append(attrs,
-				//slog.String("services", strings.Join(info.services, ", ")),
-				SafeStringSlice("services", info.services),
-				slog.Int("num_services", numServices),
+				slog.String("exe", info.exe))
+			//To avoid cluttering the console, at least.
+			numServices := len(info.services)
+			if numServices != 0 {
+				attrs = append(attrs,
+					SafeStringSlice("services", info.services),
+					slog.Int("num_services", numServices),
+				)
+			}
+			attrs = append(attrs,
+				slog.String("proto", info.protocol),
+				SafeAddr("clientAddr", info.clientAddr),
+				slog.Uint64("pid", uint64(info.pid)),
 			)
+			if info.err != nil {
+				attrs = append(attrs,
+					wincoe.SafeErr(info.err),
+				)
+			}
+			attrs = append(attrs,
+				slog.String("elapsed", elapsed.String()),
+				//slog.Int64("elapsed_ms", elapsed.Milliseconds()),
+				slog.Int64("elapsed_ns", elapsed.Nanoseconds()),
+				slog.String("client_connected_at_ts", info.startTime.Format(TimeStampsFormat)),
+				slog.String("log_ts", ts),
+			)
+		} else {
+			// This is the "Epic Coding Fail" tracker.
+			// We add a field to the query log so you can find these easily.
+			attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
+
+			// Also, log a separate Error to your main system log/stderr
+			// so you get alerted that a handler is broken.
+			log.Warn("coding_fail: logQuery called without metadata in context",
+				slog.String("client", client),
+				slog.String("domain", domain))
+		}
+
+		if ruleID != "" {
+			attrs = append(attrs, slog.String("rule_id", ruleID))
+		}
+		if len(ips) > 0 {
+			attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
 		}
 		attrs = append(attrs,
-			slog.String("proto", info.protocol),
-			//slog.String("clientAddr", info.clientAddr.String()),
-			SafeAddr("clientAddr", info.clientAddr),
-			slog.Uint64("pid", uint64(info.pid)),
-		)
-		if info.err != nil {
-			attrs = append(attrs,
-				//slog.String("err", info.err.Error()),
-				wincoe.SafeErr(info.err),
-			)
-		}
-		attrs = append(attrs,
-			slog.String("elapsed", elapsed.String()),
-			//slog.Int64("elapsed_ms", elapsed.Milliseconds()),
-			slog.Int64("elapsed_ns", elapsed.Nanoseconds()),
-			slog.String("client_connected_at_ts", info.startTime.Format(TimeStampsFormat)),
-			slog.String("log_ts", ts),
-		)
-	} else {
-		// This is the "Epic Coding Fail" tracker.
-		// We add a field to the query log so you can find these easily.
-		attrs = append(attrs, slog.String("metadata_error", "context_missing_client_info"))
-
-		// Also, log a separate Error to your main system log/stderr
-		// so you get alerted that a handler is broken.
-		log.Warn("coding_fail: logQuery called without metadata in context",
 			slog.String("client", client),
-			slog.String("domain", domain))
-	}
 
-	if ruleID != "" {
-		attrs = append(attrs, slog.String("rule_id", ruleID))
-	}
-	if len(ips) > 0 {
-		attrs = append(attrs, slog.String("ips", strings.Join(ips, ",")))
-	}
-	attrs = append(attrs,
-		slog.String("client", client),
+			slog.String("category", "query"), // <-- this routes it to "queries.log" only
+		)
 
-		slog.String("category", "query"), // <-- this routes it to "queries.log" only
-	)
-	if blocked != nil {
-		attrs = append(attrs, slog.String("blocked_dnsMsg", blocked.String()))
-	}
-	// Inject the upstream-state payload
-	if upstreamState2.Strategy != "" {
-		attrs = append(attrs, slog.String("strategy", upstreamState2.Strategy))
-	}
-	if upstreamState2.UpstreamUsed != "" {
-		attrs = append(attrs, slog.String("upstream_used", upstreamState2.UpstreamUsed))
-	}
-	if len(upstreamState2.FailedUpstreams) > 0 {
-		attrs = append(attrs, slog.Any("failed_upstreams", upstreamState2.FailedUpstreams))
-	}
-	log.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
-}
+		if blockedMsgStr != "" {
+			attrs = append(attrs, slog.String("blocked_dnsMsg", blockedMsgStr))
+		}
+
+		// Inject the upstream-state payload
+		if upstreamState2.Strategy != "" {
+			attrs = append(attrs, slog.String("strategy", upstreamState2.Strategy))
+		}
+		if upstreamState2.UpstreamUsed != "" {
+			attrs = append(attrs, slog.String("upstream_used", upstreamState2.UpstreamUsed))
+		}
+		if len(upstreamState2.FailedUpstreams) > 0 {
+			attrs = append(attrs, slog.Any("failed_upstreams", upstreamState2.FailedUpstreams))
+		}
+		log.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
+	}()
+} //func
 
 func servfailResponse(msg *dns.Msg) *dns.Msg {
 	msg.SetRcode(msg, dns.RcodeServerFailure)
@@ -8819,25 +8849,21 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		}
 		//XXX: this below(until the goroutine) slows down things here before going to the next ReadFromUDP aka client (above) again! could move these into the below goroutine but then XXX: it's gonna be too late to get the pid of the exe that just did this connection because it's gone from the list of UDP conns!
 		//^ "Valid tradeoff — PID lookup must happen before the goroutine or you lose the connection from the OS table; intentional" -Claude
+		//ok ^ moved!
 
-		start = time.Now()
-		pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
-		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
-			wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForUDP() in runDNSUDPLoop",
-				slog.Duration("elapsed", elapsed),
-			)
-		}
+		// start = time.Now()
+		// pid, exe, err2 := wincoe.PidAndExeForUDP(clientAddr)
+		// if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
+		// 	wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForUDP() in runDNSUDPLoop",
+		// 		slog.Duration("elapsed", elapsed),
+		// 	)
+		// }
 
-		start = time.Now()
 		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
 		// query's upstream forwarding should only be cancelled by full process shutdown, not
 		// by this specific listener instance being torn down during a hot rebind.
-		udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
-		if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
-			wincoe.GetBugLogger().Warn("slow makeClientInfoContext() in runDNSUDPLoop",
-				slog.Duration("elapsed", elapsed),
-			)
-		}
+		//udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
+		udpPacketCtx := s.startMetadataLookup(s.ctx, "UDP", clientAddr) //non-blocking!
 
 		// --- ADD SEMAPHORE CHECK HERE ---
 		release, ok := s.acquireDNSUDPSlot()
@@ -8912,11 +8938,12 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 			log3.Error("BUG: could not cast remote addr to TCPAddr", SafeAddr("addr", conn.RemoteAddr()))
 			// XXX: tcpPacketCtx stays as s.ctx; goroutine will still close conn and release the semaphore via defer.
 		} else {
-			//itisnecessarysonothingtodoFIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
+			//okfixed//itisnecessarysonothingtodoFIXME: this slows down things here until it's ready to tcpLn.Accept() (above) again!
 			// 2. Call your new TCP PID/Exe helper
 
-			pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
-			tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
+			//pid, exe, pidErr := wincoe.PidAndExeForTCP(clientAddr)
+			//tcpPacketCtx = s.makeClientInfoContext(tcpPacketCtx, "TCP", clientAddr, pid, exe, pidErr)
+			tcpPacketCtx = s.startMetadataLookup(tcpPacketCtx, "TCP", clientAddr)
 		}
 		// accepted a connection; handle in new goroutine
 
