@@ -62,6 +62,11 @@
         });
     }
 
+    // --- Filter Expression Parser ---
+    function normalizeStr(str) {
+        return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+
     // generateClientId produces a short, session-unique token used to track a
     // staged "Add" entry (rule/host/blacklist) before it has a real server-assigned
     // identity, so a subsequent staged Edit/Delete of that same not-yet-applied
@@ -584,6 +589,7 @@
         if (!filterInput) return;
         
         const raw = filterInput.value.trim().toLowerCase();
+        const rawNorm = normalizeStr(raw);
         sessionStorage.setItem(opts.storageKey, raw);
         
         const tbody = document.querySelector(opts.tbodySelector);
@@ -602,8 +608,8 @@
                 return;
             }
             
-            const searchTargetText = opts.getSearchText(row).toLowerCase();
-            const isMatch = raw.length === 0 || matchesFilterExpression(searchTargetText, raw);
+            const searchTargetText = normalizeStr(opts.getSearchText(row).toLowerCase());
+            const isMatch = rawNorm.length === 0 || matchesFilterExpression(searchTargetText, rawNorm);
             row.style.display = isMatch ? '' : 'none';
             
             if (opts.highlightTerms) {
