@@ -4156,20 +4156,47 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	//Gemini 3 Thinking: "The ID Matching is a "defense in depth" move. By using a random ID for the journey to Quad9 and back, you decouple your internal network's IDs from the public internet,
 	// making it much harder for someone to inject fake DNS responses into your proxy."
-	if resp == nil || resp.Rcode != dns.RcodeSuccess {
-		ips := []string{}
-		if resp != nil {
-			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
-		}
+
+	// if resp == nil || resp.Rcode != dns.RcodeSuccess {
+	// 	ips := []string{}
+	// 	if resp != nil {
+	// 		ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
+	// 	}
+	// 	negResp := servfailResponse(reqMsg)
+	// 	s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
+	// 	// Cache negatives short
+	// 	// Store a copy of the negative response as well
+	// 	cachee.Set(key, CacheEntry{
+	// 		Msg:   negResp.Copy(),
+	// 		State: upstreamState3,
+	// 	}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second) // time to cache negatives
+	// 	return negResp
+	// }
+
+	// FIX: Handle complete network failures (resp == nil)
+	if resp == nil {
 		negResp := servfailResponse(reqMsg)
-		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
-		// Cache negatives short
-		// Store a copy of the negative response as well
+		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, nil, negResp, upstreamState3)
 		cachee.Set(key, CacheEntry{
 			Msg:   negResp.Copy(),
 			State: upstreamState3,
-		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second) // time to cache negatives
+		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
 		return negResp
+	}
+
+	// FIX: Handle valid negative responses from upstream (NXDOMAIN, REFUSED, etc.)
+	if resp.Rcode != dns.RcodeSuccess {
+		ips := []string{fmt.Sprintf("dns.Rcode:%d", resp.Rcode)}
+		// Log exactly what the upstream told us
+		s.logQuery(ctx, clientAddr, domain, qtype, forwardedGotNegativeResponse, matchedID, ips, resp, upstreamState3)
+
+		// Cache negative responses
+		cachee.Set(key, CacheEntry{
+			Msg:   resp.Copy(),
+			State: upstreamState3,
+		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
+
+		return resp
 	}
 
 	//ips := extractIPs(resp) //before 'resp' gets mutated, and its IPs deleted.
@@ -5062,6 +5089,7 @@ func extractIPs(msg *dns.Msg) []string {
 const originalSTR string = "_ORIGINAL"
 const returnedModifiedSTR string = "_RETURNEDMODIFIED"
 const forwardedButFailedSoSERVFAIL string = "forwarded_but_FAILED_so_SERVFAIL"
+const forwardedGotNegativeResponse string = "forwarded_negative_response"
 const forwardedSTR string = "forwarded"
 const localHostOverride string = "local_host_override"
 const cacheHit string = "cache_hit"
@@ -5075,11 +5103,12 @@ var QueryActionANSI = map[string]string{
 	blockedSTR:                         "\x1b[91m", // Bright Red
 	globalRateLimitExceeded:            "\x1b[31m", // Red
 	clientRateLimitExceeded:            "\x1b[31m", // Red
-	BlockedBlacklistedIP + originalSTR: "\x1b[91m",
-	BlockedBlacklistedIP + returnedModifiedSTR: "\x1b[91m",
-	BlockedByUpstream + originalSTR:            "\x1b[91m",
-	BlockedByUpstream + returnedModifiedSTR:    "\x1b[91m",
-	forwardedButFailedSoSERVFAIL:               "\x1b[91m",
+	BlockedBlacklistedIP + originalSTR: "\x1b[91m", // Bright Red
+	BlockedBlacklistedIP + returnedModifiedSTR: "\x1b[91m", // Bright Red
+	BlockedByUpstream + originalSTR:            "\x1b[91m", // Bright Red
+	BlockedByUpstream + returnedModifiedSTR:    "\x1b[91m", // Bright Red
+	forwardedButFailedSoSERVFAIL:               "\x1b[91m", // Bright Red
+	forwardedGotNegativeResponse:               "\x1b[91m", // Bright Red
 	localHostOverride:                          "\x1b[96m", // Bright Cyan
 }
 
