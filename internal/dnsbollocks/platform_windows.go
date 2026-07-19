@@ -2311,7 +2311,7 @@ func (s *Server) Reload() {
 		defer s.reloadInProgress.Store(false)
 	}
 
-	log.Debug("Reload triggered...")
+	log.Debug("Reload function triggered...")
 
 	oldCfg := s.getConfig()
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
@@ -2394,7 +2394,7 @@ func (s *Server) Reload() {
 	}
 	log = s.getLogger() // Grab the newly initialized logger
 
-	log.Info("Configuration files reloaded successfully")
+	log.Info("All configuration files reloaded successfully")
 
 	// 3. Flush the cache to apply new TTLs/rules
 	s.flushCache()
@@ -3465,7 +3465,7 @@ func (s *Server) generateCertIfNeeded() {
 	}
 
 	// Load cert/key into global for reuse
-	log.Info("Loading cert/key for DoH and Web UI...")
+	log.Debug("Loading cert/key for DoH and Web UI...")
 
 	loadedCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -3475,7 +3475,7 @@ func (s *Server) generateCertIfNeeded() {
 	s.dohCertMu.Lock()
 	s.dohCert = loadedCert
 	s.dohCertMu.Unlock()
-	log.Info("Success - loaded into tls.Certificate")
+	log.Debug("Success - loaded into tls.Certificate")
 }
 
 // 'host' can be localhost or 127.0.0.1 for example, but it won't be looked up!
@@ -8620,7 +8620,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 	}
 	// 6. ATOMIC STORE
 	um.activeSet.Store(newSet)
-	log.Info("DoH clients initialized", slog.Int("count", len(newUpstreams)))
+	log.Debug("DoH clients initialized", slog.Int("count", len(newUpstreams)))
 	return newSet
 }
 
