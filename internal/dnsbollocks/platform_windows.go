@@ -2317,19 +2317,26 @@ func (s *Server) Reload() {
 	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
 
 	// 1. Load and validate the new config cleanly from disk using our decoupled helper
-	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.rt.FileWriter)
+	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.rt.FileWriter, false)
 	if err != nil {
-		// s.logFatal("main config ("+configFileName+") reload failed:", err)
-		// panic2("BUG: unreachable")
-		// Intercept fatal strings exactly as the old code did
-		if strings.HasPrefix(err.Error(), "FATAL:") {
-			log.Error(strings.TrimPrefix(err.Error(), "FATAL: "))
-			finalShutdownSequence(log, 1, os.Exit, s.rt.FlushLogsForShutdown)
-			//TODO: maybe now we don't have to os.Exit ?
-		} else {
-			log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
-			return
-		}
+		// Unlike OldMain's initial load — where every LoadAndValidateConfig error
+		// (FATAL-prefixed or not) exits the process because there is no
+		// previously-running server to fall back to — Reload() always has a
+		// known-good config already live and actively serving DNS/WebUI traffic at
+		// this exact point, and nothing has been mutated yet here (applyConfig,
+		// listener rebinds, cert regen, dependent-store reloads etc. all happen
+		// further below). So a LoadAndValidateConfig failure here — including a
+		// "FATAL:"-prefixed one, e.g. an unresolved config template or an aborted
+		// interactive password prompt — is never fatal to the running server: it
+		// only aborts this specific reload attempt, exactly like any other reload
+		// failure. The admin can fix config.json and retry (Ctrl+R) without any
+		// downtime. (Contrast this with the s.logFatal(...) call on
+		// loadDependentStores() failure further below, which correctly still exits:
+		// by that point s.applyConfig has already swapped in the new config, so
+		// continuing on a dependent-store load failure would risk running with
+		// mismatched config/whitelist/blacklist/hosts state.)
+		log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
+		return
 	}
 	log.Debug("main config reloaded", slog.String("filename", configFileName))
 
@@ -2674,7 +2681,7 @@ func OldMain() {
 	}
 
 	// ── 3. Load and validate configuration ────────────────────────────────────
-	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.Logger(), configFileName, rt.FileWriter)
+	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.Logger(), configFileName, rt.FileWriter, true)
 	if err != nil {
 		// Intercept fatal strings exactly as the old code did
 		if strings.HasPrefix(err.Error(), "FATAL:") {
@@ -2730,11 +2737,14 @@ const cacheMinTTLClamp = 10 // seconds
 // LoadAndValidateConfig reads, parses, validates, and clamps the configuration.
 // fw is used for CheckPowerLossFile; if nil a temporary FileWriter is created
 // with default settings (appropriate for the first call before config is loaded).
-func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWriter) (*Config, *Config, bool, error) {
-	// func (s *Server) loadMainConfig() error {
-	//log := s.getLogger()
-	//cfg := s.getConfig()
-	//const cfgFname = configFileName
+// allowInteractivePasswordSetup gates the interactive console password prompt used
+// when webui_password_hash is empty. Pass true only for the initial OldMain() boot
+// sequence; every other caller (currently just Reload()) must pass false, since
+// Reload can run from the Ctrl+R raw-terminal-reading loop (where re-entering the
+// prompt's own terminal handling would fight over the same console state) or from
+// an HTTP handler goroutine via the WebUI's Apply button (where there is no console
+// reader waiting for input at all, so the prompt would simply hang forever).
+func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWriter, allowInteractivePasswordSetup bool) (*Config, *Config, bool, error) {
 	if cfgFname == "" {
 		return nil, nil, false, fmt.Errorf("given config file %q is empty", cfgFname)
 	}
@@ -2927,14 +2937,22 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 
 	// Enforce password setup if it's missing from the config
 	if resolvedCfg.WebUIPasswordHash == "" {
+		if !allowInteractivePasswordSetup {
+			// See the allowInteractivePasswordSetup doc comment above: only the
+			// initial OldMain() boot may block on this interactive prompt. Any other
+			// caller (Reload()) gets a clean, immediately-abortable error instead of
+			// an indefinite/racy stdin read.
+			return nil, nil, false, fmt.Errorf(
+				"webui_password_hash is empty in %q; interactive password setup only runs during the initial startup sequence; "+
+					"set webui_password_hash manually (e.g. via the --hash-password flag; or via webUI) before triggering a reload",
+				cfgFname)
+		}
 		log.Warn("No WebUI password configured. Securing WebUI now...")
 		fmt.Println("\n========================================================")
 		fmt.Println("   INITIAL SETUP: SECURING YOUR WEB CONTROL PANEL ")
 		fmt.Println("========================================================")
 		hash, err2 := promptAndHashPassword(log, resolvedCfg.WebUIPasswordBcryptCost)
 		if err2 != nil {
-			// s.logFatal2("Failed to setup password (aborted): " + err2.Error())
-			// panic2("BUG: unreachable")
 			return nil, nil, false, fmt.Errorf("FATAL: failed to setup password (aborted): %w", err2)
 		}
 
