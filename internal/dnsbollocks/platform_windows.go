@@ -4170,7 +4170,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	//Gemini 3 Thinking: "The ID Matching is a "defense in depth" move. By using a random ID for the journey to Quad9 and back, you decouple your internal network's IDs from the public internet,
 	// making it much harder for someone to inject fake DNS responses into your proxy."
 	if resp == nil || resp.Rcode != dns.RcodeSuccess {
-		ips := []string{} //{"NXDOMAIN"}
+		ips := []string{}
 		if resp != nil {
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}

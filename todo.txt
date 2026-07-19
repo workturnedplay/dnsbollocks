@@ -1,4 +1,7 @@
 todo:
+* is it ok to have servfailResponse(msg) modify msg's fields inplace, or should it return a new one based on msg?
+* so I'm doing "if resp.Rcode != dns.RcodeSuccess" then I respond with servfailResponse(msg), that's bad according to '1' in the below gemini url
+* fixes todo for v0.26.4 (todo: 1,2,3 done: ) see: https://gemini.google.com/app/1c55a5851c12fb33
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
