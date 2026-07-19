@@ -303,6 +303,10 @@ func (s *Server) getConfig() *Config {
 }
 
 // On init and every reload, swap atomically:
+// cfg's derived, runtime-only fields (UpstreamURLsParsed, UpstreamIPs, UpstreamSNIs) are
+// expected to already be fully populated by the caller (via sanitizeAndValidateConfig,
+// through LoadAndValidateConfig) before this is called, so no reader ever observes a live
+// Config with those fields nil/stale — see parseAndValidateUpstreams's doc comment.
 func (s *Server) applyConfig(cfg, rawCfg Config) {
 	s.liveRawConfig.Store(&rawCfg)
 	s.liveConfig.Store(&cfg)
@@ -621,6 +625,29 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	return nil, "", failedUpstreams, errors.New("all upstreams failed to respond")
 }
 
+// cloneURLSlice returns a deep copy of urls (each *url.URL, and its embedded *url.Userinfo
+// if present, copied independently) so the returned slice shares no backing memory — not
+// even the pointed-to url.URL structs — with the input. Used by Config.Clone() and by
+// sanitizeAndValidateConfig's upstream-derived-field population, both of which need
+// resolvedCfg's and rawCfg's UpstreamURLsParsed slices to never alias each other.
+func cloneURLSlice(urls []*url.URL) []*url.URL {
+	if urls == nil {
+		return nil
+	}
+	out := make([]*url.URL, len(urls))
+	for i, v := range urls {
+		if v != nil {
+			uCopy := *v
+			if v.User != nil {
+				uUser := *v.User
+				uCopy.User = &uUser
+			}
+			out[i] = &uCopy
+		}
+	}
+	return out
+}
+
 func (c Config) Clone() Config {
 	// 1. Shallow copy all primitive fields and string headers at once
 	dst := c
@@ -637,19 +664,7 @@ func (c Config) Clone() Config {
 	}
 
 	//Deep-copy the newly added parsed triplets
-	if c.UpstreamURLsParsed != nil {
-		dst.UpstreamURLsParsed = make([]*url.URL, len(c.UpstreamURLsParsed))
-		for i, v := range c.UpstreamURLsParsed {
-			if v != nil {
-				uCopy := *v
-				if v.User != nil {
-					uUser := *v.User
-					uCopy.User = &uUser
-				}
-				dst.UpstreamURLsParsed[i] = &uCopy
-			}
-		}
-	}
+	dst.UpstreamURLsParsed = cloneURLSlice(c.UpstreamURLsParsed)
 	if c.UpstreamIPs != nil {
 		dst.UpstreamIPs = make([]string, len(c.UpstreamIPs))
 		copy(dst.UpstreamIPs, c.UpstreamIPs)
@@ -8191,6 +8206,73 @@ func (um *UpstreamManager) getConfig() *Config {
 	return c
 }
 
+// parseAndValidateUpstreams validates upstream_urls (each entry must parse, use the https
+// scheme, and have an IP-literal host — never a hostname, since this proxy performs no DNS
+// resolution of its own to look one up) and derives the three runtime-only fields stored
+// alongside them: one *url.URL (with a guaranteed non-empty port, defaulting to 443), one
+// IP-literal host string, and one SNI hostname per upstream_urls entry, in the same order.
+//
+// upstreamSNIHostnames must already be padded out to at least the same length as
+// upstreamURLs — sanitizeAndValidateConfig's SNI-padding block guarantees this for any
+// Config that went through it — otherwise this returns an error rather than panicking with
+// an index-out-of-range.
+//
+// Shared by two callers:
+//   - sanitizeAndValidateConfig, so UpstreamURLsParsed/UpstreamIPs/UpstreamSNIs are already
+//     correct on resolvedCfg the instant it becomes the live Config (via Server.applyConfig),
+//     closing a race window where concurrent readers (e.g. the /stats WebUI handler) could
+//     otherwise observe those fields nil/stale between applyConfig and UpstreamManager
+//     getting around to recomputing them. It also means a bad upstream_urls entry is now
+//     caught at config-validation time — including the WebUI /config apply dry-run — instead
+//     of only surfacing later inside UpstreamManager, which previously reacted to it by
+//     shutting down the entire process via UpstreamManager.OnShutdown.
+//   - UpstreamManager.updateInnerState, as defense-in-depth: several tests in this package
+//     deliberately construct a bare Config{} that bypasses sanitizeAndValidateConfig
+//     entirely, specifically to exercise UpstreamManager's own independent validation and
+//     shutdown behavior, so that path must keep re-validating on its own rather than trusting
+//     that every live Config was necessarily built via the normal pipeline.
+func parseAndValidateUpstreams(upstreamURLs, upstreamSNIHostnames []string) (parsedURLs []*url.URL, ips, snis []string, err error) {
+	if len(upstreamURLs) == 0 {
+		return nil, nil, nil, errors.New("upstream_urls list is empty")
+	}
+
+	for i, rawURL := range upstreamURLs {
+		u, parseErr := url.Parse(rawURL)
+		if parseErr != nil {
+			return nil, nil, nil, fmt.Errorf("invalid upstream URL (must be https): %s, err: %w", rawURL, parseErr)
+		}
+		if u.Scheme != "https" {
+			return nil, nil, nil, fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
+		}
+		port := u.Port()
+		if port == "" {
+			port = "443" // since we're allowing only https scheme, this should always be 443
+			// This is how you add the port back into the URL object
+			u.Host = net.JoinHostPort(u.Hostname(), port)
+		}
+		if u.Port() == "" {
+			panic2("BUG: dev fail: port is empty")
+		}
+		parsedURLs = append(parsedURLs, u)
+
+		ip := u.Hostname()
+		if net.ParseIP(ip) == nil {
+			return nil, nil, nil, fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
+		}
+		ips = append(ips, ip)
+
+		if i >= len(upstreamSNIHostnames) {
+			// sanitizeAndValidateConfig is responsible for padding UpstreamSNIHostnames
+			// out to match UpstreamURLs before this ever runs; a caller that bypasses it
+			// would otherwise panic here with an index-out-of-range instead of getting a
+			// clean, recoverable error that flows through the normal shutdown path below.
+			return nil, nil, nil, fmt.Errorf("upstream_sni_hostnames has %d entries but upstream_urls has %d (index %d has no matching SNI entry); they must be padded to equal length before use", len(upstreamSNIHostnames), len(upstreamURLs), i)
+		}
+		snis = append(snis, upstreamSNIHostnames[i])
+	}
+	return parsedURLs, ips, snis, nil
+}
+
 // due to presumed config changes ie. UpstreamManager.liveConfig, update the 'cached' inner state of the upstreamIPs, upstreamSNIs and upstreamURLs
 func (um *UpstreamManager) updateInnerState() error {
 	// XXX: um.getConfig() returns the LIVE, atomically-shared *Config that
@@ -8206,56 +8288,25 @@ func (um *UpstreamManager) updateInnerState() error {
 	// always see either the complete old Config or the complete new one, never
 	// a struct caught mid-mutation. Any error return below leaves the live
 	// config completely untouched.
+	//
+	// NOTE: sanitizeAndValidateConfig now runs this exact same derivation (via
+	// parseAndValidateUpstreams) and publishes the result as part of resolvedCfg
+	// before Server.applyConfig ever makes a new Config live — see that call
+	// site's doc comment for why. So by the time Reload() gets here via
+	// UpstreamManager.ReInitDoHClients(), liveCfg's UpstreamURLsParsed/IPs/SNIs
+	// are normally already correct, and this just redundantly recomputes the
+	// identical result. This call stays in place regardless, as defense-in-depth:
+	// see parseAndValidateUpstreams's doc comment for why.
 	liveCfg := um.getConfig()
 	newCfg := liveCfg.Clone()
 
-	snapSNI := newCfg.UpstreamSNIHostnames
-	snapURL := newCfg.UpstreamURLs
-
-	newCfg.UpstreamURLsParsed = nil
-	newCfg.UpstreamIPs = nil
-	newCfg.UpstreamSNIs = nil
-
-	if len(newCfg.UpstreamURLs) == 0 {
-		return errors.New("upstream_urls list is empty")
+	parsedURLs, ips, snis, err := parseAndValidateUpstreams(newCfg.UpstreamURLs, newCfg.UpstreamSNIHostnames)
+	if err != nil {
+		return err
 	}
-
-	for i, rawURL := range snapURL {
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			return fmt.Errorf("invalid upstream URL (must be https): %s, err: %w", rawURL, err)
-		}
-		if u.Scheme != "https" {
-			return fmt.Errorf("invalid upstream URL (must be https): %s", rawURL)
-		}
-		port := u.Port()
-		if port == "" {
-			port = "443" // since we're allowing only https scheme, this should always be 443
-			// log.Warn("Using implied port for DoH upstream due to unspecified port and scheme",
-			//     slog.String("implied_port", ImpliedPort),
-			//     slog.Any("upstreamURL", u))
-			// This is how you add the port back into the URL object
-			u.Host = net.JoinHostPort(u.Hostname(), port)
-		}
-		if u.Port() == "" {
-			panic2("BUG: dev fail: port is empty")
-		}
-		newCfg.UpstreamURLsParsed = append(newCfg.UpstreamURLsParsed, u)
-
-		ip := u.Hostname()
-		if net.ParseIP(ip) == nil {
-			return fmt.Errorf("upstream host must be IP literal (no resolution): %s", ip)
-		}
-		newCfg.UpstreamIPs = append(newCfg.UpstreamIPs, ip)
-		if i >= len(snapSNI) {
-			// sanitizeAndValidateConfig is responsible for padding UpstreamSNIHostnames
-			// out to match UpstreamURLs before this ever runs; a caller that bypasses it
-			// would otherwise panic here with an index-out-of-range instead of getting a
-			// clean, recoverable error that flows through the normal shutdown path below.
-			return fmt.Errorf("upstream_sni_hostnames has %d entries but upstream_urls has %d (index %d has no matching SNI entry); they must be padded to equal length before UpstreamManager runs", len(snapSNI), len(snapURL), i)
-		}
-		newCfg.UpstreamSNIs = append(newCfg.UpstreamSNIs, snapSNI[i])
-	}
+	newCfg.UpstreamURLsParsed = parsedURLs
+	newCfg.UpstreamIPs = ips
+	newCfg.UpstreamSNIs = snis
 
 	// Publish the fully-built, validated clone atomically.
 	um.liveConfig.Store(&newCfg)
@@ -10929,16 +10980,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
 
-	// Hard-check URLs unconditionally to prevent downstream panics
-	for i, rawURL := range resolvedCfg.UpstreamURLs {
-		if _, err := url.Parse(rawURL); err != nil {
-			return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err)
-		}
-		if _, err := hostFromURL(rawURL); err != nil {
-			return shouldSaveConfig, fmt.Errorf("invalid upstream host at index %d: %w", i, err)
-		}
-	}
-
 	if len(resolvedCfg.UpstreamSNIHostnames) > len(resolvedCfg.UpstreamURLs) {
 		const msg = "there are more SNIs vs URLs for upstream, only the opposite is allowed ( >= URLs than SNIs which then inherit the SNI from URLs)"
 		log.Warn(msg)
@@ -10968,6 +11009,28 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	log.Debug("Using upstream SNI hostnames:",
 		SafeStringSlice("SNI_hostnames", resolvedCfg.UpstreamSNIHostnames),
 	)
+
+	// Derive and validate the runtime-only upstream fields (UpstreamURLsParsed, UpstreamIPs,
+	// UpstreamSNIs) here, as part of validation, instead of leaving that solely to
+	// UpstreamManager.updateInnerState() later in the config lifecycle — see
+	// parseAndValidateUpstreams's doc comment for the race this closes and the bad-config
+	// crash it prevents.
+	parsedUpstreamURLs, upstreamIPs, upstreamSNIs, upstreamErr := parseAndValidateUpstreams(resolvedCfg.UpstreamURLs, resolvedCfg.UpstreamSNIHostnames)
+	if upstreamErr != nil {
+		return shouldSaveConfig, upstreamErr
+	}
+	resolvedCfg.UpstreamURLsParsed = parsedUpstreamURLs
+	resolvedCfg.UpstreamIPs = upstreamIPs
+	resolvedCfg.UpstreamSNIs = upstreamSNIs
+	// Mirror onto rawCfg too, for consistency with resolvedCfg (same defensive pattern as
+	// BlockIPv4Parsed/BlockIPv6Parsed above): these fields are transient/derived (json:"-")
+	// and never persisted, but keeping them populated identically on both structs avoids
+	// them silently diverging.
+	rawCfg.UpstreamURLsParsed = cloneURLSlice(parsedUpstreamURLs)
+	rawCfg.UpstreamIPs = make([]string, len(upstreamIPs))
+	copy(rawCfg.UpstreamIPs, upstreamIPs)
+	rawCfg.UpstreamSNIs = make([]string, len(upstreamSNIs))
+	copy(rawCfg.UpstreamSNIs, upstreamSNIs)
 
 	// Helper closure to apply the cleaning and track if a save is needed
 	checkAndClean := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {

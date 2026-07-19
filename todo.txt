@@ -1,8 +1,4 @@
 todo:
-* need to make the logic within updateInnerState be part of sanitizeAndValidateConfig, if that makes more sense! Maybe to avoid some kind of half-state race.
-
-* fixes todo for v0.26.4 (todo: 3 done: 1,2,) see: https://gemini.google.com/app/1c55a5851c12fb33
-
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
@@ -28,6 +24,8 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* fixes todo for v0.26.4 (todo: done: 1,2,3) see: https://gemini.google.com/app/1c55a5851c12fb33
+//* need to make the logic within updateInnerState be part of sanitizeAndValidateConfig, if that makes more sense! Maybe to avoid some kind of half-state race during Reload()
 //* so I'm doing "if resp.Rcode != dns.RcodeSuccess" then I respond with servfailResponse(msg), that's bad according to '1' in the below gemini url
 //no,fixed//* is it ok to have servfailResponse(msg) modify msg's fields inplace, or should it return a new one based on msg? and why?
 //  * do the new for blockResponse too because if servfailResponse and formerrResponse also do new, then blockResponse should too? in the second branch.
