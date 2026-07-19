@@ -2314,7 +2314,13 @@ func (s *Server) Reload() {
 	log.Debug("Reload function triggered...")
 
 	oldCfg := s.getConfig()
-	oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
+	// 1. Group the exact fields that require a full cache rebuild if they change
+	oldCacheState := struct{ Janitor, Max int }{
+		oldCfg.CacheJanitorIntervalMinutes,
+		oldCfg.CacheMaxEntries,
+	}
+	// oldJanitorInterval := oldCfg.CacheJanitorIntervalMinutes
+	// oldMaxCacheEntries := oldCfg.CacheMaxEntries
 
 	// 1. Load and validate the new config cleanly from disk using our decoupled helper
 	resolvedCfg, rawCfg, needsSave, err := LoadAndValidateConfig(log, configFileName, s.rt.FileWriter, false)
@@ -2359,26 +2365,6 @@ func (s *Server) Reload() {
 		panic2("BUG: unreachable")
 	}
 
-	// if err := s.loadQueryWhitelist(); err != nil {
-	// 	s.logFatal("Whitelist ("+cfgNew.WhitelistFile+") reload failed:", err)
-	// 	panic2("BUG: unreachable")
-	// } else {
-	// 	log.Debug("Whitelist reloaded", slog.String("filename", cfgNew.WhitelistFile))
-	// }
-	// if err := s.loadResponseBlacklist(); err != nil {
-	// 	s.logFatal("Blacklist ("+cfgNew.BlacklistFile+") reload failed:", err)
-	// 	panic2("BUG: unreachable")
-	// } else {
-	// 	log.Debug("Blacklist reloaded", slog.String("filename", cfgNew.BlacklistFile))
-	// }
-	// // Inside watchKeys, in the Ctrl+R lambda block:
-	// if err := s.loadLocalHosts(); err != nil {
-	// 	s.logFatal("Hosts ("+cfgNew.HostsFile+") reload failed:", err)
-	// 	panic2("BUG: unreachable")
-	// } else {
-	// 	log.Debug("Local hosts reloaded", slog.String("filename", cfgNew.HostsFile))
-	// }
-
 	if err := s.loadDependentStores(); err != nil {
 		s.logFatal("Dependent stores reload failed:", err)
 		panic2("BUG: unreachable")
@@ -2414,11 +2400,19 @@ func (s *Server) Reload() {
 
 	//clearLoginLockouts()//wired in startWebUI
 
-	if oldJanitorInterval != cfgNew.CacheJanitorIntervalMinutes {
+	newCacheState := struct{ Janitor, Max int }{
+		cfgNew.CacheJanitorIntervalMinutes,
+		cfgNew.CacheMaxEntries,
+	}
+	// 2. Compare the entire struct at once
+	if oldCacheState != newCacheState {
 		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes, cfgNew.CacheMaxEntries)
 		log.Warn("Cache janitor interval changed; cache instance replaced (all cached entries dropped)",
-			slog.Int("old_interval_minutes", oldJanitorInterval),
-			slog.Int("new_interval_minutes", cfgNew.CacheJanitorIntervalMinutes))
+			slog.Int("old_interval", oldCacheState.Janitor),
+			slog.Int("new_interval", newCacheState.Janitor),
+			slog.Int("old_max", oldCacheState.Max),
+			slog.Int("new_max", newCacheState.Max),
+		)
 	}
 
 	if oldCfg.MaxConcurrentDNSTCPConns != cfgNew.MaxConcurrentDNSTCPConns {
