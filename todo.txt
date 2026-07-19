@@ -7,6 +7,7 @@ todo:
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
 
 * fixes/improvements for v0.10.0 (done:1_1, 3_1, 1_2, 1_3, 3_2, 4_2  todo: 4_1,  dontdo: 2): https://gemini.google.com/app/8bc2956c9fed71bb
+  4_1 is this: Client-Side Filtering on Large Data: In applyRulesFilter and applyBlacklistFilter, you iterate through all <tr> elements in the DOM. If a user uploads a blacklist of 50,000 IPs, rendering all those rows and filtering them in JS will completely freeze the browser. Fix: We should implement server-side pagination or virtual scrolling if the list exceeds a few hundred items.
 * improvements for v0.0.6 (did 1,2,4,5,6; todo: 3) : https://gemini.google.com/app/8fba2ee635340715
 * do more encapsulation for v0.1.1 (did ) : https://gemini.google.com/app/573dd1cd10f69c76
 * link to Tinywall in readme and to Go lang to install Go.

@@ -8826,7 +8826,7 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		}
 
 		start := time.Now()
-		log3.Debug("client connected(early logging)", //FIXME: this can stall for over 1 minute during AnythingLLM installation which causes 11sec avg. response time for C: disk and 100% active time for minutes!
+		log3.Debug("client connected(early logging)", //doneitasyncloggingnowFIXME: this can stall for over 1 minute during AnythingLLM installation which causes 11sec avg. response time for C: disk and 100% active time for minutes!
 			slog.String("proto", "UDP"),
 			SafeAddr("clientAddr", clientAddr),
 		)
