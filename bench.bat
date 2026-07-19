@@ -1,5 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
+rem 1. Prevent the current working directory from taking precedence over PATH, doesn't work with eg. "start go.exe"
+set "NoDefaultCurrentDirectoryInExePath=1"
+cd /d "%~dp0"
 
 :: 0. Capture Workspace State
 :: Run this BEFORE you 'set GOWORK=off' if you want to know the original state
@@ -27,7 +30,7 @@ if "!HAS_WORKSPACE!"=="1" (
 )
 
 
-cd /d "%~dp0"
+
 
 ::echo Running go vet ... (not here, we do this in build.bat)
 ::go.exe vet -mod=vendor ./...
