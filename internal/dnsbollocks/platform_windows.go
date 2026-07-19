@@ -10946,30 +10946,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 	// Ensure SNIHostnames has the same length as UpstreamURLs, falling back to the URL's hostname
 
-	// for i := len(resolvedCfg.UpstreamSNIHostnames); i < len(resolvedCfg.UpstreamURLs); i++ {
-	// 	host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
-	// 	if err2 != nil {
-	// 		log.Warn("invalid upstream URL during SNI fill", slog.Int("index", i), wincoe.SafeErr(err2))
-	// 		return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
-	// 	}
-	// 	rawCfg.UpstreamSNIHostnames = append(rawCfg.UpstreamSNIHostnames, host)
-	// 	resolvedCfg.UpstreamSNIHostnames = append(resolvedCfg.UpstreamSNIHostnames, host)
-	// 	shouldSaveConfig = true
-	// }
-	// //doneFIXME: this is weird, what are we doing here below vs above?!
-	// for i := range resolvedCfg.UpstreamURLs {
-	// 	if resolvedCfg.UpstreamSNIHostnames[i] != "" {
-	// 		continue
-	// 	}
-	// 	host, err2 := hostFromURL(resolvedCfg.UpstreamURLs[i])
-	// 	if err2 != nil {
-	// 		log.Error("invalid upstream URL", slog.Int("at_index", i), wincoe.SafeErr(err2))
-	// 		return shouldSaveConfig, fmt.Errorf("invalid upstream URL at index %d: %w", i, err2)
-	// 	}
-	// 	rawCfg.UpstreamSNIHostnames[i] = host
-	// 	resolvedCfg.UpstreamSNIHostnames[i] = host
-	// 	shouldSaveConfig = true
-	// }
 	for i, rawURL := range resolvedCfg.UpstreamURLs {
 		host, err := hostFromURL(rawURL)
 		if err != nil {
