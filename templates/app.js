@@ -775,7 +775,12 @@
                 // staged entry per Edit+Stage cycle, and detect a full round-trip
                 // back to the original values so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-                const isNoOp = newPattern === origPattern && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
+                
+                //const isNoOp = newPattern === origPattern && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
+                
+                // FIX: Compare newPattern against the Unicode display pattern (`pat`), not the Punycode `origPattern`.
+                const isNoOp = newPattern === pat.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
+
                 const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, edit: '1' };
                 const displayPattern = isNoOp ? origPattern : newPattern;
                 const displayIPs = isNoOp ? origIps : newIPs;

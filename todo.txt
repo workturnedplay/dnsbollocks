@@ -19,11 +19,13 @@ nevermind/quirks(I don't wanna fix these):
 no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 //* sanitizeAndValidateConfig the defaultConfig() and i dno, use that or even panic2 BUG ? hmm, actually since sanitizeAndValidateConfig depends on defaultConfig() we can't do this.
+* 3 "UI State Gap: Wildcard Rules vs. Recent Blocks Button State" from https://gemini.google.com/app/e6c6d356d495a825
 
 half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+* do fixes for v0.27.0 (todo:  done:1,2  dontdo: 3(UI State Gap: Wildcard Rules vs. Recent Blocks Button State)  invalid: 4) see: https://gemini.google.com/app/e6c6d356d495a825
 //* fixes todo for v0.26.4 (todo: done: 1,2,3) see: https://gemini.google.com/app/1c55a5851c12fb33
 //* need to make the logic within updateInnerState be part of sanitizeAndValidateConfig, if that makes more sense! Maybe to avoid some kind of half-state race during Reload()
 //* so I'm doing "if resp.Rcode != dns.RcodeSuccess" then I respond with servfailResponse(msg), that's bad according to '1' in the below gemini url

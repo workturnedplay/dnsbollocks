@@ -6324,14 +6324,25 @@ func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
 	return nil
 }
 
-// EditHost replaces (old→new). It removes the old pattern (if it differs from new),
-// removes any existing rule for the new pattern, then appends the updated rule.
-func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) {
+// EditHost replaces (old→new). Returns an error if the new pattern already
+// exists and is different from the old pattern.
+func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
+
+	// Check for collision if the pattern is being renamed
+	if oldPattern != newPattern {
+		for _, rule := range hs.hosts {
+			if rule.Pattern == newPattern {
+				return fmt.Errorf("local host with pattern %q already exists", newPattern)
+			}
+		}
+	}
+
 	hs.hosts = deleteHostEntry(hs.hosts, oldPattern)
-	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // evict any collision
+	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // safe eviction
 	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips})
+	return nil
 }
 
 // DeleteHost removes the rule with the given pattern. Returns true if found.
@@ -12374,15 +12385,19 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 
 	var err error
 	if isEdit {
-		ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
+		// NOW CATCHING THE ERROR:
+		err = ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
 	} else {
 		//it's Add (Delete was handled above)
 		err = ui.hostStore.AddHost(patternLowercased, netIPs)
 	}
 
 	if err != nil {
-		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err), slog.String("pattern", patternLowercased), slog.Any("IPs", netIPs),
-			slog.String("pattern_idn", displayPattern))
+		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err),
+			slog.String("pattern", patternLowercased),
+			slog.String("pattern_idn", displayPattern),
+			slog.Any("IPs", netIPs),
+		)
 		if displayPattern != patternLowercased {
 			return http.StatusConflict, fmt.Errorf("local host with this pattern already exists (as entered: %q): %w", displayPattern, err)
 		}
