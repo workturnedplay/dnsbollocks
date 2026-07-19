@@ -1,5 +1,4 @@
 todo:
-* in LoggerManager.Reinit() and in .Close() too, fix "error returned from external package is unwrapped: sig: func errors.Join(errs ...error) error (wrapcheck)"
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
