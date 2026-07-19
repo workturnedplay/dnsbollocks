@@ -1,5 +1,4 @@
 todo:
-* is it ok to have servfailResponse(msg) modify msg's fields inplace, or should it return a new one based on msg? and why?
 * so I'm doing "if resp.Rcode != dns.RcodeSuccess" then I respond with servfailResponse(msg), that's bad according to '1' in the below gemini url
 * fixes todo for v0.26.4 (todo: 1,3 done: 2,) see: https://gemini.google.com/app/1c55a5851c12fb33
 
@@ -28,3 +27,5 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//no,fixed//* is it ok to have servfailResponse(msg) modify msg's fields inplace, or should it return a new one based on msg? and why?
+//  * do the new for blockResponse too because if servfailResponse and formerrResponse also do new, then blockResponse should too? in the second branch.

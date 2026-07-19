@@ -3700,8 +3700,8 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	if clientAddr == nil {
 		panic2("BUG: nil ClientAddr in handleUDP, not possible?!")
 	}
-	msg := new(dns.Msg)
-	if err := msg.Unpack(wire); err != nil {
+	reqMsg := new(dns.Msg)
+	if err := reqMsg.Unpack(wire); err != nil {
 		// Edge: Invalid packet (common in floods)
 		log.Warn("invalid DNS UDP packet (couldn't Unpack) thus dropped/ignored", wincoe.SafeErr(err))
 		return
@@ -3709,11 +3709,11 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	// 1. EXTRACT MAX UDP SIZE
 	// Default to standard 512 bytes, but check if the client provided an EDNS0 OPT record.
 	maxUDPSize := 512
-	if clientOpt := msg.IsEdns0(); clientOpt != nil {
+	if clientOpt := reqMsg.IsEdns0(); clientOpt != nil {
 		maxUDPSize = int(clientOpt.UDPSize())
 	}
 
-	resp := s.handleDNSQuery(ctx, msg, clientAddr.String())
+	resp := s.handleDNSQuery(ctx, reqMsg, clientAddr.String())
 	if resp == nil {
 		cfg := s.getConfig()
 		log.Debug("Dropped UDP DNS response (is BlockMode 'drop' ?)", slog.String("BlockMode", cfg.BlockMode))
@@ -3808,13 +3808,13 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 	}
 
 	// --- 3. PROCESS ---
-	msg := new(dns.Msg)
-	if err := msg.Unpack(wire); err != nil {
+	reqMsg := new(dns.Msg)
+	if err := reqMsg.Unpack(wire); err != nil {
 		log.Warn("invalid DNS TCP packet (couldn't Unpack) thus dropped/ignored", wincoe.SafeErr(err))
 		return
 	}
 
-	resp := s.handleDNSQuery(ctx, msg, conn.RemoteAddr().String())
+	resp := s.handleDNSQuery(ctx, reqMsg, conn.RemoteAddr().String())
 	// --- 4. WRITE THE RESPONSE ---
 	if resp != nil {
 		pack, err1 := resp.Pack() // Ignore err
@@ -3969,15 +3969,15 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
-	msg := new(dns.Msg)
-	if err2 := msg.Unpack(body); err2 != nil {
+	reqMsg := new(dns.Msg)
+	if err2 := reqMsg.Unpack(body); err2 != nil {
 		log.Warn("DoH request rejected: Failed to unpack DNS query",
 			wincoe.SafeErr(err2),
 			slog.String("client", r.RemoteAddr))
 		http.Error(w, fmt.Sprintf("Failed to unpack DNS query, err:%v", err2), http.StatusBadRequest)
 		return
 	}
-	resp := s.handleDNSQuery(ctx, msg, r.RemoteAddr /*field not method*/)
+	resp := s.handleDNSQuery(ctx, reqMsg, r.RemoteAddr /*field not method*/)
 	if resp == nil { //can happen when BlockMode is "drop" so nvmFIXME? "For DoH the HTTP connection is already accepted; 503 is the only correct response for drop mode"
 		if cfg.BlockMode != blockModeDrop {
 			log.Warn("empty DNS response, replying to client with: 503 Service Unavailable", slog.String("client", r.RemoteAddr))
@@ -4003,19 +4003,19 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr string) *dns.Msg {
+func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr string) *dns.Msg {
 	cfg := s.getConfig()
 	log := s.getLogger()
 	//This is the important one — without capturing it once, a reload landing between the cachee-hit check and a later Set for the same request could write into a freshly-swapped (empty) cachee generation while having read from the old one.
 	cachee := s.getCache()
 
-	if len(msg.Question) != 1 {
-		return formerrResponse(msg)
+	if len(reqMsg.Question) != 1 {
+		return formerrResponse(reqMsg)
 	}
-	q := msg.Question[0]
+	q := reqMsg.Question[0]
 	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowercase it for matchPattern below! at least.
 	if domain == "" || !isValidDNSName(domain) {               // Edge: Empty domain
-		return formerrResponse(msg)
+		return formerrResponse(reqMsg)
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
@@ -4053,13 +4053,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 			burstVal = cfg.ClientBurstQPS
 		}
 
-		// log.Warn(reason,
-		// 	slog.String("client", clientAddr),
-		// 	slog.String("domain", domain),
-		// 	slog.String("exe", exeName),
-		// 	slog.Int(rateTag, rateVal),
-		// 	slog.Int(burstTag, burstVal),
-		// )
 		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
 		attrs := []any{
 			slog.String("client", clientAddr),
@@ -4073,7 +4066,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		}
 		log.Warn(reason, attrs...)
 
-		sfr := servfailResponse(msg)
+		sfr := servfailResponse(reqMsg)
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
 	}
@@ -4086,7 +4079,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	if !matched {
 		s.stats.Add(1)
 		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
-		blocked := s.blockResponse(msg)
+		blocked := s.blockResponse(reqMsg)
 		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
 		return blocked
 	}
@@ -4102,7 +4095,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		// Return a copy of cached response with the current query ID to avoid
 		// clients rejecting replies because of mismatched transaction IDs.
 		resp := cached.Copy()
-		resp.Id = msg.Id
+		resp.Id = reqMsg.Id
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
 
@@ -4118,7 +4111,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 	// Local hosts check (was: s.localHostsMu.RLock / range s.localHosts)
 	if matchedIPs, ok := s.hostStore.Match(domain); ok {
 		resp := new(dns.Msg)
-		resp.SetReply(msg)
+		resp.SetReply(reqMsg)
 		resp.Authoritative = true
 		resp.RecursionAvailable = true
 
@@ -4152,12 +4145,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 
 	// Forward to upstream DNS
 	// 1. Save the original client ID
-	oldID := msg.Id
-	msg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
+	oldID := reqMsg.Id
+	reqMsg.Id = getSecureID() // 2. Generate a random ID for the upstream query (helps prevent cache poisoning)
 	// 3. DO THE ACTUAL UPSTREAM QUERY
-	resp, upstreamState3 := s.dohForwarder.ForwardToDoH(ctx, msg)
+	resp, upstreamState3 := s.dohForwarder.ForwardToDoH(ctx, reqMsg)
 	// 4. Restore the original ID so the client's DNS resolver accepts the answer
-	msg.Id = oldID // unconditionally restore so any msg-derived error response carries the right ID
+	reqMsg.Id = oldID // unconditionally restore so any msg-derived error response carries the right ID
 	if resp != nil {
 		resp.Id = oldID // Restores the ID for the upstream's response object
 	}
@@ -4168,7 +4161,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		if resp != nil {
 			ips = append(ips, fmt.Sprintf("dns.Rcode:%d", resp.Rcode))
 		}
-		negResp := servfailResponse(msg)
+		negResp := servfailResponse(reqMsg)
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, ips, negResp, upstreamState3)
 		// Cache negatives short
 		// Store a copy of the negative response as well
@@ -4191,7 +4184,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, msg *dns.Msg, clientAddr st
 		s.logQuery(ctx, clientAddr, domain, qtype,
 			filterReason+originalSTR, //blockedByUpstream_ORIGINAL //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
 			matchedID, originalIPs, originalCopy, upstreamState3)
-		blocked := s.blockResponse(msg)
+		blocked := s.blockResponse(reqMsg)
 		blockedIPs := extractIPs(blocked)
 		s.logQuery(ctx, clientAddr, domain, qtype,
 			filterReason+returnedModifiedSTR, //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
@@ -5286,15 +5279,24 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	}()
 } //func
 
-func servfailResponse(msg *dns.Msg) *dns.Msg {
-	msg.SetRcode(msg, dns.RcodeServerFailure)
-	msg.RecursionAvailable = true
-	return msg
+func servfailResponse(reqMsg *dns.Msg) *dns.Msg {
+	// reqMsg.SetRcode(reqMsg, dns.RcodeServerFailure)
+	// reqMsg.RecursionAvailable = true
+	// return reqMsg
+	resp := new(dns.Msg)
+	resp.SetReply(reqMsg)
+	resp.SetRcode(resp, dns.RcodeServerFailure)
+	resp.RecursionAvailable = true
+	return resp
 }
 
-func formerrResponse(msg *dns.Msg) *dns.Msg {
-	msg.SetRcode(msg, dns.RcodeFormatError)
-	return msg
+func formerrResponse(reqMsg *dns.Msg) *dns.Msg {
+	// reqMsg.SetRcode(reqMsg, dns.RcodeFormatError)
+	// return reqMsg
+	resp := new(dns.Msg)
+	resp.SetReply(reqMsg)
+	resp.SetRcode(resp, dns.RcodeFormatError)
+	return resp
 }
 
 func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
