@@ -292,7 +292,7 @@ func TestRuleStore_SetEnabled_ToggleOff(t *testing.T) {
 	rs := newRuleStore()
 	mustAdd(t, rs, "A", "example.com", true)
 
-	found, changed := rs.SetEnabled("A", "example.com", false)
+	found, changed := rs.SetEnabled("A", "example.com", false, discardLogger())
 	if !found {
 		t.Fatal("expected found=true")
 	}
@@ -310,7 +310,7 @@ func TestRuleStore_SetEnabled_NoOpWhenAlreadySet(t *testing.T) {
 	rs := newRuleStore()
 	mustAdd(t, rs, "A", "example.com", true)
 
-	found, changed := rs.SetEnabled("A", "example.com", true) // already true
+	found, changed := rs.SetEnabled("A", "example.com", true, discardLogger()) // already true
 	if !found {
 		t.Fatal("expected found=true")
 	}
@@ -322,7 +322,7 @@ func TestRuleStore_SetEnabled_NoOpWhenAlreadySet(t *testing.T) {
 func TestRuleStore_SetEnabled_NotFound(t *testing.T) {
 	rs := newRuleStore()
 
-	found, changed := rs.SetEnabled("A", "nonexistent.com", false)
+	found, changed := rs.SetEnabled("A", "nonexistent.com", false, discardLogger())
 	if found {
 		t.Error("expected found=false for missing pattern")
 	}

@@ -422,6 +422,30 @@
         
         return true;
     }
+
+    // withApplyButtonBusy disables `button` and swaps in `busyLabel` for the
+    // duration of the async `fn`, guarding against a second click firing a
+    // duplicate request while the first is still in flight (e.g. a slow or
+    // temporarily-firewalled backend after a restart). If `fn` resolves
+    // truthy the caller is about to location.reload(), so the button is left
+    // disabled/relabeled (the page is going away); otherwise it's restored so
+    // the user can actually read the failure alert and retry.
+    async function withApplyButtonBusy(button, busyLabel, fn) {
+        if (button.disabled) return false; // already in flight; ignore extra clicks
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = busyLabel;
+        let success = false;
+        try {
+            success = await fn();
+        } finally {
+            if (!success) {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+        return success;
+    }
     
     // postBlocksAction performs a background (AJAX) POST to /blocks for a
     // single Unblock/Re-block action, without navigating or reloading the
@@ -981,8 +1005,14 @@
         const row = document.getElementById('configRow_' + key);
         if (!row) return;
         
-        // Cancel any existing inline edits to prevent duplicate row injection
-        document.querySelectorAll('.config-cancel-btn').forEach(btn => btn.click());
+        // Only cancel THIS row's own edit if one is somehow already open (guards
+        // against duplicate row injection from a stale re-click); other rows'
+        // in-progress edits are left alone, so multiple config fields can be
+        // edited concurrently — matching /rules, /hosts, and /response-blacklist.
+        const existingEditRow = document.getElementById('editConfigRow_' + key);
+        if (existingEditRow) {
+            existingEditRow.querySelector('.config-cancel-btn')?.click();
+        }
         
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
@@ -1272,16 +1302,16 @@
         }
     }
     
-    async function applyConfigChanges() {
+    async function applyConfigChanges(e) {
         if (Object.keys(stagedChanges).length === 0) return;
         if (!confirm('Applying changes will overwrite ' + configFileName + ' and gracefully restart listeners.\n\n' +
             'The existing ' + configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.\n\nProceed?')) return;
 
-        const success = await postAdminForm('/config', {
+        const success = await withApplyButtonBusy(e.currentTarget, 'Applying\u2026', () => postAdminForm('/config', {
             'action': 'apply',
             'payload': JSON.stringify(stagedChanges),
             'config_version': configVersion
-        }, 'Failed to apply configuration');
+        }, 'Failed to apply configuration'));
         
         if (success) {
             // CRITICAL: Clear the object to disarm the beforeunload listener before reloading!
@@ -1355,10 +1385,13 @@
                 return;
             }
             if (e.target.closest('.js-apply-table-btn')) {
+                const applyBtn = e.target.closest('.js-apply-table-btn');
                 if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
                 (async () => {
-                    const payload = JSON.stringify(stagedTableChanges);
-                    const success = await postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
+                    const success = await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
+                        const payload = JSON.stringify(stagedTableChanges);
+                        return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
+                    });
                     if (success) {
                         stagedTableChanges = []; // Bypass the beforeunload block!
                         location.reload();

@@ -4961,6 +4961,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 
 	// Re-assign the filtered slices directly back to the message
 	msg.Answer = filterSection(msg.Answer, "inAnswer")
+	msg.Ns = filterSection(msg.Ns, "inNs")
 	msg.Extra = filterSection(msg.Extra, "inExtra")
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
@@ -5564,9 +5565,9 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 
 	// Everything else goes through sechead->hostvalid->auth → CSRF → inner mux.
 	var h http.Handler = innerMux
+	h = ui.authMiddleware(h) // costly bcrypt here
 	h = ui.csrfMiddleware(h)
 	h = ui.originValidationMiddleware(boundAddr, usedTLS, h)
-	h = ui.authMiddleware(h)
 	h = ui.hostValidationMiddleware(boundAddr, h)
 	h = ui.fetchMetadataWhitelistMiddleware(h)
 	h = ui.securityHeadersMiddleware(h)
@@ -6225,7 +6226,7 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 
 // SetEnabled enables or disables the first rule matching domain+type.
 // Returns (found, changed): changed=false when already in the desired state.
-func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, changed bool) {
+func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.Logger) (found, changed bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -6245,7 +6246,7 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool) (found, change
 		next := cloneRuleMap(current)
 		updatedRule := rule
 		updatedRule.Enabled = enabled
-		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, nil) //TODO: use a logger not nil here!
+		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, logger)
 		rs.rules.Store(&next)
 
 		return true, true
@@ -7174,7 +7175,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		if domainLowercased != "" && typ != "" {
 			switch action {
 			case "reblock":
-				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false)
+				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false, log)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", displayDomain, typ)
 					log.Info("Quick re-block via WebUI: paused existing rule",
@@ -7186,7 +7187,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", displayDomain, typ)
 				}
 			case "unblock":
-				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true)
+				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true, log)
 				if found && changed {
 					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", displayDomain, typ)
 					log.Info("Quick unblock via WebUI: enabled existing paused rule",
@@ -9664,6 +9665,12 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 		return 0, errors.New("rotatingLogWriter, log file is not open")
 	}
 	w.rotateIfNeededYouHoldLock()
+
+	if w.file == nil {
+		// rotateIfNeededYouHoldLock's rotation attempt (and its reopenOriginal
+		// fallback) both failed catastrophically; there is nothing left to write to.
+		return 0, errors.New("rotatingLogWriter, log file is not open after failed rotation") //TODO: this is kinda huge, do we even log this on console with Error or Warn at least?!
+	}
 
 	start = time.Now()
 	n, err = w.file.Write(p)
