@@ -3063,15 +3063,16 @@ func isAdminNow() bool {
 	return elevated
 }
 
-func getNextLogBackupName(basePath string) string {
+func getNextLogBackupName(basePath string) (string, error) {
+	const maxNumberOfRotations = 10000 // TODO: should this be config.json configurable? yeah why not
 	for i := 1; ; i++ {
 		backupName := fmt.Sprintf("%s.%d", basePath, i)
 		if _, err := os.Stat(backupName); os.IsNotExist(err) {
-			return backupName
+			return backupName, nil
 		}
 		// Put a hard cap to avoid infinite loops in extreme edge cases
-		if i >= 10000 {
-			return fmt.Sprintf("%s.%d", basePath, time.Now().Unix())
+		if i >= maxNumberOfRotations {
+			return fmt.Sprintf("%s.%d", basePath, time.Now().Unix()), fmt.Errorf("at max number of rotations %d, cannot rotate! Clean up some of the early files first", maxNumberOfRotations)
 		}
 	}
 }
@@ -9720,10 +9721,20 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 		w.logger.Error("Log rotation failed: log file isn't open yet")
 		return
 	}
+	// 2. Determine the dynamic backup name (.1, .2, etc.)
+	backupPath, err := getNextLogBackupName(w.path)
+	if err != nil {
+		w.logger.Error("Log rotation failed: could not get the next logfile name",
+			wincoe.SafeErr(err),
+			slog.String("current_log", w.path),
+			slog.String("gotten_new_log_filename", backupPath),
+		)
+		return
+	}
 
 	// 1. Close the current file so Windows doesn't block the rename
-	if err := w.file.Close(); err != nil {
-		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), wincoe.SafeErr(err))
+	if err2 := w.file.Close(); err2 != nil {
+		w.logger.Error("Log rotation failed: could not close current log file", slog.String("path", w.path), wincoe.SafeErr(err2))
 		w.file = nil // clear stale handle so reopenOriginal() starts from a known state
 		w.reopenOriginal()
 		return
@@ -9734,20 +9745,17 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 	// than a cryptic OS error from writing to a dead file descriptor.
 	w.file = nil
 
-	// 2. Determine the dynamic backup name (.1, .2, etc.)
-	backupPath := getNextLogBackupName(w.path)
-
 	// 3. Rename the file
-	if err := os.Rename(w.path, backupPath); err != nil {
-		w.logger.Error("Log rotation failed: rename error", slog.String("path", w.path), slog.String("backup", backupPath), wincoe.SafeErr(err))
+	if err3 := os.Rename(w.path, backupPath); err3 != nil {
+		w.logger.Error("Log rotation failed: rename error", slog.String("path", w.path), slog.String("backup", backupPath), wincoe.SafeErr(err3))
 		w.reopenOriginal()
 		return
 	}
 
 	// 4. Attempt to create the fresh log file
-	newFile, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		w.logger.Warn("Log rotation failed to create new file; rolling back to previous log", slog.String("path", w.path), wincoe.SafeErr(err))
+	newFile, err4 := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err4 != nil {
+		w.logger.Warn("Log rotation failed to create new file; rolling back to previous log", slog.String("path", w.path), wincoe.SafeErr(err4))
 
 		// 5. ROLLBACK: Rename it back if creating the new one failed
 		if rbErr := os.Rename(backupPath, w.path); rbErr != nil {
@@ -9781,6 +9789,7 @@ func (w *rotatingLogWriter) reopenOriginal() {
 	if stat, statErr := f.Stat(); statErr == nil {
 		w.size = stat.Size()
 	} else {
+		w.size = 0
 		w.logger.Warn("Failed to stat reopened log file after rotation failure; size tracking may be stale until next successful rotation", slog.String("path", w.path), wincoe.SafeErr(statErr))
 	}
 }
@@ -11625,7 +11634,7 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.closed {
-		w.recordDrop()
+		w.recordDrop("was closed")
 		return n, nil
 	}
 
@@ -11640,12 +11649,12 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 	select {
 	case w.queue <- cp:
 	default:
-		w.recordDrop()
+		w.recordDrop("queue full")
 	}
 	return n, nil
 }
 
-func (w *asyncLogWriter) recordDrop() {
+func (w *asyncLogWriter) recordDrop(what string) {
 	total := w.dropped.Add(1)
 
 	now := time.Now().UnixNano()
@@ -11657,9 +11666,9 @@ func (w *asyncLogWriter) recordDrop() {
 		return // another goroutine already won the throttle window
 	}
 	fmt.Fprintf(os.Stderr,
-		"[asyncLogWriter %q] WARNING: log queue full; %d line(s) dropped so far "+
+		"[asyncLogWriter %q] WARNING: log %q; %d line(s) dropped so far "+
 			"(underlying sink is not keeping up, e.g. due to slow/contended disk)\n",
-		w.name, total)
+		w.name, what, total)
 }
 
 // DroppedCount returns the total number of log lines dropped so far due to

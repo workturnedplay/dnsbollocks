@@ -42,7 +42,12 @@
         optsUpstreamSelectionMode: (_cfgKeysEl.dataset.optsUpstreamSelectionMode || '').split(',').filter(Boolean),
         optsConsoleLogLevel:       (_cfgKeysEl.dataset.optsConsoleLogLevel       || '').split(',').filter(Boolean),
         optsBlockMode:             (_cfgKeysEl.dataset.optsBlockMode             || '').split(',').filter(Boolean),
-    } : {};
+    } : {
+        //XXX: the following(or any) fallbacks to empty aren't needed because all are only used in /config
+        // optsUpstreamSelectionMode: [],
+        // optsConsoleLogLevel: [],
+        // optsBlockMode: []
+    };
     
     // --- Table-edit staging queue (rules / hosts / blacklist) ---
     // Works identically to the /config page staging system: Add, Edit, and Delete

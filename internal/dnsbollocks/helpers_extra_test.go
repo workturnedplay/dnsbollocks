@@ -518,7 +518,10 @@ func TestGetNextLogBackupName_Sequential(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "app.log")
 
-	first := getNextLogBackupName(base)
+	first, err2 := getNextLogBackupName(base)
+	if err2 != nil {
+		t.Fatalf("errored on getNextLogBackupName, err:%q", err2)
+	}
 	if first != base+".1" {
 		t.Fatalf("expected %q, got %q", base+".1", first)
 	}
@@ -527,7 +530,10 @@ func TestGetNextLogBackupName_Sequential(t *testing.T) {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
-	second := getNextLogBackupName(base)
+	second, err2 := getNextLogBackupName(base)
+	if err2 != nil {
+		t.Fatalf("errored on getNextLogBackupName, err:%q", err2)
+	}
 	if second != base+".2" {
 		t.Fatalf("expected %q, got %q", base+".2", second)
 	}
@@ -536,7 +542,10 @@ func TestGetNextLogBackupName_Sequential(t *testing.T) {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
-	third := getNextLogBackupName(base)
+	third, err2 := getNextLogBackupName(base)
+	if err2 != nil {
+		t.Fatalf("errored on getNextLogBackupName, err:%q", err2)
+	}
 	if third != base+".3" {
 		t.Fatalf("expected %q, got %q", base+".3", third)
 	}
@@ -546,7 +555,10 @@ func TestGetNextLogBackupName_NoExistingBackups(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "fresh.log")
 
-	got := getNextLogBackupName(base)
+	got, err2 := getNextLogBackupName(base)
+	if err2 != nil {
+		t.Fatalf("errored on getNextLogBackupName, err:%q", err2)
+	}
 	if got != base+".1" {
 		t.Errorf("expected %q, got %q", base+".1", got)
 	}
