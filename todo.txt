@@ -1,4 +1,5 @@
 todo:
+
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
@@ -20,6 +21,7 @@ no:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
 //* sanitizeAndValidateConfig the defaultConfig() and i dno, use that or even panic2 BUG ? hmm, actually since sanitizeAndValidateConfig depends on defaultConfig() we can't do this.
 * 3 "UI State Gap: Wildcard Rules vs. Recent Blocks Button State" from https://gemini.google.com/app/e6c6d356d495a825
+* improvements: I could probably cache the conversion from "{builtin:clientexe}" to the requesting exe, in doSingleDoHRequest(), so that I don't do it everytime, actually it may cost more than the PathEscape i'm trying to cache, hmm. nevermind.
 
 half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
