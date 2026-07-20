@@ -1,5 +1,5 @@
 todo:
-* Claude said "Once /hosts is checked independently and first, the stripped name should only ever be used to look up /hosts. If there's no override, the port-prefixed query gets blocked outright rather than falling through to the normal whitelist+forward path. Net effect: /hosts matches always win regardless of whitelist state, and port-prefixed HTTPS lookups can only ever be satisfied via an explicit /hosts entry." - that's not right, so let's make sure if whitelist has that host (with the port in label) then it is checked against the whitelist not auto-blocked before it reaches the check.
+* maybe I need some renaming to properly refer to hosts or /hosts as etc_hosts so it's more obvious it's not some generic hosts or hostnames and it's generally unclear.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
@@ -28,6 +28,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* Claude said "Once /hosts is checked independently and first, the stripped name should only ever be used to look up /hosts. If there's no override, the port-prefixed query gets blocked outright rather than falling through to the normal whitelist+forward path. Net effect: /hosts matches always win regardless of whitelist state, and port-prefixed HTTPS lookups can only ever be satisfied via an explicit /hosts entry." - that's not right, so let's make sure if whitelist has that host (with the port in label) then it is checked against the whitelist not auto-blocked before it reaches the check.
 //* this is probably the wrong way to do this? "// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
 	// We strip this prefix so it matches against the base domain in rules and hosts." Or, if it's correct, let me know, if not, what's the better/best way?
 //* we should have a config.json setting/key which when true (the default) would require the host from /hosts (in webUI) to be in whitelist akak /rules (in webUI) first before accepting/resolving it as a host to IP mapping. Hmm, INSTEAD of that, I'm kinda thinking now that maybe we should just make the code assume it's false thus never require it to be in whitelist also, because whitelist may become stale if I change the hostname/pattern in /hosts then whitelist would allow the old one to be forwarded which is very bad! So yes, let's do this then, no setting, but change the code so it doesn't require whitelisting the host(well any of them, oc) from /hosts first. So after doing this, then we don't have to allow any domain(except those in /hosts ) to get their _port._https. prefixed domains resolved if they're DNS HTTPS type, which is what currently happens.

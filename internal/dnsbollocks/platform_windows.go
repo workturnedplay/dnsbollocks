@@ -4137,25 +4137,31 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		return sfr
 	}
 
-	// --- RFC 9460 §9 port-prefixed HTTPS record names ---
-	// Modern clients (e.g. Firefox) look up "_<port>._https.<target>" to find
-	// HTTPS records for a non-standard port. Such a lookup is only ever
-	// answered via an explicit /hosts local override for <target> below -
-	// never via the normal whitelist+upstream-forward path - so a whitelisted
-	// A/HTTPS rule for <target> can never be (ab)used to transparently expose
-	// or forward arbitrary port-prefixed lookups nobody explicitly configured
-	// as a local override. See stripHTTPSPortPrefix's doc comment for the
-	// exact syntax recognized here.
-	baseDomainForHostMatch := domain
-	isPortPrefixedHTTPS := false
-	if qtype == "HTTPS" {
-		if stripped, ok := stripHTTPSPortPrefix(domain); ok {
-			baseDomainForHostMatch = stripped
-			isPortPrefixedHTTPS = true
-		}
-	}
+	// RFC 9460 §9 port-prefixed HTTPS record names.
+	//
+	// Modern clients (e.g. Firefox 152.0.6) may query "_<port>._https.<target>" for
+	// non-standard ports. For local /hosts overrides we strip the RFC 9460
+	// prefix so a host entry for <target> also applies to these lookups.
+	// If no local override matches, the query proceeds through the normal
+	// whitelist and upstream resolution path unchanged.
+	/*
+			The behavior then becomes:
 
-	log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain))
+		/hosts contains example.com
+		_8443._https.example.com uses that local override. ✅
+		/hosts doesn't contain it
+		fall through to the normal whitelist. ✅
+		if the whitelist contains a rule matching _8443._https.example.com, it forwards upstream. ✅
+		if not, it's blocked exactly like any other query. ✅
+	*/
+	baseDomainForHostMatch := domain
+	//if qtype == "HTTPS" {
+	if stripped, ok := stripHTTPSPortPrefix(domain); ok {
+		baseDomainForHostMatch = stripped
+	}
+	//}
+
+	log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain)) //TODO: remove, this was temporary!
 
 	// Local host overrides in /hosts are authoritative on their own and never
 	// gated behind the /rules whitelist: gating them would either let a stale
@@ -4167,18 +4173,11 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	var matchedID string
 	allowed := hostMatched
-	blockStrategy := "blockedByLackOfRuleAllowingIt"
 	if !allowed {
-		if isPortPrefixedHTTPS {
-			// No local override exists for this port-prefixed lookup: refuse
-			// it outright instead of falling through to the normal
-			// whitelist+upstream-forward path (see the comment above).
-			blockStrategy = "blockedPortPrefixedHTTPSNoHostsOverride"
-		} else {
-			matchedID, allowed = s.ruleStore.MatchForType(qtype, domain)
-			if !allowed && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
-				matchedID, allowed = s.ruleStore.MatchForType("A", domain)
-			}
+		//normal check against the whitelist(aka the /rules page in webUI):
+		matchedID, allowed = s.ruleStore.MatchForType(qtype, domain)
+		if !allowed && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+			matchedID, allowed = s.ruleStore.MatchForType("A", domain)
 		}
 	}
 
@@ -4186,7 +4185,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		s.stats.Add(1)
 		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
 		blocked := s.blockResponse(reqMsg)
-		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: blockStrategy})
+		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
 		return blocked
 	}
 
