@@ -4035,6 +4035,17 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
+	// --- NEW: Strip SVCB/HTTPS port prefixes for matching ---
+	// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
+	// We strip this prefix so it matches against the base domain in rules and hosts.
+	baseDomainForMatch := domain
+	if qtype == "HTTPS" && strings.HasPrefix(domain, "_") {
+		if idx := strings.Index(domain, "._https."); idx > 0 {
+			// e.g. "_3405._https.self.dns" -> "self.dns"
+			baseDomainForMatch = domain[idx+len("._https."):]
+		}
+	}
+
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
 		//log.Warn(reason, slog.String("client", clientAddr))
@@ -4087,9 +4098,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		return sfr
 	}
 
-	matchedID, matched := s.ruleStore.MatchForType(qtype, domain)
+	matchedID, matched := s.ruleStore.MatchForType(qtype, baseDomainForMatch)
 	if !matched && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
-		matchedID, matched = s.ruleStore.MatchForType("A", domain)
+		matchedID, matched = s.ruleStore.MatchForType("A", baseDomainForMatch)
 	}
 
 	if !matched {
@@ -4125,7 +4136,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	// --- START Local Hosts Override ---
 	// Local hosts check (was: s.localHostsMu.RLock / range s.localHosts)
-	if matchedIPs, ok := s.hostStore.Match(domain); ok {
+	if matchedIPs, ok := s.hostStore.Match(baseDomainForMatch); ok {
 		resp := new(dns.Msg)
 		resp.SetReply(reqMsg)
 		resp.Authoritative = true
@@ -12588,7 +12599,7 @@ func getCleanIP(remoteAddr string, runFnOnError func(err error)) string {
 	parsed := net.ParseIP(ipStr)
 	if parsed == nil {
 		// Only warn if it's neither "localhost" nor a valid IP literal (e.g., unexpected garbage)
-		runFnOnError(fmt.Errorf("getCleanIP received unparseable IP or it's a hostname %q (original: %q), using it as is then!", ipStr, remoteAddr))
+		runFnOnError(fmt.Errorf("getCleanIP received unparseable IP or it's a hostname %q (original: %q), using it as is then", ipStr, remoteAddr))
 		return ipStr // Fallback to what we have
 	}
 

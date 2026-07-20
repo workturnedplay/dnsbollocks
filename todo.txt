@@ -1,4 +1,9 @@
 todo:
+* we should have a config.json setting/key which when true (the default) would require the host from /hosts (in webUI) to be in whitelist akak /rules (in webUI) first before accepting/resolving it as a host to IP mapping. Hmm, I'm kinda thinking maybe we should just make the code assume it's false thus never require it to be in whitelist also, because whitelist may become stale if I change the hostname/pattern in /hosts then whitelist would allow the old one to be forwarded which is very bad! So yes, let's do this then, no setting, but change the code so it doesn't require whitelisting the host(well any of them, oc) from /hosts first.
+
+* this is probably the wrong way to do this? "// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
+	// We strip this prefix so it matches against the base domain in rules and hosts." Or, if it's correct, let me know, if not, what's the better/best way?
+  
 * the []string-textarea auto-height code persists its custom height to a single shared sessionStorage key (config_textarea_height) rather than one per field, so if you resize two list-type textareas open at once, they'll fight over that one stored height.
 
 * in blockResponse some returns(or just the last one then?) modify the request and return it, it should return a newly allocated one based on the reqMsg like servfailResponse and formerrResponse already do!
