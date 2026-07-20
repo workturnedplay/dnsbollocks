@@ -4161,7 +4161,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	//}
 
-	log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain)) //TODO: remove, this was temporary!
+	//log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain)) //TODO: remove, this was temporary!
 
 	// Local host overrides in /hosts are authoritative on their own and never
 	// gated behind the /rules whitelist: gating them would either let a stale
@@ -4214,6 +4214,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	// --- START Local Hosts Override ---
 	if hostMatched {
+		switch qtype {
+		case "A", "AAAA", "HTTPS":
+			//good
+		default:
+			log.Warn("FIXME: unhandled hosts-override DNS type query. What exactly we doing here? ignore or block?", slog.String("DNS_query_type", qtype))
+			panic2("BUG: unhandled hosts-override DNS type " + qtype + " query!")
+		}
 		resp := new(dns.Msg)
 		resp.SetReply(reqMsg)
 		resp.Authoritative = true
@@ -4263,8 +4270,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 					rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: []net.IP{ip}})
 				}
 				resp.Answer = append(resp.Answer, rr)
-			}
-		}
+			} //if
+		} //for
+		//FIXME: what if none of the above 3 applied? we currently return empty?! unsure if this makes sense or is valid reply?!
 
 		// Cache this override so subsequent queries bypass the pattern loop
 		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
