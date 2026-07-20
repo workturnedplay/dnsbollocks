@@ -4785,7 +4785,7 @@ var (
 	edeCode = dns.ExtendedErrorCodeBlocked
 )
 
-func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
+func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 	cfg := s.getConfig()
 
 	// Special-case: For AAAA queries, return NOERROR with an empty answer instead of NXDOMAIN.
@@ -4799,10 +4799,10 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	// and we whitelist it in A afterwards, then dnscache might've cached the NXDOMAIN from AAAA and treat it as such for X more seconds thus
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
-	if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && (cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {
+	if cfg.BlockAAAAasEmptyNoError && len(reqMsg.Question) > 0 && reqMsg.Question[0].Qtype == dns.TypeAAAA && (cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {
 		//if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == blockModeNXDOMAIN {
 		resp := new(dns.Msg)
-		resp.SetReply(msg)
+		resp.SetReply(reqMsg)
 		resp.Rcode = dns.RcodeSuccess
 		resp.Answer = []dns.RR{}
 		resp.Ns = []dns.RR{}
@@ -4816,28 +4816,28 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	//in Go, implicit 'break' after each 'case'
 	switch cfg.BlockMode { //XXX: it's already lowercased!
 	case blockModeNXDOMAIN:
-		msg.SetRcode(msg, dns.RcodeNameError) // this is NXDOMAIN
+		reqMsg.SetRcode(reqMsg, dns.RcodeNameError) // this is NXDOMAIN
 	case blockModeIPBlock: //, "block_ip", "ipblock", "blockip":
 		ttl := cfg.BlockedResponseTTLSec
-		qtype := msg.Question[0].Qtype
+		qtype := reqMsg.Question[0].Qtype
 		switch qtype {
 		case dns.TypeA:
 			rr := new(dns.A)
-			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
+			rr.Hdr = dns.RR_Header{Name: reqMsg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
 			// Clone rather than alias cfg.BlockIPv4Parsed: that slice is shared across every
 			// blocked query until the next Reload(). Assigning it directly would let any future
 			// code that mutates rr.A's bytes in place (rather than replacing the slice) silently
 			// corrupt the shared config value for every subsequent blocked response.
 			rr.A = append(net.IP(nil), cfg.BlockIPv4Parsed...)
-			msg.Answer = []dns.RR{rr}
-			msg.SetRcode(msg, dns.RcodeSuccess)
+			reqMsg.Answer = []dns.RR{rr}
+			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
 		case dns.TypeAAAA:
 			rr := new(dns.AAAA)
-			rr.Hdr = dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
+			rr.Hdr = dns.RR_Header{Name: reqMsg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
 			// See the rr.A clone comment in the TypeA case above — identical aliasing hazard.
 			rr.AAAA = append(net.IP(nil), cfg.BlockIPv6Parsed...)
-			msg.Answer = []dns.RR{rr}
-			msg.SetRcode(msg, dns.RcodeSuccess)
+			reqMsg.Answer = []dns.RR{rr}
+			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
 		default:
 			// non A or AAAA during this BlockMode?
 			/*
@@ -4846,8 +4846,8 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 			*/
 			// For MX, TXT, etc., return an explicit NODATA response
 			// (Success with 0 answers) because the domain "exists" in our ip_block view.
-			msg.Answer = []dns.RR{}
-			msg.SetRcode(msg, dns.RcodeSuccess)
+			reqMsg.Answer = []dns.RR{}
+			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
 		}
 
 	case blockModeDrop:
@@ -4860,8 +4860,8 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 		// msg.SetRcode(msg, dns.RcodeNameError)
 	}
 
-	msg.Authoritative = true
-	msg.RecursionAvailable = true
+	reqMsg.Authoritative = true
+	reqMsg.RecursionAvailable = true
 
 	// Re-allocate the OPT "envelope" but use the static EDE logic
 
@@ -4879,7 +4879,7 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	ourMax := uint16(1232)
 
 	// 2. Check if the client specifically asked for less
-	if clientOpt := msg.IsEdns0(); clientOpt != nil {
+	if clientOpt := reqMsg.IsEdns0(); clientOpt != nil {
 		if clientOpt.UDPSize() < ourMax {
 			ourMax = clientOpt.UDPSize() // Respect the client's smaller limit
 		}
@@ -4906,9 +4906,9 @@ func (s *Server) blockResponse(msg *dns.Msg) *dns.Msg {
 	}
 
 	// 3. Append the envelope to the response
-	msg.Extra = append(msg.Extra, opt)
+	reqMsg.Extra = append(reqMsg.Extra, opt)
 
-	return msg
+	return reqMsg
 }
 
 const NODATA string = "upstream_nodata"
