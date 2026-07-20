@@ -1,6 +1,4 @@
 todo:
-* properly GoSafe the rest of the 'go func's that you find after each "s.shutdownWG.Add(1)"
-* see if other 'go func's need similar GoSafe wrapper
 
 * do I want to allow one or more hostnames (set in config.json) for my own hosting of the webUI (if not for others like DoH, TCP and UDP listeners too, so a list of hostnames for each then? because each of those can be different IPs not just ports) to point (via local hosts override seen via /hosts (the page in webUI)) to my own IPs (that I'm listening on) ? but I know portmaster doesn't place nice with it because it poits to a local IP in 127/8 range and it blocks it in the "System DNS Client" profile requiring "Enforce Global/Private Split-View" to be off, and some others too but unsure which (either all 4 in Firefox profile, and/or one in global settings which isn't visible in profiles about unknown TLDs for my case hostname being "self.dns" which I tested) but then I also need the cert to have the hosts (some of them) in the SNI ... 
 
@@ -33,6 +31,8 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* properly GoSafe the rest of the 'go func's that you find after each "s.shutdownWG.Add(1)"
+//* see if other 'go func's need similar GoSafe wrapper
 //* we don't seem to be flushing the log on panic2() ? or maybe we do but it's io.Discard() ? Example this WARN log line isn't seen(but the BUG: from panic2() is, ah because it's using the bugLogger no doubt!):
 //  log.Warn("FIXME: unhandled hosts-override DNS type query. What exactly we doing here? ignore or block?", slog.String("DNS_query_type", qtype))
 //  panic2("BUG: unhandled hosts-override DNS type query")

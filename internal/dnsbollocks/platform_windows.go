@@ -3640,7 +3640,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 	future.info.startTime = time.Now() // Capture start time
 	future.wg.Add(1)
 
-	go func() {
+	s.GoSafe(func() {
 		defer future.wg.Done()
 		var pid uint32
 		var exe string
@@ -3708,7 +3708,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 			slog.String("services", serviceInfo),
 			wincoe.SafeErr(err),
 		)
-	}()
+	})
 
 	return context.WithValue(ctx, clientInfoKey{}, future)
 }
@@ -5392,7 +5392,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	}
 
 	// Fire and forget logging so the DNS response isn't delayed
-	go func() {
+	s.GoSafe(func() {
 		// Re-fetch the live logger here, at the moment this goroutine actually
 		// runs, rather than reusing the one captured above when logQuery was
 		// called synchronously. A config Reload can swap in a new logger (and
@@ -5481,7 +5481,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 			attrs = append(attrs, slog.Any("failed_upstreams", upstreamState2.FailedUpstreams))
 		}
 		log.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
-	}()
+	})
 } //func
 
 func servfailResponse(reqMsg *dns.Msg) *dns.Msg {
@@ -9328,30 +9328,26 @@ func (s *Server) startDNSListenerInstance(params dnsListenerParams) (*dnsListene
 	inst := &dnsListenerInstance{params: params, udp: udpConn, tcp: tcpLn, cancel: cancel}
 
 	inst.wg.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
 		<-instCtx.Done()
 		udpConn.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 		// This wakes up Accept() with an error safely
 		tcpLn.Close() //nolint:errcheck // best-effort close, nothing to do on error
-	}()
+	})
 
 	inst.wg.Add(1)
-	s.shutdownWG.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done()
 		s.runDNSUDPLoop(instCtx, udpConn)
-	}()
+	})
 
 	inst.wg.Add(1)
-	s.shutdownWG.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done()
 		s.runDNSTCPLoop(instCtx, tcpLn)
-	}()
+	})
 
 	return inst, nil
 }
@@ -9441,11 +9437,9 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	   The Rule of Thumb: Always Add() in the "parent" goroutine and Done() in the "child" goroutine.
 	*/
 	inst.wg.Add(1)
-	s.shutdownWG.Add(1)
 	// Listen for the global shutdown signal to gracefully close the DoH server
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done() // Signal this watcher is finished
 		<-instCtx.Done()
 		log := s.getLogger()
 		cfg := s.getConfig()
@@ -9456,20 +9450,18 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 		if err := srv.Shutdown(shutdownCtx); /*this call returns*/ err != nil && !errors.Is(err, context.Canceled) {
 			log.Warn("DoH server shutdown error", wincoe.SafeErr(err))
 		}
-	}()
+	})
 
 	inst.wg.Add(1)
-	s.shutdownWG.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done() // Signal the server is officially stopped
 		// Graceful close on shutdown
 		defer listener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.getLogger().Error("doh_serve_failed", wincoe.SafeErr(err), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("DoH server failed on %q: %w", addr, err)
 		}
-	}()
+	})
 
 	s.getLogger().Info("DoH listening", slog.String("address", addr))
 	return inst, nil
@@ -9670,10 +9662,8 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 
 	inst.wg.Add(1)
 	// Listen for the global shutdown signal to gracefully close the Web UI
-	s.shutdownWG.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done()
 		<-instCtx.Done()
 		log := s.getLogger()
 		cfg := s.getConfig()
@@ -9683,13 +9673,11 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		if err2 := srv.Shutdown(shutdownCtx); /*this call returns*/ err2 != nil && !errors.Is(err2, context.Canceled) {
 			log.Warn("webUI server shutdown error", wincoe.SafeErr(err2))
 		}
-	}()
+	})
 
 	inst.wg.Add(1)
-	s.shutdownWG.Add(1)
-	go func() {
+	s.GoSafe(func() {
 		defer inst.wg.Done()
-		defer s.shutdownWG.Done()
 		// Graceful close
 		defer finalListener.Close() //nolint:errcheck // best-effort close, nothing to do on error
 		if err2 := srv.Serve(finalListener); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
@@ -9697,7 +9685,7 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 			log.Error("ui_serve_failed", wincoe.SafeErr(err2), slog.String("addr", addr))
 			s.errChan <- fmt.Errorf("webUI server failed on %q: %w", addr, err2)
 		}
-	}()
+	})
 
 	// Split the address for the logger to maintain your existing clean log output
 	host, portStr, err := net.SplitHostPort(boundAddr)
