@@ -4239,7 +4239,22 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 				rr := new(dns.HTTPS)
 				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: cfg.LocalHostsOverrideTTLSec}
 				rr.Priority = 1
-				rr.Target = "." // Target is the same domain
+
+				// RFC 9460 forbids Target="." for port-prefixed queries.
+				// Point it explicitly back to the base domain.
+				if baseDomainForHostMatch != domain {
+					rr.Target = baseDomainForHostMatch + "."
+				} else {
+					rr.Target = "."
+				}
+
+				/*
+					While your Target fix is perfectly spec-compliant, modern browsers and the Windows 11 dnscache service are incredibly picky about HTTPS records (Type 65). If a record is in "ServiceMode" (Priority = 1), strict parsers expect an ALPN (Application-Layer Protocol Negotiation) hint. Without it, they might deem the record "incomplete" for a secure connection and drop the entire DNS resolution sequence.
+					To bulletproof your synthesized record against strict OS/browser parsers, inject the SVCBAlpn parameter right above your IP hints:
+					 - Gemini 3.1 Pro
+				*/
+				// Tell strict clients which HTTP protocols we speak
+				rr.Value = append(rr.Value, &dns.SVCBAlpn{Alpn: []string{"h2", "http/1.1"}})
 
 				// Inject the overridden IP directly into the SVCB hints
 				if isIPv4 {
