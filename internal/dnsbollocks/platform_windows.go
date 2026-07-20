@@ -40,6 +40,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"unsafe"
 
@@ -4019,6 +4020,55 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// stripHTTPSPortPrefix recognizes an RFC 9460 §9 "port-prefixed" HTTPS
+// record name of the form "_<port>._https.<target>" (queried by some
+// clients, e.g. browsers, when connecting to a non-standard port) and, if
+// domain matches that exact syntax, returns <target> and true.
+//
+// The syntax requires, in order: a first label consisting of a single
+// leading underscore followed by one or more ASCII digits (the port number,
+// which must additionally fall within 0-65535); a second label that is
+// exactly "_https"; and at least one further label (the target name).
+// Anything that doesn't match this precisely — including a bare leading
+// underscore with no digits, non-numeric "port" text, or "_https" not
+// immediately following the port label — is left untouched (ok=false),
+// since it isn't actually a port-prefixed HTTPS lookup at all.
+//
+// domain must already be lowercased and have any trailing root dot stripped
+// (as handleDNSQuery does before calling this).
+func stripHTTPSPortPrefix(domain string) (target string, ok bool) {
+	if !strings.HasPrefix(domain, "_") {
+		return domain, false
+	}
+	labels := strings.SplitN(domain, ".", 3)
+	if len(labels) != 3 {
+		return domain, false
+	}
+	portLabel, httpsLabel, rest := labels[0], labels[1], labels[2]
+
+	portDigits := strings.TrimPrefix(portLabel, "_")
+	if portDigits == "" {
+		return domain, false // bare "_" with no digits after it
+	}
+	for i := 0; i < len(portDigits); i++ {
+		if portDigits[i] < '0' || portDigits[i] > '9' {
+			return domain, false
+		}
+	}
+	portNum, err := strconv.Atoi(portDigits)
+	if err != nil || portNum < 0 || portNum > 65535 {
+		return domain, false
+	}
+
+	if httpsLabel != "_https" {
+		return domain, false
+	}
+	if rest == "" {
+		return domain, false
+	}
+	return rest, true
+}
+
 func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr string) *dns.Msg {
 	cfg := s.getConfig()
 	log := s.getLogger()
@@ -4087,28 +4137,56 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		return sfr
 	}
 
-	// --- NEW: Strip SVCB/HTTPS port prefixes for matching ---
-	// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
-	// We strip this prefix so it matches against the base domain in rules and hosts.
-	baseDomainForMatch := domain
-	if qtype == "HTTPS" && strings.HasPrefix(domain, "_") {
-		if idx := strings.Index(domain, "._https."); idx > 0 {
-			// e.g. "_3405._https.self.dns" -> "self.dns"
-			baseDomainForMatch = domain[idx+len("._https."):]
+	// --- RFC 9460 §9 port-prefixed HTTPS record names ---
+	// Modern clients (e.g. Firefox) look up "_<port>._https.<target>" to find
+	// HTTPS records for a non-standard port. Such a lookup is only ever
+	// answered via an explicit /hosts local override for <target> below -
+	// never via the normal whitelist+upstream-forward path - so a whitelisted
+	// A/HTTPS rule for <target> can never be (ab)used to transparently expose
+	// or forward arbitrary port-prefixed lookups nobody explicitly configured
+	// as a local override. See stripHTTPSPortPrefix's doc comment for the
+	// exact syntax recognized here.
+	baseDomainForHostMatch := domain
+	isPortPrefixedHTTPS := false
+	if qtype == "HTTPS" {
+		if stripped, ok := stripHTTPSPortPrefix(domain); ok {
+			baseDomainForHostMatch = stripped
+			isPortPrefixedHTTPS = true
 		}
 	}
 
-	log.Debug(fmt.Sprintf("Checking if %q type %q is allowed, original %q", baseDomainForMatch, qtype, domain))
-	matchedID, matched := s.ruleStore.MatchForType(qtype, baseDomainForMatch)
-	if !matched && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
-		matchedID, matched = s.ruleStore.MatchForType("A", baseDomainForMatch)
+	log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain))
+
+	// Local host overrides in /hosts are authoritative on their own and never
+	// gated behind the /rules whitelist: gating them would either let a stale
+	// /rules pattern block an override that should work, or - worse - keep
+	// permitting resolution after a /hosts pattern is edited/removed, purely
+	// because the OLD pattern still happens to satisfy some unrelated /rules
+	// entry. So check it first, unconditionally.
+	hostIPs, hostMatched := s.hostStore.Match(baseDomainForHostMatch)
+
+	var matchedID string
+	allowed := hostMatched
+	blockStrategy := "blockedByLackOfRuleAllowingIt"
+	if !allowed {
+		if isPortPrefixedHTTPS {
+			// No local override exists for this port-prefixed lookup: refuse
+			// it outright instead of falling through to the normal
+			// whitelist+upstream-forward path (see the comment above).
+			blockStrategy = "blockedPortPrefixedHTTPSNoHostsOverride"
+		} else {
+			matchedID, allowed = s.ruleStore.MatchForType(qtype, domain)
+			if !allowed && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+				matchedID, allowed = s.ruleStore.MatchForType("A", domain)
+			}
+		}
 	}
 
-	if !matched {
+	if !allowed {
 		s.stats.Add(1)
 		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
 		blocked := s.blockResponse(reqMsg)
-		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
+		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: blockStrategy})
 		return blocked
 	}
 
@@ -4136,14 +4214,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 
 	// --- START Local Hosts Override ---
-	// Local hosts check (was: s.localHostsMu.RLock / range s.localHosts)
-	if matchedIPs, ok := s.hostStore.Match(baseDomainForMatch); ok {
+	if hostMatched {
 		resp := new(dns.Msg)
 		resp.SetReply(reqMsg)
 		resp.Authoritative = true
 		resp.RecursionAvailable = true
 
-		for _, ip := range matchedIPs {
+		for _, ip := range hostIPs {
 			isIPv4 := ip.To4() != nil
 
 			if qtype == "A" && isIPv4 {
@@ -4180,7 +4257,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		cachee.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState5,
-		}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second) //doneTODO: configurable cache time and dns record aka ttl time? (see above)
+		}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second)
 
 		s.logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
@@ -4828,7 +4905,6 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
 	if cfg.BlockAAAAasEmptyNoError && len(reqMsg.Question) > 0 && reqMsg.Question[0].Qtype == dns.TypeAAAA && (cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {
-		//if cfg.BlockAAAAasEmptyNoError && len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeAAAA && cfg.BlockMode == blockModeNXDOMAIN {
 		resp := new(dns.Msg)
 		resp.SetReply(reqMsg)
 		resp.Rcode = dns.RcodeSuccess
@@ -4841,31 +4917,38 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 		return resp
 	}
 
+	// Build the response as a fresh dns.Msg derived from reqMsg via SetReply
+	// (mirrors servfailResponse/formerrResponse), rather than mutating reqMsg
+	// itself and returning it: reqMsg is the caller's own query object, and
+	// blockResponse must never alias the two together.
+	resp := new(dns.Msg)
+	resp.SetReply(reqMsg)
+
 	//in Go, implicit 'break' after each 'case'
 	switch cfg.BlockMode { //XXX: it's already lowercased!
 	case blockModeNXDOMAIN:
-		reqMsg.SetRcode(reqMsg, dns.RcodeNameError) // this is NXDOMAIN
+		resp.SetRcode(resp, dns.RcodeNameError) // this is NXDOMAIN
 	case blockModeIPBlock: //, "block_ip", "ipblock", "blockip":
 		ttl := cfg.BlockedResponseTTLSec
-		qtype := reqMsg.Question[0].Qtype
+		qtype := resp.Question[0].Qtype
 		switch qtype {
 		case dns.TypeA:
 			rr := new(dns.A)
-			rr.Hdr = dns.RR_Header{Name: reqMsg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
+			rr.Hdr = dns.RR_Header{Name: resp.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
 			// Clone rather than alias cfg.BlockIPv4Parsed: that slice is shared across every
 			// blocked query until the next Reload(). Assigning it directly would let any future
 			// code that mutates rr.A's bytes in place (rather than replacing the slice) silently
 			// corrupt the shared config value for every subsequent blocked response.
 			rr.A = append(net.IP(nil), cfg.BlockIPv4Parsed...)
-			reqMsg.Answer = []dns.RR{rr}
-			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
+			resp.Answer = []dns.RR{rr}
+			resp.SetRcode(resp, dns.RcodeSuccess)
 		case dns.TypeAAAA:
 			rr := new(dns.AAAA)
-			rr.Hdr = dns.RR_Header{Name: reqMsg.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
+			rr.Hdr = dns.RR_Header{Name: resp.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
 			// See the rr.A clone comment in the TypeA case above — identical aliasing hazard.
 			rr.AAAA = append(net.IP(nil), cfg.BlockIPv6Parsed...)
-			reqMsg.Answer = []dns.RR{rr}
-			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
+			resp.Answer = []dns.RR{rr}
+			resp.SetRcode(resp, dns.RcodeSuccess)
 		default:
 			// non A or AAAA during this BlockMode?
 			/*
@@ -4874,22 +4957,18 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 			*/
 			// For MX, TXT, etc., return an explicit NODATA response
 			// (Success with 0 answers) because the domain "exists" in our ip_block view.
-			reqMsg.Answer = []dns.RR{}
-			reqMsg.SetRcode(reqMsg, dns.RcodeSuccess)
+			resp.Answer = []dns.RR{}
+			resp.SetRcode(resp, dns.RcodeSuccess)
 		}
 
 	case blockModeDrop:
 		return nil
 	default:
 		panic2(fmt.Sprintf("BUG: validated BlockMode reached impossible value, %q", cfg.BlockMode))
-		// log := s.getLogger()
-		// log.Warn("Unknown BlockMode in config file, falling back to NXDOMAIN", slog.String("blockmode", cfg.BlockMode))
-		// // fallback to nxdomain
-		// msg.SetRcode(msg, dns.RcodeNameError)
 	}
 
-	reqMsg.Authoritative = true
-	reqMsg.RecursionAvailable = true
+	resp.Authoritative = true
+	resp.RecursionAvailable = true
 
 	// Re-allocate the OPT "envelope" but use the static EDE logic
 
@@ -4928,15 +5007,14 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 			InfoCode:  edeCode,
 			ExtraText: edeText,
 		}
-
 		// You can reuse a global EDE struct here IF it is never modified
 		opt.Option = []dns.EDNS0{ede}
 	}
 
 	// 3. Append the envelope to the response
-	reqMsg.Extra = append(reqMsg.Extra, opt)
+	resp.Extra = append(resp.Extra, opt)
 
-	return reqMsg
+	return resp
 }
 
 const NODATA string = "upstream_nodata"
@@ -5270,6 +5348,14 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 
 	// Fire and forget logging so the DNS response isn't delayed
 	go func() {
+		// Re-fetch the live logger here, at the moment this goroutine actually
+		// runs, rather than reusing the one captured above when logQuery was
+		// called synchronously. A config Reload can swap in a new logger (and
+		// close the old one's async log writer) at any point between when this
+		// goroutine is spawned and when it actually gets scheduled/executes;
+		// logging through the stale, since-closed logger silently drops the
+		// line and prints a "log was closed" warning instead.
+		log := s.getLogger()
 		var attrs []any = []any{
 			slog.String("domain", displayDomain),
 			slog.String("type", typ),
@@ -11868,6 +11954,17 @@ func joinCloseErrors(prefix string, errs []error) error {
 // Reinit atomically swaps the logger, registers new closers (typically
 // *rotatingLogWriter instances), and closes the previously registered ones.
 // It is safe to call on config reload.
+//
+// Before closing any of the previously registered closers, this also
+// publishes l to wincoe's package-level logger fallbacks (wincoe.Logger,
+// and wincoe.bugLogger via wincoe.SetBugLogger) — not just lm.ptr. Those are
+// read independently of lm.ptr by wincoe.* helpers (PidAndExeForUDP,
+// panic2, etc.); if they were only updated by the caller sometime *after*
+// Reinit returned, any such helper running concurrently in that window
+// would still read the OLD logger and write into an already-closed
+// asyncLogWriter — silently dropping the line and printing a "was closed"
+// warning — instead of the new one. Publishing all three "current logger"
+// sources here, before any old writer is closed, closes that window.
 func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
 	lm.mu.Lock()
 	old := lm.closers
@@ -11875,6 +11972,8 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
 	lm.mu.Unlock()
 
 	lm.set(l) // readers see the new logger from this point
+	wincoe.SetBugLogger(l)
+	wincoe.Logger.Store(l)
 
 	var errs []error
 	for _, c := range old {
@@ -11980,22 +12079,19 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		handlers: []slog.Handler{fullHandler, consoleH, queryH},
 	})
 
-	// Reinit closes old async log writers (if any) and registers the new ones.
+	// Reinit closes old async log writers (if any) and registers these new ones.
 	closers := make([]io.Closer, len(asyncWriters))
 	for i, w := range asyncWriters {
 		closers[i] = w
 	}
+	// Reinit publishes improvedLogger to wincoe's package-level fallbacks too
+	// (before closing anything old) — see Reinit's doc comment.
 	if reinitErr := lm.Reinit(improvedLogger, closers...); reinitErr != nil {
 		// The new logger is already stored by Reinit; use it for the warning.
 		improvedLogger.Warn("error closing old log files during logger reinit", wincoe.SafeErr(reinitErr))
 	}
 
-	//bugLogger.Store(improvedLogger)
-	wincoe.SetBugLogger(improvedLogger)
-	//wincoe.Logger = improvedLogger
-	wincoe.Logger.Store(improvedLogger)
-
-	improvedLogger.Info("Logging initialized",
+	improvedLogger.Info("Logging (re)initialized",
 		slog.String("full_log", cfg.LogEverythingFile),
 		slog.String("queries_log", cfg.LogQueriesFile),
 		slog.String("console_level", cfg.ConsoleLogLevel),

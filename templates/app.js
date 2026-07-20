@@ -1238,10 +1238,16 @@
                 ta.style.height = 'auto';
                 const contentH = ta.scrollHeight;
                 
+                // Per-field storage key: each []string config field remembers its
+                // own custom textarea height independently, so resizing one field
+                // (e.g. upstream_urls) doesn't clobber or get clobbered by another
+                // (e.g. upstream_sni_hostnames) sharing a single global key.
+                const textareaHeightKey = 'config_textarea_height_' + key;
+                
                 // The user may have previously resized a textarea on this page.
                 // Apply the saved height if it is larger than the content height,
                 // so the preference is honoured without hiding any content.
-                const savedH = parseInt(sessionStorage.getItem('config_textarea_height') || '0', 10);
+                const savedH = parseInt(sessionStorage.getItem(textareaHeightKey) || '0', 10);
                 const finalH = Math.max(contentH, savedH, 85); // 85px is the CSS minimum
                 ta.style.height = finalH + 'px';
                 
@@ -1258,7 +1264,7 @@
                 ta.addEventListener('mouseup', () => {
                     const h = ta.offsetHeight;
                     if (h > 0) {
-                        sessionStorage.setItem('config_textarea_height', String(h));
+                        sessionStorage.setItem(textareaHeightKey, String(h));
                     }
                 });
                 
@@ -1272,7 +1278,7 @@
                     if (clickX >= rect.width - 20 && clickY >= rect.height - 20) {
                         if (confirm('Reset and stop remembering the custom textarea size?')) {
                             // Remove the preference completely
-                            sessionStorage.removeItem('config_textarea_height');
+                            sessionStorage.removeItem(textareaHeightKey);
                             
                             // Recalculate and snap layout back to natural content boundaries instantly
                             ta.style.height = 'auto';
