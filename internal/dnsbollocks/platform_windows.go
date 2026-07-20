@@ -4035,17 +4035,6 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
-	// --- NEW: Strip SVCB/HTTPS port prefixes for matching ---
-	// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
-	// We strip this prefix so it matches against the base domain in rules and hosts.
-	baseDomainForMatch := domain
-	if qtype == "HTTPS" && strings.HasPrefix(domain, "_") {
-		if idx := strings.Index(domain, "._https."); idx > 0 {
-			// e.g. "_3405._https.self.dns" -> "self.dns"
-			baseDomainForMatch = domain[idx+len("._https."):]
-		}
-	}
-
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
 		//log.Warn(reason, slog.String("client", clientAddr))
@@ -4098,6 +4087,18 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		return sfr
 	}
 
+	// --- NEW: Strip SVCB/HTTPS port prefixes for matching ---
+	// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
+	// We strip this prefix so it matches against the base domain in rules and hosts.
+	baseDomainForMatch := domain
+	if qtype == "HTTPS" && strings.HasPrefix(domain, "_") {
+		if idx := strings.Index(domain, "._https."); idx > 0 {
+			// e.g. "_3405._https.self.dns" -> "self.dns"
+			baseDomainForMatch = domain[idx+len("._https."):]
+		}
+	}
+
+	log.Debug(fmt.Sprintf("Checking if %q type %q is allowed, original %q", baseDomainForMatch, qtype, domain))
 	matchedID, matched := s.ruleStore.MatchForType(qtype, baseDomainForMatch)
 	if !matched && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 		matchedID, matched = s.ruleStore.MatchForType("A", baseDomainForMatch)
