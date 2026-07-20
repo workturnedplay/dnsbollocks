@@ -1,21 +1,6 @@
 todo:
-* investigate these if they're working properly:
-=== RUN   TestAsyncLogWriter_WriteNeverBlocksCallerEvenWhenUnderlyingStalls
-[asyncLogWriter "test.log"] WARNING: log "queue full"; 1 line(s) dropped so far (underlying sink is not keeping up, e.g. due to slow/contended disk)
-[asyncLogWriter "test.log"] total dropped log lines this session: 4095
---- PASS: TestAsyncLogWriter_WriteNeverBlocksCallerEvenWhenUnderlyingStalls (0.00s)
-=== RUN   TestAsyncLogWriter_CloseIsIdempotentAndSafeAfterConcurrentWrite
-[asyncLogWriter "test.log"] WARNING: log "was closed"; 1 line(s) dropped so far (underlying sink is not keeping up, e.g. due to slow/contended disk)
-[asyncLogWriter "test.log"] total dropped log lines this session: 100
---- PASS: TestAsyncLogWriter_CloseIsIdempotentAndSafeAfterConcurrentWrite (0.00s)
-
-* we don't seem to be flushing the log on panic2() ? or maybe we do but it's io.Discard() ? Example this WARN log line isn't seen(but the BUG: from panic2() is, ah because it's using the bugLogger no doubt!):
-  log.Warn("FIXME: unhandled hosts-override DNS type query. What exactly we doing here? ignore or block?", slog.String("DNS_query_type", qtype))
-  panic2("BUG: unhandled hosts-override DNS type query")
-
-* see a fix for that (currently)log "FIXME: unhandled hosts-override DNS type query." since I'm allowing any DNS type query if it's a hostname in hosts-override.
-
-* revisit the "RFC 9460 §9 port-prefixed HTTPS record names." code in handleDNSQuery to see if it's really necessary to allow any DNS query type for the host overrides, because since portmaster disallowed firefox's queries for the hostname, it tried all kinds even www.self.dns in the end, so maybe not even the A record for _8443._https.self.dns isn't needed, if the HTTPS one works, I mean, if after the HTTPS one the connection is allowed to go thru the firewall! maybe the A query was a fallback?
+* properly GoSafe the rest of the 'go func's that you find after each "s.shutdownWG.Add(1)"
+* see if other 'go func's need similar GoSafe wrapper
 
 * do I want to allow one or more hostnames (set in config.json) for my own hosting of the webUI (if not for others like DoH, TCP and UDP listeners too, so a list of hostnames for each then? because each of those can be different IPs not just ports) to point (via local hosts override seen via /hosts (the page in webUI)) to my own IPs (that I'm listening on) ? but I know portmaster doesn't place nice with it because it poits to a local IP in 127/8 range and it blocks it in the "System DNS Client" profile requiring "Enforce Global/Private Split-View" to be off, and some others too but unsure which (either all 4 in Firefox profile, and/or one in global settings which isn't visible in profiles about unknown TLDs for my case hostname being "self.dns" which I tested) but then I also need the cert to have the hosts (some of them) in the SNI ... 
 
@@ -48,6 +33,11 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* we don't seem to be flushing the log on panic2() ? or maybe we do but it's io.Discard() ? Example this WARN log line isn't seen(but the BUG: from panic2() is, ah because it's using the bugLogger no doubt!):
+//  log.Warn("FIXME: unhandled hosts-override DNS type query. What exactly we doing here? ignore or block?", slog.String("DNS_query_type", qtype))
+//  panic2("BUG: unhandled hosts-override DNS type query")
+//* see a fix for that (currently)log "FIXME: unhandled hosts-override DNS type query." since I'm allowing any DNS type query if it's a hostname in hosts-override.
+//* revisit the "RFC 9460 §9 port-prefixed HTTPS record names." code in handleDNSQuery to see if it's really necessary to allow any DNS query type for the host overrides, because since portmaster disallowed firefox's queries for the hostname, it tried all kinds even www.self.dns in the end, so maybe not even the A record for _8443._https.self.dns isn't needed, if the HTTPS one works, I mean, if after the HTTPS one the connection is allowed to go thru the firewall! maybe the A query was a fallback?
 //* Claude said "Once /hosts is checked independently and first, the stripped name should only ever be used to look up /hosts. If there's no override, the port-prefixed query gets blocked outright rather than falling through to the normal whitelist+forward path. Net effect: /hosts matches always win regardless of whitelist state, and port-prefixed HTTPS lookups can only ever be satisfied via an explicit /hosts entry." - that's not right, so let's make sure if whitelist has that host (with the port in label) then it is checked against the whitelist not auto-blocked before it reaches the check.
 //* this is probably the wrong way to do this? "// Modern browsers(eg. Firefox 152.0.6) query _<port>._https.<domain> when using non-standard ports.
 	// We strip this prefix so it matches against the base domain in rules and hosts." Or, if it's correct, let me know, if not, what's the better/best way?

@@ -2607,6 +2607,11 @@ func OldMain() {
 		Level: envLvl,
 	}))
 
+	// Wire the global fallback logger immediately so any panic2/getBugLogger call
+	// during bootstrap uses the default
+	wincoe.SetBugLogger(localLogger)
+	wincoe.Logger.Store(localLogger)
+
 	// wincoe.InstallCrashSink()
 	// if true {
 	//     panic2("deliberate panic")
@@ -2627,18 +2632,16 @@ func OldMain() {
 	if localLogger == nil {
 		panic2("BUG: unexpected nil return from initBootstrapLogging")
 	}
-	// go func() {
+	// Wire the global fallback logger immediately so any panic2/getBugLogger call
+	// during bootstrap uses the colored bootstrap logger, not the silent default.
+	wincoe.SetBugLogger(localLogger)
+	wincoe.Logger.Store(localLogger)
+
+	// go func() {//TODO: get this back but maybe every 5 minutes or 10 or 1? but see to properly shut it down tho.
 	//     ticker := time.NewTicker(5 * time.Second)
 	//     defer ticker.Stop()
 	//     for range ticker.C {
 	//         log.Debug("MARK")
-	//     }
-	// }()
-	// go func() {
-	//     for {
-	//         wincoe.Churn2()
-	//         // No sleep here, or a very small one
-	//         time.Sleep(20 * time.Millisecond)
 	//     }
 	// }()
 
@@ -2649,13 +2652,17 @@ func OldMain() {
 	if logMgr == nil {
 		panic2("BUG: unexpected nil return from NewLoggerManager")
 	}
-
-	// Wire the global fallback logger immediately so any panic2/getBugLogger call
-	// during bootstrap uses the colored bootstrap logger, not the silent default.
-	//wincoe.bugLogger.Store(localLogger)
-	wincoe.SetBugLogger(localLogger)
-	//wincoe.Logger = localLogger
-	wincoe.Logger.Store(localLogger)
+	defer func() {
+		if r := recover(); r != nil {
+			// We caught a raw panic. Flush the logs first!
+			if err := logMgr.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning2: error flushing/closing log writers during shutdown: %v\n", err)
+			}
+			// Then re-throw the panic so the program still crashes
+			// and prints the stack trace to os.Stderr as expected.
+			panic(r)
+		}
+	}()
 
 	// Create a default FileWriter for the bootstrap phase (config not yet loaded).
 	// It shares the LogManager's atomic pointer so it always sees the current logger.
@@ -2671,6 +2678,17 @@ func OldMain() {
 		LogMgr:     logMgr,
 		FileWriter: fileWriter,
 	}
+
+	// defer func() {//kinda late, maybe, ctually no, because this affects only log files, not eg. console.
+	// 	if r := recover(); r != nil {
+	// 		// We caught a raw panic. Flush the logs first!
+	// 		rt.FlushLogsForShutdown()
+
+	// 		// Then re-throw the panic so the program still crashes
+	// 		// and prints the stack trace to os.Stderr as expected.
+	// 		panic(r)
+	// 	}
+	// }()
 
 	// ── 2. Handle CLI flags ────────────────────────────────────────────────────
 	//flag.Parse() // For future flags
@@ -4216,13 +4234,17 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	if hostMatched {
 		switch qtype {
 		case "A", "AAAA", "HTTPS":
-			//good
+			// Handled below
 		default:
-			log.Warn("FIXME: unhandled hosts-override DNS type query. What exactly we doing here? ignore or block?", slog.String("DNS_query_type", qtype))
-			panic2("BUG: unhandled hosts-override DNS type " + qtype + " query!")
-		}
+			// Domain exists in local overrides, but this record type is unhandled.
+			// Do not panic. Just fall through. The loop below won't match the type,
+			// resulting in an empty NOERROR (NODATA) response. This correctly tells
+			// the client the domain exists but lacks this specific record type.
+			log.Debug("Returning NODATA for unhandled host-override query type", slog.String("DNS_query_type", qtype))
+		} //switch
+
 		resp := new(dns.Msg)
-		resp.SetReply(reqMsg)
+		resp.SetReply(reqMsg) // this sets Rcode=RcodeSuccess aka 0
 		resp.Authoritative = true
 		resp.RecursionAvailable = true
 
@@ -4272,7 +4294,8 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 				resp.Answer = append(resp.Answer, rr)
 			} //if
 		} //for
-		//FIXME: what if none of the above 3 applied? we currently return empty?! unsure if this makes sense or is valid reply?!
+		//itisdoneFIXME: what if none of the above 3 applied? we currently return empty?! unsure if this makes sense or is valid reply?!
+		//"According to RFC 2308, if a domain exists (because it's in our hosts2ip.json) but the requested record type doesn't exist for it, the correct response is a NODATA response (an RcodeSuccess with 0 answer records)." - Gemini 3.1 Pro
 
 		// Cache this override so subsequent queries bypass the pattern loop
 		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
@@ -9142,13 +9165,25 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		// --------------------------------
 
 		// TRACK INDIVIDUAL REQUESTS:
-		s.shutdownWG.Add(1)
-		go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn, rel func()) {
-			defer s.shutdownWG.Done()
+
+		// s.shutdownWG.Add(1)
+		// go func(pCtx context.Context, data []byte, bufferPtr *[]byte, addr *net.UDPAddr, ln *net.UDPConn, rel func()) {
+		// 	defer s.shutdownWG.Done()
+		// 	defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
+		// 	defer rel()                  // Release the slot when the goroutine exits
+		// 	s.handleUDP(pCtx, data, addr, ln)
+		// }(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn, release)
+		pCtx := udpPacketCtx
+		var data []byte = buf[:n]
+		var bufferPtr *[]byte = bufPtr
+		var addr *net.UDPAddr = clientAddr
+		var ln *net.UDPConn = udpLn
+		rel := release
+		s.GoSafe(func() {
 			defer udpPool.Put(bufferPtr) // 4. Recycle buffer when the handler finishes
 			defer rel()                  // Release the slot when the goroutine exits
 			s.handleUDP(pCtx, data, addr, ln)
-		}(udpPacketCtx, buf[:n], bufPtr, clientAddr, udpLn, release)
+		})
 	} //infinite 'for'
 }
 
@@ -9210,19 +9245,30 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 		}
 		// accepted a connection; handle in new goroutine
 
-		//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
 		// TRACK INDIVIDUAL CONNECTIONS:
-
-		s.shutdownWG.Add(1)
-		go func(c net.Conn, pCtx context.Context, rel func()) {
-			defer s.shutdownWG.Done() // This fires when handleTCP returns
-
-			defer rel() // always release the slot
-
+		//XXX: tcpPacketCtx is passed as arg(instead of as above commented out code) because: "Because that goroutine might not start instantly, the loop might move on to the next connection before the first goroutine actually reads the value of tcpPacketCtx." - Gemini 3 Thinking
+		//Passing arguments vs. creating a local variable are two ways to achieve the exact same safety result
+		// 1. Freeze/copy the interface headers synchronously in the current loop iteration
+		c := conn
+		pCtx := tcpPacketCtx
+		rel := release
+		// 2. Hand them off to GoSafe
+		s.GoSafe(func() {
+			defer rel()     // always release the slot
 			defer c.Close() //nolint:errcheck // best-effort close, nothing to do on error
 
 			s.handleTCP(pCtx, c)
-		}(conn, tcpPacketCtx, release)
+		})
+		// s.shutdownWG.Add(1)
+		// go func(c net.Conn, pCtx context.Context, rel func()) {
+		// 	defer s.shutdownWG.Done() // This fires when handleTCP returns
+
+		// 	defer rel() // always release the slot
+
+		// 	defer c.Close() //nolint:errcheck // best-effort close, nothing to do on error
+
+		// 	s.handleTCP(pCtx, c)
+		// }(conn, tcpPacketCtx, release)
 	}
 }
 
@@ -12729,4 +12775,25 @@ func getCleanIP(remoteAddr string, runFnOnError func(err error)) string {
 
 	// 5. Return the normalized IP string (standardizes IPv6 formatting)
 	return parsed.String()
+}
+
+// GoSafe executes fn in a new goroutine, tracks it in the shutdown WaitGroup,
+// and ensures async logs are flushed if the goroutine accidentally panics.
+func (s *Server) GoSafe(fn func()) {
+	s.shutdownWG.Add(1)
+	go func() {
+		defer s.shutdownWG.Done()
+
+		// The panic catcher for this specific goroutine
+		defer func() {
+			if r := recover(); r != nil {
+				// We have access to 's.rt' here to flush the logs
+				s.rt.FlushLogsForShutdown()
+				panic(r)
+			}
+		}()
+
+		// Run the actual workload
+		fn()
+	}()
 }
