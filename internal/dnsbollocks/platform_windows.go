@@ -5604,12 +5604,20 @@ func (ui *AdminUI) webUIRateLimitMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		allowed, reason := ui.rateLimiter.Allow(r.RemoteAddr)
+		// FIX: Strip ephemeral port before rate-limiting the WebUI
+		clientIP := getCleanIP(r.RemoteAddr, func(splitErr error) {
+			log := ui.getLogger()
+			log.Warn("WebUI webUIRateLimitMiddleware: could not split RemoteAddr into host:port",
+				slog.String("remoteAddr", r.RemoteAddr),
+				wincoe.SafeErr(splitErr))
+		})
+
+		allowed, reason := ui.rateLimiter.Allow(clientIP)
 		if !allowed {
 			log := ui.getLogger()
 			log.Warn("WebUI request rejected: rate limit exceeded",
 				slog.String("reason", reason),
-				slog.String("client", r.RemoteAddr),
+				slog.String("client", clientIP),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 			)
@@ -7747,14 +7755,20 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Extract bare IP (without port) as the per-client rate-limit key.
-		clientIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
-		if splitErr != nil {
-			// r.RemoteAddr should always be host:port for TCP, but be defensive.
-			clientIP = r.RemoteAddr
+		clientIP := getCleanIP(r.RemoteAddr, func(splitErr error) {
 			log.Warn("WebUI auth: could not split RemoteAddr into host:port",
 				slog.String("remoteAddr", r.RemoteAddr),
 				wincoe.SafeErr(splitErr))
-		}
+		})
+
+		// clientIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+		// if splitErr != nil {
+		// 	// r.RemoteAddr should always be host:port for TCP, but be defensive.
+		// 	clientIP = r.RemoteAddr
+		// 	log.Warn("WebUI auth: could not split RemoteAddr into host:port",
+		// 		slog.String("remoteAddr", r.RemoteAddr),
+		// 		wincoe.SafeErr(splitErr))
+		// }
 
 		// ── Rate-limit gate ──────────────────────────────────────────────────
 		if allowed, _, lockedUntil := ui.isLoginAllowed(clientIP); !allowed {
@@ -7952,18 +7966,26 @@ func (rl *ClientRateLimiter) Allow(clientAddr string) (allowed bool, reason stri
 		return false, globalRateLimitExceeded
 	}
 	// 1. Extract only the IP address to strip away the ephemeral port
-	clientIP, _, err := net.SplitHostPort(clientAddr)
-	if err != nil {
-		// Fallback safety: if string parsing fails, default back to the raw string
-		rl.logger.Warn("couldn't split clientAddr into host:port for per-client rate limiter key, using as-is",
-			slog.String("clientAddr", clientAddr))
-		clientIP = clientAddr
-	}
-	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
-	// 2. Collapse loopback addresses to prevent bypassing limits
-	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.IsLoopback() {
-		clientIP = "localhost"
-	}
+	// clientIP, _, err := net.SplitHostPort(clientAddr)
+	// if err != nil {
+	// 	// Fallback safety: if string parsing fails, default back to the raw string
+	// 	rl.logger.Warn("couldn't split clientAddr into host:port for per-client rate limiter key, using as-is",
+	// 		slog.String("clientAddr", clientAddr),
+	// 		wincoe.SafeErr(err),
+	// 	)
+	// 	clientIP = clientAddr
+	// }
+	// // 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+	// // 2. Collapse loopback addresses to prevent bypassing limits
+	// if parsed := net.ParseIP(clientIP); parsed != nil && parsed.IsLoopback() {
+	// 	clientIP = "localhost"
+	// }
+	clientIP := getCleanIP(clientAddr, func(splitErr error) {
+		rl.logger.Warn("ClientRateLimiter.Allow couldn't split clientAddr into host:port for per-client rate limiter key, using as-is",
+			slog.String("clientAddr", clientAddr),
+			wincoe.SafeErr(splitErr),
+		)
+	})
 
 	// 3. Thread-safe LRU management with guaranteed deferred unlock
 	limiter := rl.getOrCreateLimiter(clientIP)
@@ -12527,4 +12549,28 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error)
 		log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
 	} //switch
 	return http.StatusBadRequest, fmt.Errorf("unknown action: %q", action)
+}
+
+// getCleanIP reliably extracts and normalizes the client IP, stripping ephemeral ports
+// and collapsing all loopback variants to prevent rate-limit bypasses.
+// returns the IP or hostname
+func getCleanIP(remoteAddr string, runFnOnError func(err error)) string {
+	// r.RemoteAddr should always be host:port for TCP, but be defensive.
+	ipStr, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		ipStr = remoteAddr // Fallback if couldn't split it for some reason!
+		runFnOnError(fmt.Errorf("getCleanIP failed to SplitHostPort(%q), err: %w, continuing with fallback %q", remoteAddr, err, ipStr))
+	}
+
+	//if it's a hostname then keep it
+	parsed := net.ParseIP(ipStr)
+	if parsed == nil {
+		runFnOnError(fmt.Errorf("getCleanIP failed to ParseIP(%q), SplitHostPort(aka prev.) err was: %w, will return/use the fallback %q", ipStr, err, ipStr))
+		return ipStr
+	}
+	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+	if parsed.IsLoopback() {
+		return "localhost"
+	}
+	return parsed.String() // Normalizes IPv6 representations
 }

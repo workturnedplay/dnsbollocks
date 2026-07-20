@@ -7,7 +7,7 @@ todo:
 
 
 
-* to fix (todo: 1C,1D done: 2A  dontdo: 1B,3C notathing: 1A,2B,3A,3B,3D) from https://gemini.google.com/app/f0690efe8f767ec7 via Gemini 3.5 Thinking (many false positives, but ofc!)
+* to fix (todo: 1D done: 1C,2A  dontdo: 1B,3C notathing: 1A,2B,3A,3B,3D) from https://gemini.google.com/app/f0690efe8f767ec7 via Gemini 3.5 Thinking (many false positives, but ofc!)
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
