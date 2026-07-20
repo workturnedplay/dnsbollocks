@@ -12569,24 +12569,34 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error)
 
 // getCleanIP reliably extracts and normalizes the client IP, stripping ephemeral ports
 // and collapsing all loopback variants to prevent rate-limit bypasses.
-// returns the IP or hostname
 func getCleanIP(remoteAddr string, runFnOnError func(err error)) string {
-	// r.RemoteAddr should always be host:port for TCP, but be defensive.
-	ipStr, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		ipStr = remoteAddr // Fallback if couldn't split it for some reason!
-		runFnOnError(fmt.Errorf("getCleanIP failed to SplitHostPort(%q), err: %w, continuing with fallback %q", remoteAddr, err, ipStr))
+	ipStr := remoteAddr
+
+	// 1. Attempt to strip the port if present.
+	// We ignore the error because a missing port (e.g., bare "localhost" or "192.168.1.1")
+	// is perfectly valid depending on where the address originated.
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		ipStr = host
 	}
 
-	//if it's a hostname then keep it
+	// 2. Fast-path for "localhost" (either passed bare or extracted from "localhost:port")
+	if strings.EqualFold(ipStr, "localhost") {
+		return "localhost"
+	}
+
+	// 3. Parse as a strict IP literal
 	parsed := net.ParseIP(ipStr)
 	if parsed == nil {
-		runFnOnError(fmt.Errorf("getCleanIP failed to ParseIP(%q), SplitHostPort(aka prev.) err was: %w, will return/use the fallback %q", ipStr, err, ipStr))
-		return ipStr
+		// Only warn if it's neither "localhost" nor a valid IP literal (e.g., unexpected garbage)
+		runFnOnError(fmt.Errorf("getCleanIP received unparseable IP or it's a hostname %q (original: %q), using it as is then!", ipStr, remoteAddr))
+		return ipStr // Fallback to what we have
 	}
-	// 2. If it's any loopback address (127.x.x.x or ::1), collapse it to "localhost" to avoid one .exe which could be using many IPs in range of 127.0.0.0/8 as the request sender.
+
+	// 4. Collapse all loopback variants (127.x.x.x, ::1) to "localhost"
 	if parsed.IsLoopback() {
 		return "localhost"
 	}
-	return parsed.String() // Normalizes IPv6 representations
+
+	// 5. Return the normalized IP string (standardizes IPv6 formatting)
+	return parsed.String()
 }
