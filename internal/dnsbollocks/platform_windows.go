@@ -4144,6 +4144,22 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: cfg.LocalHostsOverrideTTLSec}
 				rr.AAAA = ip
 				resp.Answer = append(resp.Answer, rr)
+			} else if qtype == "HTTPS" {
+				// FIX D: Synthesize Type 65 HTTPS records locally.
+				// This prevents aggressive clients (like Apple devices) from bypassing
+				// the proxy when they receive an empty NODATA response for the HTTPS DNS query.
+				rr := new(dns.HTTPS)
+				rr.Hdr = dns.RR_Header{Name: q.Name, Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: cfg.LocalHostsOverrideTTLSec}
+				rr.Priority = 1
+				rr.Target = "." // Target is the same domain
+
+				// Inject the overridden IP directly into the SVCB hints
+				if isIPv4 {
+					rr.Value = append(rr.Value, &dns.SVCBIPv4Hint{Hint: []net.IP{ip}})
+				} else {
+					rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: []net.IP{ip}})
+				}
+				resp.Answer = append(resp.Answer, rr)
 			}
 		}
 

@@ -5,10 +5,6 @@ todo:
 
 * check if after a Reload/applyConfig, any cached stuff like a 'log' var is being used when it may actually be closed and how to fix this? never cache them maybe? and/or maybe delay closing of the old logs, or should I never cache logs and just get the live one and use it upon each logging attempt!? because currently I'm still getting one "[asyncLogWriter "dnsbollocks.log"] WARNING: log "was closed"; 1 line(s) dropped so far" at shutdown, but only if I did a Reload() first!
 
-
-
-* to fix (todo: 1D done: 1C,2A  dontdo: 1B,3C notathing: 1A,2B,3A,3B,3D) from https://gemini.google.com/app/f0690efe8f767ec7 via Gemini 3.5 Thinking (many false positives, but ofc!)
-
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
@@ -36,6 +32,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* to fix (todo:  done: 1C,1D,2A  dontdo: 1B,3C notathing: 1A,2B,3A,3B,3D) from https://gemini.google.com/app/f0690efe8f767ec7 via Gemini 3.5 Thinking (many false positives, but ofc!)
 //* need a way to say (and disable the Apply button) during the fetch (sending of the stuff to the backend) that it is doing it(maybe temp-rename the Apply into 'in progress' or something), because in case it doesn't reply for 1 minute, for wtw reason, I shouldn't be able to press Apply again to cause another fetch which would then reload the page while the prev. one says it failed in an alert but you can't read the alert due to page got reloaded automatically but the second succeeding fetch (presumably that's why it got reloaded)! Also/or maybe the second one gets this "Conflict: config.json was modified on disk since you loaded this page." reply if I actually submitted a request from a stale page (ie. i restarted the program since), and it's trying to tell me that in an alert but I can't see it because it reloads page and gets rid of the alert. I know it hits postAdminForm in that "catch" because the console.log says "Failed to apply configuration network error: TypeError: NetworkError when attempting to fetch resource." (but this may be for the first case). Btw, if I do restart it, portmaster seems to need about 30sec or more to allow the newly started exe (even tho it's same .exe and path and has the rules already, because it's same profile/rules that applied for the old exe) thru the firewall, that's why after restart it would hang and eventually timeout (which is why the NetworkError happened above).
 //* in /config page of webUI, currently there can't be more than 1 Edit in progress (but it should can!), unlike for others like /rules where multiple Edit(s) can be open at same time!
 //* find out why I get the following 2 log lines(well, the last one) during Reload() but only if something changed in the config.json, and let's fix it so it doesn't drop any lines?:
