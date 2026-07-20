@@ -11835,7 +11835,7 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.closed {
-		w.recordDrop("was closed")
+		w.recordDrop(true) // "was closed"
 		return n, nil
 	}
 
@@ -11850,22 +11850,29 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 	select {
 	case w.queue <- cp:
 	default:
-		w.recordDrop("queue full")
+		w.recordDrop(false) // "queue full"
 	}
 	return n, nil
 }
 
-func (w *asyncLogWriter) recordDrop(what string) {
+func (w *asyncLogWriter) recordDrop(wasClosed bool) {
 	total := w.dropped.Add(1)
+	var what string
+	if wasClosed {
+		what = "was closed"
+	} else {
+		//only rate limit the "queue full" ones!
+		what = "queue full"
 
-	now := time.Now().UnixNano()
-	last := w.lastDropWarnNs.Load()
-	if now-last < asyncLogWriterDropWarnThrottle.Nanoseconds() {
-		return
-	}
-	if !w.lastDropWarnNs.CompareAndSwap(last, now) {
-		return // another goroutine already won the throttle window
-	}
+		now := time.Now().UnixNano()
+		last := w.lastDropWarnNs.Load()
+		if now-last < asyncLogWriterDropWarnThrottle.Nanoseconds() {
+			return
+		}
+		if !w.lastDropWarnNs.CompareAndSwap(last, now) {
+			return // another goroutine already won the throttle window
+		}
+	} // end of queue-full
 	fmt.Fprintf(os.Stderr,
 		"[asyncLogWriter %q] WARNING: log %q; %d line(s) dropped so far "+
 			"(underlying sink is not keeping up, e.g. due to slow/contended disk)\n",
