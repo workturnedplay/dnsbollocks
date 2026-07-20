@@ -10164,7 +10164,9 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 
 			// Commit to disk and trigger hot-reload
 			if ui.OnApplyConfig != nil {
-				if err7 := ui.OnApplyConfig(&rawCfg); err7 != nil {
+				err7 := ui.OnApplyConfig(&rawCfg)
+				log = ui.getLogger() // <--- FIX: Refresh the logger pointer after the reload finishes!
+				if err7 != nil {
 					log.Error("Failed to apply config (that is: save&reload)", wincoe.SafeErr(err7))
 					http.Error(w, "Failed to save/reload config: "+err7.Error(), http.StatusInternalServerError)
 					return
@@ -11815,7 +11817,6 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
 	lm.closers = newClosers
 	lm.mu.Unlock()
 
-	//lm.ptr.Store(l) // readers see the new logger from this point
 	lm.set(l) // readers see the new logger from this point
 
 	var errs []error
