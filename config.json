@@ -70,7 +70,7 @@
   "_description_allow_https_if_a_allowed": "If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule.",
   "allow_https_if_a_allowed": true,
   "_description_remove_https_ipv4_hints": "Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints.",
-  "remove_https_ipv4_hints": true,
+  "remove_https_ip_hints": true,
   "_description_use_ede_in_blocked_reply": "Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block.",
   "use_ede_in_blocked_reply": true,
   "_description_webui_password_hash": "Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here.",
