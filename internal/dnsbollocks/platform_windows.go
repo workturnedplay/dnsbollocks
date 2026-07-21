@@ -4212,15 +4212,10 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// clients rejecting replies because of mismatched transaction IDs.
 		resp := cached.Copy()
 		resp.Id = reqMsg.Id
-		// Preserve ORIGINAL client casing in Question section (critical for strict clients)
-		//"Question is the main RFC requirement. Most clients only care about Question." -Grok 4 Fast
-		if len(resp.Question) > 0 && len(reqMsg.Question) > 0 { //TODO: merge this within adjustResponseCaseToQuery and have it take the reqMsg.Question arg to check if its len > 0 before doing any!
-			resp.Question[0].Name = reqMsg.Question[0].Name // echo exact client casing
-		}
-		// Also echo the current query's casing onto any Answer/Ns owner names that
-		// directly answer it, since a cache entry may have been populated by a
-		// differently-cased query for the same name (see the comment on 'key' above).
-		adjustResponseCaseToQuery(resp, reqMsg.Question[0].Name)
+		// Echo the current query's casing onto the Question section and any Answer/Ns
+		// owner names that directly answer it, since a cache entry may have been
+		// populated by a differently-cased query for the same name.
+		adjustResponseCaseToQuery(resp, reqMsg)
 
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
@@ -5278,10 +5273,9 @@ func extractIPs(msg *dns.Msg) []string {
 	return ips
 }
 
-// adjustResponseCaseToQuery rewrites the owner name of every Answer- and
-// Ns-section RR that matches queryName case-insensitively so it echoes the
-// exact case the client queried with, mirroring the case-echo already
-// applied to the Question section by handleDNSQuery's cache-hit path.
+// adjustResponseCaseToQuery rewrites the Question section and the owner name
+// of every Answer- and Ns-section RR that matches the query case-insensitively
+// so it echoes the exact case the client queried with.
 //
 // This exists because the DNS cache is intentionally keyed by the
 // lowercased domain (see handleDNSQuery's "key := domain + ..." line), so a
@@ -5299,10 +5293,19 @@ func extractIPs(msg *dns.Msg) []string {
 // a chain like "left.example CNAME right.example" is followed, the next
 // record's owner name ("right.example") is a distinct name from the
 // original query with no defined casing relationship to it.
-func adjustResponseCaseToQuery(msg *dns.Msg, queryName string) {
-	if msg == nil {
+func adjustResponseCaseToQuery(msg *dns.Msg, reqMsg *dns.Msg) {
+	if msg == nil || reqMsg == nil || len(reqMsg.Question) == 0 {
 		return
 	}
+
+	queryName := reqMsg.Question[0].Name
+
+	// Preserve ORIGINAL client casing in Question section (critical for strict clients)
+	// "Question is the main RFC requirement. Most clients only care about Question."
+	if len(msg.Question) > 0 {
+		msg.Question[0].Name = queryName // echo exact client casing
+	}
+
 	fixSection := func(rrs []dns.RR) {
 		for _, rr := range rrs {
 			hdr := rr.Header()

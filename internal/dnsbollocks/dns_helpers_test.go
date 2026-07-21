@@ -352,9 +352,24 @@ func TestExtractIPs_MultipleARecords_OrderPreserved(t *testing.T) {
 	}
 }
 
-func TestAdjustResponseCaseToQuery_RewritesMatchingAnswerOwnerName(t *testing.T) {
+// ── adjustResponseCaseToQuery ────────────────────────────────────────────────
+
+func TestAdjustResponseCaseToQuery_RewritesQuestionAndAnswerOwnerName(t *testing.T) {
 	m := msgWithAnswer(makeA("Example.COM.", "1.2.3.4", 300))
-	adjustResponseCaseToQuery(m, "example.com.")
+	m.Question = []dns.Question{{Name: "EXAMPLE.COM."}}
+
+	req := &dns.Msg{
+		Question: []dns.Question{{Name: "example.com."}},
+	}
+
+	adjustResponseCaseToQuery(m, req)
+
+	// Verify Question section was updated
+	if len(m.Question) > 0 && m.Question[0].Name != "example.com." {
+		t.Errorf("expected Question section rewritten to query casing, got %q", m.Question[0].Name)
+	}
+
+	// Verify Answer section was updated
 	if m.Answer[0].Header().Name != "example.com." {
 		t.Errorf("expected owner name rewritten to query casing, got %q", m.Answer[0].Header().Name)
 	}
@@ -366,7 +381,12 @@ func TestAdjustResponseCaseToQuery_LeavesCNAMETargetUntouched(t *testing.T) {
 		makeCNAME("Example.COM.", "target.example.net.", 300),
 		makeA("target.example.net.", "1.2.3.4", 300),
 	}
-	adjustResponseCaseToQuery(m, "example.com.")
+	req := &dns.Msg{
+		Question: []dns.Question{{Name: "example.com."}},
+	}
+
+	adjustResponseCaseToQuery(m, req)
+
 	if m.Answer[0].Header().Name != "example.com." {
 		t.Errorf("expected CNAME owner name rewritten to query casing, got %q", m.Answer[0].Header().Name)
 	}
@@ -377,12 +397,29 @@ func TestAdjustResponseCaseToQuery_LeavesCNAMETargetUntouched(t *testing.T) {
 
 func TestAdjustResponseCaseToQuery_NoMatchLeavesRecordsUntouched(t *testing.T) {
 	m := msgWithAnswer(makeA("other.example.", "1.2.3.4", 300))
-	adjustResponseCaseToQuery(m, "example.com.")
+	req := &dns.Msg{
+		Question: []dns.Question{{Name: "example.com."}},
+	}
+
+	adjustResponseCaseToQuery(m, req)
+
 	if m.Answer[0].Header().Name != "other.example." {
 		t.Errorf("expected unrelated owner name untouched, got %q", m.Answer[0].Header().Name)
 	}
 }
 
-func TestAdjustResponseCaseToQuery_NilMsgIsSafe(t *testing.T) {
-	adjustResponseCaseToQuery(nil, "example.com.")
+func TestAdjustResponseCaseToQuery_NilAndEmptyInputsAreSafe(t *testing.T) {
+	req := &dns.Msg{
+		Question: []dns.Question{{Name: "example.com."}},
+	}
+	m := msgWithAnswer(makeA("Example.COM.", "1.2.3.4", 300))
+
+	// Should not panic on nil msg
+	adjustResponseCaseToQuery(nil, req)
+
+	// Should not panic on nil reqMsg
+	adjustResponseCaseToQuery(m, nil)
+
+	// Should not panic on empty Question slice in reqMsg
+	adjustResponseCaseToQuery(m, &dns.Msg{})
 }
