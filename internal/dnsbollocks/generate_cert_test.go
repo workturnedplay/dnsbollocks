@@ -35,7 +35,10 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 			ListenUI:    uiAddr,
 			WebUIUseTLS: true,
 		}
-		s.liveConfig.Store(cfg)
+		s.liveConfigs.Store(&LiveConfigs{
+			Resolved: cfg,
+			Raw:      cfg,
+		})
 		conf := s.getConfig()
 		{
 			def := defaultConfig()

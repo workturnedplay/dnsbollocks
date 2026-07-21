@@ -575,15 +575,16 @@ func TestGetConfigFields(t *testing.T) {
 		LocalHostsOverrideTTLSec: 300,
 		// UpstreamSNIHostnames deliberately left nil to exercise the empty-[]string case.
 	}
-	var liveConfig atomic.Pointer[Config]
-	liveConfig.Store(&cfg)
-	var liveRawConfig atomic.Pointer[Config]
-	liveRawConfig.Store(&cfg)
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
 	var liveLogger atomic.Pointer[slog.Logger]
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
 
-	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
+	ui := &AdminUI{liveConfigs: &liveConfigs, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 
@@ -645,14 +646,18 @@ func TestGetConfigFields_NoDuplicateKeysAcrossFullDefaultConfig(t *testing.T) {
 	// Run against a fully-populated defaultConfig() to catch any future field
 	// additions that might collide on JSON tag or break the reflection walk.
 	cfg := defaultConfig()
-	var liveConfig atomic.Pointer[Config]
-	liveConfig.Store(&cfg)
+
 	var liveLogger atomic.Pointer[slog.Logger]
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
-	var liveRawConfig atomic.Pointer[Config]
-	liveRawConfig.Store(&cfg)
-	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
+
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
+
+	ui := &AdminUI{liveConfigs: &liveConfigs, liveLogger: &liveLogger}
 
 	fields := ui.getConfigFields()
 	if len(fields) == 0 {
@@ -679,14 +684,16 @@ func TestGetConfigFields_NoUnsupportedWarnings(t *testing.T) {
 	// 2. Use your actual defaultConfig() to test your real codebase surface area
 	cfg := defaultConfig()
 
-	var liveConfig atomic.Pointer[Config]
-	liveConfig.Store(&cfg)
-
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(logger)
-	var liveRawConfig atomic.Pointer[Config]
-	liveRawConfig.Store(&cfg)
-	ui := &AdminUI{liveConfig: &liveConfig, liveRawConfig: &liveRawConfig, liveLogger: &liveLogger}
+
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
+
+	ui := &AdminUI{liveConfigs: &liveConfigs, liveLogger: &liveLogger}
 
 	// 3. Run the reflection loop
 	fields := ui.getConfigFields()

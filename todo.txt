@@ -7,7 +7,6 @@ todo:
 * fix wrong things in v0.29.0 (todo: done:) https://gemini.google.com/app/5ee548df8baa0efc listed below:
 ### 🔴 Concurrency & Race Conditions
 
-* **Split Atomic State:** In `Server.applyConfig`, `liveConfig` and `liveRawConfig` are swapped sequentially via two separate `atomic.Pointer.Store()` calls. A concurrent reader can easily grab the updated state of one and the stale state of the other.
 * **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
 
 ### 🔴 Denial of Service (DoS) Vectors
@@ -98,3 +97,4 @@ done:
 //* check if after a Reload/applyConfig, any cached stuff like a 'log' var is being used when it may actually be closed and how to fix this? never cache them maybe? and/or maybe delay closing of the old logs, or should I never cache logs and just get the live one and use it upon each logging attempt!? because currently I'm still getting one "[asyncLogWriter "dnsbollocks.log"] WARNING: log "was closed"; 1 line(s) dropped so far" at shutdown, but only if I did a Reload() first(via Ctrl+R) and it's not due to a race!
 //* might be a small window in ApplyConfig whereby lm.Reinit and wincoe.SetBugLogger(improvedLogger) plus wincoe.Logger.Store(improvedLogger) are happening decoupled, so if anything happens between the 2 operations they hit closed logger, no?
 //* **Interface Pointer Anti-Pattern:** `liveDNSCache` is defined as `atomic.Pointer[DNSCache]`. Because `DNSCache` is an interface (which is already a two-word pointer under the hood), this creates a pointer-to-an-interface. This is a known Go anti-pattern that introduces unnecessary indirection and circumvents standard nil-interface checks, which can lead to panics when dereferenced in `getCache()`.
+//* **Split Atomic State:** In `Server.applyConfig`, `liveConfig` and `liveRawConfig` are swapped sequentially via two separate `atomic.Pointer.Store()` calls. A concurrent reader can easily grab the updated state of one and the stale state of the other.

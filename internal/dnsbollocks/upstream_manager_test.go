@@ -23,15 +23,18 @@ import (
 
 // setupTestContext creates a fresh UpstreamManager with atomic pointers initialized.
 func setupTestContext(cfg *Config) *UpstreamManager {
-	var liveConfig atomic.Pointer[Config]
-	liveConfig.Store(cfg)
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: cfg,
+		Raw:      cfg,
+	})
 
 	var liveLogger atomic.Pointer[slog.Logger]
 	//logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
 
-	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, nil, nil)
+	return NewUpstreamManager(context.Background(), &liveConfigs, &liveLogger, nil, nil)
 }
 
 func TestValidateUpstream(t *testing.T) {
@@ -232,8 +235,11 @@ func TestUpstreamManager_ValidationShutdownCallbackOnInvalidScheme(t *testing.T)
 		UpstreamURLs: []string{"http://127.0.0.1:853"},
 	}
 
-	var liveConfig atomic.Pointer[Config]
-	liveConfig.Store(&cfg)
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
 	var liveLogger atomic.Pointer[slog.Logger]
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	//logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -252,7 +258,7 @@ func TestUpstreamManager_ValidationShutdownCallbackOnInvalidScheme(t *testing.T)
 	}
 
 	// Manually wire the UpstreamManager with the shutdownHandler callback instead of nil
-	um := NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, shutdownHandler, nil)
+	um := NewUpstreamManager(context.Background(), &liveConfigs, &liveLogger, shutdownHandler, nil)
 
 	// 🟢 Fix: Set up the defer block to catch the sentinel and safely evaluate assertions
 	defer func() {
@@ -286,8 +292,11 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 		UpstreamURLs: []string{"invalid-url-no-scheme"},
 	}
 
-	liveConfig := &atomic.Pointer[Config]{}
-	liveConfig.Store(&cfg)
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
 	liveLogger := &atomic.Pointer[slog.Logger]{}
 	liveLogger.Store(slog.New(slog.NewTextHandler(
 		//os.Stdout,
@@ -295,7 +304,7 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 		nil)))
 
 	// Wire up the panic sentinel directly into the manager
-	um := NewUpstreamManager(context.Background(), liveConfig, liveLogger, func(exitCode int) {
+	um := NewUpstreamManager(context.Background(), &liveConfigs, liveLogger, func(exitCode int) {
 		if exitCode != 1 {
 			t.Errorf("expected exit code 1, got %d", exitCode)
 		}

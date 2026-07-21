@@ -183,13 +183,20 @@ type Config struct {
 	ExtraSafety bool `json:"extra_safety" desc:"Enable extra defensive checks: duplicate-entry detection in JSON files, power-loss staging files for atomic writes, and strict purging of malformed or duplicate rules on load. Recommended for production."`
 }
 
+// 1. Create a wrapper struct
+type LiveConfigs struct {
+	Resolved *Config // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
+	Raw      *Config //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
+	// liveConfig    atomic.Pointer[Config]
+	// liveRawConfig atomic.Pointer[Config]
+}
+
 // Server encapsulates all the state required to run the DNSbollocks application.
 type Server struct {
 	rt *Runtime // owns LogMgr + FileWriter; injected by NewServer
 	// File writes are serialised through rt.FileWriter which owns its own mutex.
 
-	liveConfig    atomic.Pointer[Config] // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
-	liveRawConfig atomic.Pointer[Config] //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
+	liveConfigs atomic.Pointer[LiveConfigs]
 
 	// Upstream state
 	upstreamMgr  *UpstreamManager
@@ -250,9 +257,10 @@ type Server struct {
 type AdminUI struct {
 	// logger       *slog.Logger
 	// config       Config // Pass by value so UI can read it safely
-	liveConfig    *atomic.Pointer[Config]
-	liveRawConfig *atomic.Pointer[Config]
-	liveLogger    *atomic.Pointer[slog.Logger]
+	// liveConfig    *atomic.Pointer[Config]
+	// liveRawConfig *atomic.Pointer[Config]
+	liveConfigs *atomic.Pointer[LiveConfigs]
+	liveLogger  *atomic.Pointer[slog.Logger]
 
 	ruleStore    *RuleStore
 	hostStore    *HostStore
@@ -296,11 +304,29 @@ func (s *Server) getLogger() *slog.Logger {
 
 // pointer to live Server.Config
 func (s *Server) getConfig() *Config {
-	c := s.liveConfig.Load()
+	c := s.getLiveConfigs().Resolved
 	if c == nil {
-		panic2("BUG: Server.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
+		panic2("BUG: Server.liveConfigs.Load().Resolved not initialized before use")
+		panic(nil)
 	}
 	return c
+}
+
+func (s *Server) getLiveConfigs() *LiveConfigs {
+	both := s.liveConfigs.Load()
+	if both == nil {
+		panic2("BUG: Server.liveConfigs not initialized before use — NewServer must call liveConfigs.Store()")
+		panic(nil)
+	}
+	return both
+}
+func (s *Server) getRawConfig() *Config {
+
+	if c := s.getLiveConfigs().Raw; c != nil {
+		return c
+	}
+	panic2("BUG: Server.liveRawConfig not initialized before use")
+	panic(nil)
 }
 
 // On init and every reload, swap atomically:
@@ -309,8 +335,12 @@ func (s *Server) getConfig() *Config {
 // through LoadAndValidateConfig) before this is called, so no reader ever observes a live
 // Config with those fields nil/stale — see parseAndValidateUpstreams's doc comment.
 func (s *Server) applyConfig(cfg, rawCfg Config) {
-	s.liveRawConfig.Store(&rawCfg)
-	s.liveConfig.Store(&cfg)
+	// s.liveRawConfig.Store(&rawCfg)
+	// s.liveConfig.Store(&cfg)
+	s.liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &rawCfg,
+	})
 	// fileWriter, AdminUI, etc. pick it up on their next read — nothing to call
 }
 
@@ -338,7 +368,7 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
 	// failoverSelect now lives inside UpstreamManager
-	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.rt.LogMgr.Ptr(), s.shutdown, s.rt.FlushLogsForShutdown)
+	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfigs, s.rt.LogMgr.Ptr(), s.shutdown, s.rt.FlushLogsForShutdown)
 	s.dohForwarder = s.upstreamMgr
 
 	return s // yes it escapes to heap
@@ -8364,18 +8394,38 @@ func (ui *AdminUI) getLogger() *slog.Logger {
 
 // pointer to live Server.Config via AdminUI
 func (ui *AdminUI) getConfig() *Config {
-	c := ui.liveConfig.Load()
+	c := ui.getLiveConfigs().Resolved
 	if c == nil {
-		panic2("BUG: AdminUI.liveConfig not initialized before use — NewServer must call liveConfig.Store()")
+		panic2("BUG: AdminUI.getLiveConfigs().Resolved not initialized before use")
 	}
 	return c
+}
+
+func (ui *AdminUI) getLiveConfigs() *LiveConfigs {
+	both := ui.liveConfigs.Load()
+	if both == nil {
+		panic2("BUG: AdminUI.liveConfigs not initialized before use")
+		panic(nil)
+	}
+	return both
+}
+
+func (ui *AdminUI) getRawConfig() *Config {
+	c := ui.getLiveConfigs().Raw
+	if c != nil {
+		return c
+	}
+	panic2("BUG: AdminUI.getLiveConfigs().Raw isn't inited, should point to the Server's raw config")
+	panic2("BUG: AdminUI.liveRawConfig isn't inited, should point to the Server.liveRawConfig")
+	panic(nil)
 }
 
 func NewAdminUI(
 	// logger *slog.Logger,
 	// cfg Config,
-	liveConfig *atomic.Pointer[Config],
-	liveRawConfig *atomic.Pointer[Config],
+	// liveConfig *atomic.Pointer[Config],
+	// liveRawConfig *atomic.Pointer[Config],
+	liveConfigs *atomic.Pointer[LiveConfigs],
 	liveLogger *atomic.Pointer[slog.Logger],
 	rs *RuleStore,
 	hs *HostStore,
@@ -8389,15 +8439,15 @@ func NewAdminUI(
 	return &AdminUI{
 		// logger:       logger,
 		// config:       cfg,
-		liveConfig:    liveConfig,
-		liveRawConfig: liveRawConfig,
-		liveLogger:    liveLogger,
-		ruleStore:     rs,
-		hostStore:     hs,
-		blacklist:     bl,
-		loginTracker:  lt,
-		recentBlocks:  rb,
-		stats:         stats,
+		liveConfigs: liveConfigs,
+		// liveRawConfig: liveRawConfig,
+		liveLogger:   liveLogger,
+		ruleStore:    rs,
+		hostStore:    hs,
+		blacklist:    bl,
+		loginTracker: lt,
+		recentBlocks: rb,
+		stats:        stats,
 		//upstreamIPs:  upstreamIPs,
 		uiTemplates: tpls,
 	}
@@ -8414,9 +8464,10 @@ type IPChecker interface {
 }
 
 type UpstreamManager struct {
-	liveConfig *atomic.Pointer[Config]
-	liveLogger *atomic.Pointer[slog.Logger]
-	serverCtx  context.Context // server lifetime ctx for Upstream.BackgroundCtx
+	// liveConfig *atomic.Pointer[Config]
+	liveLogger  *atomic.Pointer[slog.Logger]
+	liveConfigs *atomic.Pointer[LiveConfigs] //only need the Resolved, not the Raw here tho!
+	serverCtx   context.Context              // server lifetime ctx for Upstream.BackgroundCtx
 
 	dohTransportsPtrs []*http.Transport //protected by dohMu, used only to clean up during reinit via initDoHClient
 	//upstreamsPtr      atomic.Pointer[[]Upstream] // Combines clients, URLs, and SNIs safely
@@ -8436,20 +8487,20 @@ type UpstreamManager struct {
 	flushLogs func()
 }
 
-func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int), flushLogs func()) *UpstreamManager {
+func NewUpstreamManager(serverCtx context.Context, liveConfigs *atomic.Pointer[LiveConfigs], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int), flushLogs func()) *UpstreamManager {
 	if serverCtx == nil {
 		panic2("BUG: NewUpstreamManager: nil serverCtx")
 	}
-	if liveConfig == nil {
+	if liveConfigs == nil {
 		panic2("BUG: NewUpstreamManager: nil liveConfig pointer")
 	}
 	if liveLogger == nil {
 		panic2("BUG: NewUpstreamManager: nil liveLogger pointer")
 	}
 	um := &UpstreamManager{
-		serverCtx:  serverCtx,
-		liveConfig: liveConfig,
-		liveLogger: liveLogger,
+		serverCtx:   serverCtx,
+		liveConfigs: liveConfigs,
+		liveLogger:  liveLogger,
 		//Pass the server's shutdown method directly
 		OnShutdown: shutdownFunc,
 		flushLogs:  flushLogs,
@@ -8463,10 +8514,20 @@ func (um *UpstreamManager) getLogger() *slog.Logger {
 	return wincoe.GetLoggerOrFallback(um.liveLogger, "UpstreamManager.liveLogger")
 }
 
+func (um *UpstreamManager) getLiveConfigs() *LiveConfigs {
+	both := um.liveConfigs.Load()
+	if both == nil {
+		panic2("BUG: UpstreamManager.liveConfigs not initialized before use")
+		panic(nil)
+	}
+	return both
+}
+
 func (um *UpstreamManager) getConfig() *Config {
-	c := um.liveConfig.Load()
+	c := um.getLiveConfigs().Resolved
 	if c == nil {
 		panic2("BUG: UpstreamManager.liveConfig not initialized before use")
+		panic(nil)
 	}
 	return c
 }
@@ -8569,12 +8630,23 @@ func (um *UpstreamManager) updateInnerState() error {
 	if err != nil {
 		return err
 	}
+	// if newCfg.UpstreamURLsParsed != parsedURLs {
+
+	// }
 	newCfg.UpstreamURLsParsed = parsedURLs
 	newCfg.UpstreamIPs = ips
 	newCfg.UpstreamSNIs = snis
 
 	// Publish the fully-built, validated clone atomically.
-	um.liveConfig.Store(&newCfg)
+	//um.liveConfig.Store(&newCfg)
+	// if newCfg != *liveCfg {
+	// 	panic2("BUG: should've been already set properly")
+	// }
+	//FIXME: maybe don't set it here, but fail if it's not the same! since at load time this should've been properly filled already!
+	um.liveConfigs.Store(&LiveConfigs{
+		Resolved: &newCfg,
+		Raw:      um.getLiveConfigs().Raw,
+	})
 	return nil
 }
 
@@ -9571,8 +9643,8 @@ func (s *Server) rebindDoHListener(params dohListenerParams) {
 
 func (s *Server) initAdminUI() {
 	ui := NewAdminUI(
-		&s.liveConfig,
-		&s.liveRawConfig,
+		&s.liveConfigs,
+		//&s.liveRawConfig,
 		s.rt.LogMgr.Ptr(),
 		s.ruleStore,
 		s.hostStore,
@@ -10716,25 +10788,6 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) getRawConfig() *Config {
-	if c := s.liveRawConfig.Load(); c != nil {
-		return c
-	}
-	panic2("BUG: Server.liveRawConfig not initialized before use")
-	panic(nil)
-}
-
-func (ui *AdminUI) getRawConfig() *Config {
-	if ui.liveRawConfig != nil {
-		if c := ui.liveRawConfig.Load(); c != nil {
-			return c
-		}
-		panic2("BUG: AdminUI.liveRawConfig.Config isn't inited, should point to the Server.liveRawConfig.Config")
-	}
-	panic2("BUG: AdminUI.liveRawConfig isn't inited, should point to the Server.liveRawConfig")
-	panic(nil)
 }
 
 // clampIntField is the shared implementation behind sanitizeAndValidateConfig's many
@@ -12315,7 +12368,7 @@ func saveConfig(fw wincoe.FileWriter, log *slog.Logger, rawCfg *Config) error {
 
 // saveConfig is the Server method wrapper around the free function.
 func (s *Server) saveConfig() error {
-	rawCfg := s.liveRawConfig.Load()
+	rawCfg := s.getRawConfig()
 	if rawCfg == nil {
 		// Defensive: should never happen in normal operation.
 		panic2("BUG: saveConfig called before liveRawConfig was initialised")
