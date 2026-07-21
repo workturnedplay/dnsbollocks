@@ -1,4 +1,39 @@
 todo:
+* fix wrong things in v0.29.0 (todo: done:) https://gemini.google.com/app/5ee548df8baa0efc listed below:
+### 🔴 Concurrency & Race Conditions
+
+* **Split Atomic State:** In `Server.applyConfig`, `liveConfig` and `liveRawConfig` are swapped sequentially via two separate `atomic.Pointer.Store()` calls. A concurrent reader can easily grab the updated state of one and the stale state of the other.
+* **Interface Pointer Anti-Pattern:** `liveDNSCache` is defined as `atomic.Pointer[DNSCache]`. Because `DNSCache` is an interface (which is already a two-word pointer under the hood), this creates a pointer-to-an-interface. This is a known Go anti-pattern that introduces unnecessary indirection and circumvents standard nil-interface checks, which can lead to panics when dereferenced in `getCache()`.
+* **Global Logging Bottleneck:** `ColoredConsoleHandler.Handle` locks a mutex (`h.Mu.Lock()`) across *all* goroutines for every single log message just to increment a shared counter (`*h.Counter++`) for zebra-striping rows. This creates severe lock contention on high-throughput paths like DNS packet parsing.
+* **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
+
+### 🔴 Denial of Service (DoS) Vectors
+
+* **CPU Exhaustion via Basic Auth:** In `AdminUI.authMiddleware`, `bcrypt.CompareHashAndPassword` (cost factor 12) is executed on *every single authenticated request*. While there is a rate limiter, an attacker flooding the server up to that limit (e.g., 5 QPS per client) with random passwords in the Basic Auth header will heavily tax the CPU.
+* **Unbounded Metadata Lookups:** In `runDNSUDPLoop` and `runDNSTCPLoop`, `s.startMetadataLookup` is invoked *before* the semaphore (`acquireDNSUDPSlot` / `acquireDNSTCPSlot`) limits concurrency. A UDP flood will bypass the connection limit and spawn thousands of metadata-lookup goroutines, exhausting memory and threads.
+* **Panic on External Input:** In `matchPattern`, if an incoming DNS query length exceeds 253 characters, the code executes `panic2` instead of gracefully returning `false`. A single malformed, oversized DNS query from the network will instantly crash the entire server.
+
+### 🔴 Logic & Implementation Flaws
+
+* **Cache Eviction Failure:** In `goCacheStore.Set`, if the cache hits `maxEntries` and `DeleteExpired()` doesn't free up space, the code explicitly drops the new entry (`return // Cache is full`). Without a true LRU eviction policy, a saturated cache permanently degrades and refuses new entries.
+* **Unreachable Buffer Growth:** In `QueryFullProcessName`, if the retry loop doubles the `nextSize` allocation to exactly `MaxExtendedPath` (32767), the subsequent boundary check `if nextSize > MaxExtendedPath` triggers an error, preventing the allocation from ever succeeding at the absolute limit.
+* **Brittle UUID Generation:** `generateUniqueRuleID` hard-panics the server if it encounters 10 UUID prefix collisions. Crashing the proxy over an RNG collision during a whitelist addition is unnecessarily destructive.
+* **Fallback Sanity Check Panic:** In `cleanFileName`, `filepath.Clean(fallback)` is run, but its output is compared directly against the un-cleaned `fallback`. If the developer-provided fallback string wasn't pre-cleaned, the application hard-panics.
+* **Redundant Byte-Swapping:** In `PidAndExeForUDP` and `PidAndExeForTCP`, the port extraction logic reads `localPortRaw` using `binary.LittleEndian.Uint32`, isolates the lower 16 bits, and manually byte-swaps them with bitwise shifts. The network port in these Win32 structs is already stored in Network Byte Order (Big Endian), making this double-reversal fragile.
+
+### 🔴 API & OS Integration Quirks
+
+* **ACL Preservation Failure:** `ReplaceFileW` in `win11SafeFileWriter` is invoked without the `REPLACEFILE_IGNORE_ACL_ERRORS` flag. On many Windows environments, moving files across security zones (like a Temp directory to a System directory) will instantly fail the ACL merge, causing the transaction to abort and permanently degrade to the truncation fallback.
+* **Weak Key Permissions:** In `generateCert`, the private key file is created with `os.O_TRUNC`. On Windows, `O_TRUNC` on an existing file preserves the existing file's Security Descriptors (ACLs). If a low-privilege user previously created a dummy `key.pem`, the new private key inherits those weak permissions despite the `0600` argument in `OpenFile`.
+* **Aggressive Stdin Flushing:** `ClearStdinIfTermIsNOTRaw` relies on `GetNumberOfConsoleInputEvents`. This Win32 API counts *all* input events—including mouse movements, window resizes, and focus events. It will aggressively flush the buffer even if the user never touched the keyboard.
+* **EDNS0 Fingerprinting:** `blockResponse` modifies the `OPT` record to enforce a `1232` UDP size ceiling (`opt.SetUDPSize(ourMax)`). Mutating the EDNS0 behavior specifically for blocked queries creates a fingerprinting vector, making it obvious to a client that the proxy intercepted the request.
+
+### 🔴 Frontend / UI Oddities
+
+* **Destructive DOM Highlighting:** The `applyTableFilter` logic in `app.js` dynamically attaches `<mark>` elements directly into the DOM tree of table rows. When the user clears the search, it reconstructs the text nodes. This constant DOM shredding on every keystroke causes unnecessary reflows and GC pressure.
+* **Ephemeral UI State:** The configuration textarea auto-resize logic relies on `sessionStorage`. Because `sessionStorage` is cleared when the tab closes, a user's customized layout preferences are lost entirely upon opening a new session.
+* **Screen Reader Race Condition:** The WebUI blocks page sets `aria-live="polite"` on the `.block-action-feedback` span, but immediately overwrites its text content and class name upon receiving the network response. Screen readers frequently drop rapid, sequential DOM mutations on polite regions if they occur too closely together.
+
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
