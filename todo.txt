@@ -6,13 +6,11 @@ todo:
 
 * **Split Atomic State:** In `Server.applyConfig`, `liveConfig` and `liveRawConfig` are swapped sequentially via two separate `atomic.Pointer.Store()` calls. A concurrent reader can easily grab the updated state of one and the stale state of the other.
 * **Interface Pointer Anti-Pattern:** `liveDNSCache` is defined as `atomic.Pointer[DNSCache]`. Because `DNSCache` is an interface (which is already a two-word pointer under the hood), this creates a pointer-to-an-interface. This is a known Go anti-pattern that introduces unnecessary indirection and circumvents standard nil-interface checks, which can lead to panics when dereferenced in `getCache()`.
-* **Global Logging Bottleneck:** `ColoredConsoleHandler.Handle` locks a mutex (`h.Mu.Lock()`) across *all* goroutines for every single log message just to increment a shared counter (`*h.Counter++`) for zebra-striping rows. This creates severe lock contention on high-throughput paths like DNS packet parsing.
 * **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
 
 ### 🔴 Denial of Service (DoS) Vectors
 
 * **CPU Exhaustion via Basic Auth:** In `AdminUI.authMiddleware`, `bcrypt.CompareHashAndPassword` (cost factor 12) is executed on *every single authenticated request*. While there is a rate limiter, an attacker flooding the server up to that limit (e.g., 5 QPS per client) with random passwords in the Basic Auth header will heavily tax the CPU.
-* **Unbounded Metadata Lookups:** In `runDNSUDPLoop` and `runDNSTCPLoop`, `s.startMetadataLookup` is invoked *before* the semaphore (`acquireDNSUDPSlot` / `acquireDNSTCPSlot`) limits concurrency. A UDP flood will bypass the connection limit and spawn thousands of metadata-lookup goroutines, exhausting memory and threads.
 * **Panic on External Input:** In `matchPattern`, if an incoming DNS query length exceeds 253 characters, the code executes `panic2` instead of gracefully returning `false`. A single malformed, oversized DNS query from the network will instantly crash the entire server.
 
 ### 🔴 Logic & Implementation Flaws
@@ -52,6 +50,7 @@ nevermind/quirks(I don't wanna fix these):
 //* currently: the new CIDR is still the old CIDR, I guess the wrong one is sent to the backend? in /response-blacklist page at least(?!) Actually, my bad it only happens for old_cidr=127.0.0.0/8 new_cidr=127.0.0.0/8  when my edited was 127.0.0.20/8 but this makes sense.
 * if I Edit an entry(Stage it but not Apply it), then Delete it, the Undelete will recover the original one not the last edited value(s).
 * if I filter and put the "!" after the word (even with a space) it acts as if it's !word so it excludes it.
+//* **Global Logging Bottleneck:** `ColoredConsoleHandler.Handle` locks a mutex (`h.Mu.Lock()`) across *all* goroutines for every single log message just to increment a shared counter (`*h.Counter++`) for zebra-striping rows. This creates severe lock contention on high-throughput paths like DNS packet parsing.
 
 doNOTdo:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
@@ -74,6 +73,7 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* **Unbounded Metadata Lookups:** In `runDNSUDPLoop` and `runDNSTCPLoop`, `s.startMetadataLookup` is invoked *before* the semaphore (`acquireDNSUDPSlot` / `acquireDNSTCPSlot`) limits concurrency. A UDP flood will bypass the connection limit and spawn thousands of metadata-lookup goroutines, exhausting memory and threads.
 //* since I now return a cached entry with the question's case-sensitive Name, should I rewrite the answer/NS/etc. to use same case? but what if some checksums are somewhere and won't match then? or should I just I dno, keep the cache key the same case as the question instead? even if that may create more entries? because i hear the client may case about case-sensitivity of the domain when receiving the reply!
 //* double check if the cache will hit or miss different case DNS query since it seems to at least check for lowercase domain, does it store only the same lowercase domain key? unsure, seems yes tho.
 //* we should color the "failed_upstreams=" key(without the "=" ofc) with red in the logQuery()

@@ -9226,12 +9226,7 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		// 	)
 		// }
 
-		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
-		// query's upstream forwarding should only be cancelled by full process shutdown, not
-		// by this specific listener instance being torn down during a hot rebind.
-		//udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
-		udpPacketCtx := s.startMetadataLookup(s.ctx, "UDP", clientAddr) //non-blocking!
-
+		// --- 1. ACQUIRE SEMAPHORE FIRST ---
 		// --- ADD SEMAPHORE CHECK HERE ---
 		release, ok := s.acquireDNSUDPSlot()
 		if !ok {
@@ -9243,8 +9238,16 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 			)
 			continue
 		}
-		// --------------------------------
+		// ---
 
+		// --- 2. THEN START METADATA LOOKUP ---
+		// NOTE: deliberately rooted in s.ctx, not the per-listener instance ctx — an in-flight
+		// query's upstream forwarding should only be cancelled by full process shutdown, not
+		// by this specific listener instance being torn down during a hot rebind.
+		//udpPacketCtx := s.makeClientInfoContext(s.ctx, "UDP", clientAddr, pid, exe, err2)
+		udpPacketCtx := s.startMetadataLookup(s.ctx, "UDP", clientAddr) //non-blocking!
+
+		// --- 3. PROCEED TO HANDLER ---
 		// TRACK INDIVIDUAL REQUESTS:
 
 		// s.shutdownWG.Add(1)
