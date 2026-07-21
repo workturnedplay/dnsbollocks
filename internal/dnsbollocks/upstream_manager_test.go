@@ -31,7 +31,7 @@ func setupTestContext(cfg *Config) *UpstreamManager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	liveLogger.Store(logger)
 
-	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, nil)
+	return NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, nil, nil)
 }
 
 func TestValidateUpstream(t *testing.T) {
@@ -252,7 +252,7 @@ func TestUpstreamManager_ValidationShutdownCallbackOnInvalidScheme(t *testing.T)
 	}
 
 	// Manually wire the UpstreamManager with the shutdownHandler callback instead of nil
-	um := NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, shutdownHandler)
+	um := NewUpstreamManager(context.Background(), &liveConfig, &liveLogger, shutdownHandler, nil)
 
 	// 🟢 Fix: Set up the defer block to catch the sentinel and safely evaluate assertions
 	defer func() {
@@ -300,7 +300,7 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 			t.Errorf("expected exit code 1, got %d", exitCode)
 		}
 		panic(shutdownSentinel)
-	})
+	}, nil)
 
 	defer func() {
 		if r := recover(); r != nil {

@@ -873,3 +873,43 @@ func TestIsBlocksAjaxRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoverAndFlushLogs_RecoversFlushesThenRepanics(t *testing.T) {
+	flushed := false
+	func() {
+		defer func() {
+			if r := recover(); r != "boom" {
+				t.Fatalf("expected repanic with %q, got %v", "boom", r)
+			}
+		}()
+		func() {
+			defer recoverAndFlushLogs(func() { flushed = true })
+			panic("boom")
+		}()
+	}()
+	if !flushed {
+		t.Error("expected flushLogs to be called before repanic")
+	}
+}
+
+func TestRecoverAndFlushLogs_NilFlushIsSafe(t *testing.T) {
+	defer func() {
+		if r := recover(); r != "boom2" {
+			t.Fatalf("expected repanic with %q, got %v", "boom2", r)
+		}
+	}()
+	func() {
+		defer recoverAndFlushLogs(nil)
+		panic("boom2")
+	}()
+}
+
+func TestRecoverAndFlushLogs_NoPanicIsNoOp(t *testing.T) {
+	called := false
+	func() {
+		defer recoverAndFlushLogs(func() { called = true })
+	}()
+	if called {
+		t.Error("flushLogs should not be called when there is no panic")
+	}
+}

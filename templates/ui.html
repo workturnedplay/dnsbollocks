@@ -17,9 +17,9 @@
         <h1>DNSbollocks</h1>
         <nav>
             <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
-            <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Hosts</a>
+            <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Local Hosts</a>
             <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Blacklisted IPs(in responses)</a>
-            <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Blocks(recent)</a>
+            <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Recent Blocks</a>
             <a href="/logs" {{if eq .Path "/logs" }} class="active" {{end}}>System Logs(incl.queries)</a>
             <a href="/logs_queries" {{if eq .Path "/logs_queries" }} class="active" {{end}}>Query(only) Logs</a>
             <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>

@@ -338,7 +338,7 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
 	// failoverSelect now lives inside UpstreamManager
-	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.rt.LogMgr.Ptr(), s.shutdown)
+	s.upstreamMgr = NewUpstreamManager(s.ctx, &s.liveConfig, s.rt.LogMgr.Ptr(), s.shutdown, s.rt.FlushLogsForShutdown)
 	s.dohForwarder = s.upstreamMgr
 
 	return s // yes it escapes to heap
@@ -349,15 +349,16 @@ type FailoverSelector struct {
 	mu             sync.RWMutex
 	activeIndex    int
 	inFlightProbes sync.Map
-	allFailed      bool // Tracks if the system is coming out of a total blackout
+	allFailed      bool   // Tracks if the system is coming out of a total blackout
+	flushLogs      func() // may be nil; see recoverAndFlushLogs
 }
 
 // NewFailoverSelector initializes the tracker starting at the first upstream (index 0)
-func NewFailoverSelector(liveLogger *atomic.Pointer[slog.Logger]) *FailoverSelector {
+func NewFailoverSelector(liveLogger *atomic.Pointer[slog.Logger], flushLogs func()) *FailoverSelector {
 	if liveLogger == nil {
 		panic2("BUG: passed nil atomic pointer to logger but code assumes this is never nil, logger can be nil tho")
 	}
-	return &FailoverSelector{liveLogger: liveLogger, activeIndex: 0, allFailed: false}
+	return &FailoverSelector{liveLogger: liveLogger, activeIndex: 0, allFailed: false, flushLogs: flushLogs}
 }
 
 // Upstream represents a single configured DoH target and handles its own network lifecycle.
@@ -442,6 +443,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 		}
 		go func(idx int, wasProbe bool) {
+			defer recoverAndFlushLogs(fs.flushLogs)
 			// Clean up the probe lock when this request finishes
 			if wasProbe {
 				defer fs.inFlightProbes.Delete(idx)
@@ -4626,10 +4628,51 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	for attempt := 1; attempt <= maxTries; attempt++ {
 		// Use an anonymous function wrapper so 'defer' operates on a per-iteration scope
 		failedToCreateRequest, errReq := func() (bool, error) {
-			// 1. Create a transient request context derived from the client's ctx
+			// 1. Resolve the target URL BEFORE starting the per-request timeout clock
+			// below, so a (normally fast, but not instant) client-metadata lookup —
+			// only relevant when {builtin:clientexe} is configured — never eats into
+			// the actual network-operation timeout budget.
+			// create request with supplied context so caller controls deadline/cancel
+			targetURLStr := u.URL.String()
+			// (the {builtin:clientexe} substitution block that follows stays exactly
+			// as fixed above, unchanged, still reading the outer ctx not reqCtx)
+			// 1. Pass the merged context to the HTTP request
+			// Check if the user configured either variant of the placeholder in their upstream URL
+			if strings.Contains(targetURLStr, templateClientExe) || strings.Contains(targetURLStr, templateClientExeEscaped) {
+				exeName := "unknown-process"
+
+				// Extract the metadata from the context. startMetadataLookup always
+				// stores a *ClientMetadataFuture (never a bare clientMetadata value),
+				// since the real pid/exe/service lookup runs concurrently in its own
+				// goroutine and may still be in flight here. Asserting the wrong
+				// (non-pointer) type silently failed every single time, which is why
+				// {builtin:clientexe} always substituted "unknown-process" no matter
+				// how fast the real lookup completed elsewhere (e.g. by the time
+				// logQuery ran, which asserts the correct type and does show the
+				// real exe name).
+				if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
+					future.wg.Wait() // must block: we cannot build the request URL without the real name
+					if future.info.exe != "" {
+						//// Optionally strip the .exe extension for cleaner NextDNS logs
+						//exeName = strings.TrimSuffix(future.info.exe, ".exe")
+						exeName = future.info.exe
+
+						// URL-encode the executable name to prevent malformed requests
+						exeName = url.PathEscape(exeName)
+					}
+				} else {
+					log.Warn("BUG: Failed to get future metadata from the context in doSingleDoHRequest(), did the type change again?!")
+				}
+
+				// Inject the executable name by replacing both potential string variations
+				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExe, exeName)
+				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExeEscaped, exeName)
+			}
+
+			// 2. Create a transient request context derived from the client's ctx
 			// reqCtx, cancelReq := context.WithCancel(ctx)
 			//NOTTRUEXXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
-			// 1. Derive a timed-out context from your incoming request context (reqCtx)
+			// 3. Derive a timed-out context from your incoming request context (reqCtx)
 			reqCtx, cancelReq := context.WithTimeout(ctx, u.UpstreamClientTimeoutDuration)
 			// Crucial: always defer cancel to prevent context leaks!
 			// defer cancel() NO
@@ -4656,29 +4699,6 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 		// Normal exit when the request finishes or client disconnects
 			// 	}
 			// }()
-
-			// 3. Pass the merged context to the HTTP request
-
-			// create request with supplied context so caller controls deadline/cancel
-			targetURLStr := u.URL.String()
-			// Check if the user configured either variant of the placeholder in their upstream URL
-			if strings.Contains(targetURLStr, templateClientExe) || strings.Contains(targetURLStr, templateClientExeEscaped) {
-				exeName := "unknown-process"
-
-				// Extract the metadata from the context
-				if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
-					//// Optionally strip the .exe extension for cleaner NextDNS logs
-					//exeName = strings.TrimSuffix(info.exe, ".exe")
-					exeName = info.exe
-
-					// URL-encode the executable name to prevent malformed requests
-					exeName = url.PathEscape(exeName)
-				}
-
-				// Inject the executable name by replacing both potential string variations
-				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExe, exeName)
-				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExeEscaped, exeName)
-			}
 
 			// Build the request using the dynamically generated URL
 			var e error
@@ -8364,9 +8384,17 @@ type UpstreamManager struct {
 
 	//UM calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
+
+	// flushLogs, if non-nil, flushes buffered async log writers. Passed down
+	// to FailoverSelector (via buildSet) and used directly by ForwardToDoH's
+	// own per-upstream goroutines, since none of these hot, per-query
+	// goroutines may be tracked in Server.shutdownWG the way Server.GoSafe's
+	// goroutines are (some are designed to intentionally outlive the call
+	// that spawned them). See recoverAndFlushLogs.
+	flushLogs func()
 }
 
-func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int)) *UpstreamManager {
+func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Config], liveLogger *atomic.Pointer[slog.Logger], shutdownFunc func(exitCode int), flushLogs func()) *UpstreamManager {
 	if serverCtx == nil {
 		panic2("BUG: NewUpstreamManager: nil serverCtx")
 	}
@@ -8382,6 +8410,7 @@ func NewUpstreamManager(serverCtx context.Context, liveConfig *atomic.Pointer[Co
 		liveLogger: liveLogger,
 		//Pass the server's shutdown method directly
 		OnShutdown: shutdownFunc,
+		flushLogs:  flushLogs,
 	}
 	//NewUpstreamManager no longer constructs a FailoverSelector upfront — it's created fresh inside buildSet:
 	//um.failoverSelect = NewFailoverSelector(liveLogger)
@@ -8557,6 +8586,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 			}
 			wg.Add(1)
 			go func(idx int, target Upstream) {
+				defer recoverAndFlushLogs(um.flushLogs)
 				defer wg.Done()
 				msg, err := target.doSingleDoHRequest(ctx, reqBytes)
 				results[idx] = result{msg: msg, err: err, idx: idx}
@@ -8663,6 +8693,7 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 					i, upstream.URL, upstream.SNI)) //um.upstreamURLs[i], um.upstreamSNIs[i]))
 			}
 			go func(idx int, target Upstream) {
+				defer recoverAndFlushLogs(um.flushLogs)
 				msg, err := target.doSingleDoHRequest(ctx, reqBytes)
 				resChan <- result{msg: msg, err: err, idx: idx}
 			}(i, upstream)
@@ -8886,7 +8917,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 
 	newSet := &UpstreamSet{
 		upstreams: newUpstreams,
-		failover:  NewFailoverSelector(um.liveLogger), // fresh: activeIndex=0, allFailed=false
+		failover:  NewFailoverSelector(um.liveLogger, um.flushLogs), // fresh: activeIndex=0, allFailed=false
 	}
 	// 6. ATOMIC STORE
 	um.activeSet.Store(newSet)
@@ -12792,4 +12823,43 @@ func (s *Server) GoSafe(fn func()) {
 		// Run the actual workload
 		fn()
 	}()
+}
+
+// recoverAndFlushLogs is a lightweight, untracked counterpart to Server.GoSafe
+// for goroutines that must NOT be tracked in Server.shutdownWG: specifically
+// FailoverSelector.Exchange's per-upstream probe/query goroutine and
+// UpstreamManager.ForwardToDoH's own per-upstream goroutines (fastest-mode
+// races and strict-mode fan-out). These are extremely hot, per-DNS-query-path
+// goroutines, and at least the fastest-mode/healing-probe ones are designed
+// to intentionally keep running after the call that spawned them already
+// returned — tracking them in shutdownWG the way GoSafe does would make a
+// graceful shutdown's Wait() block on work that can only finish after Wait()
+// itself would need to return, i.e. a guaranteed deadlock, mirroring exactly
+// the reasoning already recorded in todo.txt for why Server.watchKeys is a
+// bare `go` statement instead of GoSafe.
+//
+// What this DOES still provide is GoSafe's other guarantee: since Go gives
+// no way to stop an unrecovered panic in one goroutine from crashing the
+// entire process, at least make sure any buffered-but-not-yet-written log
+// lines (see asyncLogWriter) are flushed before that crash happens, instead
+// of silently losing the very lines that would explain why it crashed. It
+// recovers the panic, flushes logs via flushLogs, then re-panics
+// immediately — the process still terminates exactly as it did before this
+// helper existed.
+//
+// flushLogs may be nil (e.g. tests constructing a FailoverSelector or
+// UpstreamManager directly without a full Runtime); a nil flush function is
+// simply skipped, matching this codebase's other nil-safety conventions.
+//
+// Call this as the very FIRST deferred statement in the goroutine (so it's
+// registered before any other defers and thus runs LAST during a panic
+// unwind), so it catches a panic from anywhere else in that goroutine,
+// including from its own other deferred cleanup.
+func recoverAndFlushLogs(flushLogs func()) {
+	if r := recover(); r != nil {
+		if flushLogs != nil {
+			flushLogs()
+		}
+		panic(r)
+	}
 }

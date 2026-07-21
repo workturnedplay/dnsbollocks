@@ -73,7 +73,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	dummyReqBytes := []byte("dummy-dns-query")
 
 	t.Run("Primary Success", func(t *testing.T) {
-		fs := NewFailoverSelector(&liveDiscardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger, nil)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return makeDoHResponse(), nil
@@ -101,7 +101,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Primary Fails, Falls back to Secondary", func(t *testing.T) {
-		fs := NewFailoverSelector(&liveDiscardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger, nil)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return nil, errors.New("simulated timeout/failure")
@@ -133,7 +133,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Global Blackout", func(t *testing.T) {
-		fs := NewFailoverSelector(&liveDiscardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger, nil)
 		upstreams := []Upstream{
 			createMockUpstream("https://primary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
 				return nil, errors.New("fail")
@@ -161,7 +161,7 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 	})
 
 	t.Run("Healing Probe Restores Primary", func(t *testing.T) {
-		fs := NewFailoverSelector(&liveDiscardLogger)
+		fs := NewFailoverSelector(&liveDiscardLogger, nil)
 		// Force state to simulate that secondary is currently active
 		fs.activeIndex = 1
 
