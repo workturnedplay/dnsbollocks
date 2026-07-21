@@ -9118,7 +9118,6 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 	}
 	//TheFor:
 	for {
-
 		// 2. Grab a buffer pointer from the pool
 		bufPtr, ok := udpPool.Get().(*[]byte)
 		if !ok {
@@ -9768,11 +9767,15 @@ func (s *Server) rebindWebUIListener(params uiListenerParams) {
 }
 
 type dnsListenerParams struct {
-	Addr string
+	Addr          string
+	UDPBufferSize int
 }
 
 func dnsListenerParamsFrom(cfg *Config) dnsListenerParams {
-	return dnsListenerParams{Addr: cfg.ListenDNS}
+	return dnsListenerParams{
+		Addr:          cfg.ListenDNS,
+		UDPBufferSize: cfg.DNSUDPBufferSize,
+	}
 }
 
 type dohListenerParams struct {

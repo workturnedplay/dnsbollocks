@@ -1,4 +1,6 @@
 todo:
+* see if I missed more config settings which when changed require rebinding the listeners that use/depend_on them. Last one I fixed was Config.DNSUDPBufferSize , I put it in dnsListenerParams !
+
 * inconsistencies detected (todo: 1,2,3,4,5 done: ) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
