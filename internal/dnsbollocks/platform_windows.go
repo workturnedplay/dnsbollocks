@@ -5293,7 +5293,7 @@ func extractIPs(msg *dns.Msg) []string {
 // a chain like "left.example CNAME right.example" is followed, the next
 // record's owner name ("right.example") is a distinct name from the
 // original query with no defined casing relationship to it.
-func adjustResponseCaseToQuery(msg *dns.Msg, reqMsg *dns.Msg) {
+func adjustResponseCaseToQuery(msg, reqMsg *dns.Msg) {
 	if msg == nil || reqMsg == nil || len(reqMsg.Question) == 0 {
 		return
 	}
