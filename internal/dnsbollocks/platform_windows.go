@@ -7431,14 +7431,17 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 } // end blocksHandler
 
-func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, filePath, filter string) {
+func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageName, title, filePath, filter string) {
 	cfg := ui.getConfig()
 	log := ui.getLogger()
+	if pageName == "" {
+		panic2("BUG: called with empty pageName arg in renderLogPage!")
+	}
 
 	file, err := os.Open(filePath)
 	if err != nil {
 		// Fallback if file doesn't exist yet
-		ui.renderTemplate(w, r, "logs", map[string]any{
+		ui.renderTemplate(w, r, pageName, map[string]any{
 			//"Page": "logs",
 			//"Path":  r.URL.Path,
 			"Title": title, "Filter": filter, "Content": "No log entries found.",
@@ -7562,7 +7565,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, title, 
 		"Content": content,
 	}
 
-	ui.renderTemplate(w, r, "logs", renderData)
+	ui.renderTemplate(w, r, pageName, renderData)
 }
 
 func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
@@ -7583,7 +7586,7 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	//     filter = r.URL.Query().Get("domain")
 	// }
 
-	ui.renderLogPage(w, r, "Query Logs", cfg.LogQueriesFile, filter)
+	ui.renderLogPage(w, r, "logs_queries", "Query Logs", cfg.LogQueriesFile, filter)
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -7598,7 +7601,7 @@ func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "System & Error Logs", cfg.LogEverythingFile, filter)
+	ui.renderLogPage(w, r, "logs", "System & Error Logs", cfg.LogEverythingFile, filter)
 }
 
 func (s *Server) shutdown(exitCode int) {
