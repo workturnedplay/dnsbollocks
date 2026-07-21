@@ -1,11 +1,13 @@
 todo:
+* see if I wanna use localStorage instead of sessionStorage but at the very least have a const or var set to one of them only once at the top and somehow then use that const everywhere where currently sessionStorage is used, thus I can easily swap between the two in code if I want to.
+* **Ephemeral UI State:** The configuration textarea auto-resize logic relies on `sessionStorage`. Because `sessionStorage` is cleared when the tab closes, a user's customized layout preferences are lost entirely upon opening a new session.
+
 * need a button in Recent Blocks webUI page aka /blocks which when pressed it will tell backend to clear the list of recent blocks, but not if any new ones were blocked since the page was shown ie. clear the ones listed in the page only, else new ones might've snuck in but due to page being stale user didn't know/see those, so those must be kept! and after clearing show the current state of it, ie. reload page i guess.
 
 * fix wrong things in v0.29.0 (todo: done:) https://gemini.google.com/app/5ee548df8baa0efc listed below:
 ### 🔴 Concurrency & Race Conditions
 
 * **Split Atomic State:** In `Server.applyConfig`, `liveConfig` and `liveRawConfig` are swapped sequentially via two separate `atomic.Pointer.Store()` calls. A concurrent reader can easily grab the updated state of one and the stale state of the other.
-* **Interface Pointer Anti-Pattern:** `liveDNSCache` is defined as `atomic.Pointer[DNSCache]`. Because `DNSCache` is an interface (which is already a two-word pointer under the hood), this creates a pointer-to-an-interface. This is a known Go anti-pattern that introduces unnecessary indirection and circumvents standard nil-interface checks, which can lead to panics when dereferenced in `getCache()`.
 * **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
 
 ### 🔴 Denial of Service (DoS) Vectors
@@ -31,7 +33,6 @@ todo:
 ### 🔴 Frontend / UI Oddities
 
 * **Destructive DOM Highlighting:** The `applyTableFilter` logic in `app.js` dynamically attaches `<mark>` elements directly into the DOM tree of table rows. When the user clears the search, it reconstructs the text nodes. This constant DOM shredding on every keystroke causes unnecessary reflows and GC pressure.
-* **Ephemeral UI State:** The configuration textarea auto-resize logic relies on `sessionStorage`. Because `sessionStorage` is cleared when the tab closes, a user's customized layout preferences are lost entirely upon opening a new session.
 * **Screen Reader Race Condition:** The WebUI blocks page sets `aria-live="polite"` on the `.block-action-feedback` span, but immediately overwrites its text content and class name upon receiving the network response. Screen readers frequently drop rapid, sequential DOM mutations on polite regions if they occur too closely together.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
@@ -96,3 +97,4 @@ done:
 //* in blockResponse some returns(or just the last one then?) modify the request and return it, it should return a newly allocated one based on the reqMsg like servfailResponse and formerrResponse already do!
 //* check if after a Reload/applyConfig, any cached stuff like a 'log' var is being used when it may actually be closed and how to fix this? never cache them maybe? and/or maybe delay closing of the old logs, or should I never cache logs and just get the live one and use it upon each logging attempt!? because currently I'm still getting one "[asyncLogWriter "dnsbollocks.log"] WARNING: log "was closed"; 1 line(s) dropped so far" at shutdown, but only if I did a Reload() first(via Ctrl+R) and it's not due to a race!
 //* might be a small window in ApplyConfig whereby lm.Reinit and wincoe.SetBugLogger(improvedLogger) plus wincoe.Logger.Store(improvedLogger) are happening decoupled, so if anything happens between the 2 operations they hit closed logger, no?
+//* **Interface Pointer Anti-Pattern:** `liveDNSCache` is defined as `atomic.Pointer[DNSCache]`. Because `DNSCache` is an interface (which is already a two-word pointer under the hood), this creates a pointer-to-an-interface. This is a known Go anti-pattern that introduces unnecessary indirection and circumvents standard nil-interface checks, which can lead to panics when dereferenced in `getCache()`.

@@ -198,7 +198,7 @@ type Server struct {
 	// Caching & Rate limiting
 	// dnsCache    DNSCache
 	// rateLimiter *ClientRateLimiter
-	liveDNSCache atomic.Pointer[DNSCache]
+	liveDNSCache atomic.Pointer[goCacheStore]
 	rateLimiter  *ClientRateLimiter
 
 	// Data stores (each owns its own mutex).
@@ -7099,11 +7099,7 @@ type HostView struct {
 // invalidateCacheForPattern surgically removes any cached DNS responses
 // that match the given host pattern (handling wildcards correctly).
 func (s *Server) invalidateCacheForPattern(pattern string) {
-	c := s.liveDNSCache.Load()
-	if c == nil {
-		return
-	}
-	cachee := *c
+	cachee := s.getCache()
 	log := s.getLogger()
 
 	for key := range cachee.Items() {
@@ -7136,11 +7132,7 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 }
 
 func (s *Server) invalidateCacheForBlacklistedIPs() {
-	c := s.liveDNSCache.Load()
-	if c == nil {
-		return
-	}
-	cachee := *c
+	cachee := s.getCache()
 	log := s.getLogger()
 
 	// 1. Grab a snapshot of pointers under a microsecond single lock
@@ -8308,8 +8300,8 @@ func (s *goCacheStore) getLogger() *slog.Logger {
 	return wincoe.GetLoggerOrFallback(s.liveLogger, "goCacheStore.liveLogger")
 }
 
-func newGoCacheStore(janitorInterval time.Duration, maxEntries int, liveLogger *atomic.Pointer[slog.Logger]) DNSCache {
-	return &goCacheStore{
+func newGoCacheStore(janitorInterval time.Duration, maxEntries int, liveLogger *atomic.Pointer[slog.Logger]) goCacheStore {
+	return goCacheStore{
 		c:          cache.New(janitorInterval, janitorInterval),
 		maxEntries: maxEntries,
 		liveLogger: liveLogger,
@@ -9076,7 +9068,7 @@ func (s *Server) getCache() DNSCache {
 	if c == nil {
 		panic2("BUG: Server.liveDNSCache not initialized before use — Run() must call swapDNSCache() before listeners start")
 	}
-	return *c
+	return c // Go automatically promotes the concrete pointer to the DNSCache interface
 }
 
 func (s *Server) swapDNSCache(janitorIntervalMinutes, maxEntries int) {
