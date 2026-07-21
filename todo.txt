@@ -32,6 +32,8 @@ todo:
 * **Destructive DOM Highlighting:** The `applyTableFilter` logic in `app.js` dynamically attaches `<mark>` elements directly into the DOM tree of table rows. When the user clears the search, it reconstructs the text nodes. This constant DOM shredding on every keystroke causes unnecessary reflows and GC pressure.
 * **Screen Reader Race Condition:** The WebUI blocks page sets `aria-live="polite"` on the `.block-action-feedback` span, but immediately overwrites its text content and class name upon receiving the network response. Screen readers frequently drop rapid, sequential DOM mutations on polite regions if they occur too closely together.
 
+* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
+
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877

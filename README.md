@@ -113,7 +113,7 @@ You need `go.exe` of Go language to compile this code into a standalone exe.
 
 No internet required if you have Go already installed.
 
-To run `buildwrace.bat` or `go build -race` or `go run -race` you need a `gcc.exe` in `PATH` so use this (or just get it from [https://winlibs.com](https://winlibs.com)):
+To run `buildwrace.bat` or `go build -race` or `go run -race` you need a `gcc.exe` in `PATH` so get it from msys64(recommended, the ucrt64 one works for me, not shown here TODO), or use this (or just get it from [https://winlibs.com](https://winlibs.com)):
 
 [https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.7z](https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.7z)
 
