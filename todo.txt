@@ -1,5 +1,5 @@
 todo:
-* inconsistencies detected for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
+* inconsistencies detected (todo: 1,2,3,4,5 done: ) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 

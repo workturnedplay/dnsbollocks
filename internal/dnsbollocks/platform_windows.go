@@ -90,7 +90,7 @@ type Config struct {
 	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
-	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (actually replies with 503 Service Unavailable)."`
+	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (for DoH clients it actually replies with 503 Service Unavailable)."`
 	//cantFIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two: // cantFIXME: Go struct tags must be string literals.
 	BlockIP   string `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
 	BlockIPv6 string `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
@@ -3886,7 +3886,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		}
 		return
 	} // else it's nil like if BlockMode is "drop"
-	log.Debug("No TCP DNS response to write, likely due to BlockMode being 'drop' ?!")
+	log.Debug("No TCP DNS response to write, likely due to BlockMode being 'drop' ?!", slog.String("BlockMode", cfg.BlockMode))
 }
 
 func getSecureID() uint16 {
@@ -4017,7 +4017,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	resp := s.handleDNSQuery(ctx, reqMsg, r.RemoteAddr /*field not method*/)
 	if resp == nil { //can happen when BlockMode is "drop" so nvmFIXME? "For DoH the HTTP connection is already accepted; 503 is the only correct response for drop mode"
 		if cfg.BlockMode != blockModeDrop {
-			log.Warn("empty DNS response, replying to client with: 503 Service Unavailable", slog.String("client", r.RemoteAddr))
+			log.Warn("empty DNS response, replying to DoH client with: 503 Service Unavailable", slog.String("client", r.RemoteAddr))
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
