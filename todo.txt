@@ -1,4 +1,6 @@
 todo:
+* need a button in Recent Blocks webUI page aka /blocks which when pressed it will tell backend to clear the list of recent blocks, but not if any new ones were blocked since the page was shown ie. clear the ones listed in the page only, else new ones might've snuck in but due to page being stale user didn't know/see those, so those must be kept! and after clearing show the current state of it, ie. reload page i guess.
+
 * fix wrong things in v0.29.0 (todo: done:) https://gemini.google.com/app/5ee548df8baa0efc listed below:
 ### 🔴 Concurrency & Race Conditions
 
