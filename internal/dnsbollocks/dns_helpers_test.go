@@ -351,3 +351,38 @@ func TestExtractIPs_MultipleARecords_OrderPreserved(t *testing.T) {
 		}
 	}
 }
+
+func TestAdjustResponseCaseToQuery_RewritesMatchingAnswerOwnerName(t *testing.T) {
+	m := msgWithAnswer(makeA("Example.COM.", "1.2.3.4", 300))
+	adjustResponseCaseToQuery(m, "example.com.")
+	if m.Answer[0].Header().Name != "example.com." {
+		t.Errorf("expected owner name rewritten to query casing, got %q", m.Answer[0].Header().Name)
+	}
+}
+
+func TestAdjustResponseCaseToQuery_LeavesCNAMETargetUntouched(t *testing.T) {
+	m := new(dns.Msg)
+	m.Answer = []dns.RR{
+		makeCNAME("Example.COM.", "target.example.net.", 300),
+		makeA("target.example.net.", "1.2.3.4", 300),
+	}
+	adjustResponseCaseToQuery(m, "example.com.")
+	if m.Answer[0].Header().Name != "example.com." {
+		t.Errorf("expected CNAME owner name rewritten to query casing, got %q", m.Answer[0].Header().Name)
+	}
+	if m.Answer[1].Header().Name != "target.example.net." {
+		t.Errorf("expected CNAME target owner name left untouched, got %q", m.Answer[1].Header().Name)
+	}
+}
+
+func TestAdjustResponseCaseToQuery_NoMatchLeavesRecordsUntouched(t *testing.T) {
+	m := msgWithAnswer(makeA("other.example.", "1.2.3.4", 300))
+	adjustResponseCaseToQuery(m, "example.com.")
+	if m.Answer[0].Header().Name != "other.example." {
+		t.Errorf("expected unrelated owner name untouched, got %q", m.Answer[0].Header().Name)
+	}
+}
+
+func TestAdjustResponseCaseToQuery_NilMsgIsSafe(t *testing.T) {
+	adjustResponseCaseToQuery(nil, "example.com.")
+}

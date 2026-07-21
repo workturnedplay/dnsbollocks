@@ -37,11 +37,11 @@ func TestProcessRR(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                 string
-		rr                   dns.RR
-		removeHTTPSIPv4Hints bool
-		wantKeep             bool
-		wantReason           string
+		name               string
+		rr                 dns.RR
+		removeHTTPSIPHints bool
+		wantKeep           bool
+		wantReason         string
 	}{
 		{
 			name: "Valid A Record",
@@ -98,15 +98,15 @@ func TestProcessRR(t *testing.T) {
 					},
 				},
 			},
-			removeHTTPSIPv4Hints: true,
-			wantKeep:             true,
-			wantReason:           "",
+			removeHTTPSIPHints: true,
+			wantKeep:           true,
+			wantReason:         "",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPv4Hints, blacklist)
+			keep, modifiedRR, reason := processRR(dummyLog, tc.rr, tc.removeHTTPSIPHints, blacklist)
 
 			if keep != tc.wantKeep {
 				t.Errorf("expected keep=%v, got %v", tc.wantKeep, keep)

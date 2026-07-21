@@ -127,7 +127,7 @@ type Config struct {
 	AllowRunAsAdmin         bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
 	BlockAAAAasEmptyNoError bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
 	AllowHTTPSIfAAllowed    bool   `json:"allow_https_if_a_allowed"  desc:"If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule."`
-	RemoveHTTPSIPv4Hints    bool   `json:"remove_https_ipv4_hints"   desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
+	RemoveHTTPSIPHints      bool   `json:"remove_https_ip_hints"     desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
 	UseEDEInBlockedReply    bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
 
 	WebUIPasswordHash           string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
@@ -1458,7 +1458,7 @@ func defaultConfig() Config {
 		AllowRunAsAdmin:             false,
 		BlockAAAAasEmptyNoError:     true,
 		AllowHTTPSIfAAllowed:        true,
-		RemoveHTTPSIPv4Hints:        true,
+		RemoveHTTPSIPHints:          true,
 		WebUIUseTLS:                 true,
 		WebUIForceTLSOnNonLocalhost: true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
 		WebUIMaxLoginFailures:       5,
@@ -1737,6 +1737,10 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 			if valStr != "<nil>" {
 				valColor = "\x1b[91m" // Red
 			}
+		case "failed_upstreams":
+			// Only ever logged when non-empty (see logQuery), so its mere presence
+			// always signals at least one upstream failure for this query.
+			valColor = "\x1b[91m" // Red
 		}
 		// ----------------------
 
@@ -4211,6 +4215,11 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 
 	// Cache (edge: Negative responses cached short)
+	// Intentionally keyed by the lowercased 'domain' (not the original, possibly
+	// mixed-case query name) so every casing variant of the same query name (e.g.
+	// "example.com", "Example.COM", "EXAMPLE.com") shares one cache entry instead of
+	// one entry per casing variant seen. See adjustResponseCaseToQuery below for how
+	// the served response still gets the CURRENT query's exact casing on a cache hit.
 	key := domain + ":" + qtype
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
@@ -4224,10 +4233,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		resp.Id = reqMsg.Id
 		// Preserve ORIGINAL client casing in Question section (critical for strict clients)
 		//"Question is the main RFC requirement. Most clients only care about Question." -Grok 4 Fast
-		if len(resp.Question) > 0 && len(reqMsg.Question) > 0 {
+		if len(resp.Question) > 0 && len(reqMsg.Question) > 0 { //TODO: merge this within adjustResponseCaseToQuery and have it take the reqMsg.Question arg to check if its len > 0 before doing any!
 			resp.Question[0].Name = reqMsg.Question[0].Name // echo exact client casing
 		}
-		//FIXME: "Also fix Answer/NS/etc. names if you want full canonical preservation"
+		// Also echo the current query's casing onto any Answer/Ns owner names that
+		// directly answer it, since a cache entry may have been populated by a
+		// differently-cased query for the same name (see the comment on 'key' above).
+		adjustResponseCaseToQuery(resp, reqMsg.Question[0].Name)
 
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
@@ -4380,7 +4392,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	originalCopy := resp.Copy()
 	originalIPs := extractIPs(originalCopy)
 	// Filter
-	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPv4Hints, s.blacklist) // XXX: resp gets mutated here!
+	filtered, filterReason := filterResponse(log, resp, cfg.RemoveHTTPSIPHints, s.blacklist) // XXX: resp gets mutated here!
 	if filtered == nil {
 		// filterReason now holds exact info like "blockedByUpstream_ZeroIP" or "dns_rebinding_protection"
 
@@ -5101,22 +5113,22 @@ const StrippedRRSIG string = "stripped_rrsig"
 const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
 // mutates the passed arg
-func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, blacklist IPChecker) (*dns.Msg, string) {
+func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool, blacklist IPChecker) (*dns.Msg, string) {
 	//log := s.getLogger()
 
-	if msg == nil {
+	if respMsg == nil {
 		panic2("BUG: msg was nil, unexpected bad programming/code ;p")
 	}
-	if len(msg.Question) == 0 {
+	if len(respMsg.Question) == 0 {
 		panic2("BUG: no DNS question! unexpected bad programming/code ;p")
 	}
 
-	q := msg.Question[0]
+	q := respMsg.Question[0]
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
-	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
-		return msg, NODATA
+	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && len(respMsg.Extra) == 0 {
+		return respMsg, NODATA
 	}
 
 	var dropReasons []string
@@ -5125,7 +5137,7 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 	filterSection := func(records []dns.RR, sectionName string) []dns.RR {
 		var good []dns.RR
 		for _, rr := range records {
-			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPv4Hints, blacklist); keep {
+			if keep, modifiedRR, reason := processRR(log, rr, removeHTTPSIPHints, blacklist); keep {
 				good = append(good, modifiedRR)
 			} else {
 				// Captures and mutates 'dropReasons' from the outer scope automatically
@@ -5142,12 +5154,12 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 	}
 
 	// Re-assign the filtered slices directly back to the message
-	msg.Answer = filterSection(msg.Answer, "inAnswer")
-	msg.Ns = filterSection(msg.Ns, "inNs")
-	msg.Extra = filterSection(msg.Extra, "inExtra")
+	respMsg.Answer = filterSection(respMsg.Answer, "inAnswer")
+	respMsg.Ns = filterSection(respMsg.Ns, "inNs")
+	respMsg.Extra = filterSection(respMsg.Extra, "inExtra")
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
-	if len(msg.Answer) == 0 && len(msg.Ns) == 0 && len(msg.Extra) == 0 {
+	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && len(respMsg.Extra) == 0 {
 		domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
 
@@ -5182,12 +5194,12 @@ func filterResponse(log *slog.Logger, msg *dns.Msg, removeHTTPSIPv4Hints bool, b
 		return nil, "filtered_all_records"
 		//return nil
 	}
-	return msg, ""
+	return respMsg, ""
 }
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist IPChecker) (bool, dns.RR, string) {
+func processRR(log *slog.Logger, rr dns.RR, RemoveHTTPSIPHints bool, blacklist IPChecker) (bool, dns.RR, string) {
 	// cfg := s.getConfig()
 	// log := s.getLogger()
 
@@ -5224,7 +5236,7 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 		}
 
 		//doneTODO: make this configurable in config.json so only if 'true' do this:
-		if removeHTTPSIPv4Hints {
+		if RemoveHTTPSIPHints {
 			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 			// Filter the SVCB/HTTPS parameters
@@ -5242,7 +5254,7 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPv4Hints bool, blacklist
 						slog.String("target", r.Target), // then target is "." here
 						slog.String("param", param.String() /*non nil*/),
 						slog.String("config_filename", configFileName),
-						slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPv4Hints))),
+						slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPHints))),
 					}
 					if wasIDN {
 						attrs = append(attrs, slog.String("domain_idn", displayDomain))
@@ -5283,6 +5295,46 @@ func extractIPs(msg *dns.Msg) []string {
 		}
 	}
 	return ips
+}
+
+// adjustResponseCaseToQuery rewrites the owner name of every Answer- and
+// Ns-section RR that matches queryName case-insensitively so it echoes the
+// exact case the client queried with, mirroring the case-echo already
+// applied to the Question section by handleDNSQuery's cache-hit path.
+//
+// This exists because the DNS cache is intentionally keyed by the
+// lowercased domain (see handleDNSQuery's "key := domain + ..." line), so a
+// single cache entry is shared across every casing variant of the same
+// query instead of paying for one cache entry per casing variant. That
+// means a cached Msg's Answer/Ns owner names still carry whichever client's
+// casing first populated the entry, even after the Question section is
+// rewritten to the current query's casing. Some strict or 0x20-aware
+// clients expect the owner name(s) that directly answer the query to echo
+// the same case as the question, so this fixes that up at serve time
+// instead of keying the cache by exact case.
+//
+// Only records whose owner name equals queryName case-insensitively are
+// touched, which deliberately leaves CNAME-chain target records alone: once
+// a chain like "left.example CNAME right.example" is followed, the next
+// record's owner name ("right.example") is a distinct name from the
+// original query with no defined casing relationship to it.
+func adjustResponseCaseToQuery(msg *dns.Msg, queryName string) {
+	if msg == nil {
+		return
+	}
+	fixSection := func(rrs []dns.RR) {
+		for _, rr := range rrs {
+			hdr := rr.Header()
+			if hdr == nil {
+				continue
+			}
+			if hdr.Name != queryName && strings.EqualFold(hdr.Name, queryName) {
+				hdr.Name = queryName
+			}
+		}
+	}
+	fixSection(msg.Answer)
+	fixSection(msg.Ns)
 }
 
 const originalSTR string = "_ORIGINAL"

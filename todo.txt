@@ -1,16 +1,4 @@
 todo:
-* since I now return a cached entry with the question's case-sensitive Name, should I rewrite the answer/NS/etc. to use same case? but what if some checksums are somewhere and won't match then? or should I just I dno, keep the cache key the same case as the question instead? even if that may create more entries? because i hear the client may case about case-sensitivity of the domain when receiving the reply!
-
-* double check if the cache will hit or miss different case DNS query since it seems to at least check for lowercase domain, does it store only the same lowercase domain key? unsure, seems yes tho.
-
-* we should color the "failed_upstreams=" key(without the "=" ofc) with red in the logQuery()
-
-* see if I missed more config settings which when changed require rebinding the listeners that use/depend_on them. Last one I fixed was Config.DNSUDPBufferSize , I put it in dnsListenerParams !
-
-* inconsistencies detected (todo: 3 done: 1,2,5 worksasintended: 4) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
-  * this is 3. (from the gemini url) properly rename removeHTTPSIPv4Hints to removeHTTPSIPHints since it removes IPv6 ones too! obviously rename all relevant stuff about it like the json tag. Don't include migration code. The user aka me, should manually rename the old key from config.json
-
-
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
@@ -49,6 +37,12 @@ half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
 
 done:
+//* since I now return a cached entry with the question's case-sensitive Name, should I rewrite the answer/NS/etc. to use same case? but what if some checksums are somewhere and won't match then? or should I just I dno, keep the cache key the same case as the question instead? even if that may create more entries? because i hear the client may case about case-sensitivity of the domain when receiving the reply!
+//* double check if the cache will hit or miss different case DNS query since it seems to at least check for lowercase domain, does it store only the same lowercase domain key? unsure, seems yes tho.
+//* we should color the "failed_upstreams=" key(without the "=" ofc) with red in the logQuery()
+//* see if I missed more config settings which when changed require rebinding the listeners that use/depend_on them. Last one I fixed was Config.DNSUDPBufferSize , I put it in dnsListenerParams !
+//* inconsistencies detected (todo: done: 1,2,3,5 worksasintended: 4) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
+//  * this is 3. (from the gemini url) properly rename removeHTTPSIPv4Hints to removeHTTPSIPHints since it removes IPv6 ones too! obviously rename all relevant stuff about it like the json tag. Don't include migration code. The user aka me, should manually rename the old key from config.json
 //* find out what other places need to ensure the loggers are closed/flushed similar to how GoSafe did it. Found 2 more beyond the 3 known bare-`go`-statement exceptions: UpstreamManager.ForwardToDoH's per-upstream goroutines in both strict mode and fastest mode were completely unguarded (no recover at all). Added recoverAndFlushLogs(flushLogs func()) as a lightweight, untracked (NOT shutdownWG-tracked) counterpart to GoSafe, wired via a new flushLogs field/constructor param on both FailoverSelector and UpstreamManager, deferred first in all 3 previously-unguarded goroutines (FailoverSelector.Exchange's probe goroutine, plus ForwardToDoH's strict+fastest goroutines). Server.watchKeys and promptAndHashPassword's abort-watcher remain intentionally bare per the reasoning already recorded for those.
 //* properly GoSafe the rest of the 'go func's that you find after each "s.shutdownWG.Add(1)"
 //* see if other 'go func's need similar GoSafe wrapper
