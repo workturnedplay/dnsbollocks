@@ -2817,7 +2817,7 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 			lp.Store(log)
 			checkFW = newDefaultFileWriter(&lp)
 		}
-		checkFW.CheckPowerLossFile(cfgFname)
+		checkFW.CheckPowerLossFile(cfgFname) //this panics if .powerloss file exists!
 	}
 
 	data, err := os.ReadFile(cfgFname)
@@ -2831,6 +2831,7 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 			return nil, nil, false, fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
 				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
 		}
+		//TODO: shall we notify that a .bak exists ? and if it does then what? stop and suggest renaming? or just warn about it but still create a default ? if we're here we know .powerloss doesn't exist
 
 		// not admin, auto create config file with defaults
 		//doneFIXME: make sure it's not found not just don't have read permission (but could have write!)
@@ -10870,6 +10871,13 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec)),
+		&resolvedCfg.UpstreamIdleConnTimeoutSec, &rawCfg.UpstreamIdleConnTimeoutSec,
+		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamIdleConnTimeoutSec,
+		" (connections stay open indefinitely or drop unpredictably)") {
+		shouldSaveConfig = true
+	}
+
 	tagH2ReadIdle := getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamH2ReadIdleTimeoutSec))
 	if clampIntField(log, tagH2ReadIdle, &resolvedCfg.UpstreamH2ReadIdleTimeoutSec, &rawCfg.UpstreamH2ReadIdleTimeoutSec,
 		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamH2ReadIdleTimeoutSec, "") {
@@ -10913,13 +10921,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamRetriesPerQuery)),
 		&resolvedCfg.UpstreamRetriesPerQuery, &rawCfg.UpstreamRetriesPerQuery,
 		func(v int) bool { return v < 0 }, defaultCfg.UpstreamRetriesPerQuery, " (cannot be negative)") {
-		shouldSaveConfig = true
-	}
-
-	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UpstreamIdleConnTimeoutSec)),
-		&resolvedCfg.UpstreamIdleConnTimeoutSec, &rawCfg.UpstreamIdleConnTimeoutSec,
-		func(v int) bool { return v <= 0 }, defaultCfg.UpstreamIdleConnTimeoutSec,
-		" (connections stay open indefinitely or drop unpredictably)") {
 		shouldSaveConfig = true
 	}
 
