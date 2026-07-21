@@ -963,20 +963,6 @@ func (s *Server) loadLocalHosts() error {
 	seenPatterns := make(map[string]struct{}, len(raw))
 
 	for pat, ips := range raw {
-		// pat = strings.ToLower(pat) // normalize for matchPattern
-		// var netIPs []net.IP
-		// for _, ipStr := range ips {
-		// 	if ip := net.ParseIP(ipStr); ip != nil {
-		// 		netIPs = append(netIPs, ip)
-		// 	} else {
-		// 		log.Warn("Invalid IP in hosts file, skipping", slog.String("ip", ipStr), slog.String("pattern", pat))
-		// 	}
-		// }
-		// //TODO: check for dup patterns or hostnames, wtw we're using here.
-		// if len(netIPs) > 0 {
-		// 	parsed = append(parsed, LocalHostRule{Pattern: pat, IPs: netIPs})
-		// }
-
 		// Normalize pattern the same way the WebUI does: trim whitespace, strip
 		// trailing FQDN dot, lowercase.  Track whether anything actually changed
 		// so we can rewrite the file if needed.
@@ -2372,7 +2358,7 @@ func (s *Server) Reload() {
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
 	// Update the fileWriter with the newly loaded safety parameters instantly
-	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
+	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //TODO: make these 2 lines into a helper function and call that here and in the other place
 	s.rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	if needsSave {
@@ -2808,7 +2794,7 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 	var rawCfg *Config = &rawTempCfg
 
 	// s.fileWriter.SetExtraSafety(defaultCfg.ExtraSafety)                                               //using default cfg.ExtraSafety until read from disk, this is already set to this default in the NewServer constructor tho
-	// s.fileWriter.SetRetryParams(defaultCfg.FileWriterMaxRetries, defaultCfg.FileWriterRetryBackoffMs) //TODO: ensure defautlConfig had sanitizeAndValidateConfig run on it
+	// s.fileWriter.SetRetryParams(defaultCfg.FileWriterMaxRetries, defaultCfg.FileWriterRetryBackoffMs) //TODO: ensure defaultConfig had sanitizeAndValidateConfig run on it
 
 	// s.fileWriter.CheckPowerLossFile(cfgFname) //a default Config was already set at birth(even tho we also set it here, above, this one we set above isn't in effect yet), or kept the previously loaded one, those values are used by any child callers that use Server's Config during loadMainConfig() until the new config is atomically swapped in(at the end tho)
 
@@ -2964,11 +2950,6 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 			}
 		}
 	}
-
-	// //(re)apply newly loaded validated/clamped config settings for fileWriter
-	// //TODO: make these 2 lines into a helper function and call that here and in another place above
-	// s.fileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
-	// s.fileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	// Enforce password setup if it's missing from the config
 	if resolvedCfg.WebUIPasswordHash == "" {
