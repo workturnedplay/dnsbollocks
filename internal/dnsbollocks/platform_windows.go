@@ -9082,7 +9082,7 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 	}
 	//TheFor:
 	for {
-		log3 := s.getLogger()
+
 		// 2. Grab a buffer pointer from the pool
 		bufPtr, ok := udpPool.Get().(*[]byte)
 		if !ok {
@@ -9100,6 +9100,7 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 		// 		slog.Duration("elapsed", elapsed),
 		// 	)
 		// }
+		log3 := s.getLogger()
 		if err2 != nil {
 			udpPool.Put(bufPtr) // Return buffer on error
 			select {
@@ -9192,9 +9193,8 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 	log2.Info("TCP DNS listening", slog.String("address", tcpLn.Addr().String()))
 
 	for {
-		log3 := s.getLogger()
-
 		conn, err := tcpLn.Accept()
+		log3 := s.getLogger()
 		if err != nil {
 			// if context canceled, exit cleanly
 			select {
@@ -11857,12 +11857,14 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 
 func (w *asyncLogWriter) recordDrop(wasClosed bool) {
 	total := w.dropped.Add(1)
-	var what string
+	var what, extra string
 	if wasClosed {
 		what = "was closed"
+		extra = ""
 	} else {
 		//only rate limit the "queue full" ones!
 		what = "queue full"
+		extra = " (underlying sink is not keeping up, e.g. due to slow/contended disk)"
 
 		now := time.Now().UnixNano()
 		last := w.lastDropWarnNs.Load()
@@ -11874,8 +11876,7 @@ func (w *asyncLogWriter) recordDrop(wasClosed bool) {
 		}
 	} // end of queue-full
 	fmt.Fprintf(os.Stderr,
-		"[asyncLogWriter %q] WARNING: log %q; %d line(s) dropped so far "+
-			"(underlying sink is not keeping up, e.g. due to slow/contended disk)\n",
+		"[asyncLogWriter %q] WARNING: log %q; %d line(s) dropped so far"+extra+"\n",
 		w.name, what, total)
 }
 
