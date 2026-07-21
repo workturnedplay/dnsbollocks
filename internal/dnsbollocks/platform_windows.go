@@ -2387,6 +2387,14 @@ func (s *Server) Reload() {
 	// Apply the new config atomically
 	s.applyConfig(*resolvedCfg, *rawCfg)
 
+	// 2. Re-initialize logging (applies new console levels or log files)
+	// Done late to keep the same logger until reload is mostly complete.
+	if err := s.rt.LogMgr.ApplyConfig(resolvedCfg); err != nil {
+		log.Error("Failed to apply logging config during reload; logging may be stale", wincoe.SafeErr(err))
+		// The core config is already live; log the error but do not abort the reload.
+	}
+	log = s.getLogger() // Grab the newly initialized logger
+
 	// Update the fileWriter with the newly loaded safety parameters instantly
 	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //TODO: make these 2 lines into a helper function and call that here and in the other place
 	s.rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
@@ -2403,6 +2411,24 @@ func (s *Server) Reload() {
 		panic2("BUG: unreachable")
 	}
 
+	newCacheState := struct{ Janitor, Max int }{
+		cfgNew.CacheJanitorIntervalMinutes,
+		cfgNew.CacheMaxEntries,
+	}
+	// 2. Compare the entire struct at once
+	if oldCacheState != newCacheState {
+		//must happen before loadDependentStores() because inside it tries to flush it and it's nil
+		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes, cfgNew.CacheMaxEntries)
+		log.Warn("Cache settings changed thus cache instance replaced (all cached entries dropped)",
+			slog.Int("old_interval", oldCacheState.Janitor),
+			slog.Int("new_interval", newCacheState.Janitor),
+			slog.Int("old_max", oldCacheState.Max),
+			slog.Int("new_max", newCacheState.Max),
+		)
+	}
+	// 3. Flush the cache to apply new TTLs/rules
+	s.flushCache()
+
 	if err := s.loadDependentStores(); err != nil {
 		s.logFatal("Dependent stores reload failed:", err)
 		panic2("BUG: unreachable")
@@ -2410,18 +2436,7 @@ func (s *Server) Reload() {
 		log.Debug("Dependent stores reloaded successfully")
 	}
 
-	// 2. Re-initialize logging (applies new console levels or log files)
-	// Done late to keep the same logger until reload is mostly complete.
-	if err := s.rt.LogMgr.ApplyConfig(resolvedCfg); err != nil {
-		log.Error("Failed to apply logging config during reload; logging may be stale", wincoe.SafeErr(err))
-		// The core config is already live; log the error but do not abort the reload.
-	}
-	log = s.getLogger() // Grab the newly initialized logger
-
 	log.Info("All configuration files reloaded successfully")
-
-	// 3. Flush the cache to apply new TTLs/rules
-	s.flushCache()
 
 	// 4. Update the rate limiter with new QPS settings
 	s.rateLimiter.UpdateConfig(rateLimitConfigFrom(*cfgNew /*it's been updated*/))
@@ -2437,21 +2452,6 @@ func (s *Server) Reload() {
 	s.upstreamMgr.ReInitDoHClients()
 
 	//clearLoginLockouts()//wired in startWebUI
-
-	newCacheState := struct{ Janitor, Max int }{
-		cfgNew.CacheJanitorIntervalMinutes,
-		cfgNew.CacheMaxEntries,
-	}
-	// 2. Compare the entire struct at once
-	if oldCacheState != newCacheState {
-		s.swapDNSCache(cfgNew.CacheJanitorIntervalMinutes, cfgNew.CacheMaxEntries)
-		log.Warn("Cache janitor interval changed; cache instance replaced (all cached entries dropped)",
-			slog.Int("old_interval", oldCacheState.Janitor),
-			slog.Int("new_interval", newCacheState.Janitor),
-			slog.Int("old_max", oldCacheState.Max),
-			slog.Int("new_max", newCacheState.Max),
-		)
-	}
 
 	if oldCfg.MaxConcurrentDNSTCPConns != cfgNew.MaxConcurrentDNSTCPConns {
 		s.swapDNSTCPSemaphore(cfgNew.MaxConcurrentDNSTCPConns)
@@ -2528,14 +2528,14 @@ func (s *Server) Run() error {
 	// Full logging is already initialized by OldMain via rt.LogMgr.ApplyConfig
 	// before NewServer and Run are called. Nothing to do here.
 
+	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
+	log.Debug("Cache initialized")
+
 	// Load dependent data stores NOW, using the correct full logger
 	if err := s.loadDependentStores(); err != nil {
 		s.logFatal("Dependent stores load failed:", err)
 		panic2("BUG: unreachable")
 	}
-
-	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
-	log.Debug("Cache initialized")
 
 	s.rateLimiter = newClientRateLimiter(s.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
 	log.Debug("Rate limiter initialized")
@@ -6782,6 +6782,30 @@ func newRecentBlocksTracker() *RecentBlocksTracker {
 	}
 }
 
+// ClearBefore removes all blocked queries that occurred at or before the given cutoff time.
+// Returns the number of items successfully removed.
+func (t *RecentBlocksTracker) ClearBefore(cutoff time.Time) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cleared := 0
+	var next *list.Element
+
+	for e := t.lst.Front(); e != nil; e = next {
+		next = e.Next()
+		if bq, ok := e.Value.(*BlockedQuery); ok {
+			// If the block happened at or before the page render time
+			if !bq.Time.After(cutoff) {
+				delete(t.m, bq.Domain+":"+bq.Type)
+				t.lst.Remove(e)
+				cleared++
+			}
+		} else {
+			panic2("BUG: not of *BlockedQuery type")
+		}
+	}
+	return cleared
+}
+
 // Record adds or bumps a recent block entry, evicting the oldest if over maxBlocks.
 func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 	t.mu.Lock()
@@ -7384,6 +7408,8 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
 			"EnteredValue":   r.URL.Query().Get("val"),
+			// Inject current timestamp as a string so it easily embeds in the HTML
+			"RenderTime": fmt.Sprintf("%d", time.Now().UnixNano()),
 		}
 
 		ui.renderTemplate(w, r, "blocks", data)
@@ -7391,6 +7417,28 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	} //end GET HEAD
 
 	if r.Method == http.MethodPost { //"POST" {
+		action := r.FormValue("action")
+		// --- NEW: Handle the Clear Action ---
+		if action == "clear" {
+			cutoffStr := r.FormValue("cutoff")
+			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
+			if err != nil {
+				log.Warn("Failed to clear blocks: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
+				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
+				return
+			}
+			cutoff := time.Unix(0, cutoffNano)
+			cleared := ui.recentBlocks.ClearBefore(cutoff)
+
+			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
+			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
+
+			// This will automatically redirect and reload the page with the success banner
+			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
+			return
+		}
+		// --- END NEW ---
+
 		raw := r.FormValue("domain")
 
 		// Convert any Unicode (IDN) domain (e.g. "café.com") to punycode/ASCII
@@ -7426,7 +7474,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 		// accept sanitized
 		typ := r.FormValue("type")
-		action := r.FormValue("action")
+
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
 			switch action {

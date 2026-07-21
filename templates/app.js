@@ -1,6 +1,12 @@
 (() => {
     "use strict";
     
+    // --- UI State Storage Config ---
+    // Change this to `localStorage` to persist UI states (like table sorting 
+    // and textarea heights) across new tabs and browser restarts.
+    // or keep using `sessionStorage`
+    const uiStorage = localStorage;
+
     // --- Security & Extension Notices ---
     console.log(
         "%cⓘ [DNSbollocks Info]: The media block error directly above is harmless. " +
@@ -602,7 +608,7 @@
     //
     // opts:
     //   filterInputId    - id of the <input> holding the filter text
-    //   storageKey       - sessionStorage key used to persist the filter text
+    //   storageKey       - uiStorage key used to persist the filter text
     //   tbodySelector    - CSS selector for the table's <tbody>
     //   editRowClasses   - array of class names identifying an inline-edit <tr>
     //                      to always skip (in addition to 'being-edited')
@@ -619,7 +625,7 @@
         
         const raw = filterInput.value.trim().toLowerCase();
         const rawNorm = normalizeStr(raw);
-        sessionStorage.setItem(opts.storageKey, raw);
+        uiStorage.setItem(opts.storageKey, raw);
         
         const tbody = document.querySelector(opts.tbodySelector);
         if (!tbody) return;
@@ -1247,7 +1253,7 @@
                 // The user may have previously resized a textarea on this page.
                 // Apply the saved height if it is larger than the content height,
                 // so the preference is honoured without hiding any content.
-                const savedH = parseInt(sessionStorage.getItem(textareaHeightKey) || '0', 10);
+                const savedH = parseInt(uiStorage.getItem(textareaHeightKey) || '0', 10);
                 const finalH = Math.max(contentH, savedH, 85); // 85px is the CSS minimum
                 ta.style.height = finalH + 'px';
                 
@@ -1264,7 +1270,7 @@
                 ta.addEventListener('mouseup', () => {
                     const h = ta.offsetHeight;
                     if (h > 0) {
-                        sessionStorage.setItem(textareaHeightKey, String(h));
+                        uiStorage.setItem(textareaHeightKey, String(h));
                     }
                 });
                 
@@ -1278,7 +1284,7 @@
                     if (clickX >= rect.width - 20 && clickY >= rect.height - 20) {
                         if (confirm('Reset and stop remembering the custom textarea size?')) {
                             // Remove the preference completely
-                            sessionStorage.removeItem(textareaHeightKey);
+                            uiStorage.removeItem(textareaHeightKey);
                             
                             // Recalculate and snap layout back to natural content boundaries instantly
                             ta.style.height = 'auto';
@@ -1610,7 +1616,7 @@
         // Bind Rules filters on boot safely inside DOMContentLoaded
         const filterInput = document.getElementById('rulesFilter');
         if (filterInput) {
-            filterInput.value = sessionStorage.getItem('rulesTable_filter') || '';
+            filterInput.value = uiStorage.getItem('rulesTable_filter') || '';
             filterInput.addEventListener('input', () => {
                 applyRulesFilter();
             });
@@ -1735,7 +1741,7 @@
             btn.addEventListener('click', () => editHost(btn));
         });
         
-        // Delete forms: confirm, then conditionally clean the free-pass sessionStorage key.
+        // Delete forms: confirm, then conditionally clean the free-pass uiStorage key.
         // Reading pattern from the hidden <input name="pattern"> already inside the form
         // avoids adding any new data attributes to the HTML.
         document.querySelectorAll('.js-host-delete-form').forEach(form => {
@@ -1833,10 +1839,10 @@
             updateTableBanner();
         });
         
-        // Load filter value from persistent sessionStorage on page load
+        // Load filter value from persistent uiStorage on page load
         const hostsFilterInput = document.getElementById('hostsFilter');
         if (hostsFilterInput) {
-            hostsFilterInput.value = sessionStorage.getItem('hostsTable_filter') || '';
+            hostsFilterInput.value = uiStorage.getItem('hostsTable_filter') || '';
             hostsFilterInput.addEventListener('input', () => {
                 applyHostsFilter();
             });
@@ -1908,10 +1914,10 @@
             });
         });
         
-        // Load filter values from persistent sessionStorage on load tracking configuration
+        // Load filter values from persistent uiStorage on load tracking configuration
         const blacklistFilterInput = document.getElementById('blacklistFilter');
         if (blacklistFilterInput) {
-            blacklistFilterInput.value = sessionStorage.getItem('blacklistTable_filter') || '';
+            blacklistFilterInput.value = uiStorage.getItem('blacklistTable_filter') || '';
             blacklistFilterInput.addEventListener('input', () => {
                 applyBlacklistFilter();
             });
@@ -2038,7 +2044,7 @@
         // Bind event listener and restore saved state on page load
         const configFilterInput = document.getElementById('configFilter');
         if (configFilterInput) {
-            configFilterInput.value = sessionStorage.getItem('configTable_filter') || '';
+            configFilterInput.value = uiStorage.getItem('configTable_filter') || '';
             configFilterInput.addEventListener('input', applyConfigFilter);
             // Run immediately on page boot to apply the active filter
             applyConfigFilter();
@@ -2086,9 +2092,9 @@
             function applySort(th, newDir) {
                 const colIndex = parseInt(th.dataset.col);
                 
-                // 2. Save the new sorting state to sessionStorage so it survives page reloads
-                sessionStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
-                sessionStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
+                // 2. Save the new sorting state to uiStorage so it survives page reloads
+                uiStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
+                uiStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
                 
                 // Reset all headers
                 headers.forEach(h => {
@@ -2146,8 +2152,8 @@
             });
             
             // Restore sort state on load WITHOUT a synthetic click / forced layout
-            const savedCol = sessionStorage.getItem(storageKeyPrefix + '_sortCol');
-            const savedDir = sessionStorage.getItem(storageKeyPrefix + '_sortDir');
+            const savedCol = uiStorage.getItem(storageKeyPrefix + '_sortCol');
+            const savedDir = uiStorage.getItem(storageKeyPrefix + '_sortDir');
             
             if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
                 const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
