@@ -1,5 +1,10 @@
 todo:
-* fix wrong things in v0.29.0 (todo: done:) https://gemini.google.com/app/5ee548df8baa0efc listed below:
+* if cfg.UseEDEInBlockedReply is false then it seems i'm still adding an opt record but without the EDE0 part, yet the comment seems to say that "opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records", so do I have to do opt.SetDo() even if cfg.UseEDEInBlockedReply is false ? or only if it's true for it to be compliant?!
+* **EDNS0 Fingerprinting:** `blockResponse` modifies the `OPT` record to enforce a `1232` UDP size ceiling (`opt.SetUDPSize(ourMax)`). Mutating the EDNS0 behavior specifically for blocked queries creates a fingerprinting vector, making it obvious to a client that the proxy intercepted the request.
+
+* it seems that several webUI buttons can have this feature: once clicked should be greyed out so they can't be clicked more than once while the request or reload is in progress! but if the fetch or wtw fails, then ungrey them so they can be clicked again. So basically while in-flight, greyed(disabled), otherwise ungreyed(enabled/clickable). 
+
+* fix wrong things in v0.29.0 https://gemini.google.com/app/5ee548df8baa0efc listed below:
 ### 🔴 Concurrency & Race Conditions
 
 * **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
@@ -19,10 +24,8 @@ todo:
 
 ### 🔴 API & OS Integration Quirks
 
-* **ACL Preservation Failure:** `ReplaceFileW` in `win11SafeFileWriter` is invoked without the `REPLACEFILE_IGNORE_ACL_ERRORS` flag. On many Windows environments, moving files across security zones (like a Temp directory to a System directory) will instantly fail the ACL merge, causing the transaction to abort and permanently degrade to the truncation fallback.
-* **Weak Key Permissions:** In `generateCert`, the private key file is created with `os.O_TRUNC`. On Windows, `O_TRUNC` on an existing file preserves the existing file's Security Descriptors (ACLs). If a low-privilege user previously created a dummy `key.pem`, the new private key inherits those weak permissions despite the `0600` argument in `OpenFile`.
+* **Weak Key Permissions:** In `generateCert`, the private key file is created with `os.O_TRUNC`. On Windows, `O_TRUNC` on an existing file preserves the existing file's Security Descriptors (ACLs). If a low-privilege user previously created a dummy `key.pem`, the new private key inherits those weak permissions despite the `0600` argument in `OpenFile`. Keeping the ACLs is good/intended, however we should ensure the 0600 is set ie. setattr?
 * **Aggressive Stdin Flushing:** `ClearStdinIfTermIsNOTRaw` relies on `GetNumberOfConsoleInputEvents`. This Win32 API counts *all* input events—including mouse movements, window resizes, and focus events. It will aggressively flush the buffer even if the user never touched the keyboard.
-* **EDNS0 Fingerprinting:** `blockResponse` modifies the `OPT` record to enforce a `1232` UDP size ceiling (`opt.SetUDPSize(ourMax)`). Mutating the EDNS0 behavior specifically for blocked queries creates a fingerprinting vector, making it obvious to a client that the proxy intercepted the request.
 
 ### 🔴 Frontend / UI Oddities
 
@@ -46,6 +49,7 @@ nevermind/quirks(I don't wanna fix these):
 * if I Edit an entry(Stage it but not Apply it), then Delete it, the Undelete will recover the original one not the last edited value(s).
 * if I filter and put the "!" after the word (even with a space) it acts as if it's !word so it excludes it.
 //* **Global Logging Bottleneck:** `ColoredConsoleHandler.Handle` locks a mutex (`h.Mu.Lock()`) across *all* goroutines for every single log message just to increment a shared counter (`*h.Counter++`) for zebra-striping rows. No it's not just for this, I think, or at least it seems to be for more things (until func is done, also this is supposed to be async logging, no?! so no contention). This creates severe lock contention on high-throughput paths like DNS packet parsing.
+//* **ACL Preservation Failure:** `ReplaceFileW` in `win11SafeFileWriter` is invoked without the `REPLACEFILE_IGNORE_ACL_ERRORS` flag. On many Windows environments, moving files across security zones (like a Temp directory to a System directory) will instantly fail the ACL merge, causing the transaction to abort and permanently degrade to the truncation fallback. This is intended, I wanna keep the target's ACLs and if it can't do that, then it's unacceptable.
 
 doNOTdo:
 * make Edit button work without javascript? in webUI; Add/Delete already do work tho. This is too much work, not gonna do it because I'm not gonna use the program anyway since switching to Linux where I won't need it in this form.
