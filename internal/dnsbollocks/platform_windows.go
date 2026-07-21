@@ -4651,6 +4651,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				// logQuery ran, which asserts the correct type and does show the
 				// real exe name).
 				if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
+					//XXX: caveat so when using {builtin:clientexe} int he upstream url, the network request waits/depends on Windows API to resolve the pid->exe mapping of the client which issues the request before starting the DNS query (network request)
 					future.wg.Wait() // must block: we cannot build the request URL without the real name
 					if future.info.exe != "" {
 						//// Optionally strip the .exe extension for cleaner NextDNS logs
