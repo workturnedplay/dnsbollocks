@@ -90,7 +90,7 @@ type Config struct {
 	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
-	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (for DoH clients it actually replies with 503 Service Unavailable)."`
+	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (for DoH clients it actually replies with 503 Service Unavailable, otherwise it will just cause long waits/timeouts for clients by not replying anything, TODO: maybe remove this drop mode)."`
 	//cantFIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two: // cantFIXME: Go struct tags must be string literals.
 	BlockIP   string `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
 	BlockIPv6 string `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
@@ -4222,6 +4222,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// clients rejecting replies because of mismatched transaction IDs.
 		resp := cached.Copy()
 		resp.Id = reqMsg.Id
+		// Preserve ORIGINAL client casing in Question section (critical for strict clients)
+		//"Question is the main RFC requirement. Most clients only care about Question." -Grok 4 Fast
+		if len(resp.Question) > 0 && len(reqMsg.Question) > 0 {
+			resp.Question[0].Name = reqMsg.Question[0].Name // echo exact client casing
+		}
+		//FIXME: "Also fix Answer/NS/etc. names if you want full canonical preservation"
+
 		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
 		ips := extractIPs(resp)
 
@@ -4971,7 +4978,9 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 	// and we whitelist it in A afterwards, then dnscache might've cached the NXDOMAIN from AAAA and treat it as such for X more seconds thus
 	// it's best to always NODATA(aka NOERROR with 0 answers, as per Gemini) this here regardless of whether its A is or isn't allowed
 	// to avoid this case where dnscache win11 service caches the NXDOMAIN!
-	if cfg.BlockAAAAasEmptyNoError && len(reqMsg.Question) > 0 && reqMsg.Question[0].Qtype == dns.TypeAAAA && (cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {
+	if cfg.BlockAAAAasEmptyNoError && len(reqMsg.Question) > 0 && reqMsg.Question[0].Qtype == dns.TypeAAAA &&
+		cfg.BlockMode == blockModeNXDOMAIN {
+		//(cfg.BlockMode == blockModeNXDOMAIN || cfg.BlockMode == blockModeDrop) {//commented out for "drop" because: "Use NXDOMAIN for fast fallback; Drop accepts timeout penalty for true stealth."
 		resp := new(dns.Msg)
 		resp.SetReply(reqMsg)
 		resp.Rcode = dns.RcodeSuccess

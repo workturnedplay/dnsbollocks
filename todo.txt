@@ -1,7 +1,15 @@
 todo:
+* since I now return a cached entry with the question's case-sensitive Name, should I rewrite the answer/NS/etc. to use same case? but what if some checksums are somewhere and won't match then? or should I just I dno, keep the cache key the same case as the question instead? even if that may create more entries? because i hear the client may case about case-sensitivity of the domain when receiving the reply!
+
+* double check if the cache will hit or miss different case DNS query since it seems to at least check for lowercase domain, does it store only the same lowercase domain key? unsure, seems yes tho.
+
+* we should color the "failed_upstreams=" key(without the "=" ofc) with red in the logQuery()
+
 * see if I missed more config settings which when changed require rebinding the listeners that use/depend_on them. Last one I fixed was Config.DNSUDPBufferSize , I put it in dnsListenerParams !
 
-* inconsistencies detected (todo: 1,2,3,4,5 done: ) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
+* inconsistencies detected (todo: 3 done: 1,2,5 worksasintended: 4) for v0.28.1 https://gemini.google.com/app/c9249f56c01f6cab
+  * this is 3. (from the gemini url) properly rename removeHTTPSIPv4Hints to removeHTTPSIPHints since it removes IPv6 ones too! obviously rename all relevant stuff about it like the json tag. Don't include migration code. The user aka me, should manually rename the old key from config.json
+
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
 
