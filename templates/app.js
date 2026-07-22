@@ -8,8 +8,9 @@
     const uiStorage = localStorage;
 
     // --- Security & Extension Notices ---
+    //FIXME: this doesn't seem to appear anymore, unclear what and when I've change something!:
     console.log(
-        "%cⓘ [DNSbollocks Info]: The media block error directly above is harmless. " +
+        "%cⓘ [DNSbollocks Info]: The media block error directly above(FIXME: if it even appears anymore!) is harmless. " +
         "It occurs because extensions like NoScript inject layout placeholders into the page, " +
         "which our strict security policy safely rejects. No action is needed! Though if you want to change the source "+
         "replace \"media-src 'none'; \"+ with \"media-src 'self' data:; \"+ in the platform_windows.go file in function securityHeadersMiddleware.",
@@ -1335,7 +1336,8 @@
         if (!confirm('Applying changes will overwrite ' + configFileName + ' and gracefully restart listeners.\n\n' +
             'The existing ' + configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.\n\nProceed?')) return;
 
-        const success = await withApplyButtonBusy(e.currentTarget, 'Applying\u2026', () => postAdminForm('/config', {
+        const success = await withApplyButtonBusy(e.currentTarget, 'Applying\u2026', () => postAdminForm(
+          '/config', {
             'action': 'apply',
             'payload': JSON.stringify(stagedChanges),
             'config_version': configVersion
@@ -1684,6 +1686,34 @@
         if (blocksRefreshBtn) {
             blocksRefreshBtn.addEventListener('click', () => {
                 window.location.href = '/blocks';
+            });
+        }
+        
+        // Clear Shown Blocks: grey the button while the request is in flight
+        // (matching withApplyButtonBusy's pattern used elsewhere) so a slow or
+        // temporarily-firewalled backend can't be double-submitted by a second
+        // click, and un-grey it again on failure so the user can retry.
+        const blocksClearForm = document.querySelector('.js-blocks-clear-form');
+        if (blocksClearForm) {
+            blocksClearForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                if (!confirm('Clear all currently shown blocks?\n\n(New blocks that occurred since you loaded the page will be kept safely.)')) {
+                    return;
+                }
+                const btn = blocksClearForm.querySelector('button[type="submit"]');
+                (async () => {
+                    const success = await withApplyButtonBusy(btn, 'Clearing\u2026', () => postAdminForm(
+                        blocksClearForm.getAttribute('action'),// this is '/blocks'
+                        {
+                            action: blocksClearForm.querySelector('[name="action"]').value,
+                            cutoff: blocksClearForm.querySelector('[name="cutoff"]').value,
+                        },
+                        'Failed to clear shown blocks'
+                    ));
+                    if (success) {
+                        location.reload();
+                    }
+                })();
             });
         }
         

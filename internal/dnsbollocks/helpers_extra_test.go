@@ -65,6 +65,33 @@ func TestIsLoopbackBindHost(t *testing.T) {
 	}
 }
 
+func TestGetCleanIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"IPv4 with port", "203.0.113.5:1234", "203.0.113.5"},
+		{"IPv4 loopback with port", "127.0.0.1:53", "localhost"},
+		{"bare localhost", "localhost", "localhost"},
+		{"localhost with port", "localhost:8080", "localhost"},
+		{"IPv6 with port", "[2001:db8::1]:443", "2001:db8::1"},
+		{"IPv6 loopback with port", "[::1]:443", "localhost"},
+		{"bracketed IPv6 without port", "[2001:db8::1]", "2001:db8::1"},
+		{"bracketed IPv6 loopback without port", "[::1]", "localhost"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotErr error
+			got := getCleanIP(tt.input, func(err error) { gotErr = err })
+			if got != tt.expected {
+				t.Errorf("getCleanIP(%q) = %q, want %q (errFn err: %v)", tt.input, got, tt.expected, gotErr)
+			}
+		})
+	}
+}
+
 // ── retryFileOp ──────────────────────────────────────────────────────────────
 
 func TestRetryFileOp_SucceedsFirstTry(t *testing.T) {

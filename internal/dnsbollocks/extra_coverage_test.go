@@ -16,6 +16,7 @@ package dnsbollocks
 // (admin_ui_test.go) from elsewhere in this package.
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -168,7 +169,7 @@ func TestBlockResponse_UnknownModePanics(t *testing.T) {
 }
 
 func TestBlockResponse_EDE(t *testing.T) {
-	t.Run("EDE enabled adds EDNS0_EDE option and sets DO bit", func(t *testing.T) {
+	t.Run("EDE enabled adds EDNS0_EDE option and DO bit stays unset", func(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.BlockMode = "nxdomain"
 		cfg.UseEDEInBlockedReply = true
@@ -179,8 +180,8 @@ func TestBlockResponse_EDE(t *testing.T) {
 		if opt == nil {
 			t.Fatal("expected an OPT record in Extra")
 		}
-		if !opt.Do() {
-			t.Error("expected DO bit to be set when EDE is enabled")
+		if opt.Do() {
+			t.Error("expected DO bit to remain unset even when EDE is enabled (DO signals DNSSEC acceptance, unrelated to OPT record parsing)")
 		}
 		if len(opt.Option) != 1 {
 			t.Fatalf("expected exactly one EDNS0 option, got %d", len(opt.Option))
@@ -194,7 +195,7 @@ func TestBlockResponse_EDE(t *testing.T) {
 		}
 	})
 
-	t.Run("EDE disabled omits EDNS0 option", func(t *testing.T) {
+	t.Run("EDE disabled omits EDNS0 option and DO bit stays unset", func(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.BlockMode = "nxdomain"
 		cfg.UseEDEInBlockedReply = false
@@ -384,6 +385,29 @@ func TestLoginTracker_LockoutExpiry(t *testing.T) {
 	allowed, remaining, _ := lt.IsAllowed(ip, maxFailures)
 	if !allowed || remaining != maxFailures {
 		t.Errorf("expected lockout to expire and reset, got allowed=%v remaining=%d", allowed, remaining)
+	}
+}
+
+func TestLoginTracker_LRUEvictionBoundsMemory(t *testing.T) {
+	lt := newLoginTracker()
+
+	const extra = 50
+	for i := 0; i < loginTrackerMaxEntries+extra; i++ {
+		ip := fmt.Sprintf("synthetic-ip-%d", i)
+		lt.RecordFailure(ip, 5, 60)
+	}
+
+	lt.mu.Lock()
+	gotRecords := len(lt.records)
+	gotLRU := lt.lru.Len()
+	gotElems := len(lt.lruElem)
+	lt.mu.Unlock()
+
+	if gotRecords > loginTrackerMaxEntries {
+		t.Errorf("expected records map to stay capped at %d, got %d", loginTrackerMaxEntries, gotRecords)
+	}
+	if gotLRU != gotRecords || gotElems != gotRecords {
+		t.Errorf("expected lru (%d) and lruElem (%d) to stay in sync with records (%d)", gotLRU, gotElems, gotRecords)
 	}
 }
 

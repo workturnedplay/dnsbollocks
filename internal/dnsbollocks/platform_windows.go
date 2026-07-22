@@ -185,7 +185,7 @@ type Config struct {
 	ExtraSafety bool `json:"extra_safety" desc:"Enable extra defensive checks: duplicate-entry detection in JSON files, power-loss staging files for atomic writes, and strict purging of malformed or duplicate rules on load. Recommended for production."`
 }
 
-// 1. Create a wrapper struct
+// LiveConfigs a wrapper struct
 type LiveConfigs struct {
 	Resolved *Config // resolved (runtime use) // shared with AdminUI, fileWriter, etc.
 	Raw      *Config //tokens preserved (disk use) like "{file:id.key}" is preserved not resolved like liveConfig has it.
@@ -2487,12 +2487,15 @@ func (s *Server) Reload() {
 	log.Info("Config reload complete. Listeners, cache, and connection limits rebound as needed.")
 }
 
-func (s *Server) Run() error {
+func (s *Server) Run(sigChan chan os.Signal) error {
 	log := s.getLogger()
 
-	// Signals setup FIRST: Catch interrupts from init onward
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// Signal handling was already registered on sigChan as early as possible
+	// in OldMain (before config loading, before this Server even existed), so
+	// a Ctrl+C during the potentially lengthy boot sequence is queued by the
+	// Go runtime rather than falling through to the default disposition
+	// (immediate termination, skipping any buffered log flush). We just take
+	// over reading from that same channel here.
 	defer signal.Stop(sigChan)
 	log.Debug("Signal channel ready - Ctrl+C to shutdown gracefully")
 
@@ -2674,6 +2677,17 @@ func OldMain() {
 	//     }
 	// }()
 
+	// Register OS signal handling (Ctrl+C / SIGTERM) as early as possible —
+	// well before config loading, logger initialization, or Server creation —
+	// so a signal arriving during that potentially lengthy bootstrap window is
+	// queued by the Go runtime's signal machinery instead of falling through
+	// to the default disposition (immediate process termination, which would
+	// skip flushing any buffered log lines written so far). The same channel
+	// is threaded through to Server.Run(), which is the first place actually
+	// equipped to act on it via the full graceful-shutdown sequence.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	// ── 1. Build the Runtime (long-lived infrastructure) ─
 	// The LogManager starts with the bootstrap logger; ApplyConfig will upgrade
 	// it once the real config is validated.
@@ -2777,7 +2791,7 @@ func OldMain() {
 		}
 	}
 
-	if err3 := srv.Run(); err3 != nil {
+	if err3 := srv.Run(sigChan); err3 != nil {
 		rt.Logger().Error("Server exited with error", wincoe.SafeErr(err3))
 		srv.shutdown(1)
 		panic2("BUG: unreachable")
@@ -3677,11 +3691,27 @@ type clientMetadata struct {
 
 type ClientMetadataFuture struct {
 	wg   sync.WaitGroup
+	done chan struct{} // closed once info is fully populated; enables a non-blocking peek via TryExe
 	info clientMetadata
 }
 
+// TryExe reports the resolved executable name without blocking the caller.
+// It returns ("", false) if the underlying OS-level PID/exe lookup hasn't
+// finished yet. Callers that can tolerate an occasional "unknown" exe name in
+// exchange for never blocking (e.g. logging a rate-limited request) should use
+// this instead of Wait()ing on the WaitGroup — see handleDNSQuery's rate-limit
+// branch for why blocking there is actively harmful under a UDP flood.
+func (f *ClientMetadataFuture) TryExe() (exe string, ready bool) {
+	select {
+	case <-f.done:
+		return f.info.exe, true
+	default:
+		return "", false
+	}
+}
+
 func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clientAddr net.Addr) context.Context {
-	future := &ClientMetadataFuture{}
+	future := &ClientMetadataFuture{done: make(chan struct{})}
 	future.info.protocol = protocol
 	future.info.clientAddr = clientAddr
 	future.info.startTime = time.Now() // Capture start time
@@ -3689,6 +3719,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 
 	s.GoSafe(func() {
 		defer future.wg.Done()
+		defer close(future.done)
 		var pid uint32
 		var exe string
 		var err error
@@ -4075,6 +4106,12 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFC 8484 §5.1: advertise how long this response may be cached by any
+	// intermediate HTTP cache, derived from the DNS answer's own TTL — the
+	// same clamped-to-floor computation already used for our own DNS cache
+	// (see computeTTLForCaching), so both caching layers agree on freshness.
+	cacheSeconds := int(computeTTLForCaching(resp).Seconds())
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", cacheSeconds))
 	w.Header().Set("Content-Type", "application/dns-message")
 	w.Header().Set("Content-Length", fmt.Sprint(len(pack)))
 	w.WriteHeader(http.StatusOK)
@@ -4152,19 +4189,22 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
-		//log.Warn(reason, slog.String("client", clientAddr))
-		// Extract executable from context for better logging
-		// var exeName string
-		// if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok && info.exe != "" {
-		// 	exeName = info.exe
-		// } else {
-		// 	exeName = "<unknown_exe>"
-		// }
 		var exeName string = "<unknown_exe>"
 		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
-			future.wg.Wait() //waits for the future but only is rate limited!
-			if future.info.exe != "" {
-				exeName = future.info.exe
+			// Non-blocking peek only: a rate-limited request must never wait on
+			// the synchronous OS-level PID/exe lookup. Blocking here (as this
+			// used to do via future.wg.Wait()) would tie up this goroutine's
+			// concurrency-limiter slot (dnsUDPSem/dnsTCPSem) waiting on the OS
+			// instead of freeing it immediately once rate-limited, which under a
+			// UDP flood defeats the entire point of rate-limiting: shedding load
+			// fast. An occasional "<pending_lookup>" in this one log line is a
+			// fine trade for that. FIXME: not so sure about that! May need to revisit this maybe postpone logQuery itself, or log it with pending but then log it again when finished?!
+			if exe, ready := future.TryExe(); ready {
+				if exe != "" {
+					exeName = exe
+				}
+			} else {
+				exeName = "<pending_lookup>"
 			}
 		}
 
@@ -4671,6 +4711,16 @@ func classifyRetryableDoHError(err error) (reason string, retryable bool) {
 	}
 }
 
+// maxUpstreamDoHResponseBytes bounds how many bytes doSingleDoHRequest will
+// ever read from a single upstream DoH HTTP response body. Real DNS response
+// messages (even generous ones with many DNSSEC signatures) are dwarfed by
+// this; it exists purely as a defensive backstop against a compromised or
+// badly misconfigured upstream returning a multi-gigabyte payload, which
+// would otherwise force io.ReadAll to buffer the entire thing in memory and
+// could exhaust available RAM well before this proxy ever got a chance to
+// reject it as malformed.
+const maxUpstreamDoHResponseBytes = 4 * 1024 * 1024 // 4 MiB
+
 func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
 	log := u.getLogger()
 
@@ -4887,10 +4937,20 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	}
 
 	// ✅ This will now execute perfectly! The context is guaranteed to stay alive here.
-	body, err4ReadAll := io.ReadAll(resp.Body)
+	// Cap how much we'll ever read from a single upstream response: see
+	// maxUpstreamDoHResponseBytes's doc comment for why this exists as a
+	// defensive backstop against a compromised/misconfigured upstream.
+	limitedBody := io.LimitReader(resp.Body, maxUpstreamDoHResponseBytes+1)
+	body, err4ReadAll := io.ReadAll(limitedBody)
 	if err4ReadAll != nil {
 		log.Error("doh_readbody_failed", wincoe.SafeErr(err4ReadAll))
 		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll /*non-nil here*/)
+	}
+	if len(body) > maxUpstreamDoHResponseBytes {
+		log.Error("doh_upstream_response_too_large",
+			slog.Int("body_len", len(body)),
+			slog.Int("max_allowed_bytes", maxUpstreamDoHResponseBytes))
+		return nil, fmt.Errorf("upstream DoH response body exceeded maximum allowed size of %d bytes", maxUpstreamDoHResponseBytes)
 	}
 
 	// debug/log non-200 or unexpected content-type
@@ -5131,10 +5191,15 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 	// It prevents IP fragmentation on modern networks
 	//opt.SetUDPSize(1232) // Safer modern size, affects only current response. "What it actually does: When a client sends a query, it often includes its own OPT record saying "I can accept up to X bytes." By responding with SetUDPSize(1232), you are saying "I am sending this reply, and I'm letting you know my maximum limit is 1232."", "Future Queries: It does not bind future queries to that size. Each request/response pair is independent."
 
-	// Only allocate memory for EDE and set the DNSSEC OK bit if the feature is actually enabled.
+	// Only allocate memory for the EDE option if the feature is actually enabled.
+	// Note: we deliberately never call opt.SetDo() here. The DO ("DNSSEC OK") bit
+	// only signals that the sender wants/accepts DNSSEC data; it has no bearing on
+	// whether a client parses the OPT pseudo-record at all (that's controlled purely
+	// by the OPT record's presence, independent of any flag inside it). Setting DO
+	// on a reply we never validated or forwarded any DNSSEC data for would be
+	// misleading, and the old "some browsers require this to process OPT records"
+	// justification for setting it is folklore, not accurate.
 	if cfg.UseEDEInBlockedReply {
-		//"The DO ("DNSSEC OK") bit only signals that the sender wants/accepts DNSSEC data — it has nothing to do with whether a client parses the OPT pseudo-record at all (that's controlled purely by the OPT record's presence, independent of any flag inside it). The comment "some browsers require this to process OPT records" is folklore, not accurate." - Claude Sonnet 5 Extra Thinking
-		opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
 		// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
 		// 1. Manually build the EDE struct using the global variables
 		ede := &dns.EDNS0_EDE{
@@ -6908,14 +6973,63 @@ func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bo
 	return result
 }
 
+// loginTrackerMaxEntries bounds worst-case memory growth of LoginTracker.records.
+// Each entry is tiny, but without a cap, an attacker able to complete a real TCP
+// handshake from a very large number of distinct source IPs (unlike UDP DNS
+// traffic, a WebUI login attempt cannot be spoofed — the attacker needs a real,
+// completed connection, e.g. via a botnet) and send repeated malformed or
+// incorrect Basic-Auth requests would otherwise grow this map without bound
+// until the process runs out of memory. Least-recently-touched entries are
+// evicted first once the cap is reached.
+const loginTrackerMaxEntries = 10000
+
 // LoginTracker records login failures and enforces per-IP lockout.
 type LoginTracker struct {
 	mu      sync.Mutex
-	records map[string]*loginRecord // guarded by loginMu; lazily cleaned on access
+	records map[string]*loginRecord  // guarded by mu; lazily cleaned on access
+	lru     *list.List               // front = most recently touched clientIP
+	lruElem map[string]*list.Element // clientIP -> its element in lru
 }
 
 func newLoginTracker() *LoginTracker {
-	return &LoginTracker{records: make(map[string]*loginRecord)}
+	return &LoginTracker{
+		records: make(map[string]*loginRecord),
+		lru:     list.New(),
+		lruElem: make(map[string]*list.Element),
+	}
+}
+
+// touchLocked records clientIP as the most-recently-used entry, evicting the
+// least-recently-used one (from both records and the LRU tracking structures)
+// if the tracker is now over loginTrackerMaxEntries. Caller must hold lt.mu.
+func (lt *LoginTracker) touchLocked(clientIP string) {
+	if elem, ok := lt.lruElem[clientIP]; ok {
+		lt.lru.MoveToFront(elem)
+		return
+	}
+	elem := lt.lru.PushFront(clientIP)
+	lt.lruElem[clientIP] = elem
+	if lt.lru.Len() > loginTrackerMaxEntries {
+		oldest := lt.lru.Back()
+		if oldest == nil {
+			return
+		}
+		lt.lru.Remove(oldest)
+		if ip, ok := oldest.Value.(string); ok {
+			delete(lt.lruElem, ip)
+			delete(lt.records, ip)
+		}
+	}
+}
+
+// forgetLocked removes clientIP from both the records map and the LRU
+// tracking structures. Caller must hold lt.mu.
+func (lt *LoginTracker) forgetLocked(clientIP string) {
+	delete(lt.records, clientIP)
+	if elem, ok := lt.lruElem[clientIP]; ok {
+		lt.lru.Remove(elem)
+		delete(lt.lruElem, clientIP)
+	}
 }
 
 func (lt *LoginTracker) IsAllowed(clientIP string, maxFailures int) (allowed bool, remaining int, lockedUntil time.Time) {
@@ -6951,6 +7065,7 @@ func (lt *LoginTracker) RecordFailure(clientIP string, maxFailures, lockoutSec i
 		rec = &loginRecord{}
 		lt.records[clientIP] = rec
 	}
+	lt.touchLocked(clientIP)
 
 	// Expired lockout: start a fresh window.
 	if !rec.lockedUntil.IsZero() && now.After(rec.lockedUntil) {
@@ -6976,7 +7091,7 @@ func (lt *LoginTracker) RecordFailure(clientIP string, maxFailures, lockoutSec i
 func (lt *LoginTracker) RecordSuccess(clientIP string) {
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
-	delete(lt.records, clientIP)
+	lt.forgetLocked(clientIP)
 }
 
 // ClearAll wipes all records and returns how many were removed.
@@ -6985,6 +7100,8 @@ func (lt *LoginTracker) ClearAll() int {
 	defer lt.mu.Unlock()
 	n := len(lt.records)
 	lt.records = make(map[string]*loginRecord)
+	lt.lru = list.New()
+	lt.lruElem = make(map[string]*list.Element)
 	return n
 }
 
@@ -9554,6 +9671,14 @@ func (s *Server) runDNSUDPLoop(ctx context.Context, udpLn *net.UDPConn) {
 	} //infinite 'for'
 }
 
+// dnsTCPKeepAlivePeriod is the OS-level TCP keep-alive probe interval applied
+// to every accepted plain-DNS-over-TCP client connection (see runDNSTCPLoop).
+// This lets the OS network stack detect and reap dead/idle/misbehaving client
+// connections instead of them lingering silently until our own read/write
+// deadlines (ClientTCPTimeoutSec, applied per I/O operation, not to a fully
+// idle connection) eventually catch them.
+const dnsTCPKeepAlivePeriod = 30 * time.Second
+
 func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 	log2 := s.getLogger()
 	log2.Info("TCP DNS listening", slog.String("address", tcpLn.Addr().String()))
@@ -9572,6 +9697,17 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 
 				log3.Warn("tcp_accept_error", wincoe.SafeErr(err))
 				continue
+			}
+		}
+
+		// Enable OS-level TCP keep-alive probes so idle, broken, or
+		// misbehaving client connections are detected and reaped by the OS
+		// network stack, rather than lingering silently in memory.
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			if err2 := tcpConn.SetKeepAlive(true); err2 != nil {
+				log3.Debug("failed to enable TCP keep-alive on accepted DNS TCP connection", wincoe.SafeErr(err2))
+			} else if err3 := tcpConn.SetKeepAlivePeriod(dnsTCPKeepAlivePeriod); err3 != nil {
+				log3.Debug("failed to set TCP keep-alive period on accepted DNS TCP connection", wincoe.SafeErr(err3))
 			}
 		}
 
@@ -11810,6 +11946,15 @@ func punycodeEncodePattern(pattern string) (encoded string, wasIDN bool, err err
 		if encErr != nil {
 			return pattern, false, fmt.Errorf("failed to convert unicode label %q to punycode: %w", label, encErr)
 		}
+		if len(ascii) > 63 {
+			// RFC 1035 §3.1 hard-caps every DNS label at 63 octets. A label that
+			// blows past this once expanded to punycode can never match any real
+			// wire-format DNS query, so reject it now rather than silently saving
+			// an unusable rule.
+			return pattern, false, fmt.Errorf(
+				"unicode label %q expands to punycode label %q (%d chars), exceeding the DNS 63-character label limit",
+				label, ascii, len(ascii))
+		}
 		labels[i] = ascii
 		wasIDN = true
 	}
@@ -13105,6 +13250,14 @@ func getCleanIP(remoteAddr string, runFnOnError func(err error)) string {
 	// is perfectly valid depending on where the address originated.
 	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		ipStr = host
+	} else if strings.HasPrefix(ipStr, "[") && strings.HasSuffix(ipStr, "]") {
+		// Bracketed IPv6 literal with no port (e.g. "[fe80::1]"): SplitHostPort
+		// requires a port and fails on this form, and net.ParseIP does not
+		// understand the surrounding brackets either. Strip them manually so
+		// this still resolves to a real IP below (and loopback variants still
+		// collapse to "localhost"), instead of silently falling through to the
+		// raw bracketed string and fracturing rate-limiter IP tracking.
+		ipStr = ipStr[1 : len(ipStr)-1]
 	}
 
 	// 2. Fast-path for "localhost" (either passed bare or extracted from "localhost:port")

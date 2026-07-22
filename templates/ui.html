@@ -4,6 +4,9 @@
     <meta name="csrf-token" content="{{.CSRFToken}}">
     <link rel="stylesheet" href="/static/style.css?v={{.Version}}">
 </head><body>
+<!-- WARNING: no style= are allowed in this html due to tight CSP rules! all must live in style.css and referred to via class= here ; otherwise you get this:
+ Content-Security-Policy: The page’s settings blocked an inline style (style-src-attr) from being applied because it violates the following directive: “style-src 'self'”. Consider using a hash
+ -->
     <noscript>
         <div class="noscript-banner">
             JavaScript is disabled.
@@ -175,7 +178,7 @@
     <h2 class="header-inline">Recent Blocks (Quick Unblock)</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
     
-    <form method="post" action="/blocks" class="d-inline" style="margin-left: 15px;" onsubmit="return confirm('Clear all currently shown blocks?\n\n(New blocks that occurred since you loaded the page will be kept safely.)');">
+    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="clear">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">

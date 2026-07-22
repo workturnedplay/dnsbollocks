@@ -449,6 +449,9 @@ tr.edit-row td.edit-id-display {
 /* Blocks page: inline pending/success/failure feedback for the background
    fetch()-based Unblock/Re-block actions (see app.js .js-block-action-form). */
 .btn-action-pending { opacity: 0.6; cursor: wait; }
+.js-blocks-clear-form {
+    margin-left: 15px;
+}
 
 .block-action-feedback { margin-left: 8px; font-size: 0.85em; }
 .block-action-feedback-success { color: var(--success); font-weight: bold; }
