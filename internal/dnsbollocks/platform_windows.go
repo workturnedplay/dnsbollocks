@@ -5463,7 +5463,7 @@ func SafeSlice[T any](key string, slice []T, mapper func(T) string) slog.Attr {
 
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
-func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, blocked *dns.Msg, upstreamState2 UpstreamState) {
+func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, respMsg *dns.Msg, upstreamState2 UpstreamState) {
 	log := s.getLogger()
 
 	if ctx == nil {
@@ -5483,9 +5483,9 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	// extra worth logging twice.
 	displayDomain, domainIsIDN := punycodeDecodePatternForDisplay(domain)
 
-	var blockedMsgStr string
-	if blocked != nil { //XXX: must do it here, else it will race!
-		blockedMsgStr = blocked.String()
+	var respMsgStr string
+	if respMsg != nil { //XXX: must do it here, else it will race!
+		respMsgStr = respMsg.String()
 	}
 
 	// Fire and forget logging so the DNS response isn't delayed
@@ -5563,8 +5563,8 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 			slog.String("category", "query"), // <-- this routes it to "queries.log" only
 		)
 
-		if blockedMsgStr != "" {
-			attrs = append(attrs, slog.String("blocked_dnsMsg", blockedMsgStr))
+		if respMsgStr != "" {
+			attrs = append(attrs, slog.String("blocked_dnsMsg", respMsgStr))
 		}
 
 		// Inject the upstream-state payload
