@@ -1,20 +1,17 @@
 todo:
+* make the webUI's Enable rule checkbox be bigger so it's not target practice when trying to enable/disable the rule
+
 * if cfg.UseEDEInBlockedReply is false then it seems i'm still adding an opt record but without the EDE0 part, yet the comment seems to say that "opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records", so do I have to do opt.SetDo() even if cfg.UseEDEInBlockedReply is false ? or only if it's true for it to be compliant?!
 * **EDNS0 Fingerprinting:** `blockResponse` modifies the `OPT` record to enforce a `1232` UDP size ceiling (`opt.SetUDPSize(ourMax)`). Mutating the EDNS0 behavior specifically for blocked queries creates a fingerprinting vector, making it obvious to a client that the proxy intercepted the request.
 
 * it seems that several webUI buttons can have this feature: once clicked should be greyed out so they can't be clicked more than once while the request or reload is in progress! but if the fetch or wtw fails, then ungrey them so they can be clicked again. So basically while in-flight, greyed(disabled), otherwise ungreyed(enabled/clickable). 
 
 * fix wrong things in v0.29.0 https://gemini.google.com/app/5ee548df8baa0efc listed below:
-### 🔴 Concurrency & Race Conditions
 
 * **Global I/O Bottleneck:** Both `GenericSafeFileWriter` and `win11SafeFileWriter` lock a single, instance-wide `sync.Mutex` for file writes. Writing to the whitelist will completely block saving the configuration or updating hosts.
 
-### 🔴 Denial of Service (DoS) Vectors
-
 * **CPU Exhaustion via Basic Auth:** In `AdminUI.authMiddleware`, `bcrypt.CompareHashAndPassword` (cost factor 12) is executed on *every single authenticated request*. While there is a rate limiter, an attacker flooding the server up to that limit (e.g., 5 QPS per client) with random passwords in the Basic Auth header will heavily tax the CPU.
 * **Panic on External Input:** In `matchPattern`, if an incoming DNS query length exceeds 253 characters, the code executes `panic2` instead of gracefully returning `false`. A single malformed, oversized DNS query from the network will instantly crash the entire server.
-
-### 🔴 Logic & Implementation Flaws
 
 * **Cache Eviction Failure:** In `goCacheStore.Set`, if the cache hits `maxEntries` and `DeleteExpired()` doesn't free up space, the code explicitly drops the new entry (`return // Cache is full`). Without a true LRU eviction policy, a saturated cache permanently degrades and refuses new entries.
 * **Unreachable Buffer Growth:** In `QueryFullProcessName`, if the retry loop doubles the `nextSize` allocation to exactly `MaxExtendedPath` (32767), the subsequent boundary check `if nextSize > MaxExtendedPath` triggers an error, preventing the allocation from ever succeeding at the absolute limit.
@@ -22,12 +19,8 @@ todo:
 * **Fallback Sanity Check Panic:** In `cleanFileName`, `filepath.Clean(fallback)` is run, but its output is compared directly against the un-cleaned `fallback`. If the developer-provided fallback string wasn't pre-cleaned, the application hard-panics.
 * **Redundant Byte-Swapping:** In `PidAndExeForUDP` and `PidAndExeForTCP`, the port extraction logic reads `localPortRaw` using `binary.LittleEndian.Uint32`, isolates the lower 16 bits, and manually byte-swaps them with bitwise shifts. The network port in these Win32 structs is already stored in Network Byte Order (Big Endian), making this double-reversal fragile.
 
-### 🔴 API & OS Integration Quirks
-
 * **Weak Key Permissions:** In `generateCert`, the private key file is created with `os.O_TRUNC`. On Windows, `O_TRUNC` on an existing file preserves the existing file's Security Descriptors (ACLs). If a low-privilege user previously created a dummy `key.pem`, the new private key inherits those weak permissions despite the `0600` argument in `OpenFile`. Keeping the ACLs is good/intended, however we should ensure the 0600 is set ie. setattr?
 * **Aggressive Stdin Flushing:** `ClearStdinIfTermIsNOTRaw` relies on `GetNumberOfConsoleInputEvents`. This Win32 API counts *all* input events—including mouse movements, window resizes, and focus events. It will aggressively flush the buffer even if the user never touched the keyboard.
-
-### 🔴 Frontend / UI Oddities
 
 * **Destructive DOM Highlighting:** The `applyTableFilter` logic in `app.js` dynamically attaches `<mark>` elements directly into the DOM tree of table rows. When the user clears the search, it reconstructs the text nodes. This constant DOM shredding on every keystroke causes unnecessary reflows and GC pressure.
 * **Screen Reader Race Condition:** The WebUI blocks page sets `aria-live="polite"` on the `.block-action-feedback` span, but immediately overwrites its text content and class name upon receiving the network response. Screen readers frequently drop rapid, sequential DOM mutations on polite regions if they occur too closely together.
