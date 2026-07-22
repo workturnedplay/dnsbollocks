@@ -78,6 +78,22 @@
         return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     }
 
+    // debounce wraps fn so that rapid repeated calls (e.g. one per keystroke
+    // while typing into a filter box) only actually invoke fn once, after
+    // `wait` ms of silence since the last call. Used on the filter inputs so
+    // a fast typist doesn't force a full DOM highlight-rebuild (see
+    // highlightTextNodes) on every single keystroke.
+    function debounce(fn, wait) {
+        let timer = null;
+        return function debounced(...args) {
+            if (timer !== null) clearTimeout(timer);
+            timer = setTimeout(() => {
+                timer = null;
+                fn.apply(this, args);
+            }, wait);
+        };
+    }
+
     // generateClientId produces a short, session-unique token used to track a
     // staged "Add" entry (rule/host/blacklist) before it has a real server-assigned
     // identity, so a subsequent staged Edit/Delete of that same not-yet-applied
@@ -1617,9 +1633,9 @@
         const filterInput = document.getElementById('rulesFilter');
         if (filterInput) {
             filterInput.value = uiStorage.getItem('rulesTable_filter') || '';
-            filterInput.addEventListener('input', () => {
+            filterInput.addEventListener('input', debounce(() => {
                 applyRulesFilter();
-            });
+            }, 120));
             // Run IMMEDIATELY on boot load so the table stays filtered!
             applyRulesFilter();
         }
@@ -1843,9 +1859,9 @@
         const hostsFilterInput = document.getElementById('hostsFilter');
         if (hostsFilterInput) {
             hostsFilterInput.value = uiStorage.getItem('hostsTable_filter') || '';
-            hostsFilterInput.addEventListener('input', () => {
+            hostsFilterInput.addEventListener('input', debounce(() => {
                 applyHostsFilter();
-            });
+            }, 120));
             applyHostsFilter();
         }
         
@@ -1918,9 +1934,9 @@
         const blacklistFilterInput = document.getElementById('blacklistFilter');
         if (blacklistFilterInput) {
             blacklistFilterInput.value = uiStorage.getItem('blacklistTable_filter') || '';
-            blacklistFilterInput.addEventListener('input', () => {
+            blacklistFilterInput.addEventListener('input', debounce(() => {
                 applyBlacklistFilter();
-            });
+            }, 120));
             applyBlacklistFilter();
         }
         
@@ -2045,7 +2061,7 @@
         const configFilterInput = document.getElementById('configFilter');
         if (configFilterInput) {
             configFilterInput.value = uiStorage.getItem('configTable_filter') || '';
-            configFilterInput.addEventListener('input', applyConfigFilter);
+            configFilterInput.addEventListener('input', debounce(applyConfigFilter, 120));
             // Run immediately on page boot to apply the active filter
             applyConfigFilter();
         }

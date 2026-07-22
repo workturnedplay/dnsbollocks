@@ -250,6 +250,15 @@ th { background: #252525; color: #888; font-size: 0.8em; text-transform: upperca
 /* 5. UTILITIES */
 .actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
 .actions button { font-size: 0.9rem; }
+/* Bigger, easier-to-hit checkbox for toggling a rule's Enabled state (both
+   the "Add New Rule" form and the inline Edit-row form) — the browser
+   default checkbox size was small enough to be "target practice". */
+.rule-enabled-checkbox {
+    width: 20px;
+    height: 20px;
+    vertical-align: middle;
+    cursor: pointer;
+}
 .tag-enabled { color: #4ec9b0; font-weight: bold; }
 .tag-disabled { color: #f44747; font-weight: bold; }
 pre { background: #1e1e1e; padding: 15px; border-radius: 4px; border: 1px solid #333; white-space: pre-wrap; word-break: break-all; }

@@ -25,11 +25,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -170,7 +172,7 @@ type Config struct {
 	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"        desc:"Per-packet receive buffer size in bytes for UDP DNS (512–65535). 4096 safely handles modern EDNS0 payloads."`
 
 	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
-	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses, reducing retry storms during upstream outages."`
+	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses(respecting RFC 2308 tho), reducing retry storms during upstream outages."`
 
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
@@ -276,6 +278,12 @@ type AdminUI struct {
 	// webUIRateLimitMiddleware rather than causing a panic.
 	rateLimiter *ClientRateLimiter
 
+	// verifiedAuthCache lets authMiddleware skip the (deliberately expensive)
+	// bcrypt comparison for repeat requests carrying the exact same
+	// Authorization header that already verified successfully very recently.
+	// See its doc comment for why this doesn't weaken brute-force resistance.
+	verifiedAuthCache *verifiedAuthCache
+
 	uiTemplates *template.Template
 
 	// Callbacks for side-effects
@@ -321,7 +329,6 @@ func (s *Server) getLiveConfigs() *LiveConfigs {
 	return both
 }
 func (s *Server) getRawConfig() *Config {
-
 	if c := s.getLiveConfigs().Raw; c != nil {
 		return c
 	}
@@ -1273,7 +1280,7 @@ func (s *Server) loadQueryWhitelist() error {
 		return fmt.Errorf("failed to parse whitelist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", whitelistFileName, err)
 	}
 
-	// ── Normalization (no lock needed; working on local variables) ──────────────
+	// ── Normalization (no lock needed; working on local variables) ──
 	// Count total rules for initial map capacity
 	totalRules := 0
 	for _, rules := range rulesByType {
@@ -1404,7 +1411,7 @@ func (s *Server) loadQueryWhitelist() error {
 		}
 	}
 
-	// ── Atomic swap ──────────────────────────────────────────────────────────────
+	// ── Atomic swap ──
 	s.ruleStore.ReplaceAll(newRules)
 	s.flushCache()
 
@@ -2667,7 +2674,7 @@ func OldMain() {
 	//     }
 	// }()
 
-	// ── 1. Build the Runtime (long-lived infrastructure) ──────────────────────
+	// ── 1. Build the Runtime (long-lived infrastructure) ─
 	// The LogManager starts with the bootstrap logger; ApplyConfig will upgrade
 	// it once the real config is validated.
 	logMgr := NewLoggerManager(localLogger)
@@ -2712,7 +2719,7 @@ func OldMain() {
 	// 	}
 	// }()
 
-	// ── 2. Handle CLI flags ────────────────────────────────────────────────────
+	// ── 2. Handle CLI flags ─
 	//flag.Parse() // For future flags
 	hashCmd := flag.Bool("hash-password", false, "Securely prompt for a password, output the bcrypt hash, and exit")
 	flag.Parse()
@@ -2730,7 +2737,7 @@ func OldMain() {
 		finalShutdownSequence(localLogger, 0, os.Exit, rt.FlushLogsForShutdown)
 	}
 
-	// ── 3. Load and validate configuration ────────────────────────────────────
+	// ── 3. Load and validate configuration
 	resolvedCfg, rawCfg, shouldSaveConfig, err := LoadAndValidateConfig(rt.Logger(), configFileName, rt.FileWriter, true)
 	if err != nil {
 		// Intercept fatal strings exactly as the old code did
@@ -2744,7 +2751,7 @@ func OldMain() {
 		rt.Logger().Info("Config loaded", slog.String("filename", configFileName))
 	}
 
-	// ── 4. Apply the validated config to the Runtime infrastructure ───────────
+	// ── 4. Apply the validated config to the Runtime infrastructure ──
 	// Update FileWriter safety settings now that we have the real config values.
 	rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
 	rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
@@ -2756,7 +2763,7 @@ func OldMain() {
 		finalShutdownSequence(rt.Logger(), 1, os.Exit, rt.FlushLogsForShutdown)
 	}
 
-	// ── 5. Create and run the Server ──────────────────────────────────────────
+	// ── 5. Create and run the Server
 	srv := NewServer(rt, resolvedCfg, rawCfg)
 	if srv == nil {
 		panic2("BUG: unexpected NewServer returned nil Server instance")
@@ -3318,8 +3325,16 @@ func matchPattern(pattern, name string) bool {
 	// currRow := make([]bool, numChars+1)
 
 	if numChars > 253 {
-		//TODO: are we making sure it's already not bigger than this somewhere in caller?!
-		panic2(fmt.Sprintf("the DNS name %q is %d chars long which is > 253", name, numChars))
+		// Defense-in-depth: handleDNSQuery already rejects any query domain
+		// over 253 chars via isValidDNSName before ever reaching RuleStore/
+		// HostStore matching, and the stack-allocated 256-bool buffers below
+		// assume this bound. Rather than trust every current and future call
+		// site to enforce that invariant perfectly — a single malformed or
+		// directly-constructed oversized name reaching here would otherwise
+		// crash the whole server — treat it as a non-match instead: no rule
+		// pattern can ever legitimately need to match a name this long anyway.
+		wincoe.GetBugLogger().Warn(fmt.Sprintf("the DNS name %q is %d chars long which is > 253", name, numChars)) //TODO: log this somehow, might need a dedicated bugs.log file in addition to wherever panic2 logs them
+		return false
 	}
 	// We only need two rows to track matching states across token iterations.
 	// Since DNS names max out at 253 chars, stack-allocate 256 to eliminate GC pressure.
@@ -3608,7 +3623,21 @@ func (s *Server) generateCert(certFileNameNoPath, keyFileNameNoPath string, host
 	//keyOut, err := os.Create(keyFile)
 	// 2. Fix the Key Permissions: Replace os.Create(keyFile) with this:
 	// not this way: #nosec G304  but this way filepath.Clean(
-	keyOut, err := os.OpenFile(keyFileNameNoPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	//
+	// Windows note: os.OpenFile's mode bits only approximate POSIX permissions
+	// (Go maps them to the read-only attribute on Windows, not real ACLs), and
+	// O_TRUNC on an EXISTING file preserves whatever ACLs that file already
+	// had. If a lower-privileged process ever previously created a placeholder
+	// key.pem with weak permissions, truncating it in place would silently
+	// keep those weak ACLs on the brand-new private key. Removing the old file
+	// first (best-effort; a missing file is fine) and creating fresh with
+	// O_EXCL instead of O_TRUNC ensures the new key file always gets the
+	// parent directory's default-inherited ACLs rather than a stale,
+	// possibly-weaker security descriptor.
+	if rmErr := os.Remove(keyFileNameNoPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("failed to remove existing key file %q before regenerating it: %w", keyFileNameNoPath, rmErr)
+	}
+	keyOut, err := os.OpenFile(keyFileNameNoPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fmt.Errorf("key write failed: %w", err)
 	} else {
@@ -4384,11 +4413,21 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// Log exactly what the upstream told us
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedGotNegativeResponse, matchedID, ips, resp, upstreamState3)
 
-		// Cache negative responses
+		// Cache negative responses. RFC 2308 caps negative caching at the
+		// authoritative zone's SOA MINIMUM (and the SOA record's own TTL);
+		// computeTTLForCaching already derives that cap from the Answer/Ns
+		// sections the same way the successful-response cache path below
+		// does. Take the min() of that cap and our own configured
+		// cache_negative_ttl_sec so a large/misconfigured
+		// cache_negative_ttl_sec can never outlive what the zone itself says
+		// is safe. The common case — a short, deliberately-conservative
+		// cache_negative_ttl_sec default — is unaffected, since it's already
+		// far shorter than any real SOA minimum.
+		negativeTTL := min(computeTTLForCaching(resp), time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
 		cachee.Set(key, CacheEntry{
 			Msg:   resp.Copy(),
 			State: upstreamState3,
-		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
+		}, negativeTTL)
 
 		return resp
 	}
@@ -5094,6 +5133,7 @@ func (s *Server) blockResponse(reqMsg *dns.Msg) *dns.Msg {
 
 	// Only allocate memory for EDE and set the DNSSEC OK bit if the feature is actually enabled.
 	if cfg.UseEDEInBlockedReply {
+		//"The DO ("DNSSEC OK") bit only signals that the sender wants/accepts DNSSEC data — it has nothing to do with whether a client parses the OPT pseudo-record at all (that's controlled purely by the OPT record's presence, independent of any flag inside it). The comment "some browsers require this to process OPT records" is folklore, not accurate." - Claude Sonnet 5 Extra Thinking
 		opt.SetDo() // Set the "DNSSEC OK" bit; some browsers require this to process OPT records
 		// this EDE for firefox, not needed but should be easier for the user to see why DNS didn't work.
 		// 1. Manually build the EDE struct using the global variables
@@ -5205,7 +5245,7 @@ func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool,
 
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
-func processRR(log *slog.Logger, rr dns.RR, RemoveHTTPSIPHints bool, blacklist IPChecker) (bool, dns.RR, string) {
+func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPHints bool, blacklist IPChecker) (bool, dns.RR, string) {
 	// cfg := s.getConfig()
 	// log := s.getLogger()
 
@@ -5242,7 +5282,7 @@ func processRR(log *slog.Logger, rr dns.RR, RemoveHTTPSIPHints bool, blacklist I
 		}
 
 		//doneTODO: make this configurable in config.json so only if 'true' do this:
-		if RemoveHTTPSIPHints {
+		if removeHTTPSIPHints {
 			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
 			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
 			// Filter the SVCB/HTTPS parameters
@@ -5745,7 +5785,7 @@ func (ui *AdminUI) robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
-	// ── Inner mux: all routes that require authentication ────────────────
+	// ── Inner mux: all routes that require authentication ─
 	innerMux := http.NewServeMux()
 	// 2. Make the / handler strict
 	innerMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -5796,7 +5836,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 		http.ServeFileFS(w, r, templates.StaticFS, "arrow-down.svg")
 	}))
 
-	// ── Outer mux: browser-automatic routes that must bypass auth ────────
+	// ── Outer mux: browser-automatic routes that must bypass auth ──
 	// These are requests browsers fire silently before the user has had a
 	// chance to enter credentials.  Letting them hit authMiddleware would
 	// silently burn failure-counter slots on every single page load.
@@ -8043,6 +8083,83 @@ func (ui *AdminUI) recordLoginSuccess(clientIP string) {
 	log.Info("Login success", slog.String("client", clientIP))
 }
 
+// verifiedAuthCache remembers, for a short TTL, that a specific Authorization
+// header value has already been successfully verified against the CURRENT
+// WebUI password hash — so authMiddleware can skip the deliberately expensive
+// bcrypt.CompareHashAndPassword call for repeat requests carrying that exact
+// same header.
+//
+// Why this is safe: bcrypt's cost is what makes brute-forcing a DIFFERENT
+// (wrong) password guess expensive; browsers, however, resend the SAME,
+// already-correct Authorization header on every request for the lifetime of
+// a session once entered once — paying full bcrypt cost on every one of
+// those adds nothing security-wise, and gives an attacker flooding the
+// endpoint with one already-known-wrong header a free way to multiply a
+// single guess's cost. Caching "this exact header + this exact password hash
+// already matched" does not shortcut verifying a NEW guess (a different
+// guess produces a different cache key and still pays full bcrypt cost); it
+// only shortcuts re-verifying a guess already known-good.
+//
+// The cache key embeds the live password hash (see computeAuthCacheKey), so
+// rotating the WebUI password instantly invalidates every previously cached
+// success — no explicit cache-clear call is needed anywhere else.
+type verifiedAuthCache struct {
+	mu      sync.Mutex
+	entries map[string]time.Time // cache key -> expiry
+}
+
+// verifiedAuthCacheTTL bounds how long a verified Authorization header is
+// trusted without re-checking bcrypt.
+const verifiedAuthCacheTTL = 60 * time.Second
+
+// verifiedAuthCacheMaxEntries bounds worst-case memory growth: once
+// exceeded, remember() opportunistically purges expired entries first.
+const verifiedAuthCacheMaxEntries = 1000
+
+func newVerifiedAuthCache() *verifiedAuthCache {
+	return &verifiedAuthCache{entries: make(map[string]time.Time)}
+}
+
+// check reports whether key is present and not yet expired, lazily removing
+// it if it has expired.
+func (c *verifiedAuthCache) check(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	exp, ok := c.entries[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(c.entries, key)
+		return false
+	}
+	return true
+}
+
+// remember marks key as verified until ttl from now.
+func (c *verifiedAuthCache) remember(key string, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= verifiedAuthCacheMaxEntries {
+		now := time.Now()
+		for k, exp := range c.entries {
+			if now.After(exp) {
+				delete(c.entries, k)
+			}
+		}
+	}
+	c.entries[key] = time.Now().Add(ttl)
+}
+
+// computeAuthCacheKey derives a fast, fixed-size cache key from the raw
+// Authorization header value and the CURRENTLY-active password hash. Binding
+// the key to the live password hash means a password rotation automatically
+// and instantly invalidates every cache entry computed against the old hash.
+func computeAuthCacheKey(authHeader, currentPasswordHash string) string {
+	sum := sha256.Sum256([]byte(authHeader + "\x00" + currentPasswordHash))
+	return hex.EncodeToString(sum[:])
+}
+
 func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log := ui.getLogger()
@@ -8069,7 +8186,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// 		wincoe.SafeErr(splitErr))
 		// }
 
-		// ── Rate-limit gate ──────────────────────────────────────────────────
+		// ── Rate-limit gate ──
 		if allowed, _, lockedUntil := ui.isLoginAllowed(clientIP); !allowed {
 			retryAfterSecs := int(time.Until(lockedUntil).Seconds()) + 1
 			log.Warn("WebUI login rejected: IP is rate-limited",
@@ -8083,13 +8200,25 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// FIX: Check if the browser hasn't attempted to send credentials yet
-		if r.Header.Get("Authorization") == "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
 			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 			return
 		}
 
-		// ── Credential check ─────────────────────────────────────────────────
+		// Fast path: skip the expensive bcrypt comparison entirely if this
+		// exact Authorization header already verified successfully against
+		// the current password hash within the last verifiedAuthCacheTTL —
+		// see verifiedAuthCache's doc comment for why this is safe.
+		authCacheKey := computeAuthCacheKey(authHeader, cfg.WebUIPasswordHash)
+		if ui.verifiedAuthCache.check(authCacheKey) {
+			ui.recordLoginSuccess(clientIP)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// ── Credential check ─
 		// Extract the Basic Auth credentials provided by the browser
 		username, pass, ok := r.BasicAuth()
 		if username != "" {
@@ -8162,7 +8291,10 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// ── Success ──────────────────────────────────────────────────────────
+		// ── Success ─
+		// Remember this exact header as verified so the next request bearing
+		// it can skip bcrypt entirely (see verifiedAuthCache's doc comment).
+		ui.verifiedAuthCache.remember(authCacheKey, verifiedAuthCacheTTL)
 		// Clear any prior failure streak so a legitimate user is never stuck
 		// in a lockout after recovering from a typo run.
 		ui.recordLoginSuccess(clientIP)
@@ -8423,12 +8555,54 @@ func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
 			log.Debug("Cache capacity reached; performed manual DeleteExpired sweep")
 		}
 		if s.c.ItemCount() >= s.maxEntries {
-			//doneTODO: log this
-			log.Warn("Cache is full after sweep; dropping new entry", slog.String("key", key))
-			return // Cache is full, safely drop the new entry to prevent memory leaks
+			// Still full after the sweep (every entry currently has a live,
+			// unexpired TTL): rather than permanently refusing this and every
+			// future insert once the cache saturates, evict whichever single
+			// entry is closest to expiring anyway — a cheap approximation of
+			// LRU that doesn't require a separate tracking structure — to
+			// make room for this new, presumably still-useful entry.
+			if !s.evictSoonestToExpire() {
+				log.Warn("Cache is full and no evictable entry was found; dropping new entry", slog.String("key", key))
+				return // Cache is full, safely drop the new entry to prevent memory leaks
+			}
+			log.Debug("Cache still full after sweep; evicted the soonest-to-expire entry to make room", slog.String("key", key))
 		}
 	}
 	s.c.Set(key, e, d)
+}
+
+// evictSoonestToExpire deletes whichever cached item has the smallest
+// (soonest) expiration timestamp, freeing one slot. Items with no expiration
+// (Expiration == 0, "never expires") are only chosen as a last resort, if no
+// expiring item exists at all. Returns false if the cache is completely
+// empty and nothing could be evicted.
+func (s *goCacheStore) evictSoonestToExpire() bool {
+	items := s.c.Items()
+
+	var oldestKey string
+	var oldestExp int64
+	haveCandidate := false
+
+	for k, item := range items {
+		if item.Expiration == 0 {
+			if !haveCandidate {
+				oldestKey = k
+				haveCandidate = true
+			}
+			continue
+		}
+		if !haveCandidate || oldestExp == 0 || item.Expiration < oldestExp {
+			oldestKey = k
+			oldestExp = item.Expiration
+			haveCandidate = true
+		}
+	}
+
+	if !haveCandidate {
+		return false
+	}
+	s.c.Delete(oldestKey)
+	return true
 }
 
 func (s *goCacheStore) Delete(key string)            { s.c.Delete(key) }
@@ -8485,19 +8659,16 @@ func NewAdminUI(
 	tpls *template.Template,
 ) *AdminUI {
 	return &AdminUI{
-		// logger:       logger,
-		// config:       cfg,
-		liveConfigs: liveConfigs,
-		// liveRawConfig: liveRawConfig,
-		liveLogger:   liveLogger,
-		ruleStore:    rs,
-		hostStore:    hs,
-		blacklist:    bl,
-		loginTracker: lt,
-		recentBlocks: rb,
-		stats:        stats,
-		//upstreamIPs:  upstreamIPs,
-		uiTemplates: tpls,
+		liveConfigs:       liveConfigs,
+		liveLogger:        liveLogger,
+		ruleStore:         rs,
+		hostStore:         hs,
+		blacklist:         bl,
+		loginTracker:      lt,
+		recentBlocks:      rb,
+		stats:             stats,
+		verifiedAuthCache: newVerifiedAuthCache(),
+		uiTemplates:       tpls,
 	}
 }
 
@@ -9218,7 +9389,7 @@ func (s *Server) flushCache() {
 }
 
 func (s *Server) swapDNSTCPSemaphore(maxConns int) {
-	// ── Semaphore init ───────────────────────────────────────────────────
+	// ── Semaphore init
 	// Must happen before the accept goroutine starts so every Accept() can
 	// immediately check capacity.  loadConfig has already validated the
 	// value, but defend against a zero here just in case.
@@ -9227,7 +9398,7 @@ func (s *Server) swapDNSTCPSemaphore(maxConns int) {
 }
 
 func (s *Server) acquireDNSTCPSlot() (release func(), ok bool) {
-	// ── Concurrent-connection gate ───────────────────────────────
+	// ── Concurrent-connection gate ─
 	// Non-blocking try: if all slots are occupied, close the new
 	// connection immediately rather than queuing another goroutine.
 	// This bounds memory and goroutine count under idle-scanner load.
@@ -9404,7 +9575,7 @@ func (s *Server) runDNSTCPLoop(ctx context.Context, tcpLn *net.TCPListener) {
 			}
 		}
 
-		// ── Concurrent-connection gate ───────────────────────────────
+		// ── Concurrent-connection gate ─
 		// Non-blocking try: if all slots are occupied, close the new
 		// connection immediately rather than queuing another goroutine.
 		// This bounds memory and goroutine count under idle-scanner load.
@@ -11512,12 +11683,17 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 			slog.String("bad_filename", original),
 			slog.String("fallback_filename", fallback))
 
-		// Ensure the fallback itself is clean before returning
-		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice; for DRY purposes.
+		// Defensively clean the fallback too, in case a future call site ever
+		// passes one that isn't already in canonical form. There's no reason
+		// to treat that as a fatal bug — filepath.Clean is cheap and
+		// idempotent, so just use its result directly rather than crashing
+		// the whole server over a cosmetic difference in a fallback string.
+		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice(here and below); for DRY purposes.
 		if cleaned != fallback {
-			msg := fmt.Sprintf("BUG: dev fail: fallback(%q) for config key %q had to be cleaned into %q", fallback, configKey, cleaned)
-			log.Error(msg, slog.String("config_key", configKey), slog.String("fallback_filename", fallback), slog.String("filename_cleaned", cleaned))
-			panic(msg)
+			log.Debug("Fallback filename itself needed cleaning",
+				slog.String("config_key", configKey),
+				slog.String("fallback_before", fallback),
+				slog.String("fallback_after", cleaned))
 		}
 		return cleaned, true
 	}

@@ -71,7 +71,7 @@
     </select>
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="text" name="pattern" placeholder="pattern" required> 
-    <label class="lbl-spaced"><input type="checkbox" name="enabled" checked> Enabled</label>
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
     <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
@@ -139,7 +139,7 @@
         </td>
         <td class="edit-id-display"></td>
         <td><input type="text" class="edit-pattern w-100"></td>
-        <td><label><input type="checkbox" class="edit-enabled v-align-middle"></label></td>
+        <td><label><input type="checkbox" class="edit-enabled rule-enabled-checkbox"></label></td>
         <td class="actions">
             <form method="post" action="/rules" class="edit-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
