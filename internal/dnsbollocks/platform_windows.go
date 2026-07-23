@@ -124,6 +124,7 @@ type Config struct {
 	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
 	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. A domain must also match a whitelist rule before these overrides apply."`
 	LogQueriesFile          string `json:"log_queries" desc:"Path to the DNS query-only log file (JSON lines). Created automatically."`
+	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"Path to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
 	LogEverythingFile       string `json:"log_file"    desc:"Path to the full system log file (JSON lines, all levels including debug). Created automatically."`
 	ConsoleLogLevel         string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
 	LogMaxSizeMB            int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
@@ -1492,6 +1493,7 @@ func defaultConfig() Config {
 		HostsFile:     "hosts2ip.json",
 
 		LogQueriesFile:              "queries.log",
+		LogQueriesSimpleFile:        "queries_simple.log",
 		LogEverythingFile:           "dnsbollocks.log",
 		ConsoleLogLevel:             consoleLogLevelInfo,
 		LogMaxSizeMB:                4095, // Rotation threshold
@@ -5710,6 +5712,17 @@ func SafeSlice[T any](key string, slice []T, mapper func(T) string) slog.Attr {
 	return slog.GroupAttrs(key, attrs...)
 }
 
+// formatSimpleQueryLogLine renders a single line for the plain-text
+// simple-queries log (Config.LogQueriesSimpleFile): "<RFC3339Nano timestamp>
+// <type> <domain> <action> <ips>". ips is rendered via %v to match Go's
+// default slice formatting (e.g. "[1.2.3.4]", or "[]" when empty),
+// deliberately kept dead simple for fast human scanning, unlike the
+// structured JSON log_queries file which carries far more detail (exe,
+// protocol, rule ID, timing, etc.) under the same timestamp.
+func formatSimpleQueryLogLine(ts time.Time, typ, domain, action string, ips []string) string {
+	return fmt.Sprintf("%s %s %s %s %v\n", ts.Format(time.RFC3339Nano), typ, domain, action, ips)
+}
+
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
 
 func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, respMsg *dns.Msg, upstreamState2 UpstreamState) {
@@ -5722,7 +5735,12 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		return
 	}
 
-	var ts string = time.Now().Format(TimeStampsFormat)
+	// Captured once, then formatted twice below in two different layouts
+	// (TimeStampsFormat for the JSON logs, RFC3339Nano for the plain-text
+	// simple-queries log) so both logs record the identical instant even
+	// though they display it differently.
+	now := time.Now()
+	ts := now.Format(TimeStampsFormat)
 
 	// domain arrives already in wire format (ASCII/punycode for IDNs, since
 	// that's what real DNS queries always contain). Show the human-readable
@@ -5826,6 +5844,19 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		if len(upstreamState2.FailedUpstreams) > 0 {
 			attrs = append(attrs, slog.Any("failed_upstreams", upstreamState2.FailedUpstreams))
 		}
+
+		// Also append a single plain-text line to the simple-queries log
+		// (see Config.LogQueriesSimpleFile) — deliberately NOT routed
+		// through slog/JSON, for fast human scanning. Cross-reference the
+		// identical timestamp in log_queries (queries.log) for exe/
+		// protocol/rule-id/timing details.
+		if simpleW := s.rt.SimpleQueriesWriter(); simpleW != nil {
+			line := formatSimpleQueryLogLine(now, typ, displayDomain, action, ips)
+			if _, werr := simpleW.Write([]byte(line)); werr != nil {
+				log.Debug("failed to write to simple queries log", wincoe.SafeErr(werr))
+			}
+		}
+
 		log.Log(ctx, slog.LevelInfo, "logged_query", attrs...)
 	})
 } //func
@@ -6017,6 +6048,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/apply-tables", ui.applyTablesHandler)
 	innerMux.HandleFunc("/logs", ui.logsHandler)
 	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
+	innerMux.HandleFunc("/logs_queries_simple", ui.logsQueriesSimpleHandler)
 	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
@@ -8121,6 +8153,24 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	// }
 
 	ui.renderLogPage(w, r, "logs_queries", "Query Logs", cfg.LogQueriesFile, filter)
+}
+
+// logsQueriesSimpleHandler serves the plain-text, single-line-per-query
+// log (see Config.LogQueriesSimpleFile), reusing the same generic
+// renderLogPage/"logs" template as /logs and /logs_queries.
+func (ui *AdminUI) logsQueriesSimpleHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
+	cfg := ui.getConfig()
+	filter := r.URL.Query().Get("q")
+	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", cfg.LogQueriesSimpleFile, filter)
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -12078,6 +12128,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if err := checkAndClean(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultCfg.LogQueriesFile); err != nil {
 		return shouldSaveConfig, err
 	}
+	if err := checkAndClean(&resolvedCfg.LogQueriesSimpleFile, &rawCfg.LogQueriesSimpleFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)), defaultCfg.LogQueriesSimpleFile); err != nil {
+		return shouldSaveConfig, err
+	}
 	if err := checkAndClean(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultCfg.LogEverythingFile); err != nil {
 		return shouldSaveConfig, err
 	}
@@ -12093,14 +12146,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 
 	if err := validateDistinctConfigFilePaths(map[string]string{
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):     resolvedCfg.WhitelistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):     resolvedCfg.BlacklistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):         resolvedCfg.HostsFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):    resolvedCfg.LogQueriesFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)): resolvedCfg.LogEverythingFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)):       resolvedCfg.TLSCertFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)):        resolvedCfg.TLSKeyFile,
-		"(fixed) main config file":                                      configFileName,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):        resolvedCfg.WhitelistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):        resolvedCfg.BlacklistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):            resolvedCfg.HostsFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):       resolvedCfg.LogQueriesFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)): resolvedCfg.LogQueriesSimpleFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)):    resolvedCfg.LogEverythingFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)):          resolvedCfg.TLSCertFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)):           resolvedCfg.TLSKeyFile,
+		"(fixed) main config file":                                         configFileName,
 	}); err != nil {
 		return shouldSaveConfig, err
 	}
@@ -12216,6 +12270,46 @@ func isASCII(s string) bool {
 	return true
 }
 
+// labelSegment is one piece of a wildcard-token-aware split of a rule/host
+// pattern label — either a literal content run (ASCII or Unicode text) or a
+// single wildcard-syntax token character (one of *, ?, !, {, }). See
+// splitLabelAtWildcardTokens.
+type labelSegment struct {
+	text       string
+	isWildcard bool
+}
+
+// splitLabelAtWildcardTokens splits a single dot-separated label of a
+// rule/host pattern into an ordered sequence of labelSegments: runs of
+// literal text (which may freely mix ASCII and Unicode characters)
+// alternating with single-character wildcard-syntax tokens (*, ?, !, {, }).
+// Concatenating every segment's text back together, in order, exactly
+// reconstructs the original label — this is what lets
+// punycodeEncodePattern (and punycodeDecodePatternForDisplay, in reverse)
+// punycode-convert only the literal-text runs while leaving match-syntax
+// tokens like the "*" in "café*" untouched.
+func splitLabelAtWildcardTokens(label string) []labelSegment {
+	const wildcardTokenChars = "*?!{}"
+
+	var segments []labelSegment
+	var run strings.Builder
+	for _, r := range label {
+		if strings.ContainsRune(wildcardTokenChars, r) {
+			if run.Len() > 0 {
+				segments = append(segments, labelSegment{text: run.String()})
+				run.Reset()
+			}
+			segments = append(segments, labelSegment{text: string(r), isWildcard: true})
+			continue
+		}
+		run.WriteRune(r)
+	}
+	if run.Len() > 0 {
+		segments = append(segments, labelSegment{text: run.String()})
+	}
+	return segments
+}
+
 // punycodeEncodePattern converts every Unicode (non-ASCII) label of a
 // lowercased, dot-separated rule/host pattern into its ASCII "A-label" form
 // (RFC 3492 Punycode, "xn--"-prefixed) using the same UTS46 processing a
@@ -12226,12 +12320,19 @@ func isASCII(s string) bool {
 // touched: it only ever sees ASCII, exactly as before.
 //
 // Wildcard-token characters (*, ?, !, {, }) are pattern-matching syntax, not
-// real domain content, so a label consisting solely of such tokens (e.g. the
-// "*" in "*.café.com") is passed through untouched. A label that mixes a
-// wildcard token with non-ASCII characters is rejected outright: there is no
-// unambiguous way to punycode-encode "part" of a label, so the operator is
-// asked to put the wildcard in its own label instead (e.g. "*.café.com",
-// not "café{*}.com").
+// real domain content. A label made up solely of such tokens (e.g. the "*"
+// in "*.café.com") is passed through untouched. A label that MIXES wildcard
+// tokens with non-ASCII characters (e.g. "café*" or "café{**}") is handled
+// by splitting the label at each wildcard-token character (see
+// splitLabelAtWildcardTokens) into alternating content-runs and standalone
+// tokens: only the content-runs are punycode-encoded, and the wildcard
+// tokens are reinserted verbatim at their original position. This keeps
+// "café*.com" and "test*.com" behaving consistently — both are accepted —
+// rather than only the pure-ASCII form working. Note this means IDNA's
+// position-sensitive validation (e.g. the ACE-prefix hyphen rule) is applied
+// per content-run rather than across the label as a single unit; since a
+// wildcard pattern was never a literal domain name to begin with, this is an
+// accepted trade-off.
 //
 // Returns the (possibly rewritten) pattern, whether anything was actually
 // IDN-encoded, and a non-nil error if a label couldn't be safely converted.
@@ -12245,26 +12346,32 @@ func punycodeEncodePattern(pattern string) (encoded string, wasIDN bool, err err
 		if isASCII(label) {
 			continue // nothing to do for this label
 		}
-		if strings.ContainsAny(label, "*?!{}") {
-			return pattern, false, fmt.Errorf(
-				"pattern label %q mixes a wildcard token with unicode characters; "+
-					"put the wildcard in its own label instead (e.g. *.café.com, not café{*}.com)",
-				label)
+
+		segments := splitLabelAtWildcardTokens(label)
+		var rebuilt strings.Builder
+		for _, seg := range segments {
+			if seg.isWildcard || isASCII(seg.text) {
+				rebuilt.WriteString(seg.text)
+				continue
+			}
+			ascii, encErr := idna.Lookup.ToASCII(seg.text)
+			if encErr != nil {
+				return pattern, false, fmt.Errorf("failed to convert unicode segment %q (within label %q) to punycode: %w", seg.text, label, encErr)
+			}
+			rebuilt.WriteString(ascii)
 		}
-		ascii, encErr := idna.Lookup.ToASCII(label)
-		if encErr != nil {
-			return pattern, false, fmt.Errorf("failed to convert unicode label %q to punycode: %w", label, encErr)
-		}
-		if len(ascii) > 63 {
+
+		finalLabel := rebuilt.String()
+		if len(finalLabel) > 63 {
 			// RFC 1035 §3.1 hard-caps every DNS label at 63 octets. A label that
 			// blows past this once expanded to punycode can never match any real
 			// wire-format DNS query, so reject it now rather than silently saving
 			// an unusable rule.
 			return pattern, false, fmt.Errorf(
 				"unicode label %q expands to punycode label %q (%d chars), exceeding the DNS 63-character label limit",
-				label, ascii, len(ascii))
+				label, finalLabel, len(finalLabel))
 		}
-		labels[i] = ascii
+		labels[i] = finalLabel
 		wasIDN = true
 	}
 	if !wasIDN {
@@ -12301,15 +12408,35 @@ func punycodeDecodePatternForDisplay(pattern string) (display string, wasIDN boo
 
 	labels := strings.Split(pattern, ".")
 	for i, label := range labels {
-		if !strings.HasPrefix(label, "xn--") {
+		if !strings.Contains(label, "xn--") {
 			continue
 		}
-		uni, decErr := idna.Punycode.ToUnicode(label)
-		if decErr != nil || uni == "" {
-			continue // leave malformed/unconvertible labels exactly as stored
+
+		// The "xn--" run may not start at the beginning of the label if a
+		// wildcard token precedes it (e.g. "*xn--caf-dma", from encoding
+		// "*café" — see punycodeEncodePattern/splitLabelAtWildcardTokens),
+		// so split at wildcard-token boundaries the same way encoding did,
+		// and only attempt to decode the content-run segment(s).
+		segments := splitLabelAtWildcardTokens(label)
+		var rebuilt strings.Builder
+		labelChanged := false
+		for _, seg := range segments {
+			if seg.isWildcard || !strings.HasPrefix(seg.text, "xn--") {
+				rebuilt.WriteString(seg.text)
+				continue
+			}
+			uni, decErr := idna.Punycode.ToUnicode(seg.text)
+			if decErr != nil || uni == "" {
+				rebuilt.WriteString(seg.text) // leave malformed/unconvertible run exactly as stored
+				continue
+			}
+			rebuilt.WriteString(uni)
+			labelChanged = true
 		}
-		labels[i] = uni
-		wasIDN = true
+		if labelChanged {
+			labels[i] = rebuilt.String()
+			wasIDN = true
+		}
 	}
 	if !wasIDN {
 		return pattern, false
@@ -12782,6 +12909,13 @@ type LoggerManager struct {
 	ptr     atomic.Pointer[slog.Logger]
 	mu      sync.Mutex
 	closers []io.Closer // rotating log writers registered by Reinit
+
+	// simpleQueriesWriter holds the current plain-text (non-JSON) per-query
+	// log writer (see Config.LogQueriesSimpleFile), so Server.logQuery can
+	// always write to the latest writer after a config reload. This log is
+	// deliberately NOT a slog handler — just a raw io.Writer — so its format
+	// stays a simple, single-line-per-query string rather than JSON.
+	simpleQueriesWriter atomic.Pointer[asyncLogWriter]
 }
 
 // NewLoggerManager creates a manager seeded with the given bootstrap logger.
@@ -12803,6 +12937,14 @@ func (lm *LoggerManager) get() *slog.Logger {
 // that always reflects the latest logger after a Reinit.
 func (lm *LoggerManager) Ptr() *atomic.Pointer[slog.Logger] {
 	return &lm.ptr
+}
+
+// SimpleQueriesWriterPtr returns a pointer to the atomic holding the current
+// plain-text simple-queries log writer (see Config.LogQueriesSimpleFile),
+// mirroring Ptr()'s pattern for the main logger so callers always observe
+// the latest writer after a config reload.
+func (lm *LoggerManager) SimpleQueriesWriterPtr() *atomic.Pointer[asyncLogWriter] {
+	return &lm.simpleQueriesWriter
 }
 
 // set atomically swaps the logger without touching file handles.
@@ -12828,6 +12970,7 @@ func joinCloseErrors(prefix string, errs []error) error {
 // Reinit atomically swaps the logger, registers new closers (typically
 // *rotatingLogWriter instances), and closes the previously registered ones.
 // It is safe to call on config reload.
+// Also swaps the plain-text simple-queries log writer (see Config.LogQueriesSimpleFile) using the same publish-before-close ordering, for the same reason.
 //
 // Before closing any of the previously registered closers, this also
 // publishes l to wincoe's package-level logger fallbacks (wincoe.Logger,
@@ -12839,13 +12982,14 @@ func joinCloseErrors(prefix string, errs []error) error {
 // asyncLogWriter — silently dropping the line and printing a "was closed"
 // warning — instead of the new one. Publishing all three "current logger"
 // sources here, before any old writer is closed, closes that window.
-func (lm *LoggerManager) Reinit(l *slog.Logger, newClosers ...io.Closer) error {
+func (lm *LoggerManager) Reinit(l *slog.Logger, simpleQueriesWriter *asyncLogWriter, newClosers ...io.Closer) error {
 	lm.mu.Lock()
 	old := lm.closers
 	lm.closers = newClosers
 	lm.mu.Unlock()
 
 	lm.set(l) // readers see the new logger from this point
+	lm.simpleQueriesWriter.Store(simpleQueriesWriter)
 	wincoe.SetBugLogger(l)
 	wincoe.Logger.Store(l)
 
@@ -12907,7 +13051,7 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// through here, so the raw rotatingLogWriter (which can itself block
 	// for a long time under disk contention) is wrapped in asyncLogWriter
 	// before being handed to slog; see asyncLogWriter's doc comment for why.
-	openLog := func(path string) (io.Writer, error) {
+	openLog := func(path string) (*asyncLogWriter, error) {
 		if path == "" {
 			return nil, errors.New("empty logging filename")
 		}
@@ -12937,6 +13081,11 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		closeOpenedOnFailure()
 		return err
 	}
+	simpleQueriesWriter, err := openLog(cfg.LogQueriesSimpleFile)
+	if err != nil {
+		closeOpenedOnFailure()
+		return err
+	}
 
 	fullHandler := slog.NewJSONHandler(fullWriter, &slog.HandlerOptions{
 		Level:       slog.LevelDebug, // full log gets EVERYTHING
@@ -12960,7 +13109,7 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	}
 	// Reinit publishes improvedLogger to wincoe's package-level fallbacks too
 	// (before closing anything old) — see Reinit's doc comment.
-	if reinitErr := lm.Reinit(improvedLogger, closers...); reinitErr != nil {
+	if reinitErr := lm.Reinit(improvedLogger, simpleQueriesWriter, closers...); reinitErr != nil {
 		// The new logger is already stored by Reinit; use it for the warning.
 		improvedLogger.Warn("error closing old log files during logger reinit", wincoe.SafeErr(reinitErr))
 	}
@@ -12968,6 +13117,7 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	improvedLogger.Info("Logging (re)initialized",
 		slog.String("full_log", cfg.LogEverythingFile),
 		slog.String("queries_log", cfg.LogQueriesFile),
+		slog.String("queries_simple_log", cfg.LogQueriesSimpleFile),
 		slog.String("console_level", cfg.ConsoleLogLevel),
 	)
 	return nil
@@ -12988,6 +13138,18 @@ func (r *Runtime) Logger() *slog.Logger {
 		panic2("BUG: uninited Runtime.LogMgr!")
 	}
 	return r.LogMgr.get()
+}
+
+// SimpleQueriesWriter returns the current plain-text (non-JSON)
+// simple-queries log writer (see Config.LogQueriesSimpleFile), or nil if
+// logging hasn't been fully initialized yet. Callers must treat a nil
+// return as "nothing to write to yet" rather than panicking — this is
+// reached from the DNS hot path (Server.logQuery).
+func (r *Runtime) SimpleQueriesWriter() *asyncLogWriter {
+	if r == nil || r.LogMgr == nil {
+		return nil
+	}
+	return r.LogMgr.SimpleQueriesWriterPtr().Load()
 }
 
 // FlushLogsForShutdown drains and closes every currently-registered

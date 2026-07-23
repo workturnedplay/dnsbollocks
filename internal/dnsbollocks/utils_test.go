@@ -257,7 +257,8 @@ func TestPunycodeEncodePattern(t *testing.T) {
 		{"idn with wildcard label", "*.café.com", "*.xn--caf-dma.com", true, false},
 		{"idn subdomain", "www.café.com", "www.xn--caf-dma.com", true, false},
 		{"empty string", "", "", false, false},
-		{"mixed wildcard and unicode in same label", "café{*}.com", "", false, true},
+		{"idn label mixed with wildcard token", "café{*}.com", "xn--caf-dma{*}.com", true, false},
+		{"idn label with leading wildcard token", "*café.com", "*xn--caf-dma.com", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
