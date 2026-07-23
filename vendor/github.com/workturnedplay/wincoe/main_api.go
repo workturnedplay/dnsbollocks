@@ -1422,24 +1422,42 @@ func GetServiceNamesFromPIDUncached(targetPID uint32) ([]string, error) {
 	// DON'T: Trim the buffer to the actual data written, bad Grok 4.20! because data.ServiceName is a pointer past this size, still in the buffer tho!
 	//buffer = buffer[:realLen] // BAD! don't do this!
 
+	// Define buffer endpoints as unsafe.Pointers safely using unsafe.Add
+	bufStart := unsafe.Pointer(&buffer[0])
+	bufEnd := unsafe.Add(bufStart, len(buffer))
+
+	bufStartAddr := uintptr(bufStart)
+	bufEndAddr := uintptr(bufEnd)
+
 	for i := uint32(0); i < servicesReturned; i++ {
 		offset := uintptr(i) * entrySize
 		if offset+entrySize > uintptr(len(buffer)) {
 			return nil, fmt.Errorf("entry %d at offset %d + entrySize %d exceeds buffer len %d",
 				i, offset, entrySize, len(buffer))
 		}
-		data := (*windows.ENUM_SERVICE_STATUS_PROCESS)(unsafe.Pointer(&buffer[offset]))
+		//data := (*windows.ENUM_SERVICE_STATUS_PROCESS)(unsafe.Pointer(&buffer[offset]))
+		data := (*windows.ENUM_SERVICE_STATUS_PROCESS)(unsafe.Add(bufStart, offset))
 
 		// Validate ServiceName pointer is within buffer before dereferencing
-		bufStart := uintptr(unsafe.Pointer(&buffer[0]))
-		bufEnd := bufStart + uintptr(len(buffer))
-		snPtr := uintptr(unsafe.Pointer(data.ServiceName))
-		if snPtr < bufStart || snPtr >= bufEnd {
+		// bufStart := uintptr(unsafe.Pointer(&buffer[0]))
+		// bufEnd := bufStart + uintptr(len(buffer))
+		// snPtr := uintptr(unsafe.Pointer(data.ServiceName))
+		//if snPtr < bufStart || snPtr >= bufEnd {
+
+		// Validate ServiceName pointer is within buffer before dereferencing
+		snPtr := data.ServiceName // type is *uint16
+		snAddr := uintptr(unsafe.Pointer(snPtr))
+		if snAddr < bufStartAddr || snAddr >= bufEndAddr {
 			// pointer outside buffer — skip this entry
+
+			// return nil, fmt.Errorf("entry %d at offset %0x which has entrySize %d, in the buffer len %d, "+
+			// 	"has a ServiceName ptr outside the buffer=%p area, snPtr=%0x bufStart=%0x bufEnd=%0x",
+			// 	i, offset, entrySize, len(buffer),
+			// 	buffer, snPtr, bufStart, bufEnd)
 			return nil, fmt.Errorf("entry %d at offset %0x which has entrySize %d, in the buffer len %d, "+
 				"has a ServiceName ptr outside the buffer=%p area, snPtr=%0x bufStart=%0x bufEnd=%0x",
 				i, offset, entrySize, len(buffer),
-				buffer, snPtr, bufStart, bufEnd)
+				buffer, snAddr, bufStartAddr, bufEndAddr)
 		}
 
 		if data.ServiceStatusProcess.ProcessId == targetPID {
@@ -1464,17 +1482,88 @@ func GetServiceNamesFromPIDUncached(targetPID uint32) ([]string, error) {
 // windows.UTF16PtrToString when the caller only knows the string's start
 // address lies within a fixed-size buffer, not that a null terminator is
 // guaranteed to appear before the buffer's end.
-func utf16StringWithinBounds(startAddr, endAddr uintptr) (string, bool) {
-	var units []uint16
-	for addr := startAddr; addr+1 < endAddr; addr += 2 {
-		u := *(*uint16)(unsafe.Pointer(addr)) //nolint:gosec // bounds-checked by the loop condition above
-		if u == 0 {
-			return windows.UTF16ToString(units), true
-		}
-		units = append(units, u)
+func utf16StringWithinBounds(strPtr *uint16, bufEnd unsafe.Pointer) (string, bool) { // by Gemini 3.6 Thinking
+	if strPtr == nil || bufEnd == nil {
+		return "", false
 	}
-	return "", false // no null terminator found before endAddr
+
+	startAddr := uintptr(unsafe.Pointer(strPtr))
+	endAddr := uintptr(bufEnd)
+
+	if startAddr >= endAddr {
+		return "", false
+	}
+
+	// Calculate maximum allowed uint16 elements before bufEnd
+	maxUnits := int((endAddr - startAddr) / 2)
+	if maxUnits <= 0 {
+		return "", false
+	}
+
+	// unsafe.Slice accepts *uint16 directly—no unsafe.Pointer conversion needed!
+	units := unsafe.Slice(strPtr, maxUnits)
+
+	for i, u := range units {
+		if u == 0 {
+			return windows.UTF16ToString(units[:i]), true
+		}
+	}
+
+	return "", false // no null terminator found before bufEnd
 }
+
+// func utf16StringWithinBounds0(startAddr, endAddr uintptr) (string, bool) { //this was made by Claude Sonnet 5 Extra Thinking
+// 	var units []uint16
+// 	for addr := startAddr; addr+1 < endAddr; addr += 2 {
+// 		//main_api.go:1470:19: possible misuse of unsafe.Pointer
+// 		u := *(*uint16)(unsafe.Pointer(addr)) //nolint:gosec // bounds-checked by the loop condition above
+// 		if u == 0 {
+// 			return windows.UTF16ToString(units), true
+// 		}
+// 		units = append(units, u)
+// 	}
+// 	return "", false // no null terminator found before endAddr
+// }
+
+// func utf16StringWithinBounds1(startAddr, endAddr uintptr) (string, bool) { // by Gemini 3.6 Thinking
+// 	var units []uint16
+// 	basePtr := unsafe.Pointer(startAddr) //possible misuse of unsafe.Pointer
+
+// 	for offset := uintptr(0); startAddr+offset+1 < endAddr; offset += 2 {
+// 		// unsafe.Add performs single-expression pointer arithmetic
+// 		u := *(*uint16)(unsafe.Add(basePtr, offset))
+// 		if u == 0 {
+// 			return windows.UTF16ToString(units), true
+// 		}
+// 		units = append(units, u)
+// 	}
+
+// 	return "", false // no null terminator found before endAddr
+// }
+
+// func utf16StringWithinBounds2(startAddr, endAddr uintptr) (string, bool) { // by Gemini 3.6 Thinking
+// 	if startAddr >= endAddr {
+// 		return "", false
+// 	}
+
+// 	// Calculate the max possible uint16 elements in the memory range
+// 	count := (endAddr - startAddr) / 2
+// 	if count == 0 {
+// 		return "", false
+// 	}
+
+// 	// Create a slice referencing the memory range
+// 	units := unsafe.Slice((*uint16)(unsafe.Pointer(startAddr)), count) //possible misuse of unsafe.Pointer
+
+// 	// Search for null terminator
+// 	for i, u := range units {
+// 		if u == 0 {
+// 			return windows.UTF16ToString(units[:i]), true
+// 		}
+// 	}
+
+// 	return "", false // no null terminator found before endAddr
+// }
 
 // PidAndExeForUDP returns (pid, exePath_or_exeName, error).
 // clientAddr should be the remote UDP address observed on the server side.
