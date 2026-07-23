@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -292,6 +293,12 @@ type AdminUI struct {
 	// See its doc comment for why this doesn't weaken brute-force resistance.
 	verifiedAuthCache *verifiedAuthCache
 
+	// csrfSecret is a random, process-lifetime-only HMAC key used to sign
+	// and verify CSRF cookie tokens (see verifyCSRFToken's doc comment).
+	// Never persisted or logged; a fresh one is generated every process
+	// start via NewAdminUI.
+	csrfSecret []byte
+
 	uiTemplates *template.Template
 
 	// Callbacks for side-effects
@@ -299,6 +306,7 @@ type AdminUI struct {
 	OnSaveBlacklist       func() error
 	OnSaveHosts           func() error
 	OnInvalidatePattern   func(pattern string)
+	OnInvalidatePatterns  func(patterns map[string]struct{})
 	OnInvalidateBlacklist func()
 	OnApplyConfig         func(cfg *Config) error
 
@@ -3830,14 +3838,24 @@ func (s *Server) handleUDP(ctx context.Context, wire []byte, clientAddr *net.UDP
 	}
 	// 1. EXTRACT MAX UDP SIZE
 	// Default to standard 512 bytes, but check if the client provided an EDNS0 OPT record.
+	cfg := s.getConfig()
 	maxUDPSize := 512
 	if clientOpt := reqMsg.IsEdns0(); clientOpt != nil {
 		maxUDPSize = int(clientOpt.UDPSize())
 	}
+	// Clamp against our own configured UDP buffer size so a client that
+	// advertises an unreasonably large UDP payload capability (up to 65535)
+	// can never make us attempt to transmit a reply bigger than we're
+	// configured to expect. Sending an oversized UDP datagram risks IP
+	// fragmentation, which many NATs/firewalls silently drop instead of the
+	// client cleanly receiving the TC (truncated) bit and falling back to
+	// TCP.
+	if maxUDPSize > cfg.DNSUDPBufferSize {
+		maxUDPSize = cfg.DNSUDPBufferSize
+	}
 
 	resp := s.handleDNSQuery(ctx, reqMsg, clientAddr.String())
 	if resp == nil {
-		cfg := s.getConfig()
 		log.Debug("Dropped UDP DNS response (is BlockMode 'drop' ?)", slog.String("BlockMode", cfg.BlockMode))
 		return // BlockMode is "drop", so Drop
 	}
@@ -4191,6 +4209,35 @@ func stripHTTPSPortPrefix(domain string) (target string, ok bool) {
 	return rest, true
 }
 
+// stripECSOption removes any EDNS0 Client Subnet (ECS) option (RFC 7871)
+// from msg's OPT pseudo-record, if present, mutating msg in place.
+//
+// This proxy resolves on behalf of every client as a single shared
+// resolver, and caches upstream answers under a domain+qtype key that is
+// shared across every client. If a client's own stub resolver attaches an
+// ECS option carrying its subnet, some upstream providers tailor (e.g. for
+// CDN/geo-routing purposes) their answer to that specific subnet — and if
+// that subnet-specific answer were then cached under the shared key, every
+// OTHER client sharing this proxy would transparently receive it too,
+// regardless of their own network location. Stripping ECS before a query is
+// ever forwarded keeps every upstream answer subnet-independent, which is
+// what makes domain+qtype a safe, globally-shared cache key in the first
+// place.
+func stripECSOption(msg *dns.Msg) {
+	opt := msg.IsEdns0()
+	if opt == nil {
+		return
+	}
+	kept := opt.Option[:0]
+	for _, o := range opt.Option {
+		if _, isECS := o.(*dns.EDNS0_SUBNET); isECS {
+			continue
+		}
+		kept = append(kept, o)
+	}
+	opt.Option = kept
+}
+
 func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr string) *dns.Msg {
 	cfg := s.getConfig()
 	log := s.getLogger()
@@ -4206,6 +4253,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		return formerrResponse(reqMsg)
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
+
+	// Strip any client-supplied EDNS0 Client Subnet (ECS) option before this
+	// query ever reaches an upstream or gets cached — see stripECSOption's
+	// doc comment for why sharing one cache key (domain+qtype) across every
+	// client requires every upstream answer to be subnet-independent.
+	stripECSOption(reqMsg)
 
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
@@ -5823,7 +5876,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			"old_cidr": r.FormValue("old_cidr"),
 		}
 
-		status, err := ui.processBlacklistChange(fields)
+		status, err := ui.processBlacklistChange(fields, ui.OnInvalidateBlacklist)
 		if err != nil {
 			//log.X lines are inside processBlacklistChange()
 			http.Error(w, err.Error(), status)
@@ -6393,27 +6446,73 @@ func (ui *AdminUI) hostValidationMiddleware(expectedHost string, next http.Handl
 	})
 }
 
-// func (ui *AdminUI) hostValidation(next http.Handler) http.Handler {
+// newCSRFSecret generates a fresh, process-lifetime-only HMAC key used to
+// sign/verify CSRF tokens — see verifyCSRFToken's doc comment for why a
+// signed token is required instead of trusting a bare cookie value at face
+// value. Panics if the OS CSPRNG is unavailable, mirroring getSecureID's
+// rationale elsewhere in this file: a predictable/absent entropy source
+// here would make every CSRF token forgeable, so failing loudly beats
+// silently running with a weak or zero-value secret.
+func newCSRFSecret() []byte {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		panic2("BUG: critical system error: failed to generate CSRF HMAC secret: " + err.Error())
+	}
+	return secret
+}
 
-// 	//by default use the host:port from config.json
-// 	var expected string = ui.getConfig().ListenUI
-// 	if boundAddr != "" {
-// 		expected = boundAddr
-// 	}
+// newCSRFToken produces a fresh CSRF token of the form "<nonce>.<hmac>",
+// both base64url-encoded, where hmac = HMAC-SHA256(nonce, secret).
+func newCSRFToken(secret []byte) string {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		panic2("BUG: critical system error: failed to generate CSRF token nonce: " + err.Error())
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(nonce)
+	sig := mac.Sum(nil)
+	return base64.RawURLEncoding.EncodeToString(nonce) + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
 
-// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 		if ui.getExpectedHost != nil {
-// 			//use the saved boundAddr from startWebUIListenerInstance
-// 			expected = ui.getExpectedHost()
-// 		}
-// 		if !strings.EqualFold(r.Host, expected) {
-// 			http.Error(w, "Invalid Host header", http.StatusForbidden)
-// 			return
-// 		}
-
-// 		next.ServeHTTP(w, r)
-// 	})
-// }
+// verifyCSRFToken reports whether token carries a valid HMAC signature under
+// secret, i.e. whether THIS server (not some other party) generated it.
+//
+// Without this check, csrfMiddleware would blindly trust whatever value
+// happens to be in the request's csrf_token cookie as the source of truth —
+// including one an attacker planted there. Cookies do not carry port
+// granularity (RFC 6265): a cookie set for host "127.0.0.1" is shared across
+// every port on that host, so any other local program a victim's browser
+// can be made to visit (e.g. a malicious page on http://127.0.0.1:<other
+// port>/) can plant an attacker-known csrf_token value via its own
+// Set-Cookie response, even though this cookie is HttpOnly (HttpOnly only
+// blocks client-side JS from reading/writing it — it does nothing to stop a
+// *different* HTTP response on the same host from setting it). If the
+// server then trusted that planted value as correct, the attacker — who
+// knows the value they planted — could include the identical token in a
+// forged cross-site form submission and defeat the double-submit CSRF
+// defense entirely (classic CSRF token fixation).
+//
+// Requiring a valid signature closes this: an attacker who doesn't know
+// this process's in-memory secret cannot forge a token the server will
+// accept, so a fixated cookie is simply rejected and replaced.
+func verifyCSRFToken(token string, secret []byte) bool {
+	nonceB64, sigB64, ok := strings.Cut(token, ".")
+	if !ok {
+		return false
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(nonceB64)
+	if err != nil {
+		return false
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(nonce)
+	expected := mac.Sum(nil)
+	return hmac.Equal(sig, expected)
+}
 
 // const csrfTokenKey contextKey = "csrfToken"
 type csrfTokenKey struct{}
@@ -6438,12 +6537,16 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 			cookieName = "csrf_token"
 		}
 
-		// 1. Get or generate the CSRF cookie
+		// 1. Get or generate the CSRF cookie. A cookie is only trusted as
+		// "the" token if it carries a valid HMAC signature under this
+		// process's in-memory csrfSecret — see verifyCSRFToken's doc comment
+		// for why blindly trusting an existing cookie value is a token
+		// fixation vulnerability.
 		cookie, err := r.Cookie(cookieName)
 		var token string
 
-		if err != nil || cookie.Value == "" {
-			token = uuid.New().String()
+		if err != nil || cookie.Value == "" || !verifyCSRFToken(cookie.Value, ui.csrfSecret) {
+			token = newCSRFToken(ui.csrfSecret)
 			http.SetCookie(w, &http.Cookie{
 				Name:     cookieName,
 				Value:    token,
@@ -7297,7 +7400,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			"enabled": r.FormValue("enabled"),
 		}
 
-		status, err := ui.processRuleChange(fields)
+		status, err := ui.processRuleChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			//log.X happens inside the process*Change() above
 			http.Error(w, err.Error(), status)
@@ -7468,6 +7571,38 @@ func (s *Server) invalidateCacheForPattern(pattern string) {
 	}
 }
 
+// invalidateCacheForPatterns is the batch counterpart of
+// invalidateCacheForPattern: it performs a SINGLE pass over the DNS cache,
+// evicting any entry whose domain matches ANY of the given patterns. Used
+// by applyTablesHandler so that committing a large batch of staged
+// rule/host changes costs one O(cache_size) scan total instead of one
+// O(cache_size) scan per changed entry.
+func (s *Server) invalidateCacheForPatterns(patterns map[string]struct{}) {
+	if len(patterns) == 0 {
+		return
+	}
+	cachee := s.getCache()
+	log := s.getLogger()
+
+	for key := range cachee.Items() {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 0 {
+			continue
+		}
+		domain := parts[0]
+		for pattern := range patterns {
+			if matchPattern(pattern, domain) {
+				cachee.Delete(key)
+				log.Debug("Evicted cached record due to batch rule/host change",
+					slog.String("key", key),
+					slog.String("matched_pattern", pattern),
+					slog.String("domain", domain))
+				break
+			}
+		}
+	}
+}
+
 func (s *Server) invalidateCacheForBlacklistedIPs() {
 	cachee := s.getCache()
 	log := s.getLogger()
@@ -7547,7 +7682,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			"ips":         r.FormValue("ips"),
 		}
 
-		status, err := ui.processHostChange(fields)
+		status, err := ui.processHostChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			http.Error(w, err.Error(), status)
 			return
@@ -8911,6 +9046,7 @@ func NewAdminUI(
 		recentBlocks:      rb,
 		stats:             stats,
 		verifiedAuthCache: newVerifiedAuthCache(),
+		csrfSecret:        newCSRFSecret(),
 		uiTemplates:       tpls,
 	}
 }
@@ -10179,6 +10315,7 @@ func (s *Server) initAdminUI() {
 	ui.OnSaveBlacklist = s.saveResponseBlacklist
 	ui.OnSaveHosts = s.saveLocalHosts
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
+	ui.OnInvalidatePatterns = s.invalidateCacheForPatterns
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
 	ui.OnApplyConfig = func(cfg *Config) error {
 		//FIXME: is this taking an old FileWriter (potentially, if the impl. changes let's say and FileWriter is a new instance on each Reload rather than get itself updated with new values for retries and backoff_ms) ? the logger is current tho, since function!
@@ -12994,23 +13131,38 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	var failures []batchFailure
 	appliedCount := 0
 
+	// Cache invalidation is coalesced across the whole batch instead of
+	// happening once per changed entry (which used to mean N full O(cache
+	// size) table scans for an N-entry batch — see todonow.txt "O(N)
+	// Synchronous Cache Eviction"). Rule/host changes accumulate their
+	// touched patterns here instead of invalidating immediately; a single
+	// aggregated pass runs once after the whole batch (and its disk
+	// persistence) completes. Blacklist changes are cheaper to coalesce:
+	// invalidateCacheForBlacklistedIPs() already re-snapshots the live
+	// blacklist and re-scans the cache in one pass regardless of how many
+	// blacklist edits preceded it, so it only needs to run once total too.
+	touchedPatterns := make(map[string]struct{})
+	var blacklistTouched bool
+	collectPattern := func(p string) { touchedPatterns[p] = struct{}{} }
+	markBlacklistTouched := func() { blacklistTouched = true }
+
 	for i, change := range changes {
 		var status int
 		var err error
 
 		switch change.URL {
 		case "/rules":
-			status, err = ui.processRuleChange(change.Fields)
+			status, err = ui.processRuleChange(change.Fields, collectPattern)
 			if err == nil {
 				saveRules = true
 			}
 		case "/hosts":
-			status, err = ui.processHostChange(change.Fields)
+			status, err = ui.processHostChange(change.Fields, collectPattern)
 			if err == nil {
 				saveHosts = true
 			}
 		case "/response-blacklist":
-			status, err = ui.processBlacklistChange(change.Fields)
+			status, err = ui.processBlacklistChange(change.Fields, markBlacklistTouched)
 			if err == nil {
 				saveBlacklist = true
 			}
@@ -13031,6 +13183,13 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(touchedPatterns) > 0 && ui.OnInvalidatePatterns != nil {
+		ui.OnInvalidatePatterns(touchedPatterns)
+	}
+	if blacklistTouched && ui.OnInvalidateBlacklist != nil {
+		ui.OnInvalidateBlacklist()
+	}
+
 	if len(failures) > 0 {
 		first := failures[0]
 		msg := fmt.Sprintf(
@@ -13046,7 +13205,7 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
+func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(pattern string)) (int, error) {
 	log := ui.getLogger()
 
 	// Handle delete requests
@@ -13072,8 +13231,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 			return http.StatusNotFound, err
 		}
 
-		ui.OnInvalidatePattern(pattern)
-		//log.Info("Successfully deleted rule via WebUI/Batch", slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern))
+		invalidate(pattern)
 		displayPattern, wasIDN := punycodeDecodePatternForDisplay(pattern)
 		attrs := []any{slog.String("id", id), slog.String("type", typ), slog.String("pattern", pattern)}
 		if wasIDN {
@@ -13156,9 +13314,9 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 			return http.StatusConflict, err
 		}
 
-		ui.OnInvalidatePattern(oldPattern)
+		invalidate(oldPattern)
 		if oldPattern != patternNormalized {
-			ui.OnInvalidatePattern(patternNormalized)
+			invalidate(patternNormalized)
 		}
 		log.Info("Rule edited via WebUI/Batch",
 			slog.String("id", id),
@@ -13188,7 +13346,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 			return http.StatusConflict, err
 		}
 
-		ui.OnInvalidatePattern(patternNormalized)
+		invalidate(patternNormalized)
 		log.Info("Rule added via WebUI/Batch",
 			slog.String("patternLowercased", patternNormalized),
 			slog.String("pattern_idn", displayPattern),
@@ -13199,7 +13357,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string) (int, error) {
 	return http.StatusOK, nil
 }
 
-func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
+func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(pattern string)) (int, error) {
 	log := ui.getLogger()
 	// --- DELETE ---
 	if fields["delete"] == "1" {
@@ -13222,8 +13380,7 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 			return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 		}
 		if ui.hostStore.DeleteHost(patternLowercased) {
-			ui.OnInvalidatePattern(patternLowercased)
-			//log.Info("Successfully deleted local host override via WebUI/Batch", slog.String("pattern", patternLowercased))
+			invalidate(patternLowercased)
 			displayPattern, wasIDN := punycodeDecodePatternForDisplay(patternLowercased)
 			attrs := []any{slog.String("pattern", patternLowercased)}
 			if wasIDN {
@@ -13333,11 +13490,11 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 	// --- NEW: Cache Invalidation ---
 	// If this was an edit, purge the old pattern's cached entries, if different than new pattern
 	if isEdit && oldPatternLowercased != "" && oldPatternLowercased != patternLowercased {
-		ui.OnInvalidatePattern(oldPatternLowercased)
+		invalidate(oldPatternLowercased)
 	}
 	// Always purge the new pattern so the local override takes immediate effect
 	// (e.g., clearing out previous NXDOMAINs or external IPs)
-	ui.OnInvalidatePattern(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
+	invalidate(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
 	log.Info("Successfully added/edited local host override via WebUI/Batch",
 		slog.String("pattern", patternLowercased),
 		slog.String("pattern_idn", displayPattern),
@@ -13345,7 +13502,7 @@ func (ui *AdminUI) processHostChange(fields map[string]string) (int, error) {
 	return http.StatusOK, nil
 }
 
-func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error) {
+func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBlacklist func()) (int, error) {
 	log := ui.getLogger()
 	action := fields["action"]
 
@@ -13357,7 +13514,7 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error)
 
 		if ui.tryDeleteBlacklistIP(cidrStr) { //it got deleted
 			// 2. Global flush of the cache so it re-reads the updated rules list
-			ui.OnInvalidateBlacklist()
+			invalidateBlacklist()
 			log.Info("Successfully deleted IP/CIDR from response blacklist via WebUI/Batch", slog.String("cidr", cidrStr))
 			return http.StatusOK, nil
 		}
@@ -13382,7 +13539,7 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error)
 				// Using the clean add helper method with natural defer unlock
 				if ui.blacklist.TryAdd(n) {
 					// Instantly evict cached entries that contain the newly blacklisted IP
-					ui.OnInvalidateBlacklist()
+					invalidateBlacklist()
 					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()))
 					return http.StatusOK, nil
 				}
@@ -13429,7 +13586,7 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string) (int, error)
 
 			return http.StatusConflict, err
 		}
-		ui.OnInvalidateBlacklist()
+		invalidateBlacklist()
 		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 		return http.StatusOK, nil
 	default:

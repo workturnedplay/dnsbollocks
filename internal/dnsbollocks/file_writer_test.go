@@ -506,3 +506,82 @@ func TestWin11SafeFileWriter_PowerLossFileWithZeroBytesIsIgnored(t *testing.T) {
 		t.Error("zero-byte staging file should still exist")
 	}
 }
+
+func TestWin11SafeFileWriter_PreexistingEmptyStagingFile_IsReclaimedAndWriteSucceeds(t *testing.T) {
+	defer restoreHooks()
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(targetFile, []byte("old"), 0600); err != nil {
+		t.Fatalf("setup WriteFile failed: %v", err)
+	}
+
+	staging := targetFile + wincoe.PowerlossFileExtension
+	// Simulate the benign leftover: a previous write succeeded but its own
+	// cleanup couldn't unlink the now-empty staging file.
+	if err := os.WriteFile(staging, nil, 0600); err != nil {
+		t.Fatalf("setup staging WriteFile failed: %v", err)
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewWin11SafeFileWriter(true, 3, 10, &liveLogger)
+
+	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0644); err != nil {
+		t.Fatalf("expected write to succeed by reclaiming the empty staging file, got: %v", err)
+	}
+
+	got, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("expected target file content %q, got %q", "new", got)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Error("expected staging file to be cleaned up after successful write")
+	}
+}
+
+func TestSafeWriteFile_RefusesNonEmptyPreexistingStagingFile(t *testing.T) {
+	defer restoreHooks()
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(targetFile, []byte("old"), 0600); err != nil {
+		t.Fatalf("setup WriteFile failed: %v", err)
+	}
+
+	staging := targetFile + wincoe.PowerlossFileExtension
+	// A non-empty staging file at this path is never a benign leftover (see
+	// CheckPowerLossFile, which panics on exactly this state at boot); it
+	// must never be silently truncated/overwritten by a fresh write attempt.
+	if err := os.WriteFile(staging, []byte("something unexpected"), 0600); err != nil {
+		t.Fatalf("setup staging WriteFile failed: %v", err)
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
+
+	// SafeWriteFile must still succeed overall (it falls back to the
+	// in-place truncation path for the real target file), but the
+	// pre-existing staging file's content must be left completely untouched.
+	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0644); err != nil {
+		t.Fatalf("expected fallback write to succeed despite refusing the staging file, got: %v", err)
+	}
+
+	stagingContent, err := os.ReadFile(staging)
+	if err != nil {
+		t.Fatalf("expected pre-existing staging file to still exist untouched: %v", err)
+	}
+	if string(stagingContent) != "something unexpected" {
+		t.Errorf("pre-existing staging file content was modified: got %q", stagingContent)
+	}
+
+	got, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("expected target file to still be updated via fallback, got %q", got)
+	}
+}

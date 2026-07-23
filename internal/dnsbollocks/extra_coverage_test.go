@@ -643,16 +643,54 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
 		h := ui.csrfMiddleware(next)
 
-		token := "test-token-value"
+		// A GET first establishes a genuine, server-signed CSRF cookie —
+		// mirroring how a real browser session obtains one before ever
+		// submitting a form.
+		getReq := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		getRec := httptest.NewRecorder()
+		h.ServeHTTP(getRec, getReq)
+
+		var issuedCookie *http.Cookie
+		for _, c := range getRec.Result().Cookies() {
+			if c.Name == "csrf_token" {
+				issuedCookie = c
+			}
+		}
+		if issuedCookie == nil {
+			t.Fatal("expected GET to issue a csrf_token cookie")
+		}
+
 		formData := url.Values{}
-		formData.Set("csrf_token", token)
+		formData.Set("csrf_token", issuedCookie.Value)
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(formData.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: token})
+		req.AddCookie(issuedCookie)
 		h.ServeHTTP(rec, req)
 
 		if !called {
-			t.Error("expected next handler to be called with a valid CSRF token")
+			t.Error("expected next handler to be called with a valid, server-issued CSRF token")
+		}
+	})
+
+	t.Run("POST with attacker-fixated (unsigned) cookie is rejected", func(t *testing.T) {
+		ui, rec := setupTestAdminUI(t)
+		called := false
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; _ = w; _ = r })
+		h := ui.csrfMiddleware(next)
+
+		fixated := "attacker-planted-token-value"
+		formData := url.Values{}
+		formData.Set("csrf_token", fixated)
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(formData.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: fixated})
+		h.ServeHTTP(rec, req)
+
+		if called {
+			t.Error("expected an unsigned/fixated CSRF cookie to be rejected even though it matches the form value")
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", rec.Code)
 		}
 	})
 }
