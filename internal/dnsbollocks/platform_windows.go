@@ -216,7 +216,15 @@ type Server struct {
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
 
-	//dnsTCPSem chan struct{} // nil until startDNSListener; capacity = MaxConcurrentDNSTCPConns
+	// forwardInFlightMu/forwardInFlight coalesce concurrent identical
+	// upstream forwards (same domain+qtype cache key) into a single request,
+	// so a burst of duplicate queries arriving right after a cache entry
+	// expires doesn't each independently hammer the upstream resolver. See
+	// forwardInFlightEntry's doc comment.
+	forwardInFlightMu sync.Mutex
+	forwardInFlight   map[string]*forwardInFlightEntry
+
+	//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 	dnsTCPSem atomic.Pointer[chan struct{}]
 	dnsUDPSem atomic.Pointer[chan struct{}]
 
@@ -359,11 +367,12 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 		panic2("BUG: NewServer called with nil Runtime")
 	}
 	s := &Server{
-		rt:           rt,
-		ruleStore:    newRuleStore(),
-		hostStore:    newHostStore(),
-		blacklist:    newBlacklistStore(),
-		recentBlocks: newRecentBlocksTracker(),
+		rt:              rt,
+		ruleStore:       newRuleStore(),
+		hostStore:       newHostStore(),
+		blacklist:       newBlacklistStore(),
+		recentBlocks:    newRecentBlocksTracker(),
+		forwardInFlight: make(map[string]*forwardInFlightEntry),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
@@ -3997,6 +4006,17 @@ type CacheEntry struct {
 	State UpstreamState
 }
 
+// forwardInFlightEntry coordinates a single in-progress upstream forward
+// attempt for one cache key (domain+qtype), so a burst of concurrently
+// arriving identical queries for a newly-expired/never-cached entry — a
+// classic "thundering herd" — coalesces into one upstream request instead of
+// one independent upstream request per packet. Mirrors the exact same
+// in-flight-coalescing pattern wincoe.GetServiceNamesFromPIDCached already
+// uses for an analogous problem (concurrent PID->service-name lookups).
+type forwardInFlightEntry struct {
+	done chan struct{} // closed once the leader has finished this key's attempt
+}
+
 func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
 	log := s.getLogger()
@@ -4406,6 +4426,48 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	// --- END Local Hosts Override ---
 
+	// --- Request coalescing (thundering-herd protection) ---
+	// A burst of concurrent packets for the same still-uncached domain+qtype
+	// (e.g. right after this key's cache entry expires) would otherwise each
+	// independently trigger their own upstream DoH request. Coalesce them:
+	// only the first ("leader") actually forwards and populates the cache;
+	// concurrent followers wait for it to finish and re-check the cache
+	// instead of firing a redundant upstream request. See
+	// forwardInFlightEntry's doc comment and todonow.txt "Cache Miss
+	// Thundering Herd".
+	s.forwardInFlightMu.Lock()
+	if s.forwardInFlight == nil {
+		// Defensive: NewServer always initializes this map, but some tests
+		// construct a bare &Server{...} directly, bypassing NewServer.
+		s.forwardInFlight = make(map[string]*forwardInFlightEntry)
+	}
+	if entry, inFlight := s.forwardInFlight[key]; inFlight {
+		s.forwardInFlightMu.Unlock()
+		<-entry.done
+		if cached, ok := cachee.Get(key); ok {
+			resp := cached.Msg.Copy()
+			resp.Id = reqMsg.Id
+			adjustResponseCaseToQuery(resp, reqMsg)
+			ips := extractIPs(resp)
+			s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, cached.State)
+			return resp
+		}
+		// The leader's result wasn't cached (e.g. a blocked/filtered response
+		// — see filterResponse's nil-case handling further below, which is
+		// intentionally not cached); fall through and forward independently
+		// ourselves rather than looping, to avoid ever waiting twice.
+	} else {
+		leaderEntry := &forwardInFlightEntry{done: make(chan struct{})}
+		s.forwardInFlight[key] = leaderEntry
+		s.forwardInFlightMu.Unlock()
+		defer func() {
+			s.forwardInFlightMu.Lock()
+			delete(s.forwardInFlight, key)
+			s.forwardInFlightMu.Unlock()
+			close(leaderEntry.done)
+		}()
+	}
+
 	// Forward to upstream DNS
 	// 1. Save the original client ID
 	oldID := reqMsg.Id
@@ -4721,6 +4783,15 @@ func classifyRetryableDoHError(err error) (reason string, retryable bool) {
 // reject it as malformed.
 const maxUpstreamDoHResponseBytes = 4 * 1024 * 1024 // 4 MiB
 
+// clientMetadataLookupTimeout bounds how long doSingleDoHRequest will wait for
+// startMetadataLookup's client PID/exe resolution to finish when a
+// {builtin:clientexe} upstream URL template needs the real value. The
+// underlying Win32 APIs (PidAndExeForUDP/PidAndExeForTCP) accept no context
+// and cannot be cancelled, so an OS-level hang there would otherwise stall
+// this DNS query indefinitely; see todonow.txt "Uncancellable Goroutine Leak
+// in Metadata Lookup".
+const clientMetadataLookupTimeout = 2 * time.Second
+
 func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
 	log := u.getLogger()
 
@@ -4767,7 +4838,17 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				// real exe name).
 				if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
 					//XXX: caveat so when using {builtin:clientexe} int he upstream url, the network request waits/depends on Windows API to resolve the pid->exe mapping of the client which issues the request before starting the DNS query (network request)
-					future.wg.Wait() // must block: we cannot build the request URL without the real name
+					// Bounded wait: the underlying Win32 PID/exe lookup has no
+					// cancellation support, so a hung OS call could otherwise
+					// stall this DNS query forever. Cap the wait and fall
+					// back to the placeholder name if it doesn't finish in
+					// time.
+					select {
+					case <-future.done:
+					case <-time.After(clientMetadataLookupTimeout):
+						log.Warn("timed out waiting for client pid/exe metadata lookup; using placeholder exe name for {builtin:clientexe}",
+							slog.Duration("timeout", clientMetadataLookupTimeout))
+					}
 					if future.info.exe != "" {
 						//// Optionally strip the .exe extension for cleaner NextDNS logs
 						//exeName = strings.TrimSuffix(future.info.exe, ".exe")
@@ -4844,6 +4925,16 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 					cancelReq()
 				}
 				handedOver = true // Detach this iteration's deferred cleanup
+			} else if resp != nil {
+				// net/http's Client.Do can, in rare cases (certain redirect-
+				// policy failures or HTTP/2 stream errors), return BOTH a
+				// non-nil Response and a non-nil error. Every error path
+				// below discards resp entirely, so close its body now —
+				// otherwise the underlying connection/socket leaks.
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					log2.Debug("failed to close stray response body on doSingleDoHRequest error path", wincoe.SafeErr(closeErr))
+				}
+				resp = nil
 			}
 			return false, nil
 		}()
@@ -6332,14 +6423,29 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		log := ui.getLogger()
 		//cfg := ui.getConfig()
 
+		// The __Host- cookie name prefix (RFC 6265bis) forces the browser to
+		// require Secure, Path=/, and no Domain attribute, and — crucially —
+		// makes the cookie strictly host-locked: no other origin, including a
+		// same-registrable-domain subdomain (e.g. via a subdomain XSS bug),
+		// can ever set or override it. This only works when actually served
+		// over HTTPS (the prefix requires Secure, which the browser also then
+		// requires to accept the Set-Cookie at all), so fall back to an
+		// unprefixed name on the plain-HTTP path.
+		var cookieName string
+		if r.TLS != nil {
+			cookieName = "__Host-csrf_token"
+		} else {
+			cookieName = "csrf_token"
+		}
+
 		// 1. Get or generate the CSRF cookie
-		cookie, err := r.Cookie("csrf_token")
+		cookie, err := r.Cookie(cookieName)
 		var token string
 
 		if err != nil || cookie.Value == "" {
 			token = uuid.New().String()
 			http.SetCookie(w, &http.Cookie{
-				Name:     "csrf_token",
+				Name:     cookieName,
 				Value:    token,
 				Path:     "/",
 				HttpOnly: true, // Prevent client-side JS from reading the cookie
@@ -7260,9 +7366,29 @@ func generateUniqueRuleID(existingRules map[string][]RuleEntry, logger *slog.Log
 		logger.Warn("UUID collision in generateUniqueRuleID, regenerating",
 			slog.String("id", id), slog.Int("try", try), slog.Int("max_tries", triesOnCollision))
 	}
-	//panic2(fmt.Sprintf("BUG: UUID collision limit reached(after %d retries) — check RNG or storage", triesOnCollision-1))
-	msg := fmt.Sprintf("BUG: UUID collision limit reached(after %d retries) — check RNG or storage", triesOnCollision-1)
-	logger.Error(msg, slog.Int("retries", triesOnCollision-1))
+
+	// The short, 8-hex-char ID space is only 32 bits of entropy, so exhausting
+	// triesOnCollision short-ID attempts can genuinely happen once the
+	// whitelist grows large (ordinary birthday-paradox math, well before the
+	// rule count approaches 2^32) — it is not actually a "should never
+	// happen" bug, so crashing the entire DNS server over an ID-generation
+	// retry budget would be disproportionate. Fall back to a full,
+	// untruncated UUID (122 bits of randomness), whose collision probability
+	// against any realistic rule count is negligible.
+	for try := 1; try <= triesOnCollision; try++ {
+		id := uuid.New().String()
+		if _, collision := existing[id]; !collision {
+			logger.Warn("Exhausted short-ID retries; fell back to a full-length UUID to guarantee uniqueness",
+				slog.String("id", id), slog.Int("short_id_tries", triesOnCollision))
+			return id
+		}
+	}
+
+	// Reaching here means even full-length UUIDs are colliding, which really
+	// would indicate a broken RNG or corrupted storage — that remains a hard
+	// panic.
+	msg := fmt.Sprintf("BUG: UUID collision limit reached even with full-length UUIDs after %d additional retries — check RNG or storage", triesOnCollision)
+	logger.Error(msg, slog.Int("retries", triesOnCollision))
 	panic(msg)
 }
 
@@ -8986,10 +9112,45 @@ func (um *UpstreamManager) updateInnerState() error {
 	return nil
 }
 
+// computeForwardOverallTimeout bounds the total wall-clock time a single
+// ForwardToDoH call may take, across every configured upstream and every
+// retry attempt, regardless of DNS query selection mode (fastest/failover/
+// strict). Without this ceiling, doSingleDoHRequest's retry loop budgets a
+// fresh UpstreamClientTimeoutSec for EACH attempt, so strict mode's
+// wg.Wait() (which waits for every upstream's goroutine, not just the first
+// to answer) could hold the caller's DNS concurrency semaphore slot for up
+// to UpstreamClientTimeoutSec * (1 + UpstreamRetriesPerQuery) seconds under
+// a genuinely slow or partially-failing upstream — long enough, under
+// sustained query volume, to exhaust the semaphore pool and stall every new
+// connection. This computes that same worst-case per-upstream budget and
+// applies it once, up front, so no upstream is ever cut off before its own
+// documented retry budget elapses, while still guaranteeing a hard ceiling
+// on the whole attempt.
+func computeForwardOverallTimeout(cfg *Config) time.Duration {
+	perAttempt := time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second
+	backoff := time.Duration(cfg.UpstreamRetriesPerQuery) * time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond
+	total := perAttempt*time.Duration(1+cfg.UpstreamRetriesPerQuery) + backoff + time.Second // scheduling slack
+	const ceiling = 60 * time.Second
+	if total > ceiling {
+		return ceiling
+	}
+	return total
+}
+
 // ForwardToDoH uses the preinitialized dohClient and supports one retry on transient network errors.
 func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns.Msg, UpstreamState) {
 	cfg := um.getConfig()
 	log := um.getLogger()
+
+	// Bound the entire forwarding attempt (covering every upstream and every
+	// retry) so strict mode's wg.Wait() below can never hold the caller's
+	// DNS concurrency semaphore slot longer than a single upstream's own
+	// documented worst-case retry budget. See computeForwardOverallTimeout's
+	// doc comment and todonow.txt "Strict Mode Semaphore Exhaustion
+	// (Deadlock)".
+	overallCtx, cancelOverall := context.WithTimeout(ctx, computeForwardOverallTimeout(cfg))
+	defer cancelOverall()
+	ctx = overallCtx
 
 	var upstreamState1 UpstreamState
 	upstreamState1.Strategy = cfg.UpstreamSelectionMode
@@ -10903,6 +11064,17 @@ func isValidBcryptHash(s string) bool {
 	if s[6] != '$' {
 		return false
 	}
+	// The checks above only confirm the string LOOKS like a bcrypt hash by
+	// length and prefix; they don't confirm it actually IS one. A dummy
+	// 60-character string engineered to match that superficial shape would
+	// otherwise be blindly accepted and persisted as the WebUI password hash
+	// — since it's a dummy string the real plaintext is unknown, permanently
+	// locking out every administrator. bcrypt.Cost parses the full hash
+	// structure (cost field, base64-alphabet salt+hash) and errors on
+	// anything malformed, so use it as the authoritative structural check.
+	if _, err := bcrypt.Cost([]byte(s)); err != nil {
+		return false
+	}
 	return true
 }
 
@@ -12805,7 +12977,24 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 
-	for _, change := range changes {
+	// Every change in the batch is an independent rule/host/blacklist entry,
+	// so one failing entry must not silently discard the outcome of the
+	// others. Process the full batch, collect every failure, and persist
+	// whatever succeeded exactly once at the end — this replaces the
+	// previous "abort at first failure" behavior, which still persisted
+	// every change applied so far (flushDirty() ran on that path too) while
+	// telling the client the whole batch failed, leaving the client's
+	// staged-changes list out of sync with what was actually written to
+	// disk. See todonow.txt "Partial Batch Commits in WebUI".
+	type batchFailure struct {
+		index int
+		url   string
+		err   error
+	}
+	var failures []batchFailure
+	appliedCount := 0
+
+	for i, change := range changes {
 		var status int
 		var err error
 
@@ -12830,17 +13019,26 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.Warn("Batch apply failed for a record", slog.String("url", change.URL), wincoe.SafeErr(err))
-			if flushErr := flushDirty(); flushErr != nil {
-				log.Error("Batch apply: also failed to persist previously-mutated stores after this error", wincoe.SafeErr(flushErr))
-			}
-			http.Error(w, err.Error(), status)
-			return // Fails the rest of the batch and surfaces the HTTP error to the frontend
+			log.Warn("Batch apply failed for a record", slog.Int("index", i), slog.String("url", change.URL), wincoe.SafeErr(err))
+			failures = append(failures, batchFailure{index: i, url: change.URL, err: fmt.Errorf("status %d: %w", status, err)})
+			continue
 		}
+		appliedCount++
 	} // for
 
 	if flushErr := flushDirty(); flushErr != nil {
 		http.Error(w, flushErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(failures) > 0 {
+		first := failures[0]
+		msg := fmt.Sprintf(
+			"%d of %d staged change(s) failed to apply; %d succeeded and were already persisted to disk (reload to see the current state). First failure at batch index %d for %q: %v",
+			len(failures), len(changes), appliedCount, first.index, first.url, first.err,
+		)
+		log.Warn("Batch apply completed with partial failures", slog.Int("failed", len(failures)), slog.Int("applied", appliedCount), slog.Int("total", len(changes)))
+		http.Error(w, msg, http.StatusUnprocessableEntity)
 		return
 	}
 

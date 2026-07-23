@@ -1418,14 +1418,18 @@
                 const applyBtn = e.target.closest('.js-apply-table-btn');
                 if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
                 (async () => {
-                    const success = await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
+                    await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
                         const payload = JSON.stringify(stagedTableChanges);
                         return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
                     });
-                    if (success) {
-                        stagedTableChanges = []; // Bypass the beforeunload block!
-                        location.reload();
-                    }
+                    // Always clear staged changes and reload: even a reported
+                    // failure may reflect a batch where some earlier entries
+                    // were already applied and persisted to disk before the
+                    // failing one was hit (see applyTablesHandler), so the
+                    // client's staged-changes array can no longer be trusted
+                    // to accurately describe what's still pending.
+                    stagedTableChanges = []; // Bypass the beforeunload block!
+                    location.reload();
                 })();
                 return;
             }
