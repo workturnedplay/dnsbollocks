@@ -1,4 +1,6 @@
 my todos:
+* add Ctrl+V to dump the version on console, maybe even the whole Config too?
+
 * get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
