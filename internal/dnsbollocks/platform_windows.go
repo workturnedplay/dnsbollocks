@@ -8309,7 +8309,6 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 	buf := make([]byte, 3)
 
 	for {
-		log2 := s.getLogger()
 		// 1. Check if an external fatal error triggered a shutdown
 		select {
 		case <-signalTheUnstick:
@@ -8324,6 +8323,7 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 		isStdinReading.Store(true)
 		n, err := os.Stdin.Read(buf)
 		isStdinReading.Store(false) // 2. Mark that we came out (due to a key, Ctrl+C, or error)
+		log2 := s.getLogger()
 
 		if err != nil || n == 0 {
 			fmt.Print("?")
@@ -8337,7 +8337,7 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 			return
 		default:
 		}
-		fmt.Print(".") //noTODO: delete this? then the next 6 \n Print(s) as well
+		fmt.Print(".") //noTODO: delete this? then the next 6 \n Print(s) as well; we use this to cause scroll to get back to bottom!
 
 		// Ctrl+X (0x18)
 		if buf[0] == 0x18 {
@@ -8384,41 +8384,44 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 				log2.Info("Alt+R detected → reloading config")
 				//_ = term.Restore(fd, oldState)
 				reloadFn()
-			}
-		}
+			case 'v', 'V':
+				fmt.Print("\n")
+				log2.Info("Alt+V detected → dumping", slog.String("version", GetVersion()))
 
-		// Ctrl+V (0x16)
-		if buf[0] == 0x16 {
-			fmt.Print("\n")
-			log2.Info("Ctrl+V detected → dumping version and config")
+				// fmt.Printf("\n========================================\n")
+				// fmt.Printf("VERSION: %s\n", GetVersion())
+				// fmt.Printf("========================================\n\n")
 
-			fmt.Printf("\n========================================\n")
-			fmt.Printf("VERSION: %s\n", GetVersion())
-			fmt.Printf("========================================\n\n")
+				cfg := s.getConfig()
+				t := reflect.TypeOf(*cfg)
+				v := reflect.ValueOf(*cfg)
 
-			cfg := s.getConfig()
-			t := reflect.TypeOf(*cfg)
-			v := reflect.ValueOf(*cfg)
+				for i := 0; i < t.NumField(); i++ {
+					field := t.Field(i)
+					jsonTag := field.Tag.Get("json")
+					if jsonTag == "" || jsonTag == "-" {
+						continue
+					}
 
-			for i := 0; i < t.NumField(); i++ {
-				field := t.Field(i)
-				jsonTag := field.Tag.Get("json")
-				if jsonTag == "" || jsonTag == "-" {
-					continue
+					jsonKey := strings.Split(jsonTag, ",")[0]
+					desc := field.Tag.Get("desc")
+					val := v.Field(i).Interface()
+
+					// Mask the password hash in the console dump
+					if jsonKey == getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)) {
+						val = "********"
+					}
+
+					//fmt.Printf("--- %s ---\nValue: %v\nDescription: %s\n\n", jsonKey, val, desc)
+					// Log each config option cleanly as a structured debug/info attribute
+					log2.Info("--- ",
+						slog.String("key", jsonKey),
+						slog.Any("value", val),
+						slog.String("description", desc),
+					)
 				}
-
-				jsonKey := strings.Split(jsonTag, ",")[0]
-				desc := field.Tag.Get("desc")
-				val := v.Field(i).Interface()
-
-				// Mask the password hash in the console dump
-				if jsonKey == getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)) {
-					val = "********"
-				}
-
-				fmt.Printf("--- %s ---\nValue: %v\nDescription: %s\n\n", jsonKey, val, desc)
-			}
-		}
+			} //switch
+		} //alt+
 
 		// Re-ensure raw mode if anything temporarily reset it
 		_, err = term.MakeRaw(fd)
