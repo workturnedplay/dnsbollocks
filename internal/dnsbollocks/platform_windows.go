@@ -135,7 +135,7 @@ type Config struct {
 	UseEDEInBlockedReply    bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
 
 	WebUIPasswordHash           string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
-	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 12). Higher values are slower but more resistant to brute-force."`
+	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 4, max is 31). Higher values are slower but more resistant to brute-force."`
 	WebUIUseTLS                 bool   `json:"webui_use_tls"                     desc:"Serve the web admin UI over HTTPS using the auto-generated self-signed certificate. Strongly recommended for any non-loopback address."`
 	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"  desc:"Automatically promote webui_use_tls to true when listen_ui is bound to a non-loopback address, preventing the password from being transmitted as plaintext."`
 	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"          desc:"Number of consecutive failed WebUI login attempts from a single IP before that IP is locked out."`
@@ -8379,6 +8379,39 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 			}
 		}
 
+		// Ctrl+V (0x16)
+		if buf[0] == 0x16 {
+			fmt.Print("\n")
+			log2.Info("Ctrl+V detected → dumping version and config")
+
+			fmt.Printf("\n========================================\n")
+			fmt.Printf("VERSION: %s\n", GetVersion())
+			fmt.Printf("========================================\n\n")
+
+			cfg := s.getConfig()
+			t := reflect.TypeOf(*cfg)
+			v := reflect.ValueOf(*cfg)
+
+			for i := 0; i < t.NumField(); i++ {
+				field := t.Field(i)
+				jsonTag := field.Tag.Get("json")
+				if jsonTag == "" || jsonTag == "-" {
+					continue
+				}
+
+				jsonKey := strings.Split(jsonTag, ",")[0]
+				desc := field.Tag.Get("desc")
+				val := v.Field(i).Interface()
+
+				// Mask the password hash in the console dump
+				if jsonKey == getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)) {
+					val = "********"
+				}
+
+				fmt.Printf("--- %s ---\nValue: %v\nDescription: %s\n\n", jsonKey, val, desc)
+			}
+		}
+
 		// Re-ensure raw mode if anything temporarily reset it
 		_, err = term.MakeRaw(fd)
 		if err != nil {
@@ -11607,7 +11640,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
 	if clampIntField(log, tagWebUIPasswordBcryptCost,
 		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
-		func(v int) bool { return v < 12 }, max(12, defaultCfg.WebUIPasswordBcryptCost), " to secure minimum") {
+		func(v int) bool { return v < bcrypt.MinCost }, max(bcrypt.MinCost, defaultCfg.WebUIPasswordBcryptCost), " to insecure minimum (secure minimum would be 12, it's the default)") {
 		shouldSaveConfig = true
 	}
 	if clampIntField(log, tagWebUIPasswordBcryptCost,
