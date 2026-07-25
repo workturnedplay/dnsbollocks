@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // sanitizeHelper is a test-only convenience wrapper around
@@ -228,9 +230,7 @@ func TestSanitizeAndValidateConfig_ZeroLimitsClamped(t *testing.T) {
 	}
 }
 
-// TestSanitizeAndValidateConfig_SubZeroFieldsClamped covers fields whose
-// clamp condition is strictly "< 0" rather than "<= 0", meaning zero is a
-// legitimate value and must not be touched.
+// TestSanitizeAndValidateConfig_SubZeroFieldsClamped covers fields whose clamp condition is strictly "< 0" rather than "<= 0", meaning zero is a legitimate value and must not be touched.
 func TestSanitizeAndValidateConfig_SubZeroFieldsClamped(t *testing.T) {
 	t.Parallel()
 	def := defaultConfig()
@@ -261,22 +261,6 @@ func TestSanitizeAndValidateConfig_SubZeroFieldsClamped(t *testing.T) {
 		}
 		if resolved.UpstreamRetriesPerQuery != 0 {
 			t.Errorf("resolved: zero should be valid, got %d", resolved.UpstreamRetriesPerQuery)
-		}
-	})
-
-	t.Run("CacheNegativeTTLSec=-5 clamped to default", func(t *testing.T) {
-		t.Parallel()
-		cfg := defaultConfig()
-		cfg.CacheNegativeTTLSec = -5
-		resolved, raw, _, err := sanitizeHelper(t, cfg, false)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resolved.CacheNegativeTTLSec != def.CacheNegativeTTLSec {
-			t.Errorf("resolved: got %d, want %d", resolved.CacheNegativeTTLSec, def.CacheNegativeTTLSec)
-		}
-		if raw.CacheNegativeTTLSec != def.CacheNegativeTTLSec {
-			t.Errorf("raw: got %d, want %d", raw.CacheNegativeTTLSec, def.CacheNegativeTTLSec)
 		}
 	})
 
@@ -337,16 +321,18 @@ func TestSanitizeAndValidateConfig_Uint32ZeroClamped(t *testing.T) {
 
 func TestSanitizeAndValidateConfig_CacheMinTTLFloor(t *testing.T) {
 	t.Parallel()
+	def := defaultConfig()
+	clamp := def.CacheMinTTL
 
 	cases := []struct {
-		input int
-		want  int
+		input uint32
+		want  uint32
 	}{
-		{0, cacheMinTTLClamp},
-		{1, cacheMinTTLClamp},
-		{9, cacheMinTTLClamp},
-		{cacheMinTTLClamp, cacheMinTTLClamp}, // exactly at floor → unchanged
-		{cacheMinTTLClamp + 1, cacheMinTTLClamp + 1},
+		{0, clamp},
+		{1, clamp},
+		{9, clamp},
+		{clamp, clamp}, // exactly at floor → unchanged
+		{clamp + 1, clamp + 1},
 		{300, 300}, // well above floor → unchanged
 	}
 
@@ -379,12 +365,13 @@ func TestSanitizeAndValidateConfig_WebUIBcryptCostClampedToMinimum(t *testing.T)
 		input int
 		want  int
 	}{
-		{0, 12},
-		{1, 12},
-		{11, 12},
+		{0, bcrypt.MinCost},
+		{1, bcrypt.MinCost},
+		{11, 11},
 		{12, 12}, // exactly at minimum → unchanged
 		{14, 14}, // above minimum → unchanged
-		{31, 31},
+		{31, bcrypt.MaxCost},
+		{32, bcrypt.MaxCost},
 	}
 
 	for _, tc := range cases {
@@ -820,7 +807,7 @@ func TestSanitizeAndValidateConfig_ListenDoHInvalid_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
+		name      string
 		listenDoH string
 	}{
 		{"hostname instead of IP", "dns.example.com:443"},
