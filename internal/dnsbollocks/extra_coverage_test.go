@@ -129,6 +129,30 @@ func TestBlockResponse_IPBlock(t *testing.T) {
 	})
 }
 
+// TestBlockResponse_IPBlock_ZeroTTLEmbedsZero verifies that
+// BlockedResponseTTLSec=0 is honored literally in the block response's TTL
+// field rather than being clamped away: a TTL of 0 instructs clients not to
+// cache the blocked response at all. sanitizeAndValidateConfig intentionally
+// treats 0 as a valid value for this field (see
+// TestSanitizeAndValidateConfig_Uint32ZeroIsValid in
+// sanitize_validate_config_test.go).
+func TestBlockResponse_IPBlock_ZeroTTLEmbedsZero(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.BlockMode = "ip_block"
+	cfg.BlockedResponseTTLSec = 0
+	cfg.BlockIPv4Parsed = net.ParseIP("0.0.0.0").To4()
+	cfg.BlockIPv6Parsed = net.ParseIP("::").To16()
+	s := newBlockTestServer(cfg)
+
+	resp := s.blockResponse(newBlockQuery(dns.TypeA, "blocked.example.com"))
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(resp.Answer))
+	}
+	if ttl := resp.Answer[0].Header().Ttl; ttl != 0 {
+		t.Errorf("expected TTL 0 to be embedded literally, got %d", ttl)
+	}
+}
+
 func TestBlockResponse_Drop(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.BlockMode = "drop"

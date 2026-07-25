@@ -508,6 +508,120 @@ func TestHandleDNSQuery_CachePopulatedAfterForward(t *testing.T) {
 	}
 }
 
+func TestHandleDNSQuery_Forward_ZeroTTLWithZeroCacheMinTTL_NotCached(t *testing.T) {
+	// With CacheMinTTL=0 ("no minimum", per its description) and an upstream
+	// response whose only record's TTL is 0, computeTTLForCaching yields 0 and
+	// handleDNSQuery must skip caching entirely (see handleDNSQuery's
+	// "if expiry > 0" guard) rather than silently flooring the TTL back up.
+	cfg := defaultConfig()
+	cfg.CacheMinTTL = 0
+
+	q := aQuery("zerottl.example.com")
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Rcode = dns.RcodeSuccess
+	resp.Answer = []dns.RR{makeA(q.Question[0].Name, "8.8.8.8", 0)}
+
+	fwd := fixedFwd(resp, UpstreamState{Strategy: "fastest"})
+	s := newQueryTestServer(t, cfg, fwd)
+	addWhitelistRule(t, s, "A", "zerottl.example.com")
+
+	s.handleDNSQuery(context.Background(), aQuery("zerottl.example.com"), testClient)
+	if fwd.CallCount() != 1 {
+		t.Fatalf("first request: forwarder call count want 1, got %d", fwd.CallCount())
+	}
+
+	// Must NOT be served from cache — the zero-TTL response was never cached.
+	s.handleDNSQuery(context.Background(), aQuery("zerottl.example.com"), testClient)
+	if fwd.CallCount() != 2 {
+		t.Errorf("second request: expected forwarder to be called again (not cached), got %d total calls", fwd.CallCount())
+	}
+}
+
+func TestHandleDNSQuery_Forward_ZeroCacheMinTTL_RespectsShortUpstreamTTL(t *testing.T) {
+	// CacheMinTTL=0 means "no minimum" rather than being clamped up to any
+	// floor. A short-lived upstream TTL must therefore expire from this
+	// proxy's own cache at its own short duration, not be silently extended.
+	cfg := defaultConfig()
+	cfg.CacheMinTTL = 0
+
+	q := aQuery("shortttl.example.com")
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Rcode = dns.RcodeSuccess
+	resp.Answer = []dns.RR{makeA(q.Question[0].Name, "8.8.8.8", 1)}
+
+	fwd := fixedFwd(resp, UpstreamState{Strategy: "fastest"})
+	s := newQueryTestServer(t, cfg, fwd)
+	addWhitelistRule(t, s, "A", "shortttl.example.com")
+
+	s.handleDNSQuery(context.Background(), aQuery("shortttl.example.com"), testClient)
+	if fwd.CallCount() != 1 {
+		t.Fatalf("first request: forwarder call count want 1, got %d", fwd.CallCount())
+	}
+
+	// Still within the 1-second TTL: must be served from cache.
+	s.handleDNSQuery(context.Background(), aQuery("shortttl.example.com"), testClient)
+	if fwd.CallCount() != 1 {
+		t.Fatalf("second request (still cached): forwarder call count want 1, got %d", fwd.CallCount())
+	}
+
+	// Wait past the 1-second TTL: the entry must have expired instead of
+	// being silently floored to a longer minimum.
+	time.Sleep(1500 * time.Millisecond)
+	s.handleDNSQuery(context.Background(), aQuery("shortttl.example.com"), testClient)
+	if fwd.CallCount() != 2 {
+		t.Errorf("third request (after TTL expiry): expected forwarder called again, got %d total calls", fwd.CallCount())
+	}
+}
+
+func TestHandleDNSQuery_Forward_NilResponse_ZeroCacheNegativeTTL_NotCached(t *testing.T) {
+	// With CacheNegativeTTLSec=0 ("don't cache"), a SERVFAIL synthesized from
+	// a total upstream failure (fwd returns nil) must never be inserted into
+	// the cache — every query should hit the forwarder again instead of
+	// replaying a stale cached SERVFAIL.
+	cfg := defaultConfig()
+	cfg.CacheNegativeTTLSec = 0
+
+	fwd := nilFwd()
+	s := newQueryTestServer(t, cfg, fwd)
+	addWhitelistRule(t, s, "A", "example.com")
+
+	s.handleDNSQuery(context.Background(), aQuery("example.com"), testClient)
+	if fwd.CallCount() != 1 {
+		t.Fatalf("first request: forwarder call count want 1, got %d", fwd.CallCount())
+	}
+
+	s.handleDNSQuery(context.Background(), aQuery("example.com"), testClient)
+	if fwd.CallCount() != 2 {
+		t.Errorf("second request: expected forwarder to be called again (not cached), got %d total calls", fwd.CallCount())
+	}
+}
+
+func TestHandleDNSQuery_Forward_NegativeRcode_ZeroCacheNegativeTTL_NotCached(t *testing.T) {
+	// Same as the SERVFAIL case above, but for a valid negative rcode
+	// (NXDOMAIN) returned directly by the upstream: CacheNegativeTTLSec=0
+	// must still yield negativeTTL == 0 (see the min() clamp in
+	// handleDNSQuery), so the response is never cached.
+	cfg := defaultConfig()
+	cfg.CacheNegativeTTLSec = 0
+
+	q := aQuery("nxdomain.example.com")
+	fwd := fixedFwd(upstreamFailResp(q, dns.RcodeNameError), UpstreamState{})
+	s := newQueryTestServer(t, cfg, fwd)
+	addWhitelistRule(t, s, "A", "nxdomain.example.com")
+
+	s.handleDNSQuery(context.Background(), aQuery("nxdomain.example.com"), testClient)
+	if fwd.CallCount() != 1 {
+		t.Fatalf("first request: forwarder call count want 1, got %d", fwd.CallCount())
+	}
+
+	s.handleDNSQuery(context.Background(), aQuery("nxdomain.example.com"), testClient)
+	if fwd.CallCount() != 2 {
+		t.Errorf("second request: expected forwarder to be called again (not cached), got %d total calls", fwd.CallCount())
+	}
+}
+
 // ── Local Host Override Tests ─────────────────────────────────────────────────
 
 func TestHandleDNSQuery_LocalHost_A(t *testing.T) {
@@ -596,6 +710,42 @@ func TestHandleDNSQuery_LocalHost_TypeMismatch_ReturnsEmptySuccess(t *testing.T)
 	}
 	if n := fwd.CallCount(); n != 0 {
 		t.Errorf("DoH forwarder must not be called when hostStore matches, got %d calls", n)
+	}
+}
+
+func TestHandleDNSQuery_LocalHost_ZeroTTL_NotCached(t *testing.T) {
+	// LocalHostsOverrideTTLSec=0 means "don't cache" (per its description):
+	// the synthesized host-override response must still be served correctly,
+	// but must never be inserted into the internal DNS cache (see
+	// handleDNSQuery's "if cfg.LocalHostsOverrideTTLSec > 0" guard), so every
+	// query re-evaluates the override fresh instead of being served stale
+	// after a later /hosts edit.
+	cfg := defaultConfig()
+	cfg.LocalHostsOverrideTTLSec = 0
+
+	fwd := nilFwd()
+	s := newQueryTestServer(t, cfg, fwd)
+	addWhitelistRule(t, s, "A", "router.local")
+	if err := s.hostStore.AddHost("router.local", []net.IP{net.ParseIP("192.168.1.1")}); err != nil {
+		t.Fatalf("AddHost: %v", err)
+	}
+
+	resp := s.handleDNSQuery(context.Background(), aQuery("router.local"), testClient)
+	if resp == nil {
+		t.Fatal("want non-nil response, got nil")
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("rcode: want Success, got %d", resp.Rcode)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer: want 1 A record, got %d", len(resp.Answer))
+	}
+
+	if _, found := s.getCache().Get("router.local:A"); found {
+		t.Error("expected local host override response NOT to be cached when LocalHostsOverrideTTLSec=0")
+	}
+	if n := fwd.CallCount(); n != 0 {
+		t.Errorf("DoH forwarder must not be called for local host override, got %d calls", n)
 	}
 }
 

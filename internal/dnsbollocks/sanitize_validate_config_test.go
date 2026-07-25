@@ -278,79 +278,89 @@ func TestSanitizeAndValidateConfig_SubZeroFieldsClamped(t *testing.T) {
 	})
 }
 
-// TestSanitizeAndValidateConfig_Uint32ZeroClamped covers the two uint32 TTL
-// fields that cannot go negative but must not be zero either.
-func TestSanitizeAndValidateConfig_Uint32ZeroClamped(t *testing.T) {
-	t.Parallel()
-	def := defaultConfig()
+// ─── uint32 TTL fields where 0 is a valid "don't cache" sentinel ──────────────
 
-	t.Run("BlockedResponseTTLSec=0 clamped to default", func(t *testing.T) {
+// TestSanitizeAndValidateConfig_Uint32ZeroIsValid covers the two uint32 TTL
+// fields where 0 is intentional and must NOT be clamped away:
+//   - BlockedResponseTTLSec=0 embeds a literal TTL of 0 in the blocked-query
+//     response record, instructing clients not to cache the block at all.
+//   - LocalHostsOverrideTTLSec=0 additionally skips inserting the
+//     synthesized host-override response into this proxy's own internal
+//     cache (see handleDNSQuery's "if cfg.LocalHostsOverrideTTLSec > 0" guard).
+func TestSanitizeAndValidateConfig_Uint32ZeroIsValid(t *testing.T) {
+	t.Parallel()
+
+	t.Run("BlockedResponseTTLSec=0 is valid (not clamped)", func(t *testing.T) {
 		t.Parallel()
 		cfg := defaultConfig()
 		cfg.BlockedResponseTTLSec = 0
-		resolved, raw, _, err := sanitizeHelper(t, cfg, false)
+		resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if resolved.BlockedResponseTTLSec != def.BlockedResponseTTLSec {
-			t.Errorf("resolved: got %d, want %d", resolved.BlockedResponseTTLSec, def.BlockedResponseTTLSec)
+		if resolved.BlockedResponseTTLSec != 0 {
+			t.Errorf("resolved: zero should be valid, got %d", resolved.BlockedResponseTTLSec)
 		}
-		if raw.BlockedResponseTTLSec != def.BlockedResponseTTLSec {
-			t.Errorf("raw: got %d, want %d", raw.BlockedResponseTTLSec, def.BlockedResponseTTLSec)
+		if raw.BlockedResponseTTLSec != 0 {
+			t.Errorf("raw: zero should be valid, got %d", raw.BlockedResponseTTLSec)
+		}
+		if modified {
+			t.Error("expected modified=false; zero must not trigger a clamp/save")
 		}
 	})
 
-	t.Run("LocalHostsOverrideTTLSec=0 clamped to default", func(t *testing.T) {
+	t.Run("LocalHostsOverrideTTLSec=0 is valid (not clamped)", func(t *testing.T) {
 		t.Parallel()
 		cfg := defaultConfig()
 		cfg.LocalHostsOverrideTTLSec = 0
-		resolved, raw, _, err := sanitizeHelper(t, cfg, false)
+		resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if resolved.LocalHostsOverrideTTLSec != def.LocalHostsOverrideTTLSec {
-			t.Errorf("resolved: got %d, want %d", resolved.LocalHostsOverrideTTLSec, def.LocalHostsOverrideTTLSec)
+		if resolved.LocalHostsOverrideTTLSec != 0 {
+			t.Errorf("resolved: zero should be valid, got %d", resolved.LocalHostsOverrideTTLSec)
 		}
-		if raw.LocalHostsOverrideTTLSec != def.LocalHostsOverrideTTLSec {
-			t.Errorf("raw: got %d, want %d", raw.LocalHostsOverrideTTLSec, def.LocalHostsOverrideTTLSec)
+		if raw.LocalHostsOverrideTTLSec != 0 {
+			t.Errorf("raw: zero should be valid, got %d", raw.LocalHostsOverrideTTLSec)
+		}
+		if modified {
+			t.Error("expected modified=false; zero must not trigger a clamp/save")
 		}
 	})
 }
 
-// ─── CacheMinTTL floor ────────────────────────────────────────────────────────
+// ─── CacheMinTTL is never clamped (0 = no minimum) ────────────────────────────
 
-func TestSanitizeAndValidateConfig_CacheMinTTLFloor(t *testing.T) {
+// TestSanitizeAndValidateConfig_CacheMinTTLNotClamped verifies that
+// CacheMinTTL is never clamped to a floor by sanitizeAndValidateConfig. Per
+// its description, 0 means "no minimum" (the upstream TTL is respected
+// as-is, which if that is also 0 means don't cache at all — see
+// computeTTLForCaching and TestComputeTTLForCaching_ZeroRespected), and any
+// other value is used as a literal minimum with no lower bound enforced
+// here.
+func TestSanitizeAndValidateConfig_CacheMinTTLNotClamped(t *testing.T) {
 	t.Parallel()
-	def := defaultConfig()
-	clamp := def.CacheMinTTL
 
-	cases := []struct {
-		input uint32
-		want  uint32
-	}{
-		{0, clamp},
-		{1, clamp},
-		{9, clamp},
-		{clamp, clamp}, // exactly at floor → unchanged
-		{clamp + 1, clamp + 1},
-		{300, 300}, // well above floor → unchanged
-	}
+	cases := []uint32{0, 1, 9, 10, 11, 300}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(fmt.Sprintf("input=%d_want=%d", tc.input, tc.want), func(t *testing.T) {
+	for _, input := range cases {
+		input := input
+		t.Run(fmt.Sprintf("input=%d", input), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
-			cfg.CacheMinTTL = tc.input
-			resolved, raw, _, err := sanitizeHelper(t, cfg, false)
+			cfg.CacheMinTTL = input
+			resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if resolved.CacheMinTTL != tc.want {
-				t.Errorf("resolved.CacheMinTTL: got %d, want %d", resolved.CacheMinTTL, tc.want)
+			if resolved.CacheMinTTL != input {
+				t.Errorf("resolved.CacheMinTTL: got %d, want %d (unchanged)", resolved.CacheMinTTL, input)
 			}
-			if raw.CacheMinTTL != tc.want {
-				t.Errorf("raw.CacheMinTTL: got %d, want %d", raw.CacheMinTTL, tc.want)
+			if raw.CacheMinTTL != input {
+				t.Errorf("raw.CacheMinTTL: got %d, want %d (unchanged)", raw.CacheMinTTL, input)
+			}
+			if modified {
+				t.Errorf("expected modified=false for CacheMinTTL=%d; it must not be clamped", input)
 			}
 		})
 	}

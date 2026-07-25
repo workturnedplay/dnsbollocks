@@ -91,19 +91,20 @@ func TestComputeTTL_MinOfMultipleAnswerRecords(t *testing.T) {
 }
 
 func TestComputeTTL_FloorOf10s(t *testing.T) {
-	// TTL of 5 is below the 10s floor.
-	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 5))
+	// TTL of 5 while 0 should return 5
+	const five = 5
+	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", five))
 	got := computeTTLForCaching(m)
-	if got != 10*time.Second {
-		t.Errorf("expected floor of 10s, got %v", got)
+	if got != five*time.Second {
+		t.Errorf("expected floor of 0s, got %v", got)
 	}
 }
 
 func TestComputeTTL_ZeroTTL_ClampsTo10s(t *testing.T) {
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 0))
 	got := computeTTLForCaching(m)
-	if got != 10*time.Second {
-		t.Errorf("expected 10s for TTL=0, got %v", got)
+	if got != 0*time.Second {
+		t.Errorf("expected 0s for TTL=0, got %v", got)
 	}
 }
 
@@ -138,10 +139,11 @@ func TestComputeTTL_SOA_HeaderTTLBeatsMinttlWhenSmaller(t *testing.T) {
 }
 
 func TestComputeTTL_SOA_MinttlBelowFloor(t *testing.T) {
-	m := msgWithNs(makeSOA("example.com.", 3600, 3))
+	const three = 3
+	m := msgWithNs(makeSOA("example.com.", 3600, three))
 	got := computeTTLForCaching(m)
-	if got != 10*time.Second {
-		t.Errorf("expected 10s floor even from SOA Minttl=3, got %v", got)
+	if got != three*time.Second {
+		t.Errorf("expected %d from SOA Minttl=3, got %v", three, got)
 	}
 }
 

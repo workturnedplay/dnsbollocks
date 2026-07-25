@@ -179,8 +179,8 @@ type Config struct {
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
 
-	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response."`
-	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec" desc:"TTL (seconds) embedded in DNS records synthesised from the local host-override file (hosts2ip.json)."`
+	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response. 0 means instruct clients not to cache the blocked response at all; blocked responses are never stored in this proxy's own internal cache regardless of this value."`
+	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec" desc:"TTL (seconds) embedded in DNS records synthesised from the local host-override file (hosts2ip.json), and how long this proxy's own internal cache retains that synthesized response. 0 means don't cache the response internally (every query re-evaluates the override fresh) and instructs clients not to cache it either."`
 
 	UILogMaxLines int `json:"ui_log_max_lines" desc:"Maximum log lines shown per page in the WebUI log viewer. Older lines are omitted to prevent excessive RAM usage and browser freezes."`
 
@@ -11928,6 +11928,8 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
+	// NOTE: CacheMinTTL=0 is intentionally valid ("no minimum", per the
+	// field's `desc` tag); do not restore this clamp.
 	// if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL)),
 	// 	&resolvedCfg.CacheMinTTL, &rawCfg.CacheMinTTL,
 	// 	func(v int) bool { return v < cacheMinTTLClamp }, cacheMinTTLClamp, " to safe minimum") {
@@ -11946,6 +11948,8 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
+	// NOTE: CacheNegativeTTLSec=0 is intentionally valid ("don't cache", per
+	// the field's `desc` tag); do not restore this clamp.
 	// if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec)),
 	// 	&resolvedCfg.CacheNegativeTTLSec, &rawCfg.CacheNegativeTTLSec,
 	// 	func(v int) bool { return v < 0 }, defaultCfg.CacheNegativeTTLSec, "") {
@@ -11964,12 +11968,19 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
+	// NOTE: BlockedResponseTTLSec=0 is intentionally valid (embeds TTL=0 in
+	// the blocked-response record, telling clients not to cache it at all —
+	// see the field's `desc` tag); do not restore this clamp.
 	// if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec)),
 	// 	&resolvedCfg.BlockedResponseTTLSec, &rawCfg.BlockedResponseTTLSec,
 	// 	func(v uint32) bool { return v <= 0 }, defaultCfg.BlockedResponseTTLSec, "") {
 	// 	shouldSaveConfig = true
 	// }
 
+	// NOTE: LocalHostsOverrideTTLSec=0 is intentionally valid (skips both the
+	// internal cache insert and signals clients not to cache — see the
+	// field's `desc` tag and handleDNSQuery's "if cfg.LocalHostsOverrideTTLSec
+	// > 0" guard); do not restore this clamp.
 	// if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec)),
 	// 	&resolvedCfg.LocalHostsOverrideTTLSec, &rawCfg.LocalHostsOverrideTTLSec,
 	// 	func(v uint32) bool { return v == 0 }, defaultCfg.LocalHostsOverrideTTLSec, "") {
