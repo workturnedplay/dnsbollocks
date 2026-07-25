@@ -1,5 +1,8 @@
 my todos:
-* add Ctrl+V to dump the version on console, maybe even the whole Config too?
+
+* we should change all cache TTL seconds such that if 0 it means don't cache, and don't even hit that goCacheStore.Set(..., 0 seconds) wrapper for gocache which would then log a line for each try, but instead make sure that we don't call the .Set with 0, or shall we remove the log line to avoid log spam for each (non-cached) query? which is more correct?! Also modify the description for the relevant changed TTLs (or other named Config settings related to gocache) such that a value of 0 does mean don't cache at all. Also write tests about this.
+
+* add Ctrl+V to dump the version on console, maybe even the whole current Config too? with their descriptions? but maybe newline between each entry so it's more readable that each entry and its description go together (even if they span multiple lines).
 
 * get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 

@@ -174,7 +174,7 @@ type Config struct {
 	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"        desc:"Per-packet receive buffer size in bytes for UDP DNS (512–65535). 4096 safely handles modern EDNS0 payloads."`
 
 	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
-	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses(respecting RFC 2308 tho), reducing retry storms during upstream outages."`
+	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses(respecting RFC 2308 tho), reducing retry storms during upstream outages. 0 means don't cache"`
 
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
@@ -8969,6 +8969,23 @@ func (s *goCacheStore) Get(key string) (CacheEntry, bool) {
 const deleteExpiredThrottle = 1 * time.Second
 
 func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
+	if d <= 0 {
+		// go-cache's underlying Set(k, x, d) treats d == 0 as "use this
+		// cache's configured default expiration" — which newGoCacheStore
+		// wires to CacheJanitorIntervalMinutes (tens of minutes by default)
+		// — rather than "expires immediately"; a negative d is nonsensical
+		// as a TTL to begin with. Config fields such as CacheNegativeTTLSec
+		// are explicitly validated/tested to allow exactly 0 to mean "do not
+		// cache this" (see sanitizeAndValidateConfig's sub-zero clamp
+		// tests), so silently forwarding a zero/negative duration here would
+		// instead cache the entry for up to CacheJanitorIntervalMinutes,
+		// directly contradicting that documented behavior. Skip the insert
+		// entirely instead.
+		log := s.getLogger()
+		log.Debug("goCacheStore.Set: skipping cache insert for non-positive TTL",
+			slog.String("key", key), slog.Duration("requested_ttl", d))
+		return
+	}
 	if s.maxEntries > 0 && s.c.ItemCount() >= s.maxEntries {
 		log := s.getLogger()
 		now := time.Now().UnixNano()
@@ -9309,9 +9326,11 @@ func (um *UpstreamManager) updateInnerState() error {
 // a genuinely slow or partially-failing upstream — long enough, under
 // sustained query volume, to exhaust the semaphore pool and stall every new
 // connection. This computes that same worst-case per-upstream budget and
-// applies it once, up front, so no upstream is ever cut off before its own
-// documented retry budget elapses, while still guaranteeing a hard ceiling
-// on the whole attempt.
+// applies it once, up front: within the 60s ceiling below, no upstream is
+// cut off before its own documented retry budget elapses; a configuration
+// whose computed retry budget would exceed that ceiling is itself clamped
+// to it as a hard defense-in-depth cap, which takes precedence over the
+// per-upstream budget in that case.
 func computeForwardOverallTimeout(cfg *Config) time.Duration {
 	perAttempt := time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second
 	backoff := time.Duration(cfg.UpstreamRetriesPerQuery) * time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond
@@ -11118,6 +11137,17 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				if plainPwd != "" && !isValidBcryptHash(plainPwd) { //strings.HasPrefix(plainPwd, "$2") {
 					// Fetch current configured cost
 					cost := ui.getConfig().WebUIPasswordBcryptCost
+					// Prefer a cost staged in this SAME apply batch (e.g. the operator
+					// raised webui_password_bcrypt_cost and set a new password in one
+					// Apply), so the freshly-hashed password isn't silently generated
+					// at the stale, pre-edit cost.
+					tagBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
+					if stagedCost, hasStaged := changes[tagBcryptCost]; hasStaged {
+						if stagedCostFloat, ok := stagedCost.(float64); ok {
+							//FIXME: this stagedCostFloat needs to be validated or clamped the same logic should be used that sanitizeAndValidateConfig uses to clamp it!
+							cost = int(stagedCostFloat)
+						}
+					}
 					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
 					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
 					hashBytes, hashErr := bcrypt.GenerateFromPassword([]byte(plainPwd), cost)
