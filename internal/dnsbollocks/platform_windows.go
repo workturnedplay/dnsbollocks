@@ -13932,10 +13932,10 @@ func recoverAndFlushLogs(flushLogs func()) {
 
 // getValidBcryptCost enforces the boundaries for bcrypt cost in a DRY manner.
 func getValidBcryptCost(cost, fallback int) int {
-	if cost < bcrypt.MinCost {
-		return max(bcrypt.MinCost, fallback)
+	if cost < bcrypt.MinCost { //4
+		return bcrypt.MinCost //max(bcrypt.MinCost, fallback)
 	}
-	if cost > bcrypt.MaxCost {
+	if cost > bcrypt.MaxCost { //31
 		return bcrypt.MaxCost
 	}
 	return cost
