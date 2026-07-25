@@ -1,11 +1,5 @@
 my todos:
 
-* fix this "//FIXME: this stagedCostFloat needs to be validated or clamped the same logic should be used that sanitizeAndValidateConfig uses to clamp it!" in a DRY fashion, considering the logic is gonna be used in both places and we don't want it to get out of sync!
-
-* we should change all cache TTL seconds such that if 0 it means don't cache, and don't even hit that goCacheStore.Set(..., 0 seconds) wrapper for gocache which would then log a line for each try, but instead make sure that we don't call the .Set with 0, or shall we remove the log line to avoid log spam for each (non-cached) query? which is more correct?! Also modify the description for the relevant changed TTLs (or other named Config settings related to gocache) such that a value of 0 does mean don't cache at all. Also write tests about this. Some types may not need to be signed/int so why not get them to be uint ? for example BlockedResponseTTLSec is already uint32, so why not also CacheNegativeTTLSec ?(or others that apply) thus perhaps not even needing a clamp that checks <0 at all.
-
-* add Ctrl+V to dump the version on console, maybe even the whole current Config too? with their descriptions? but maybe newline between each entry so it's more readable that each entry and its description go together (even if they span multiple lines).
-
 * get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
@@ -62,3 +56,10 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 
 
 done:
+
+//* fix this "//FIXME: this stagedCostFloat needs to be validated or clamped the same logic should be used that sanitizeAndValidateConfig uses to clamp it!" in a DRY fashion, considering the logic is gonna be used in both places and we don't want it to get out of sync!
+
+//* we should change all cache TTL seconds such that if 0 it means don't cache, and don't even hit that goCacheStore.Set(..., 0 seconds) wrapper for gocache which would then log a line for each try, but instead make sure that we don't call the .Set with 0, or shall we remove the log line to avoid log spam for each (non-cached) query? which is more correct?! Also modify the description for the relevant changed TTLs (or other named Config settings related to gocache) such that a value of 0 does mean don't cache at all. Also write tests about this. Some types may not need to be signed/int so why not get them to be uint ? for example BlockedResponseTTLSec is already uint32, so why not also CacheNegativeTTLSec ?(or others that apply) thus perhaps not even needing a clamp that checks <0 at all.
+
+//* add Ctrl+V to dump the version on console, maybe even the whole current Config too? with their descriptions? but maybe newline between each entry so it's more readable that each entry and its description go together (even if they span multiple lines).
+

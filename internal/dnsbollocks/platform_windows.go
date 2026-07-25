@@ -118,7 +118,7 @@ type Config struct {
 	WebUIBurstQPS           int    `json:"webui_qps_burst_globally"   desc:"Maximum burst of WebUI HTTP requests allowed globally above the sustained webui_qps_rate_globally limit."`
 	WebUIClientRateQPS      int    `json:"webui_qps_rate_per_client"  desc:"Maximum WebUI HTTP requests per second allowed from a single client IP."`
 	WebUIClientBurstQPS     int    `json:"webui_qps_burst_per_client" desc:"Maximum burst of WebUI HTTP requests allowed from a single client IP above webui_qps_rate_per_client."`
-	CacheMinTTL             int    `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. Hard floor is 10s."`
+	CacheMinTTL             uint32 `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. 0 means no minimum (upstream TTL is respected, which if 0 means don't cache)."`
 	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
 	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
 	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
@@ -173,8 +173,8 @@ type Config struct {
 	DoHMaxRequestBodyBytes int `json:"doh_max_request_body_bytes" desc:"Maximum bytes accepted in an incoming DoH request body, guarding against memory exhaustion from oversized payloads."`
 	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"        desc:"Per-packet receive buffer size in bytes for UDP DNS (512–65535). 4096 safely handles modern EDNS0 payloads."`
 
-	CacheJanitorIntervalMinutes int `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
-	CacheNegativeTTLSec         int `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses(respecting RFC 2308 tho), reducing retry storms during upstream outages. 0 means don't cache"`
+	CacheJanitorIntervalMinutes int    `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
+	CacheNegativeTTLSec         uint32 `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses (respecting RFC 2308 tho), reducing retry storms during upstream outages. 0 means don't cache."`
 
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
@@ -2822,7 +2822,7 @@ func OldMain() {
 	panic2("BUG: unreachable")
 }
 
-const cacheMinTTLClamp = 10 // seconds
+//const cacheMinTTLClamp = 10 // seconds
 
 // LoadAndValidateConfig reads, parses, validates, and clamps the configuration.
 // fw is used for CheckPowerLossFile; if nil a temporary FileWriter is created
@@ -4469,12 +4469,14 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		//itisdoneFIXME: what if none of the above 3 applied? we currently return empty?! unsure if this makes sense or is valid reply?!
 		//"According to RFC 2308, if a domain exists (because it's in our hosts2ip.json) but the requested record type doesn't exist for it, the correct response is a NODATA response (an RcodeSuccess with 0 answer records)." - Gemini 3.1 Pro
 
-		// Cache this override so subsequent queries bypass the pattern loop
 		upstreamState5 := UpstreamState{Strategy: "etc_hosts"}
-		cachee.Set(key, CacheEntry{
-			Msg:   resp.Copy(),
-			State: upstreamState5,
-		}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second)
+		// Cache this override so subsequent queries bypass the pattern loop
+		if cfg.LocalHostsOverrideTTLSec > 0 {
+			cachee.Set(key, CacheEntry{
+				Msg:   resp.Copy(),
+				State: upstreamState5,
+			}, time.Duration(cfg.LocalHostsOverrideTTLSec)*time.Second)
+		}
 
 		s.logQuery(ctx, clientAddr, domain, qtype, localHostOverride, "", extractIPs(resp), resp, upstreamState5)
 		return resp
@@ -4557,10 +4559,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	if resp == nil {
 		negResp := servfailResponse(reqMsg)
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, nil, negResp, upstreamState3)
-		cachee.Set(key, CacheEntry{
-			Msg:   negResp.Copy(),
-			State: upstreamState3,
-		}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
+		if cfg.CacheNegativeTTLSec > 0 {
+			cachee.Set(key, CacheEntry{
+				Msg:   negResp.Copy(),
+				State: upstreamState3,
+			}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
+		}
 		return negResp
 	}
 
@@ -4581,10 +4585,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// cache_negative_ttl_sec default — is unaffected, since it's already
 		// far shorter than any real SOA minimum.
 		negativeTTL := min(computeTTLForCaching(resp), time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
-		cachee.Set(key, CacheEntry{
-			Msg:   resp.Copy(),
-			State: upstreamState3,
-		}, negativeTTL)
+		if negativeTTL > 0 {
+			cachee.Set(key, CacheEntry{
+				Msg:   resp.Copy(),
+				State: upstreamState3,
+			}, negativeTTL)
+		}
 
 		return resp
 	}
@@ -4613,11 +4619,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	expiry := max(computeTTLForCaching(filtered), time.Duration(cfg.CacheMinTTL)*time.Second)
 
 	// Store a copy in the cache, not the pointer you are about to return
-	//cacheStore.Set(key, filtered.Copy(), expiry)
-	cachee.Set(key, CacheEntry{
-		Msg:   filtered.Copy(),
-		State: upstreamState3,
-	}, expiry)
+	// Cache with clamped TTL
+	if expiry > 0 {
+		cachee.Set(key, CacheEntry{
+			Msg:   filtered.Copy(),
+			State: upstreamState3,
+		}, expiry)
+	}
 
 	ips := extractIPs(filtered)
 	s.logQuery(ctx, clientAddr, domain, qtype, forwardedSTR, matchedID, ips, filtered, upstreamState3)
@@ -4656,9 +4664,9 @@ func computeTTLForCaching(msg *dns.Msg) time.Duration {
 	if !found {
 		minTTL = defaultCacheMinTTL // * time.Second
 	}
-	if minTTL < cacheMinTTLClamp { //XXX: hardcoded minimum aka floor of 10 seconds TTL
-		minTTL = cacheMinTTLClamp
-	}
+	// if minTTL < cacheMinTTLClamp { //XXX: hardcoded minimum aka floor of 10 seconds TTL
+	// 	minTTL = cacheMinTTLClamp
+	// }
 	return time.Duration(minTTL) * time.Second
 }
 
@@ -9015,7 +9023,7 @@ func (s *goCacheStore) Set(key string, e CacheEntry, d time.Duration) {
 		// directly contradicting that documented behavior. Skip the insert
 		// entirely instead.
 		log := s.getLogger()
-		log.Debug("goCacheStore.Set: skipping cache insert for non-positive TTL",
+		log.Debug("BUG: callers of goCacheStore.Set shouldn't call it with duration of 0 or less: skipping cache insert for non-positive or 0 TTL",
 			slog.String("key", key), slog.Duration("requested_ttl", d))
 		return
 	}
@@ -11176,10 +11184,17 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					// at the stale, pre-edit cost.
 					tagBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
 					if stagedCost, hasStaged := changes[tagBcryptCost]; hasStaged {
-						if stagedCostFloat, ok := stagedCost.(float64); ok {
-							//FIXME: this stagedCostFloat needs to be validated or clamped the same logic should be used that sanitizeAndValidateConfig uses to clamp it!
-							cost = int(stagedCostFloat)
+						if stagedCostFloat, ok := stagedCost.(float64); ok { //TODO: I wonder why we(Gemini 3.1 Pro) used float64 here instead of say int64?!
+							stagedCostInt := int(stagedCostFloat)
+							cost = getValidBcryptCost(stagedCostInt, ui.getConfig().WebUIPasswordBcryptCost)
+							if cost != stagedCostInt {
+								log.Info(fmt.Sprintf("Using different %q than the staged/specified", tagBcryptCost), slog.Int("specified", stagedCostInt), slog.Int("actual_used", cost))
+							}
+						} else {
+							log.Error(fmt.Sprintf("Failed to get staged bcrypt cost %q it's not float64", tagBcryptCost))
 						}
+					} else {
+						log.Error(fmt.Sprintf("Using already configured %q", tagBcryptCost), slog.Int("current_cost", cost))
 					}
 					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
 					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
@@ -11638,14 +11653,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 
 	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
-	if clampIntField(log, tagWebUIPasswordBcryptCost,
-		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
-		func(v int) bool { return v < bcrypt.MinCost }, max(bcrypt.MinCost, defaultCfg.WebUIPasswordBcryptCost), " to insecure minimum (secure minimum would be 12, it's the default)") {
-		shouldSaveConfig = true
-	}
-	if clampIntField(log, tagWebUIPasswordBcryptCost,
-		&resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost,
-		func(v int) bool { return v > bcrypt.MaxCost }, bcrypt.MaxCost, " to bcrypt's maximum allowed cost") {
+	if clampBcryptCostField(log, tagWebUIPasswordBcryptCost, &resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost, defaultCfg.WebUIPasswordBcryptCost) {
 		shouldSaveConfig = true
 	}
 
@@ -11920,11 +11928,11 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
-	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL)),
-		&resolvedCfg.CacheMinTTL, &rawCfg.CacheMinTTL,
-		func(v int) bool { return v < cacheMinTTLClamp }, cacheMinTTLClamp, " to safe minimum") {
-		shouldSaveConfig = true
-	}
+	// if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMinTTL)),
+	// 	&resolvedCfg.CacheMinTTL, &rawCfg.CacheMinTTL,
+	// 	func(v int) bool { return v < cacheMinTTLClamp }, cacheMinTTLClamp, " to safe minimum") {
+	// 	shouldSaveConfig = true
+	// }
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheMaxEntries)),
 		&resolvedCfg.CacheMaxEntries, &rawCfg.CacheMaxEntries,
@@ -11938,11 +11946,11 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
-	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec)),
-		&resolvedCfg.CacheNegativeTTLSec, &rawCfg.CacheNegativeTTLSec,
-		func(v int) bool { return v < 0 }, defaultCfg.CacheNegativeTTLSec, "") {
-		shouldSaveConfig = true
-	}
+	// if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.CacheNegativeTTLSec)),
+	// 	&resolvedCfg.CacheNegativeTTLSec, &rawCfg.CacheNegativeTTLSec,
+	// 	func(v int) bool { return v < 0 }, defaultCfg.CacheNegativeTTLSec, "") {
+	// 	shouldSaveConfig = true
+	// }
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.FileWriterMaxRetries)),
 		&resolvedCfg.FileWriterMaxRetries, &rawCfg.FileWriterMaxRetries,
@@ -11956,17 +11964,17 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
-	if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec)),
-		&resolvedCfg.BlockedResponseTTLSec, &rawCfg.BlockedResponseTTLSec,
-		func(v uint32) bool { return v <= 0 }, defaultCfg.BlockedResponseTTLSec, "") {
-		shouldSaveConfig = true
-	}
+	// if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockedResponseTTLSec)),
+	// 	&resolvedCfg.BlockedResponseTTLSec, &rawCfg.BlockedResponseTTLSec,
+	// 	func(v uint32) bool { return v <= 0 }, defaultCfg.BlockedResponseTTLSec, "") {
+	// 	shouldSaveConfig = true
+	// }
 
-	if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec)),
-		&resolvedCfg.LocalHostsOverrideTTLSec, &rawCfg.LocalHostsOverrideTTLSec,
-		func(v uint32) bool { return v == 0 }, defaultCfg.LocalHostsOverrideTTLSec, "") {
-		shouldSaveConfig = true
-	}
+	// if clampUint32Field(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalHostsOverrideTTLSec)),
+	// 	&resolvedCfg.LocalHostsOverrideTTLSec, &rawCfg.LocalHostsOverrideTTLSec,
+	// 	func(v uint32) bool { return v == 0 }, defaultCfg.LocalHostsOverrideTTLSec, "") {
+	// 	shouldSaveConfig = true
+	// }
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.MaxRecentBlocks)),
 		&resolvedCfg.MaxRecentBlocks, &rawCfg.MaxRecentBlocks,
@@ -13920,4 +13928,28 @@ func recoverAndFlushLogs(flushLogs func()) {
 		}
 		panic(r)
 	}
+}
+
+// getValidBcryptCost enforces the boundaries for bcrypt cost in a DRY manner.
+func getValidBcryptCost(cost int, fallback int) int {
+	if cost < bcrypt.MinCost {
+		return max(bcrypt.MinCost, fallback)
+	}
+	if cost > bcrypt.MaxCost {
+		return bcrypt.MaxCost
+	}
+	return cost
+}
+
+// clampBcryptCostField wraps the bounding math for sanitizeAndValidateConfig.
+func clampBcryptCostField(log *slog.Logger, tag string, resolved, raw *int, defaultCost int) bool {
+	was := *resolved
+	valid := getValidBcryptCost(was, defaultCost)
+	if was != valid {
+		*resolved = valid
+		*raw = valid
+		log.Warn(tag+" clamped to valid bounds", slog.Int("was", was), slog.Int("clamp", valid))
+		return true
+	}
+	return false
 }
