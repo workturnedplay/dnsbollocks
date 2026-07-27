@@ -11365,7 +11365,7 @@ func isLoopbackBindHost(listenAddr string) bool {
 var (
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	//procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
-	procSetConsoleCtrlHandler = wincoe.NewBoundProc(kernel32, "SetConsoleCtrlHandler", wincoe.CheckBool)
+	procSetConsoleCtrlHandler = wincoe.NewBoundProcN(kernel32, "SetConsoleCtrlHandler", wincoe.CheckBool)
 
 	// Global bridge so our Win32 callback can reach your Server instance
 	globalConsoleEventTrigger func(eventName string, exitCode int)
