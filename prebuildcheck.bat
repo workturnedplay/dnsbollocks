@@ -90,14 +90,16 @@ rem "%goexe%" build !BUILD_WITH_RACE_DETECTOR! !MOD_FLAG! -o bin\dnsbollocks.exe
 rem go.exe build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem if errorlevel 1 goto :fail
 
-set "lintexe=%USERPROFILE%\go\bin\golangci-lint.exe"
+set "lintexev1=%USERPROFILE%\go\bin\golangci-lint.exe"
+rem this -v2.exe is what vscode runs! so we should too!
+set "lintexe=%USERPROFILE%\go\bin\golangci-lint-v2.exe"
 rem :: Check if golangci-lint.exe exists, if not, install it
-if not exist "%lintexe%" (
+if not exist "%lintexev1%" (
     echo [!] golangci-lint.exe not found. Installing via go install...
     "%goexe%" install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
     
     :: Double check if installation actually succeeded
-    if not exist "%lintexe%" (
+    if not exist "%lintexev1%" (
         echo [ERROR] Failed to install golangci-lint. Check your internet/DNS.
         exit /b 1
     )
@@ -106,11 +108,11 @@ rem pushd internal\dnsbollocks
 echo Checking if lint file .golangci.yml is valid
 rem Only v1.68+ requires internet now: "Failed executing command with error: [..\.golangci.yml] validate: compile schema: failing loading "https://golangci-lint.run/jsonschema/golangci.v1.64.jsonschema.json": Get "https://golangci-lint.run/jsonschema/golangci.v1.64.jsonschema.json": dial tcp: lookup golangci-lint.run: no such host"
 rem but this is supposed to be v2 so like: golangci-lint has version 2.12.3-0.20260726112511-6b2ddf922476
-"%lintexe%" config verify
+"%lintexe%" --color always config verify
 if errorlevel 1 goto :fail
 
 echo Running %lintexe% run !LINT_MOD_FLAG! ./...
-"%lintexe%" run !LINT_MOD_FLAG! ./...
+"%lintexe%" --color always run !LINT_MOD_FLAG! ./...
 if errorlevel 1 goto :fail
 rem popd
 

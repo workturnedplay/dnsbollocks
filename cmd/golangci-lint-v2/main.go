@@ -48,13 +48,14 @@ package main
 
 import (
 	"bufio"
-	//"errors"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -98,8 +99,16 @@ func main() {
 	// 	log.Fatalf("failed to run %s: %v", realExe, err)
 	// }
 	// We need to capture Stdout and Stderr to modify the text
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	// stdout, _ := cmd.StdoutPipe()
+	// stderr, _ := cmd.StderrPipe()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		log.Fatalf("failed to create stderr pipe: %v", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("failed to start %s: %v", realExe, err)
@@ -138,30 +147,49 @@ func main() {
 	// os.Exit(0)
 
 	// Channel to signal that we found a shadow and need to bail
-	killSignal := make(chan bool)
+	// Buffered channel prevents goroutines from blocking if main exits
+	// killSignal := make(chan bool)
+	killSignal := make(chan struct{}, 1)
 
 	go monitor(stdout, os.Stdout, killSignal)
 	go monitor(stderr, os.Stderr, killSignal)
 
 	// Wait for either the command to finish normally OR a shadow to be found
-	done := make(chan error)
+	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
 
 	select {
 	case <-killSignal:
-		// SHADOW DETECTED: Kill the linter immediately
-		_ = cmd.Process.Kill()
+		// SHADOW DETECTED: Kill the linter process immediately and exit with non-zero
+		if err := cmd.Process.Kill(); err != nil {
+			log.Printf("!!!!!!!!!!!!!! failed to kill process: %v", err)
+		}
 		// Wait a tiny bit for the pipe to flush the error message
 		os.Exit(1)
-	case <-done:
-		// Finished normally without finding a shadow
+	// case <-done:
+	// 	// Finished normally without finding a shadow
+	// 	os.Exit(0)
+	// }
+	case err := <-done:
+		if err != nil {
+			// var exitErr *exec.ExitError
+			// if errors.As(err, &exitErr) {
+			// 	os.Exit(exitErr.ExitCode())
+			// }
+
+			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 }
 
-func monitor(r io.Reader, w io.Writer, killSignal chan bool) {
+// func monitor(r io.Reader, w io.Writer, killSignal chan bool) {
+func monitor(r io.Reader, w io.Writer, killSignal chan struct{}) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -202,8 +230,32 @@ func monitor(r io.Reader, w io.Writer, killSignal chan bool) {
 		// 	return
 		// }
 
+		// Output the line so VS Code or the terminal receives it
 		fmt.Fprintln(w, line)
+
+		// Strip ANSI color codes before checking for "shadow:"
+		cleanLine := stripANSI(line)
+		if strings.Contains(cleanLine, "shadow:") {
+			select {
+			case killSignal <- struct{}{}: // it's too late because golangci-lint buffers its entire output in-memory and dumps everything at the very end, so streaming loops only see results after it has already finished.
+			default:
+			}
+			return // Stop processing any further buffered lines!
+			//os.Exit(1)
+		}
 	}
+
+	// Check scanner error after the loop completes
+	if err := scanner.Err(); err != nil {
+		log.Printf("!!!!!!!!!!!!!! error reading stream: %v", err)
+	}
+}
+
+// Regex to match ANSI escape sequences (color codes, style resets, etc.)
+var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string {
+	return ansiRegexp.ReplaceAllString(s, "")
 }
 
 func processAndFilter(r io.Reader, w io.Writer) bool {
@@ -211,17 +263,40 @@ func processAndFilter(r io.Reader, w io.Writer) bool {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "shadow:") {
+		cleanLine := stripANSI(line)
+
+		if strings.Contains(cleanLine, "shadow:") {
 			found = true
-			// Mimic the "typechecking error" format that VS Code respects as Red
-			// Format: level=error msg="[linters_context] typechecking error: file:line:col: message"
 			fmt.Fprintf(w, "level=error msg=\"[linters_context] typechecking error: %s\"\n", line)
 			continue
 		}
 		fmt.Fprintln(w, line)
 	}
+
+	// Check scanner error after the loop completes
+	if err := scanner.Err(); err != nil {
+		log.Printf("error reading stream in processAndFilter: %v", err)
+	}
+
 	return found
 }
+
+// func processAndFilter(r io.Reader, w io.Writer) bool {
+// 	found := false
+// 	scanner := bufio.NewScanner(r)
+// 	for scanner.Scan() {
+// 		line := scanner.Text()
+// 		if strings.Contains(line, "shadow:") {
+// 			found = true
+// 			// Mimic the "typechecking error" format that VS Code respects as Red
+// 			// Format: level=error msg="[linters_context] typechecking error: file:line:col: message"
+// 			fmt.Fprintf(w, "level=error msg=\"[linters_context] typechecking error: %s\"\n", line)
+// 			continue
+// 		}
+// 		fmt.Fprintln(w, line)
+// 	}
+// 	return found
+// }
 
 // func processOutput(r io.Reader, w io.Writer) {
 // 	scanner := bufio.NewScanner(r)
