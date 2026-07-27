@@ -37,9 +37,9 @@ func main() {
 
 	// 2. Parse the source file (replace 'main.go' with your actual filename)
 	// We use parser.ParseComments so the AST initially "sees" them
-	f, err := parser.ParseFile(fset, inputPath, nil, parser.ParseComments)
-	if err != nil {
-		log.Fatal("Error parsing source:", err)
+	f, err1 := parser.ParseFile(fset, inputPath, nil, parser.ParseComments)
+	if err1 != nil {
+		log.Fatal("Error parsing source:", err1)
 	}
 
 	// //// 3. Strip all comments from the Abstract Syntax Tree
@@ -127,13 +127,13 @@ func main() {
 
 	if *outPath != "" {
 		// Check if file exists
-		if _, err := os.Stat(*outPath); err == nil && !*overwrite {
+		if _, err2 := os.Stat(*outPath); err2 == nil && !*overwrite {
 			log.Fatalf("File '%s' already exists. Use -y to overwrite.", *outPath)
 		}
 
-		f, err := os.Create(*outPath)
-		if err != nil {
-			log.Fatal(err)
+		f, err3 := os.Create(*outPath)
+		if err3 != nil {
+			log.Fatal(err3)
 		}
 		defer f.Close()
 		output = f
@@ -147,9 +147,9 @@ func main() {
 	// defer outFile.Close()
 
 	// 5. Format the "clean" AST and write it to the file
-	err = format.Node(output, fset, f)
-	if err != nil {
-		log.Fatal("Error writing output:", err)
+	err1 = format.Node(output, fset, f)
+	if err1 != nil {
+		log.Fatal("Error writing output:", err1)
 	}
 
 	//println("Success! Comments stripped to .\tmpnocomments.go")
