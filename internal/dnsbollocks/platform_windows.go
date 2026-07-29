@@ -2529,12 +2529,11 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 		panic2("BUG: unreachable")
 	}
 
-	// Strictly checking the return value (as promised!)
-	res1 := procSetConsoleCtrlHandler.Call(windows.NewCallback(consoleCtrlHandler), 1)
-	//if ret == 0 {
+	res1 := wincoe.RegisterCtrlHandler(consoleCtrlHandler)
 	if res1.Failed() {
 		s.logFatal("Failed to register Windows console termination handler", res1.Err)
 		panic2("BUG: unreachable")
+		panic(nil)
 	} else {
 		log.Debug("OS console termination handler successfully registered. Handling graceful shutdown for Ctrl+Break as well.")
 	}
@@ -11363,9 +11362,6 @@ func isLoopbackBindHost(listenAddr string) bool {
 }
 
 var (
-	// kernel32 = windows.NewLazySystemDLL("kernel32.dll")
-	//procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
-	procSetConsoleCtrlHandler = wincoe.NewBoundProc2(wincoe.Kernel32, "SetConsoleCtrlHandler", wincoe.CheckBool)
 
 	// Global bridge so our Win32 callback can reach your Server instance
 	globalConsoleEventTrigger func(eventName string, exitCode int)

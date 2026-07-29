@@ -1,5 +1,14 @@
 my todos:
 
+* when logQuery happens it should log the upstream_used= having the resolved/expanded URL ie. that {builtin:clientexe} should be expanded to have the same value that the query actually used. Not exactly sure here if the pool of connections interferes here to not be able to differentiate between the connection itself and the query (ie. maybe multiple queries happen on same connection?) and if it can't does this mean the same {buildin:clientexe} expansion that happened on the first connection is the one that's gonna keep being used for any subsequent queries until the upstream connection is closed and reconnected again?! I forget how it works.
+
+* make logf have the ability to know when the last logline was logged/sent and if more than X amount of time passed, insert first a log line saying "X hours,minutes,seconds later\n" before the actual log line to log.
+
+* in webui page /blocks aka Recent Blocks (Quick Unblock) , the Clear Shown Blocks button should clear only those entries which don't have the red "Re-block (Pause)" button, ie. those that I temp-unblocked which I may potentially reblock, shouldn't be cleared! Thus, only the ones that have button "Unblock X" where X is the DNS type, should be cleared.
+
+* ensure the ctrlc handler aka the 'consoleCtrlHandler' func. can only run once? or if it runs again (which is gonna be on a new thread due to how windows runs it(assuming Gemini 3.6 Flash Thinking wasn't wrong about this)) then make sure it won't crash.
+* so I do this "wincoe.RegisterCtrlHandler(consoleCtrlHandler)" but do I have to unregister it? what happens if i press Ctrl+C again during?! am I handling this?
+
 * get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 * maybe move fileWriter tests into wincoe since the impl. is there.
