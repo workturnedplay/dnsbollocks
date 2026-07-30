@@ -3372,6 +3372,7 @@ func PostThreadMessage(threadID, msg uint32, wParam, lParam uintptr) WinResult {
 	)
 }
 
+// KEYBDINPUT is used for synthesizing inputs via SendInput
 type KEYBDINPUT struct {
 	WVk         uint16
 	WScan       uint16
@@ -3380,6 +3381,7 @@ type KEYBDINPUT struct {
 	DwExtraInfo uintptr
 }
 
+// MOUSEINPUT is used for synthesizing inputs via SendInput
 type MOUSEINPUT struct {
 	Dx          int32
 	Dy          int32
@@ -3389,6 +3391,10 @@ type MOUSEINPUT struct {
 	DwExtraInfo uintptr
 }
 
+// KEYANDMOUSE_INPUT represent any of the above 2
+// "The Union Problem: In C, an INPUT structure is a union where the largest member dictates the overall size of the structure.
+// MOUSEINPUT is larger than KEYBDINPUT. To prevent buffer overflows or misalignment when passing an array of INPUT structures to native APIs like SendInput,
+// Go structs representing C unions must explicitly pad out any remaining bytes so that Go's unsafe.Sizeof() matches the C header size precisely."
 type KEYANDMOUSE_INPUT struct {
 	Type uint32
 	_    uint32 // explicit padding for 64-bit alignment
@@ -3667,6 +3673,26 @@ func DestroyWindow(hwnd windows.Handle) WinResult {
 // GetWindowPlacement retrieves the show state and the restored, minimized, and maximized positions.
 func GetWindowPlacement(hwnd windows.Handle, wp *WINDOWPLACEMENT) WinResult {
 	return procGetWindowPlacement.Call(uintptr(hwnd), uintptr(unsafe.Pointer(wp)))
+}
+
+// --- Hook Structs ---
+
+// KBDLLHOOKSTRUCT is used by low-level keyboard hooks (SetWindowsHookEx with WH_KEYBOARD_LL)
+type KBDLLHOOKSTRUCT struct {
+	VkCode      uint32
+	ScanCode    uint32
+	Flags       uint32
+	Time        uint32
+	DwExtraInfo uintptr
+}
+
+// MSLLHOOKSTRUCT is used by low-level mouse hooks (SetWindowsHookEx with WH_MOUSE_LL)
+type MSLLHOOKSTRUCT struct {
+	Pt          POINT
+	MouseData   uint32
+	Flags       uint32
+	Time        uint32
+	DwExtraInfo uintptr
 }
 
 const (
@@ -5171,6 +5197,38 @@ type WinEventProc func(
 	dwEventThread, dwmsEventTime uint32,
 ) uintptr
 
+// WinEvent hook flags (SetWinEventHook dwFlags argument).
+const (
+	WINEVENT_OUTOFCONTEXT   uint32 = 0x0000 // callback delivered out-of-context (different process)
+	WINEVENT_SKIPOWNPROCESS uint32 = 0x0002 // suppress events originating in our own process
+)
+
+// WinEvent event codes.
+// The hook registered in runApplication covers EVENT_SYSTEM_FOREGROUND..EVENT_OBJECT_FOCUS,
+// which incidentally includes the 0x4xxx console-event band.
+const (
+	// System events
+	EVENT_SYSTEM_FOREGROUND   uint32 = 0x0003
+	EVENT_SYSTEM_CAPTURESTART uint32 = 0x0008 // a window acquired mouse capture
+	EVENT_SYSTEM_CAPTUREEND   uint32 = 0x0009 // mouse capture was released
+
+	// Console events (received because hook range 0x0003–0x8005 spans 0x4xxx)
+	EVENT_CONSOLE_UPDATE_REGION uint32 = 0x4002
+	EVENT_CONSOLE_LAYOUT        uint32 = 0x4005
+
+	// Object events
+	EVENT_OBJECT_CREATE  uint32 = 0x8000
+	EVENT_OBJECT_DESTROY uint32 = 0x8001
+	EVENT_OBJECT_SHOW    uint32 = 0x8002
+	EVENT_OBJECT_HIDE    uint32 = 0x8003
+	EVENT_OBJECT_REORDER uint32 = 0x8004
+	EVENT_OBJECT_FOCUS   uint32 = 0x8005
+)
+
+// OBJID_WINDOW is the idObject value meaning the event concerns the window itself,
+// not a child control, caret, or accessibility item.
+const OBJID_WINDOW int32 = 0
+
 // SetWinEventHook sets an event hook function for a range of events.
 //
 // It wraps the Win32 SetWinEventHook API, returning a WinResult containing
@@ -5485,16 +5543,6 @@ func GetIfTable(pIfTable unsafe.Pointer, pdwSize *uint32, bOrder bool) WinResult
 // GetIpAddrTable retrieves the interface-to-IPv4 address mapping table.
 func GetIpAddrTable(pIpAddrTable unsafe.Pointer, pdwSize *uint32, bOrder bool) WinResult {
 	return procGetIPAddrTable.Call(uintptr(pIpAddrTable), uintptr(unsafe.Pointer(pdwSize)), boolToUintptr(bOrder))
-}
-
-// --- Hook Structs ---
-
-type KBDLLHOOKSTRUCT struct { // TODO: see what's the difference between this and KEYBDINPUT struct! did we misalign something?! tho both seem to work.
-	VkCode      uint32
-	ScanCode    uint32
-	Flags       uint32
-	Time        uint32
-	DwExtraInfo uintptr
 }
 
 // --- SetupAPI Structs and Constants ---
