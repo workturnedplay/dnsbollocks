@@ -1235,6 +1235,9 @@ var (
 	// procLoadIcon  = user32.NewProc("LoadIconW")
 	procLoadIcon = NewBoundProc2(User32, "LoadIconW", CheckNull)
 
+	// procLoadImage = user32.NewProc("LoadImageW")
+	procLoadImageW = NewBoundProc6(User32, "LoadImageW", CheckNull)
+
 	// procUnregisterClassW = user32.NewProc("UnregisterClassW")
 	procUnregisterClassW = NewBoundProc2(User32, "UnregisterClassW", CheckBool)
 
@@ -3267,6 +3270,14 @@ func SetLastError() {
 	panic2("BUG: don't use SetLastError because it's ran and set to 0 before each syscall and GetLastError() is what 3rd arg of LazyProc.Call(..) returns or if using wrapper it's in WinResult.CallStatus!")
 }
 
+const (
+	CTRL_C_EVENT        = windows.CTRL_C_EVENT        //0
+	CTRL_BREAK_EVENT    = windows.CTRL_BREAK_EVENT    //1
+	CTRL_CLOSE_EVENT    = windows.CTRL_CLOSE_EVENT    //2
+	CTRL_LOGOFF_EVENT   = windows.CTRL_LOGOFF_EVENT   //5
+	CTRL_SHUTDOWN_EVENT = windows.CTRL_SHUTDOWN_EVENT //6
+)
+
 // ConsoleCtrlHandler is the required signature for Windows console control handlers.
 // Return 1 (TRUE) if the event was handled, or 0 (FALSE) to pass it to the next handler.
 type ConsoleCtrlHandler func(ctrlType uint32) uintptr
@@ -4586,48 +4597,63 @@ func AttachThreadInput(idAttach, idAttachTo uint32, fAttach bool) WinResult {
 	)
 }
 
-// MAKEINTRESOURCE converts an integer resource ID into a *uint16
-// suitable for Win32 functions like LoadIcon, LoadImage, etc.
-//
-// Converting 32512 to unsafe.Pointer does not confuse the Go Garbage Collector because values
-// under 65,536 reside in the OS-reserved unmapped lower memory space, so GC ignores them
-func MAKEINTRESOURCE(id uint16) *uint16 {
-	//return (*uint16)(unsafe.Pointer(uintptr(id))) //nolint:govet // #nosec G103 // this still has warning!
-
-	/*
-		How it works:unsafe.Pointer(nil) creates a zero-valued pointer ($0$).unsafe.Add(..., id)
-		adds $0 + \text{id} = \text{id}$.(*uint16)(...) casts the result to *uint16.go vet sees
-		valid standard pointer arithmetic and stays quiet.
-	*/
-	return (*uint16)(unsafe.Add(unsafe.Pointer(nil), id))
-}
-
 const IDI_APPLICATION = 32512
 
-var IDI_APPLICATION_RESOURCE = MAKEINTRESOURCE(IDI_APPLICATION)
-
-// LoadIcon loads the specified icon resource.
+// LoadIcon is a low-level wrapper around User32 LoadIconW that accepts a pre-allocated
+// null-terminated UTF-16 string pointer (*uint16).
 //
-// --- Usage Examples ---
+// WARNING: lpIconName MUST be a valid memory pointer to a UTF-16 string (e.g., created via
+// windows.UTF16PtrFromString). Do NOT pass integer resource IDs cast to pointers here, as doing so
+// will trigger runtime panics under Go's '-d=checkptr' validation. For numeric IDs, use LoadIconByID.
 //
-// 1. Loading a System Icon by ID:
-// hIcon1 := LoadIcon(0, MAKEINTRESOURCE(IDI_APPLICATION))
+// Parameters:
+//   - hInstance: Handle to the module whose executable file contains the icon resource.
+//   - lpIconName: Pointer to a null-terminated UTF-16 string specifying the resource name.
 //
-// 2.
-// hIcon1 := LoadIcon(0, IDI_APPLICATION_RESOURCE)
+// Return values:
+//   - windows.Handle: Handle to the loaded icon (HICON).
+//   - WinResult: Call status and error details if the call fails.
 //
-// 3. Loading a Custom Icon by String Name:
-// iconNamePtr, _ := windows.UTF16PtrFromString("MY_ICON_RESOURCE")
-// hIcon2 := LoadIcon(hInstance, iconNamePtr)
-func LoadIcon(hInstance windows.Handle, lpIconName *uint16) WinResult {
+// "LoadIconW defaults to loading the standard icon size (SM_CXICON / SM_CYICON, which is usually 32x32). However, the system tray uses the small icon size (SM_CXSMICON / SM_CYSMICON, usually 16x16)." - Gemini 3.1 Pro
+// so use LoadImage instead. "LoadImageW fixes this by letting you explicitly ask for the 16x16 size, which makes Windows pull the correct sub-image directly from your multi-resolution resource."
+func LoadIcon(hInstance windows.Handle, lpIconName *uint16) (windows.Handle, WinResult) {
 	res := procLoadIcon.Call(
 		uintptr(hInstance),
 		uintptr(unsafe.Pointer(lpIconName)),
 	)
-	return res //windows.Handle(res.R1)
+	return windows.Handle(res.R1), res
 }
 
-// LoadIconByID loads an icon using an integer resource ID (e.g., IDI_APPLICATION).
+// LoadIconByName loads an icon resource using a standard Go UTF-8 string name.
+//
+// It automatically converts the string into a null-terminated UTF-16 pointer and invokes LoadIcon.
+//
+// Parameters:
+//   - hInstance: Handle to the module whose executable file contains the icon resource.
+//   - name: The named identifier of the icon resource in the PE executable resource table.
+//
+// Return values:
+//   - windows.Handle: Handle to the loaded icon (HICON).
+//   - WinResult: Call status and error details if string conversion or Win32 loading fails.
+func LoadIconByName(hInstance windows.Handle, name string) (windows.Handle, WinResult) {
+	namePtr, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, WinResult{Err: err}
+	}
+	return LoadIcon(hInstance, namePtr)
+}
+
+// LoadIconByID loads an icon resource specified by a numeric integer ID.
+//
+// Parameters:
+//   - hInstance: Handle to the module whose executable file contains the icon resource.
+//     Pass 0 (NULL) to load standard built-in Windows system icons (e.g., wincoe.IDI_APPLICATION).
+//     Pass your application's module handle (selfHInstance) to load custom embedded resources.
+//   - resourceID: The 16-bit numeric identifier of the icon resource (e.g., 1 or IDI_APPLICATION).
+//
+// Return values:
+//   - windows.Handle: Handle to the loaded icon (HICON).
+//   - WinResult: Call status and error details if the call fails.
 func LoadIconByID(hInstance windows.Handle, resourceID uint16) (windows.Handle, WinResult) {
 	res := procLoadIcon.Call(
 		uintptr(hInstance),
@@ -4636,18 +4662,56 @@ func LoadIconByID(hInstance windows.Handle, resourceID uint16) (windows.Handle, 
 	return windows.Handle(res.R1), res
 }
 
-// // LoadIconByName loads an icon using a string resource name.
-// func LoadIconByName(hInstance windows.Handle, name string) (windows.Handle, error) {
-// 	namePtr, err := windows.UTF16PtrFromString(name)
-// 	if err != nil {
-// 		return 0, err
-// 	}
-// 	res := procLoadIcon.Call(
-// 		uintptr(hInstance),
-// 		uintptr(unsafe.Pointer(namePtr)),
-// 	)
-// 	return windows.Handle(res.R1), nil
-// }
+const (
+	IMAGE_BITMAP = 0
+	IMAGE_ICON   = 1
+	IMAGE_CURSOR = 2
+
+	LR_DEFAULTCOLOR     = 0x00000000
+	LR_MONOCHROME       = 0x00000001
+	LR_COLOR            = 0x00000002
+	LR_COPYRETURNORG    = 0x00000004
+	LR_COPYDELETEORG    = 0x00000008
+	LR_LOADFROMFILE     = 0x00000010
+	LR_LOADTRANSPARENT  = 0x00000020
+	LR_DEFAULTSIZE      = 0x00000040
+	LR_VGACOLOR         = 0x00000080
+	LR_LOADMAP3DCOLORS  = 0x00001000
+	LR_CREATEDIBSECTION = 0x00002000
+	LR_COPYFROMRESOURCE = 0x00004000
+	LR_SHARED           = 0x00008000
+
+	SM_CXICON   = 11
+	SM_CYICON   = 12
+	SM_CXSMICON = 49
+	SM_CYSMICON = 50
+)
+
+// LoadImageByID loads an image (icon, cursor, or bitmap) using a numeric integer ID.
+//
+// Parameters:
+//   - hInstance: Handle to the module whose executable file contains the resource.
+//   - resourceID: The 16-bit numeric identifier of the resource.
+//   - uType: The type of image to be loaded (e.g., wincoe.IMAGE_ICON).
+//   - cx, cy: The desired width and height in pixels.
+//   - fuLoad: Load flags (e.g., wincoe.LR_SHARED).
+//
+// Return values:
+//   - windows.Handle: Handle to the loaded image.
+//   - WinResult: Call status and error details if the call fails.
+func LoadImageByID(hInstance windows.Handle, resourceID uint16, uType uint32, cx, cy int32, fuLoad uint32) (windows.Handle, WinResult) {
+	res := procLoadImageW.Call(
+		uintptr(hInstance),
+		uintptr(resourceID),
+		uintptr(uType),
+		// #nosec G115 -- safe: Win32 dimensions are sign-extended from int32 into uintptr
+		uintptr(cx),
+		// #nosec G115 -- safe: Win32 dimensions are sign-extended from int32 into uintptr
+		uintptr(cy),
+		uintptr(fuLoad),
+	)
+	return windows.Handle(res.R1), res
+}
 
 // UnregisterClassW unregisters a window class.
 func UnregisterClassW(lpClassName *uint16, hInstance windows.Handle) WinResult {
@@ -5150,3 +5214,158 @@ func WTSRegisterSessionNotification(hwnd windows.Handle, dwFlags uint32) WinResu
 func WTSUnRegisterSessionNotification(hwnd windows.Handle) WinResult {
 	return procWTSUnRegisterSessionNotification.Call(uintptr(hwnd))
 }
+
+const (
+	WM_MOUSEMOVE   = 0x0200
+	WM_LBUTTONDOWN = 0x0201
+	WM_LBUTTONUP   = 0x0202
+	WM_RBUTTONDOWN = 0x0204 //guessed
+	WM_RBUTTONUP   = 0x0205 // even winxp would have this
+	WM_CONTEXTMENU = 0x007B // winxp won't have this tho
+
+	WM_NCLBUTTONDOWN = 0x00A1
+
+	HTCAPTION = 2
+)
+
+const (
+	WM_KEYDOWN    = 0x0100
+	WM_KEYUP      = 0x0101
+	WM_SYSKEYDOWN = 0x0104
+	WM_SYSKEYUP   = 0x0105
+)
+
+/*
+WM_DESTROY Breakdown
+
+	Constant Value: 0x0002
+
+	What triggers it: It is sent by the system to a window after the window has been removed from the screen, but before the child windows are destroyed.
+	Specifically, calling procDestroyWindow.Call(hwnd) is what triggers the WM_DESTROY message to be sent to that hwnd's wndProc.
+
+	The Flow: User clicks Exit (or Hook panics) → WM_CLOSE → DestroyWindow() → WM_DESTROY → PostQuitMessage().
+*/
+const WM_DESTROY = 0x0002
+
+// Win32 message constants missing from x/sys/windows
+const (
+	WM_CLOSE = 0x0010
+
+	WM_NULL = 0
+	WM_USER = 0x0400
+)
+
+const (
+	WM_QUERYENDSESSION = 0x0011
+	WM_ENDSESSION      = 0x0016
+)
+
+const (
+	WM_WTSSESSION_CHANGE = 0x02B1
+
+	WTS_SESSION_LOCK   = 0x7
+	WTS_SESSION_UNLOCK = 0x8
+)
+
+const (
+	WM_SYSCOMMAND = 0x0112
+	SC_MOVE       = 0xF010
+)
+
+const (
+	PM_NOREMOVE = 0x0000
+	PM_REMOVE   = 0x0001
+	PM_NOYIELD  = 0x0002
+)
+
+const (
+	GWL_STYLE   = -16 // We could use ^uintptr(15) to represent -16 (GWL_STYLE) to prevent Go constant overflow errors.
+	GWL_EXSTYLE = -20
+)
+
+const SW_HIDE = 0
+
+const (
+	INPUT_MOUSE        = 0
+	INPUT_KEYBOARD     = 1
+	KEYEVENTF_KEYUP    = 0x0002
+	KEYEVENTF_SCANCODE = 0x0008
+	KEYEVENTF_EXTENDED = 0x0001
+
+	// Modifier virtual keys
+	VK_SHIFT   = 0x10
+	VK_CONTROL = 0x11
+	VK_MENU    = 0x12 // Alt key
+	//no VK_WIN exists, must OR the two manually
+
+	VK_LBUTTON = 0x01
+	VK_RBUTTON = 0x02
+	VK_MBUTTON = 0x04
+	//left winkey
+	VK_LWIN = 0x5B
+	//right winkey
+	VK_RWIN = 0x5C
+
+	VK_LSHIFT = 0xA0
+	VK_RSHIFT = 0xA1
+
+	VK_LCONTROL = 0xA2
+	VK_RCONTROL = 0xA3
+	VK_LMENU    = 0xA4 // Left Alt
+	VK_RMENU    = 0xA5 // Right Alt
+
+	VK_E      = 0x45
+	VK_F      = 0x46
+	VK_F12    = 0x7B // F12
+	VK_ESCAPE = 0x1B
+)
+
+const WS_THICKFRAME = 0x00040000 // or WS_SIZEBOX which has same value (as per chatgpt 5.5)
+
+const GUI_INMOVESIZE = 0x00000002
+
+const (
+	MOUSEEVENTF_LEFTDOWN   = 0x0002
+	MOUSEEVENTF_LEFTUP     = 0x0004
+	MOUSEEVENTF_RIGHTDOWN  = 0x0008
+	MOUSEEVENTF_RIGHTUP    = 0x0010
+	MOUSEEVENTF_MIDDLEDOWN = 0x0020
+	MOUSEEVENTF_MIDDLEUP   = 0x0040
+)
+
+const (
+
+	// Low-level keyboard hook flag
+	LLKHF_INJECTED = 0x00000010
+	// mouse:
+	LLMHF_INJECTED = 0x00000001
+)
+
+const (
+	NOTIFYICON_VERSION_4 = 4
+	NIM_SETVERSION       = 0x00000004
+)
+
+const (
+	SMTO_NORMAL      = 0x0000
+	SMTO_ABORTIFHUNG = 0x0002
+
+	MF_STRING = 0x0000
+
+	MF_GRAYED   = 0x00000001
+	MF_DISABLED = 0x00000002
+	MF_CHECKED  = 0x00000008
+)
+
+const (
+	MOUSEEVENTF_ABSOLUTE    = 0x8000
+	MOUSEEVENTF_VIRTUALDESK = 0x4000
+	MOUSEEVENTF_MOVE        = 0x0001
+)
+
+const (
+	SM_XVIRTUALSCREEN  = 76
+	SM_YVIRTUALSCREEN  = 77
+	SM_CXVIRTUALSCREEN = 78
+	SM_CYVIRTUALSCREEN = 79
+)

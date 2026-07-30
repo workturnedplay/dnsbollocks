@@ -11372,31 +11372,23 @@ var (
 
 // consoleCtrlHandler must be a top-level function with no free variables for windows.NewCallback()
 func consoleCtrlHandler(ctrlType uint32) uintptr {
-	const (
-		CtrlCEvent        = windows.CTRL_C_EVENT        //0
-		CtrlBreakEvent    = windows.CTRL_BREAK_EVENT    //1
-		CtrlCloseEvent    = windows.CTRL_CLOSE_EVENT    //2
-		CtrlLogoffEvent   = windows.CTRL_LOGOFF_EVENT   //5
-		CtrlShutdownEvent = windows.CTRL_SHUTDOWN_EVENT //6
-	)
-
 	var exitCode int = 0 // Default to 0 for window-closed,logoff,shutdown
 
 	var eventName string
 	switch ctrlType {
-	case CtrlCEvent:
+	case wincoe.CTRL_C_EVENT:
 		eventName = "CTRL_C_EVENT (Ctrl+C)" //it's the sigChan one that triggers tho (this one does only while in shutdown())
 		exitCode = 130
-	case CtrlBreakEvent:
+	case wincoe.CTRL_BREAK_EVENT:
 		eventName = "CTRL_BREAK_EVENT (Ctrl+Break)"
 		exitCode = 130
-	case CtrlCloseEvent:
+	case wincoe.CTRL_CLOSE_EVENT:
 		skipInteractivePause.Store(true) // <-- Bypass pause! Console is closing.
 		eventName = "CTRL_CLOSE_EVENT (Console Window Closed)"
-	case CtrlLogoffEvent:
+	case wincoe.CTRL_LOGOFF_EVENT:
 		skipInteractivePause.Store(true) // <-- Bypass pause! User is logging out.
 		eventName = "CTRL_LOGOFF_EVENT (User Logoff)"
-	case CtrlShutdownEvent:
+	case wincoe.CTRL_SHUTDOWN_EVENT:
 		skipInteractivePause.Store(true) // <-- Bypass pause! OS is shutting down.
 		eventName = "CTRL_SHUTDOWN_EVENT (System Shutdown)"
 	default:
@@ -12741,7 +12733,7 @@ func (w *rotatingLogWriter) Close() error {
 	}
 }
 
-// asyncLogWriter wraps an io.Writer (in practice, always a *rotatingLogWriter
+// AsyncLogWriter wraps an io.Writer (in practice, always a *rotatingLogWriter
 // pointed at dnsbollocks.log or queries.log) so that a slow or contended disk
 // can never stall the goroutine that produced the log line.
 //
@@ -12755,7 +12747,7 @@ func (w *rotatingLogWriter) Close() error {
 // itself for that duration — a logging concern taking down the actual
 // service.
 //
-// asyncLogWriter decouples "record the log line" from "persist the log
+// AsyncLogWriter decouples "record the log line" from "persist the log
 // line": Write() copies the bytes (mandatory — slog recycles its formatting
 // buffer via sync.Pool the instant Write returns, so retaining a reference
 // to the original slice would race with, and could silently corrupt,
@@ -12781,7 +12773,7 @@ func (w *rotatingLogWriter) Close() error {
 // only bounds how long *callers* wait for it, not the goroutine's own
 // lifetime. This is an inherent limitation of blocking file I/O in Go, not
 // something this type can fully close off.
-type asyncLogWriter struct {
+type AsyncLogWriter struct {
 	underlying io.Writer
 	queue      chan []byte
 	done       chan struct{} // closed once the drain goroutine has exited
@@ -12818,11 +12810,11 @@ const asyncLogWriterCloseDrainTimeout = 5 * time.Second
 // newAsyncLogWriter starts the background drain goroutine and returns the
 // facade callers should pass to slog.NewJSONHandler (etc.) instead of
 // underlying directly. name is used only for diagnostic messages.
-func newAsyncLogWriter(underlying io.Writer, name string) *asyncLogWriter {
+func newAsyncLogWriter(underlying io.Writer, name string) *AsyncLogWriter {
 	if underlying == nil {
 		panic2("BUG: newAsyncLogWriter called with nil underlying io.Writer")
 	}
-	w := &asyncLogWriter{
+	w := &AsyncLogWriter{
 		underlying: underlying,
 		queue:      make(chan []byte, asyncLogWriterQueueCapacity),
 		done:       make(chan struct{}),
@@ -12841,7 +12833,7 @@ func newAsyncLogWriter(underlying io.Writer, name string) *asyncLogWriter {
 // Handle()'s error return entirely, so returning one here would be silently
 // swallowed anyway; the stderr fallback in recordDrop is the only path that
 // reliably reaches an operator.
-func (w *asyncLogWriter) Write(p []byte) (int, error) {
+func (w *AsyncLogWriter) Write(p []byte) (int, error) {
 	n := len(p)
 
 	// RLock (not a full mutex) so the common, uncontended case costs only a
@@ -12873,7 +12865,7 @@ func (w *asyncLogWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (w *asyncLogWriter) recordDrop(wasClosed bool) {
+func (w *AsyncLogWriter) recordDrop(wasClosed bool) {
 	total := w.dropped.Add(1)
 	var what, extra string
 	if wasClosed {
@@ -12900,14 +12892,14 @@ func (w *asyncLogWriter) recordDrop(wasClosed bool) {
 
 // DroppedCount returns the total number of log lines dropped so far due to
 // sustained back-pressure. Exposed for diagnostics/tests.
-func (w *asyncLogWriter) DroppedCount() int64 {
+func (w *AsyncLogWriter) DroppedCount() int64 {
 	return w.dropped.Load()
 }
 
 // drainLoop is the single goroutine ever allowed to touch w.underlying, so
 // per-file write ordering is preserved exactly as if writes were
 // synchronous, with no additional locking required here.
-func (w *asyncLogWriter) drainLoop() {
+func (w *AsyncLogWriter) drainLoop() {
 	defer close(w.done)
 	for p := range w.queue {
 		// 1. Safely extract an independent string copy of the log context BEFORE writing
@@ -12946,7 +12938,7 @@ func (w *asyncLogWriter) drainLoop() {
 // whatever is still queued, and then closes the underlying writer if it
 // implements io.Closer. Safe to call more than once; only the first call
 // does anything.
-func (w *asyncLogWriter) Close() error {
+func (w *AsyncLogWriter) Close() error {
 	var closeErr error
 	w.closeOnce.Do(func() {
 		w.mu.Lock()
@@ -12977,8 +12969,8 @@ func (w *asyncLogWriter) Close() error {
 	return closeErr
 }
 
-var _ io.Writer = (*asyncLogWriter)(nil)
-var _ io.Closer = (*asyncLogWriter)(nil)
+var _ io.Writer = (*AsyncLogWriter)(nil)
+var _ io.Closer = (*AsyncLogWriter)(nil)
 
 // LoggerManager owns the active *slog.Logger and any underlying file handles
 // (rotatingLogWriters) so callers can reinitialise or close them cleanly.
@@ -12996,7 +12988,7 @@ type LoggerManager struct {
 	// always write to the latest writer after a config reload. This log is
 	// deliberately NOT a slog handler — just a raw io.Writer — so its format
 	// stays a simple, single-line-per-query string rather than JSON.
-	simpleQueriesWriter atomic.Pointer[asyncLogWriter]
+	simpleQueriesWriter atomic.Pointer[AsyncLogWriter]
 }
 
 // NewLoggerManager creates a manager seeded with the given bootstrap logger.
@@ -13024,7 +13016,7 @@ func (lm *LoggerManager) Ptr() *atomic.Pointer[slog.Logger] {
 // plain-text simple-queries log writer (see Config.LogQueriesSimpleFile),
 // mirroring Ptr()'s pattern for the main logger so callers always observe
 // the latest writer after a config reload.
-func (lm *LoggerManager) SimpleQueriesWriterPtr() *atomic.Pointer[asyncLogWriter] {
+func (lm *LoggerManager) SimpleQueriesWriterPtr() *atomic.Pointer[AsyncLogWriter] {
 	return &lm.simpleQueriesWriter
 }
 
@@ -13063,7 +13055,7 @@ func joinCloseErrors(prefix string, errs []error) error {
 // asyncLogWriter — silently dropping the line and printing a "was closed"
 // warning — instead of the new one. Publishing all three "current logger"
 // sources here, before any old writer is closed, closes that window.
-func (lm *LoggerManager) Reinit(l *slog.Logger, simpleQueriesWriter *asyncLogWriter, newClosers ...io.Closer) error {
+func (lm *LoggerManager) Reinit(l *slog.Logger, simpleQueriesWriter *AsyncLogWriter, newClosers ...io.Closer) error {
 	lm.mu.Lock()
 	old := lm.closers
 	lm.closers = newClosers
@@ -13111,7 +13103,7 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// Collected for Reinit() registration below, and for immediate cleanup
 	// if a later openLog() call fails after an earlier one already
 	// succeeded (see closeOpenedOnFailure).
-	var asyncWriters []*asyncLogWriter
+	var asyncWriters []*AsyncLogWriter
 
 	// closeOpenedOnFailure releases every writer opened so far in this call.
 	// Without this, a later openLog() failing (e.g. the queries log file,
@@ -13132,7 +13124,7 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// through here, so the raw rotatingLogWriter (which can itself block
 	// for a long time under disk contention) is wrapped in asyncLogWriter
 	// before being handed to slog; see asyncLogWriter's doc comment for why.
-	openLog := func(path string) (*asyncLogWriter, error) {
+	openLog := func(path string) (*AsyncLogWriter, error) {
 		if path == "" {
 			return nil, errors.New("empty logging filename")
 		}
@@ -13226,7 +13218,7 @@ func (r *Runtime) Logger() *slog.Logger {
 // logging hasn't been fully initialized yet. Callers must treat a nil
 // return as "nothing to write to yet" rather than panicking — this is
 // reached from the DNS hot path (Server.logQuery).
-func (r *Runtime) SimpleQueriesWriter() *asyncLogWriter {
+func (r *Runtime) SimpleQueriesWriter() *AsyncLogWriter {
 	if r == nil || r.LogMgr == nil {
 		return nil
 	}

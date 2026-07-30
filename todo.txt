@@ -1,5 +1,7 @@
 my todos:
 
+* find out what this is in my context: "G704: SSRF via taint analysis (gosec)" for line: "req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))"
+
 * when logQuery happens it should log the upstream_used= having the resolved/expanded URL ie. that {builtin:clientexe} should be expanded to have the same value that the query actually used. Not exactly sure here if the pool of connections interferes here to not be able to differentiate between the connection itself and the query (ie. maybe multiple queries happen on same connection?) and if it can't does this mean the same {buildin:clientexe} expansion that happened on the first connection is the one that's gonna keep being used for any subsequent queries until the upstream connection is closed and reconnected again?! I forget how it works.
 
 * make logf have the ability to know when the last logline was logged/sent and if more than X amount of time passed, insert first a log line saying "X hours,minutes,seconds later\n" before the actual log line to log.
