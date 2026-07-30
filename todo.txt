@@ -1,19 +1,8 @@
 my todos:
 
-* find out what this is in my context: "G704: SSRF via taint analysis (gosec)" for line: "req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))"
-
-* when logQuery happens it should log the upstream_used= having the resolved/expanded URL ie. that {builtin:clientexe} should be expanded to have the same value that the query actually used. Not exactly sure here if the pool of connections interferes here to not be able to differentiate between the connection itself and the query (ie. maybe multiple queries happen on same connection?) and if it can't does this mean the same {buildin:clientexe} expansion that happened on the first connection is the one that's gonna keep being used for any subsequent queries until the upstream connection is closed and reconnected again?! I forget how it works.
-
-* make logf have the ability to know when the last logline was logged/sent and if more than X amount of time passed, insert first a log line saying "X hours,minutes,seconds later\n" before the actual log line to log.
-
-* in webui page /blocks aka Recent Blocks (Quick Unblock) , the Clear Shown Blocks button should clear only those entries which don't have the red "Re-block (Pause)" button, ie. those that I temp-unblocked which I may potentially reblock, shouldn't be cleared! Thus, only the ones that have button "Unblock X" where X is the DNS type, should be cleared.
-
-* ensure the ctrlc handler aka the 'consoleCtrlHandler' func. can only run once? or if it runs again (which is gonna be on a new thread due to how windows runs it(assuming Gemini 3.6 Flash Thinking wasn't wrong about this)) then make sure it won't crash.
-* so I do this "wincoe.RegisterCtrlHandler(consoleCtrlHandler)" but do I have to unregister it? what happens if i press Ctrl+C again during?! am I handling this?
-
 * get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
-* maybe move fileWriter tests into wincoe since the impl. is there.
+* maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
 
@@ -74,3 +63,14 @@ done:
 
 //* add Ctrl+V to dump the version on console, maybe even the whole current Config too? with their descriptions? but maybe newline between each entry so it's more readable that each entry and its description go together (even if they span multiple lines).
 
+//* find out what this is in my context: "G704: SSRF via taint analysis (gosec)" for line: "req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))"
+
+//* when logQuery happens it should log the upstream_used= having the resolved/expanded URL ie. that {builtin:clientexe} should be expanded to have the same value that the query actually used. Not exactly sure here if the pool of connections interferes here to not be able to differentiate between the connection itself and the query (ie. maybe multiple queries happen on same connection?) and if it can't does this mean the same {buildin:clientexe} expansion that happened on the first connection is the one that's gonna keep being used for any subsequent queries until the upstream connection is closed and reconnected again?! I forget how it works. Claude said: "On the pooling question: no, connection pooling does not interfere. doSingleDoHRequest is invoked fresh for every single incoming DNS query (there's no caching of the resolved URL across queries), and it recomputes targetURLStr — including the exe-name substitution — from scratch on every call, using that specific query's own ctx (which carries that query's own *ClientMetadataFuture). net/http's connection pooling (and HTTP/2 multiplexing, which you enable via ForceAttemptHTTP2) only reuses the underlying TCP/TLS socket; each request retains its own independent method/path/headers regardless of which pooled connection carries it. So every query gets its own correctly-resolved URL — the bug is purely that this correct value was never propagated back up for logging."
+
+//* make logf have the ability to know when the last logline was logged/sent and if more than X amount of time passed, insert first a log line saying "X hours,minutes,seconds later\n" before the actual log line to log.
+
+//* in webui page /blocks aka Recent Blocks (Quick Unblock) , the Clear Shown Blocks button should clear only those entries which don't have the red "Re-block (Pause)" button, ie. those that I temp-unblocked which I may potentially reblock, shouldn't be cleared! Thus, only the ones that have button "Unblock X" where X is the DNS type, should be cleared.
+
+//* ensure the ctrlc handler aka the 'consoleCtrlHandler' func. can only run once? or if it runs again (which is gonna be on a new thread due to how windows runs it(assuming Gemini 3.6 Flash Thinking wasn't wrong about this)) then make sure it won't crash. Claude said: "Today this doesn't actually crash: Server.shutdown already wraps everything in s.shutdownOnce.Do(...), and sync.Once semantics mean a second concurrent caller simply blocks inside Do() until the first invocation's function returns — and since that function ends in os.Exit, the first call never returns, so the second thread just sits parked until the whole process dies moments later anyway. So: no crash, no double-execution — but it's relying on an incidental (if correct) property of sync.Once rather than an explicit guard, and it means a second Ctrl+C silently re-logs "OS Console Event received" and re-invokes globalConsoleEventTrigger before parking. Let's make the "only once" behavior explicit and immediate."
+
+//* so I do this "wincoe.RegisterCtrlHandler(consoleCtrlHandler)" but do I have to unregister it? what happens if i press Ctrl+C again during?! am I handling this? doesn't seem like it! Claude said: "Also to answer directly: you do not need to unregister the handler. SetConsoleCtrlHandler-style handlers are automatically discarded by Windows when the process terminates, and you specifically want this handler alive for the process's entire lifetime — including during the shutdown sequence itself — precisely so a second signal is caught by you rather than falling through to Windows' default (immediate kill) behavior. Never unregistering is correct."

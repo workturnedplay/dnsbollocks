@@ -474,9 +474,10 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	}
 
 	type result struct {
-		index int
-		resp  *dns.Msg
-		err   error
+		index       int
+		resp        *dns.Msg
+		resolvedURL string
+		err         error
 	}
 
 	// 1. Try the current active working upstream AND all previous higher-priority
@@ -493,7 +494,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			//LoadOrStore(i, true): This atomically checks if an operation is already in progress for that index. If loaded is true, we immediately push a dummy error to the channel and continue, bypassing doSingleDoHRequest. This kills the log spam.
 			if _, loaded := fs.inFlightProbes.LoadOrStore(i, true); loaded {
 				// Already probing this failed upstream. Skip to prevent network and log spam.
-				resChan <- result{index: i, resp: nil, err: errors.New("skipped: probe already in flight")}
+				resChan <- result{index: i, resp: nil, resolvedURL: upstreams[i].URL.String(), err: errors.New("skipped: probe already in flight")}
 				continue
 			}
 		}
@@ -532,7 +533,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			} else {
 				reqCtx = exchangeCtx
 			}
-			resp, err := target.doSingleDoHRequest(reqCtx, reqBytes)
+			resp, resolvedURL, err := target.doSingleDoHRequest(reqCtx, reqBytes)
 
 			// 1. Do the promotion BEFORE sending to the channel
 			// ASYNC HEALING: If a higher priority upstream unexpectedly succeeded
@@ -564,20 +565,20 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 				// Log safely outside of the lock
 				if recoveredFromBlackout {
 					log.Warn("💚 Global blackout resolved; upstreams are responding again",
-						slog.String("url", target.URL.String()),
+						slog.String("url", resolvedURL),
 						slog.String("sni", target.SNI),
 						slog.Int("index", idx),
 					)
 				} else if healed {
 					log.Warn("⚙️ Primary upstream recovered; promoting back to active status",
-						slog.String("url", target.URL.String()),
+						slog.String("url", resolvedURL),
 						slog.String("sni", target.SNI),
 						slog.Int("index", idx),
 					)
 				}
 			}
 			// 2. Push to the channel last
-			resChan <- result{index: idx, resp: resp, err: err}
+			resChan <- result{index: idx, resp: resp, resolvedURL: resolvedURL, err: err}
 		}(i, isProbe)
 	}
 
@@ -599,7 +600,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 
 			if res.err == nil {
 				// No locks needed here anymore! The goroutine already handled it.
-				return res.resp, upstreams[res.index].URL.String(), failedUpstreams, nil
+				return res.resp, res.resolvedURL, failedUpstreams, nil
 			}
 			// // FIX 1: Explicit log when a parallel/primary upstream fails
 			// log.Warn("⚠️ Upstream still failed; marking as failed", // XXX: this is unnecessary spam
@@ -608,7 +609,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// 	wincoe.SafeErr(res.err),
 			// )
 			// Track the failure
-			failedUpstreams = append(failedUpstreams, upstreams[res.index].URL.String())
+			failedUpstreams = append(failedUpstreams, res.resolvedURL)
 
 			if res.index == currentIdx {
 				currentIdxAnswered = true
@@ -636,7 +637,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err() /*non-nil*/)
 		}
 		target := upstreams[i]
-		resp, err := target.doSingleDoHRequest(ctx, reqBytes)
+		resp, resolvedURL, err := target.doSingleDoHRequest(ctx, reqBytes)
 		if err == nil {
 			fs.mu.Lock()
 			wasBlackout := fs.allFailed
@@ -648,7 +649,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			fs.mu.Unlock()
 			if wasBlackout { //nvmTODO: DRY(see the above copy)
 				log.Warn("💚 Global blackout resolved; fallback upstream responding",
-					slog.String("url", target.URL.String()),
+					slog.String("url", resolvedURL),
 					slog.String("sni", target.SNI),
 					slog.Int("index", i),
 				)
@@ -661,19 +662,19 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 					slog.String("old_url", oldTarget.URL.String()),
 					slog.String("old_sni", oldTarget.SNI),
 					slog.Int("new_index", i),
-					slog.String("new_url", target.URL.String()),
+					slog.String("new_url", resolvedURL),
 					slog.String("sni", target.SNI),
 				)
 			}
-			return resp, target.URL.String(), failedUpstreams, nil
+			return resp, resolvedURL, failedUpstreams, nil
 		}
 		// FIX 3: Explicit log when a sequential fallback upstream fails
 		log.Warn("⚠️ Fallback upstream failed; moving to next (if available)",
-			slog.String("url", target.URL.String()),
+			slog.String("url", resolvedURL),
 			slog.String("sni", target.SNI),
 			wincoe.SafeErr(err),
 		)
-		failedUpstreams = append(failedUpstreams, target.URL.String())
+		failedUpstreams = append(failedUpstreams, resolvedURL)
 	} //for
 	// If execution gets here, every single configured upstream failed
 	fs.mu.Lock()
@@ -1605,9 +1606,13 @@ type ColoredConsoleHandler struct {
 	Level   slog.Level
 	Out     io.Writer
 	Mu      *sync.Mutex
-	Counter *uint64 // ADDED: Shared counter to track alternating rows
-	Attrs   []slog.Attr
-	Group   string
+	Counter *uint64 // Shared counter to track alternating rows
+	// LastLogTime tracks when the previous console line was printed, shared (via pointer)
+	// across every clone produced by WithAttrs/WithGroup so gap detection works correctly
+	// regardless of which clone logs next. Guarded by Mu, exactly like Counter.
+	LastLogTime *time.Time
+	Attrs       []slog.Attr
+	Group       string
 }
 
 func NewColoredConsoleHandler(level slog.Level, logger *slog.Logger) slog.Handler {
@@ -1617,12 +1622,14 @@ func NewColoredConsoleHandler(level slog.Level, logger *slog.Logger) slog.Handle
 		logger.Warn("EnableVirtualTerminalProcessing failed", wincoe.SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
 	}
 
-	var c uint64 // Initialize the shared counter (escapes to heap, doh)
+	var c uint64          // Initialize the shared counter (escapes to heap, doh)
+	var lastLog time.Time // zero value means "no previous console line yet"; escapes to heap
 	return &ColoredConsoleHandler{
-		Level:   level,
-		Out:     os.Stdout,
-		Mu:      &sync.Mutex{},
-		Counter: &c, // Share pointer across clones
+		Level:       level,
+		Out:         os.Stdout,
+		Mu:          &sync.Mutex{},
+		Counter:     &c, // Share pointer across clones
+		LastLogTime: &lastLog,
 	}
 }
 
@@ -1635,6 +1642,10 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	_ = ctx
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
+
+	// Compute the gap-announcement line (if any) BEFORE anything else touches
+	// h.LastLogTime, so it always reflects the silence strictly preceding this line.
+	gapLine := h.buildGapAnnouncementYouHoldLock(r.Time)
 
 	// Increment line counter to determine zebra striping (even/odd)
 	*h.Counter++
@@ -1711,6 +1722,10 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	timeStr := r.Time.Format(TimeStampsFormat) //"15:04:05.000")
 
 	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+
+	if gapLine != "" {
+		buf.WriteString(gapLine)
+	}
 
 	// Apply the background color right at the start of the line
 	buf.WriteString(bgColor)
@@ -1835,12 +1850,13 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 
 func (h *ColoredConsoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &ColoredConsoleHandler{
-		Level:   h.Level,
-		Out:     h.Out,
-		Mu:      h.Mu,
-		Counter: h.Counter, // Carry over the counter pointer
-		Attrs:   append(h.Attrs[:len(h.Attrs):len(h.Attrs)], attrs...),
-		Group:   h.Group,
+		Level:       h.Level,
+		Out:         h.Out,
+		Mu:          h.Mu,
+		Counter:     h.Counter,     // Carry over the counter pointer
+		LastLogTime: h.LastLogTime, // Carry over the shared gap-detection timestamp
+		Attrs:       append(h.Attrs[:len(h.Attrs):len(h.Attrs)], attrs...),
+		Group:       h.Group,
 	}
 }
 
@@ -1850,13 +1866,76 @@ func (h *ColoredConsoleHandler) WithGroup(name string) slog.Handler {
 		prefix += name + "."
 	}
 	return &ColoredConsoleHandler{
-		Level:   h.Level,
-		Out:     h.Out,
-		Mu:      h.Mu,
-		Counter: h.Counter, // Carry over the counter pointer
-		Attrs:   h.Attrs,
-		Group:   prefix,
+		Level:       h.Level,
+		Out:         h.Out,
+		Mu:          h.Mu,
+		Counter:     h.Counter,     // Carry over the counter pointer
+		LastLogTime: h.LastLogTime, // Carry over the shared gap-detection timestamp
+		Attrs:       h.Attrs,
+		Group:       prefix,
 	}
+}
+
+// consoleLogGapAnnounceThreshold is the minimum silence between two console log lines
+// before ColoredConsoleHandler.Handle prints a "... <duration> later ..." separator
+// line, making long gaps in the live console feed (an idle server, a hang, etc.)
+// visually obvious while scrolling back through history.
+const consoleLogGapAnnounceThreshold = 30 * time.Second
+
+// buildGapAnnouncementYouHoldLock returns a rendered "... <duration> later ..." line if
+// at least consoleLogGapAnnounceThreshold has passed since the previous console log
+// line, or "" if there's no previous line yet or the gap is too short to call out.
+// Caller must hold h.Mu; it both reads and unconditionally updates h.LastLogTime, so a
+// stale/mixed read is never observed even under concurrent Handle() calls.
+func (h *ColoredConsoleHandler) buildGapAnnouncementYouHoldLock(now time.Time) string {
+	if h.LastLogTime == nil {
+		return "" // defensive: only ever nil if a ColoredConsoleHandler{} was hand-built
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	var line string
+	if !h.LastLogTime.IsZero() {
+		if gap := now.Sub(*h.LastLogTime); gap >= consoleLogGapAnnounceThreshold {
+			line = fmt.Sprintf("\x1b[90m... %s later ...\x1b[0m\n", formatLogGapDuration(gap))
+		}
+	}
+	*h.LastLogTime = now
+	return line
+}
+
+// formatLogGapDuration renders d as "H hours, M minutes, S seconds" (omitting any
+// leading zero-valued unit) for the gap-announcement line. Sub-second precision is
+// deliberately dropped — the whole point is to make LONG silences obvious at a glance,
+// not to provide stopwatch-grade timing.
+func formatLogGapDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	totalSeconds := int64(d / time.Second)
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+
+	var parts []string
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%d hour%s", hours, pluralSuffix(hours)))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%d minute%s", minutes, pluralSuffix(minutes)))
+	}
+	if seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d second%s", seconds, pluralSuffix(seconds)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func pluralSuffix(n int64) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // -----------------------------------------------------------------------------
@@ -4752,7 +4831,10 @@ func GetVersion() string {
 }
 
 type UpstreamState struct { //doneTODO: rename Telemetry to something normal
-	Strategy        string   `json:"strategy"`
+	Strategy string `json:"strategy"`
+	// UpstreamUsed and FailedUpstreams hold the fully-resolved URL(s) actually sent on the
+	// wire for this query (with any {builtin:clientexe} placeholder already substituted),
+	// not the raw, still-templated upstream_urls config entry.
 	UpstreamUsed    string   `json:"upstream_used"`
 	FailedUpstreams []string `json:"failed_upstreams"`
 }
@@ -4854,7 +4936,12 @@ const maxUpstreamDoHResponseBytes = 4 * 1024 * 1024 // 4 MiB
 // in Metadata Lookup".
 const clientMetadataLookupTimeout = 2 * time.Second
 
-func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, error) {
+// doSingleDoHRequest performs one upstream DoH HTTP round trip (with its own bounded
+// retry loop), returning the parsed DNS response, the fully-resolved request URL that
+// was actually used on the wire (with any {builtin:clientexe} placeholder already
+// substituted), and an error. The resolved URL is always populated, even on failure,
+// since it's computed before the request is ever sent.
+func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dns.Msg, string, error) {
 	log := u.getLogger()
 
 	if u.Client == nil {
@@ -4870,7 +4957,8 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	var resp *http.Response
 	var err4ClientDo error
 	var req *http.Request
-	var cancelCurrentReq func() // Track the active context cancel function across scopes
+	var cancelCurrentReq func()     // Track the active context cancel function across scopes
+	var resolvedTargetURLStr string // the exact URL used on the wire for this attempt (post {builtin:clientexe} substitution)
 
 	//for attempt := range maxTries { // starts from 0 !
 	for attempt := 1; attempt <= maxTries; attempt++ {
@@ -4928,6 +5016,8 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				targetURLStr = strings.ReplaceAll(targetURLStr, templateClientExeEscaped, exeName)
 			}
 
+			resolvedTargetURLStr = targetURLStr
+
 			// 2. Create a transient request context derived from the client's ctx
 			// reqCtx, cancelReq := context.WithCancel(ctx)
 			//NOTTRUEXXX: when the upstream IP is set to Deny in portmaster firewall after it worked before, without this context.WithTimeout it will hang forever until Ctrl+C cancels context then you see all the logs that show it was stuck. This is the only way.
@@ -4961,7 +5051,13 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 
 			// Build the request using the dynamically generated URL
 			var e error
-			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes))
+			// G704 (gosec SSRF via taint analysis) fires because targetURLStr isn't a literal.
+			// It's safe: parseAndValidateUpstreams already restricts every configured upstream to
+			// the https scheme with an IP-literal host before any Upstream value is ever
+			// constructed (see UpstreamManager.buildSet), and the only dynamic substitution done
+			// above ({builtin:clientexe}) only ever touches the path/query, never the scheme or
+			// host, so this can never be redirected toward an unintended destination.
+			req, e = http.NewRequestWithContext(reqCtx, http.MethodPost /*"POST"*/, targetURLStr, bytes.NewReader(reqBytes)) //nolint:gosec // G704: see comment above, host is a validated IP literal
 			if e != nil {
 				// Wrap the error to give it context and satisfy wrapcheck
 				return true, fmt.Errorf("failed to create DoH HTTP request: %w", e /*non-nil*/)
@@ -4999,11 +5095,11 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 				resp = nil
 			}
 			return false, nil
-		}()
+		}() //so it's called here!
 
 		// If NewRequestWithContext failed, abort immediately just like the original logic
 		if failedToCreateRequest {
-			return nil, errReq
+			return nil, resolvedTargetURLStr, errReq
 		}
 
 		// If client.Do succeeded, we can stop retrying
@@ -5029,7 +5125,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 🔴 FIX #1: If this was the last attempt, return the REAL error immediately!
 			// This prevents falling through to the bottom of the function.
 			if attempt >= maxTries {
-				return nil, fmt.Errorf("exhausted %d/%d tries to upstream DoH, last request's err: %w", attempt, maxTries, err4ClientDo /*non-nil here*/)
+				return nil, resolvedTargetURLStr, fmt.Errorf("exhausted %d/%d tries to upstream DoH, last request's err: %w", attempt, maxTries, err4ClientDo /*non-nil here*/)
 			}
 			if u.RetryBackoffDuration <= 0 {
 				u.RetryBackoffDuration = time.Duration(100) * time.Millisecond
@@ -5046,11 +5142,11 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			case <-ctx.Done():
 				timer.Stop()
 				log.Debug("doh sensed client quit during retry backoff...")
-				return nil, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err() /*non-nil guaranteed*/)
+				return nil, resolvedTargetURLStr, fmt.Errorf("doh sensed client quit during retry backoff... ctx.err: %w", ctx.Err() /*non-nil guaranteed*/)
 			case <-u.BackgroundCtx.Done():
 				timer.Stop()
 				log.Debug("doh sensed quit during retry backoff...")
-				return nil, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err() /*non-nil guaranteed*/)
+				return nil, resolvedTargetURLStr, fmt.Errorf("doh sensed quit during retry backoff... bkgctx.err: %w", u.BackgroundCtx.Err() /*non-nil guaranteed*/)
 			}
 			continue //next try
 		} //if
@@ -5058,7 +5154,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 		// --- NEW DIAGNOSTIC BLOCK ---
 		if strings.Contains(err4ClientDo.Error(), "tls:") || strings.Contains(err4ClientDo.Error(), "x509:") {
 			log.Error("TLS verification failed when tried to query upstream DNS server",
-				slog.String("url", u.URL.String()),
+				slog.String("url", resolvedTargetURLStr),
 				slog.String("sni_used", u.SNI),
 				wincoe.SafeErr(err4ClientDo))
 
@@ -5066,12 +5162,12 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			u.logCertDetails() //targetURL.Hostname(), targetURL.Port(), sni)
 		} else {
 			log.Error("Failed to query upstream DNS server",
-				slog.String("url", u.URL.String()),
+				slog.String("url", resolvedTargetURLStr),
 				slog.String("sni_used", u.SNI),
 				wincoe.SafeErr(err4ClientDo))
 		}
 		// --- END DIAGNOSTIC BLOCK ---
-		return nil, fmt.Errorf("failed to send the HTTP request to the upstream DoH server %q, err: %w", u.URL.String(), err4ClientDo /*non-nil here*/)
+		return nil, resolvedTargetURLStr, fmt.Errorf("failed to send the HTTP request to the upstream DoH server %q, err: %w", resolvedTargetURLStr, err4ClientDo /*non-nil here*/)
 	} //for retries
 
 	// --- THE CODE BELOW ONLY EXECUTES ON SUCCESSFUL BREAK ---
@@ -5084,7 +5180,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	if resp == nil {
 		// last attempt produced no response (shouldn't happen), treat as failure
 		log.Error("doh_no_response")
-		return nil, errors.New("no response")
+		return nil, resolvedTargetURLStr, errors.New("no response")
 	} else {
 		defer resp.Body.Close() //nolint:errcheck // best-effort close, nothing to do on error
 	}
@@ -5097,19 +5193,19 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 	body, err4ReadAll := io.ReadAll(limitedBody)
 	if err4ReadAll != nil {
 		log.Error("doh_readbody_failed", wincoe.SafeErr(err4ReadAll))
-		return nil, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll /*non-nil here*/)
+		return nil, resolvedTargetURLStr, fmt.Errorf("failed to read upstream DoH response body: %w", err4ReadAll /*non-nil here*/)
 	}
 	if len(body) > maxUpstreamDoHResponseBytes {
 		log.Error("doh_upstream_response_too_large",
 			slog.Int("body_len", len(body)),
 			slog.Int("max_allowed_bytes", maxUpstreamDoHResponseBytes))
-		return nil, fmt.Errorf("upstream DoH response body exceeded maximum allowed size of %d bytes", maxUpstreamDoHResponseBytes)
+		return nil, resolvedTargetURLStr, fmt.Errorf("upstream DoH response body exceeded maximum allowed size of %d bytes", maxUpstreamDoHResponseBytes)
 	}
 
 	// debug/log non-200 or unexpected content-type
 	if resp.StatusCode != 200 {
 		log.Error("doh_upstream_status", slog.String("status", resp.Status))
-		return nil, fmt.Errorf("upstream status %s", resp.Status)
+		return nil, resolvedTargetURLStr, fmt.Errorf("upstream status %s", resp.Status)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct != "application/dns-message" {
@@ -5126,9 +5222,9 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			slog.String("body_hex", fmt.Sprintf("Upstream body (hex, first %d): %x", n, body[:n])),
 			slog.String("body_text", fmt.Sprintf("Upstream body (text, first %d): %q", n, body[:n])),
 		)
-		return nil, fmt.Errorf("failed to unpack response body for upstream DoH %q, err: %w", u.URL.String(), err4Unpack /*non-nil here*/)
+		return nil, resolvedTargetURLStr, fmt.Errorf("failed to unpack response body for upstream DoH %q, err: %w", resolvedTargetURLStr, err4Unpack /*non-nil here*/)
 	}
-	return upMsg, nil
+	return upMsg, resolvedTargetURLStr, nil
 }
 
 func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
@@ -7135,9 +7231,13 @@ func newRecentBlocksTracker() *RecentBlocksTracker {
 	}
 }
 
-// ClearBefore removes all blocked queries that occurred at or before the given cutoff time.
-// Returns the number of items successfully removed.
-func (t *RecentBlocksTracker) ClearBefore(cutoff time.Time) int {
+// ClearBefore removes blocked queries that occurred at or before cutoff AND are NOT
+// currently unblocked, as reported by isUnblocked(domain, qtype). Entries the operator
+// has temporarily unblocked (still showing the WebUI's "Re-block (Pause)" button rather
+// than "Unblock X") are deliberately preserved, so "Clear Shown Blocks" can never
+// silently discard the one piece of UI state that lets the operator undo a quick-unblock
+// later. Returns the number of items actually removed.
+func (t *RecentBlocksTracker) ClearBefore(cutoff time.Time, isUnblocked func(domain, qtype string) bool) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cleared := 0
@@ -7145,15 +7245,16 @@ func (t *RecentBlocksTracker) ClearBefore(cutoff time.Time) int {
 
 	for e := t.lst.Front(); e != nil; e = next {
 		next = e.Next()
-		if bq, ok := e.Value.(*BlockedQuery); ok {
-			// If the block happened at or before the page render time
-			if !bq.Time.After(cutoff) {
-				delete(t.m, bq.Domain+":"+bq.Type)
-				t.lst.Remove(e)
-				cleared++
-			}
-		} else {
+		bq, ok := e.Value.(*BlockedQuery)
+		if !ok {
 			panic2("BUG: not of *BlockedQuery type")
+		}
+		// The block happened at or before the page render time, and it isn't
+		// currently sitting in a temporarily-unblocked state.
+		if !bq.Time.After(cutoff) && !isUnblocked(bq.Domain, bq.Type) {
+			delete(t.m, bq.Domain+":"+bq.Type)
+			t.lst.Remove(e)
+			cleared++
 		}
 	}
 	return cleared
@@ -7773,7 +7874,12 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 }
 
-func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
+// buildIsUnblockedPredicate returns a predicate reporting whether a given domain+qtype
+// currently has an ENABLED whitelist rule matching it exactly — i.e. whether it's
+// presently unblocked/paused rather than actively blocked. Shared by getRecentBlocksCopy
+// (rendering the /blocks page) and blocksHandler's "clear" action, so both agree on
+// exactly which rows show "Re-block (Pause)" versus "Unblock X" at any given moment.
+func (ui *AdminUI) buildIsUnblockedPredicate() func(domain, qtype string) bool {
 	snapshot := ui.ruleStore.Snapshot()
 
 	// Pre-build a hash set of active rules for O(1) lookups.
@@ -7787,9 +7893,13 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 		}
 	}
 
-	blocks := ui.recentBlocks.Snapshot(func(domain, qtype string) bool {
+	return func(domain, qtype string) bool {
 		return activeRules[qtype+":"+domain]
-	})
+	}
+}
+
+func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
+	blocks := ui.recentBlocks.Snapshot(ui.buildIsUnblockedPredicate())
 	for i := range blocks {
 		blocks[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(blocks[i].Domain)
 	}
@@ -7885,7 +7995,9 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
-			cleared := ui.recentBlocks.ClearBefore(cutoff)
+			// Only clear rows currently showing "Unblock X" (still actively blocked).
+			// Rows showing "Re-block (Pause)" are preserved — see ClearBefore's doc comment.
+			cleared := ui.recentBlocks.ClearBefore(cutoff, ui.buildIsUnblockedPredicate())
 
 			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
 			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
@@ -9421,9 +9533,10 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 	failover := set.failover
 
 	type result struct {
-		msg *dns.Msg
-		err error
-		idx int // Useful for tracking which upstream won or failed
+		msg         *dns.Msg
+		resolvedURL string
+		err         error
+		idx         int // Useful for tracking which upstream won or failed
 	}
 
 	switch cfg.UpstreamSelectionMode {
@@ -9447,8 +9560,8 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 			go func(idx int, target Upstream) {
 				defer recoverAndFlushLogs(um.flushLogs)
 				defer wg.Done()
-				msg, err := target.doSingleDoHRequest(ctx, reqBytes)
-				results[idx] = result{msg: msg, err: err, idx: idx}
+				msg, resolvedURL, err := target.doSingleDoHRequest(ctx, reqBytes)
+				results[idx] = result{msg: msg, resolvedURL: resolvedURL, err: err, idx: idx}
 			}(i, upstream)
 		}
 
@@ -9459,13 +9572,12 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 		// Compare responses
 		for i, res := range results {
-			strURL := upstreams[i].URL.String()
 			if res.err != nil || res.msg == nil {
 				log.Error("upstream failed or returned nil",
-					slog.String("url", strURL), // um.upstreamURLs[i].String()),
+					slog.String("url", res.resolvedURL),
 					wincoe.SafeErr(res.err),
 				)
-				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, res.resolvedURL)
 				return nil, upstreamState1 // Refuse to resolve if any upstream completely fails
 			}
 
@@ -9479,18 +9591,18 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 			// by Claude Sonnet 5 Extra Thinking
 			if res.msg.Rcode == dns.RcodeSuccess && len(res.msg.Answer) == 0 {
 				log.Warn("strict mode: treating NOERROR/no-answer (NODATA) response as an unverifiable failure",
-					slog.String("url", strURL))
-				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
+					slog.String("url", res.resolvedURL))
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, res.resolvedURL)
 				return nil, upstreamState1
 			}
 
 			if reference == nil {
 				reference = res.msg
 				refIdx = i
-				upstreamState1.UpstreamUsed = strURL
+				upstreamState1.UpstreamUsed = res.resolvedURL
 			} else if !compareDNSResponses(reference, res.msg) {
 				// Mismatch means failure to agree
-				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL)
+				upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, res.resolvedURL)
 
 				// Extract IPs for the log message
 				refIPs := extractIPs(reference)
@@ -9501,9 +9613,9 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 
 				attrs := []any{
 					slog.String("query", req.Question[0].Name),
-					slog.String("upstream_DoH_url1", upstreams[refIdx].URL.String()),
+					slog.String("upstream_DoH_url1", results[refIdx].resolvedURL),
 					SafeStringSlice("ips_returned1", refIPs),
-					slog.String("upstream_DoH_url2", strURL),
+					slog.String("upstream_DoH_url2", res.resolvedURL),
 					SafeStringSlice("ips_returned2", curIPs),
 					slog.String("reference", reference.String()),
 					slog.String("current", res.msg.String()),
@@ -9553,21 +9665,20 @@ func (um *UpstreamManager) ForwardToDoH(ctx context.Context, req *dns.Msg) (*dns
 			}
 			go func(idx int, target Upstream) {
 				defer recoverAndFlushLogs(um.flushLogs)
-				msg, err := target.doSingleDoHRequest(ctx, reqBytes)
-				resChan <- result{msg: msg, err: err, idx: idx}
+				msg, resolvedURL, err := target.doSingleDoHRequest(ctx, reqBytes)
+				resChan <- result{msg: msg, resolvedURL: resolvedURL, err: err, idx: idx}
 			}(i, upstream)
 		}
 
 		var lastErr error
 		for range len(upstreams) {
 			res := <-resChan
-			strURL := upstreams[res.idx].URL.String()
 			// If we got a valid DNS response (even an NXDOMAIN), return it immediately
 			if res.err == nil && res.msg != nil {
-				upstreamState1.UpstreamUsed = strURL //um.upstreamURLs[res.idx].String()
+				upstreamState1.UpstreamUsed = res.resolvedURL
 				return res.msg, upstreamState1
 			}
-			upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, strURL) //um.upstreamURLs[res.idx].String())
+			upstreamState1.FailedUpstreams = append(upstreamState1.FailedUpstreams, res.resolvedURL)
 			// Keep track of the error in case they ALL fail
 			if res.err != nil {
 				lastErr = res.err
@@ -11368,9 +11479,26 @@ var (
 
 	// NEW: Flag to bypass the "Press any key" pause during forced teardowns
 	skipInteractivePause atomic.Bool
+
+	// consoleCtrlHandlerFired guards against consoleCtrlHandler re-entering its
+	// shutdown-trigger logic. Windows can invoke a registered console control handler
+	// on a brand-new OS thread for every signal it delivers, so an impatient second
+	// Ctrl+C while the first shutdown is still in flight (e.g. waiting out
+	// server_graceful_shutdown_sec) can genuinely re-enter this function
+	// concurrently on a different thread, not just re-run sequentially after the
+	// first call returns. s.shutdown's own shutdownOnce already prevents the
+	// shutdown SEQUENCE from running twice, but this flag stops the second signal
+	// from redundantly re-logging and re-entering globalConsoleEventTrigger at all,
+	// rather than relying on sync.Once's blocking behavior (which would otherwise
+	// leave that second thread parked indefinitely until the first shutdown's
+	// terminal os.Exit tears down the whole process anyway).
+	consoleCtrlHandlerFired atomic.Bool
 )
 
-// consoleCtrlHandler must be a top-level function with no free variables for windows.NewCallback()
+// consoleCtrlHandler must be a top-level function with no free variables for windows.NewCallback().
+// Only the FIRST console control event this process ever receives triggers the shutdown
+// sequence; every subsequent invocation (including a concurrent one on another OS
+// thread) is acknowledged and ignored — see consoleCtrlHandlerFired's doc comment.
 func consoleCtrlHandler(ctrlType uint32) uintptr {
 	var exitCode int = 0 // Default to 0 for window-closed,logoff,shutdown
 
@@ -11394,6 +11522,12 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 	default:
 		// Return 0 (FALSE) for unhandled events so Windows continues standard routing
 		return 0
+	}
+
+	if !consoleCtrlHandlerFired.CompareAndSwap(false, true) {
+		// A shutdown is already in flight (this is a repeat/concurrent signal);
+		// acknowledge it to Windows and do nothing further.
+		return 1
 	}
 
 	if globalConsoleEventTrigger != nil {
@@ -13935,7 +14069,7 @@ func recoverAndFlushLogs(flushLogs func()) {
 // getValidBcryptCost enforces the boundaries for bcrypt cost in a DRY manner.
 func getValidBcryptCost(cost, fallback int) int {
 	if cost < bcrypt.MinCost { //4
-		return bcrypt.MinCost //max(bcrypt.MinCost, fallback)
+		return max(bcrypt.MinCost, fallback) // bcrypt.MinCost //
 	}
 	if cost > bcrypt.MaxCost { //31
 		return bcrypt.MaxCost

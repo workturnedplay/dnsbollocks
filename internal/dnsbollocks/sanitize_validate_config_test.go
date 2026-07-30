@@ -371,12 +371,13 @@ func TestSanitizeAndValidateConfig_CacheMinTTLNotClamped(t *testing.T) {
 func TestSanitizeAndValidateConfig_WebUIBcryptCostClampedToMinimum(t *testing.T) {
 	t.Parallel()
 
+	def := defaultConfig()
 	cases := []struct {
 		input int
 		want  int
 	}{
-		{0, bcrypt.MinCost},
-		{1, bcrypt.MinCost},
+		{0, def.WebUIPasswordBcryptCost},
+		{1, def.WebUIPasswordBcryptCost},
 		{11, 11},
 		{12, 12}, // exactly at minimum → unchanged
 		{14, 14}, // above minimum → unchanged
@@ -385,7 +386,8 @@ func TestSanitizeAndValidateConfig_WebUIBcryptCostClampedToMinimum(t *testing.T)
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		//tc := tc // tf is this?
+
 		t.Run(fmt.Sprintf("cost=%d", tc.input), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -394,6 +396,11 @@ func TestSanitizeAndValidateConfig_WebUIBcryptCostClampedToMinimum(t *testing.T)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+
+			// if tc.input < bcrypt.MinCost { // this is how getValidBcryptCost() is made
+			// 	tc.want = cfg.WebUIPasswordBcryptCost
+			// }
+
 			if resolved.WebUIPasswordBcryptCost != tc.want {
 				t.Errorf("resolved: got %d, want %d", resolved.WebUIPasswordBcryptCost, tc.want)
 			}
