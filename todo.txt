@@ -1,8 +1,5 @@
 my todos:
 
-* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
-* link to Tinywall in readme and to Go lang to install Go.
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -52,6 +49,7 @@ doNOTdo:
 
 half-done:
 goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply, should probably say that too, like the whole filename .bak
-
+//didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
+//* link to Tinywall in readme and to Go lang to install Go.
