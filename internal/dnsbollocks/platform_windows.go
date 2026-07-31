@@ -5823,7 +5823,11 @@ func SafeSlice[T any](key string, slice []T, mapper func(T) string) slog.Attr {
 // structured JSON log_queries file which carries far more detail (exe,
 // protocol, rule ID, timing, etc.) under the same timestamp.
 func formatSimpleQueryLogLine(ts time.Time, typ, domain, action string, ips []string) string {
-	return fmt.Sprintf("%s %s %s %s %v\n", ts.Format(time.RFC3339Nano), typ, domain, action, ips)
+	// return fmt.Sprintf("%s %s %s %s %v\n", ts.Format(time.RFC3339Nano), typ, domain, action, ips)//The jagged alignment happens because Go's built-in time.RFC3339Nano format uses .999999999 for fractional seconds under the hood. In Go's time formatting rules, 9s mean "omit trailing zeroes," which results in a variable-length string depending on the exact nanosecond.
+
+	// Replaced time.RFC3339Nano with a custom format using .000000000
+	// to force fixed-width trailing zeroes for perfect column alignment.
+	return fmt.Sprintf("%s %s %s %s %v\n", ts.Format("2006-01-02T15:04:05.000000000Z07:00"), typ, domain, action, ips)
 }
 
 const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
