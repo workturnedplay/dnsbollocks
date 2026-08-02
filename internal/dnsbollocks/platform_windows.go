@@ -11543,14 +11543,6 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 	return 1 // TRUE (Though os.Exit will usually fire before we ever reach this line)
 }
 
-var reservedNames = map[string]struct{}{
-	"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
-	"COM1": {}, "COM2": {}, "COM3": {}, "COM4": {}, "COM5": {},
-	"COM6": {}, "COM7": {}, "COM8": {}, "COM9": {},
-	"LPT1": {}, "LPT2": {}, "LPT3": {}, "LPT4": {}, "LPT5": {},
-	"LPT6": {}, "LPT7": {}, "LPT8": {}, "LPT9": {},
-}
-
 // resolveConfigTags returns a deep-copied *Config with every {file:...} and
 // {env:...} token in string and []string fields expanded to its real value.
 // The input raw is never mutated; all changes live in the returned copy.
@@ -12413,7 +12405,7 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 	// filepath.Base handles any directory prefix; TrimRight strips trailing
 	// dots and spaces that Windows itself strips before resolving the name.
 	baseName := strings.ToUpper(strings.TrimRight(filepath.Base(cleaned), ". "))
-	if _, reserved := reservedNames[baseName]; reserved {
+	if _, reserved := wincoe.ReservedFileNames[baseName]; reserved {
 		log.Warn("Config filename is a reserved Windows device name; using fallback",
 			slog.String("for_config_key", configKey),
 			slog.String("reserved_filename", cleaned),
@@ -12722,7 +12714,7 @@ func resolveTag(input string) (resolved string, isTag bool, err error) {
 				firstErr = fmt.Errorf("path separators not allowed in {file:...} — must be in same directory: %q", filename)
 				return match
 			}
-			if _, bad := reservedNames[filename]; bad {
+			if _, bad := wincoe.ReservedFileNames[filename]; bad {
 				firstErr = fmt.Errorf("reserved Windows filename original: %q, processed:%q", tagValue, filename)
 				return match
 			}
