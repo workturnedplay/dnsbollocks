@@ -25,13 +25,6 @@ func main() {
 	}
 	inputPath := flag.Arg(0)
 
-	// 1. Check for the flag
-	// // Usage: go run stripper.go --preserve
-	// preserveLines := false
-	// if len(os.Args) > 1 && os.Args[1] == "--preserve-line-numbers" {
-	// preserveLines = true
-	// }
-
 	// 1. Initialize the file set
 	fset := token.NewFileSet()
 
@@ -41,77 +34,6 @@ func main() {
 	if err1 != nil {
 		log.Fatal("Error parsing source:", err1)
 	}
-
-	// //// 3. Strip all comments from the Abstract Syntax Tree
-	// //f.Comments = nil
-	// // Filter the comments
-	// var cleanComments []*ast.CommentGroup
-	// for _, group := range f.Comments {
-	// keepGroup := false
-	// for _, c := range group.List {
-	// txt := strings.TrimSpace(c.Text)
-	// // The fix: Check for both //go: and the older // +build
-	// // and ensure we catch them even if the parser slightly tweaked the string
-	// if strings.Contains(txt, "//go:") || strings.Contains(txt, "// +build") {
-	// keepGroup = true
-	// break
-	// }
-	// }
-
-	// if keepGroup {
-	// cleanComments = append(cleanComments, group)
-	// }
-	// }
-
-	// // // Replace original comments with our filtered list
-	// // f.Comments = cleanComments
-	// for _, group := range f.Comments {
-	// for _, c := range group.List {
-	// // 1. Get the raw text (e.g., "  //  go:generate  ")
-	// raw := c.Text
-
-	// // 2. Left-trim whitespace and the slashes to see the "core"
-	// // This handles "  //  go:..."
-	// core := strings.TrimLeft(raw, " /")
-
-	// // 3. We only care if the core starts with "go:" or is the old build tag
-	// // Note: we don't trim spaces *inside* the core
-	// isDirective := strings.HasPrefix(core, "go:") || strings.HasPrefix(core, "+build")
-
-	// if !isDirective {
-	// // Check if it's a block comment /* ... */
-	// if strings.HasPrefix(c.Text, "/*") {
-	// // Count newlines to keep vertical spacing
-	// lineCount := strings.Count(c.Text, "\n")
-	// if lineCount == 0 {
-	// // Inline block: Keep it on one line!
-	// c.Text = "/*.*/"
-	// } else {
-	// // Multi-line block: Keep the newlines inside the /* */
-	// c.Text = "/*." + strings.Repeat("\n.", lineCount) + "*/"
-	// }
-	// // // We want to keep every newline, but replace everything else
-	// // // This preserves the EXACT shape of the block
-	// // lines := strings.Split(c.Text, "\n")
-	// // for i := range lines {
-	// // if i == 0 {
-	// // lines[i] = "/* ." // Keep start
-	// // } else if i == len(lines)-1 {
-	// // lines[i] = " . */" // Keep end
-	// // } else {
-	// // lines[i] = " . " // Middle lines
-	// // }
-	// // }
-	// // c.Text = strings.Join(lines, "\n")
-	// } else {
-	// // Regular line comment //
-	// c.Text = "//."
-	// }
-	// } else {
-	// // It's a directive! Keep it exactly as it was.
-	// }
-	// }
-	// }
 
 	// 2. Logic Selection
 	if *preserveLines {
@@ -139,19 +61,11 @@ func main() {
 		output = f
 	}
 
-	// // 4. Create the output file
-	// outFile, err := os.Create("tmpnocomments.go")
-	// if err != nil {
-	// log.Fatal("Error creating file:", err)
-	// }
-	// defer outFile.Close()
-
 	// 5. Format the "clean" AST and write it to the file
 	err1 = format.Node(output, fset, f)
 	if err1 != nil {
-		log.Fatal("Error writing output:", err1)
+		log.Panic("Error writing output:", err1)
 	}
-
 	//println("Success! Comments stripped to .\tmpnocomments.go")
 }
 
@@ -198,7 +112,6 @@ func applyPreserveLogic(f *ast.File) {
 			}
 		}
 	}
-
 }
 
 func applyStripLogic(f *ast.File) {
