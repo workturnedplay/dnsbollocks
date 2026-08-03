@@ -271,7 +271,8 @@ func TestWriteSyncedFile_CreatesAndWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read back written file: %v", err)
 	}
-	if string(got) != string(data) {
+	// if string(got) != string(data) {
+	if !bytes.Equal(got, data) {
 		t.Errorf("content mismatch: got %q, want %q", got, data)
 	}
 }

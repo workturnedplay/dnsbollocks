@@ -1,5 +1,4 @@
-//go:build windows
-// +build windows
+//go:build windows && go1.22
 
 package dnsbollocks
 
@@ -344,7 +343,8 @@ func TestSanitizeAndValidateConfig_CacheMinTTLNotClamped(t *testing.T) {
 	cases := []uint32{0, 1, 9, 10, 11, 300}
 
 	for _, input := range cases {
-		input := input
+		//input := input
+		//Starting in Go 1.22, the language specification changed the semantics of for loops so that each iteration gets its own distinct variable instance. If you are compiling with Go 1.22 or newer, lines like input := input are entirely redundant and can be safely removed.
 		t.Run(fmt.Sprintf("input=%d", input), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -518,7 +518,7 @@ func TestSanitizeAndValidateConfig_GlobalBurstQPS_ClampedToRateWhenBelow(t *test
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -554,7 +554,7 @@ func TestSanitizeAndValidateConfig_ClientBurstQPS_ClampedToRateWhenBelow(t *test
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -594,7 +594,7 @@ func TestSanitizeAndValidateConfig_UpstreamClientTimeoutBelowDial_ClampedToDial(
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -635,7 +635,7 @@ func TestSanitizeAndValidateConfig_MaxIdleConnsPerHostAboveTotal_ClampedToTotal(
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -675,7 +675,7 @@ func TestSanitizeAndValidateConfig_DNSUDPBufferSizeOutOfRange_ClampedToDefault(t
 	}
 
 	for _, tc := range outOfRange {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -702,7 +702,7 @@ func TestSanitizeAndValidateConfig_DNSUDPBufferSizeValidBoundaries_Unchanged(t *
 	valid := []int{512, 513, 1500, 4096, 65534, 65535}
 
 	for _, size := range valid {
-		size := size
+		// size := size
 		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -736,7 +736,7 @@ func TestSanitizeAndValidateConfig_BlockIPInvalid_ReturnsError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -766,7 +766,7 @@ func TestSanitizeAndValidateConfig_BlockIPv6Invalid_ReturnsError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -792,7 +792,7 @@ func TestSanitizeAndValidateConfig_BlockIPandIPv6_ValidValues_ParsedIntoFields(t
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.blockIP+"/"+tc.blockIPv6, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -834,7 +834,7 @@ func TestSanitizeAndValidateConfig_ListenDoHInvalid_ReturnsError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -861,7 +861,7 @@ func TestSanitizeAndValidateConfig_ListenUIInvalid_ReturnsError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -905,7 +905,7 @@ func TestSanitizeAndValidateConfig_ConsoleLogLevelNormalized(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(fmt.Sprintf("%q", tc.input), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -930,7 +930,7 @@ func TestSanitizeAndValidateConfig_ConsoleLogLevelInvalid_ReturnsError(t *testin
 	invalid := []string{"verbose", "trace", "fatal", "off", "all", "none", "x", "z", "ii"}
 
 	for _, level := range invalid {
-		level := level
+		// level := level
 		t.Run(fmt.Sprintf("%q", level), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -963,7 +963,7 @@ func TestSanitizeAndValidateConfig_UpstreamSelectionModeNormalized(t *testing.T)
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(fmt.Sprintf("%q", tc.input), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -988,7 +988,7 @@ func TestSanitizeAndValidateConfig_UpstreamSelectionModeInvalid_ReturnsError(t *
 	invalid := []string{"round_robin", "random", "sticky", "all", "", "fastest2"}
 
 	for _, mode := range invalid {
-		mode := mode
+		// mode := mode
 		t.Run(fmt.Sprintf("%q", mode), func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
