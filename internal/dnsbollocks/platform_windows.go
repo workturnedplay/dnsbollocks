@@ -247,7 +247,7 @@ type Server struct {
 	dohCertMu      sync.RWMutex
 	certGeneration atomic.Uint64
 
-	// Simple stats, TODO.
+	// Simple stats counter (expvar-based); TODO: extend with richer metrics if/when needed.
 	stats *expvar.Int
 
 	// Lifecycle & Concurrency
@@ -2969,7 +2969,18 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 			return nil, nil, false, fmt.Errorf("config file %q not found; refusing to create a new config file with defaults due to running as Admin!"+
 				" because you're likely just in the wrong dir like %%WINDIR%%\\System32\\", cfgFname)
 		}
-		//TODO: shall we notify that a .bak exists ? and if it does then what? stop and suggest renaming? or just warn about it but still create a default ? if we're here we know .powerloss doesn't exist
+
+		// A leftover .bak from a prior SafeWriteFile-based save may mean the real
+		// config.json was accidentally deleted/renamed rather than genuinely
+		// missing for the first time. We don't block startup on it (that would be
+		// too disruptive for what may be a legitimate first-run), but surface it
+		// loudly so the operator notices before we silently create a fresh
+		// defaults file over what might be recoverable state.
+		if _, bakErr := os.Stat(cfgFname + wincoe.BackupFileExtension); bakErr == nil {
+			log.Warn("Config file not found, but a backup file exists; if this is unexpected, restore it before continuing",
+				slog.String("config_file", cfgFname),
+				slog.String("backup_file", cfgFname+wincoe.BackupFileExtension))
+		}
 
 		// not admin, auto create config file with defaults
 		//doneFIXME: make sure it's not found not just don't have read permission (but could have write!)
@@ -3219,7 +3230,7 @@ func isAdminNow() bool {
 }
 
 func getNextLogBackupName(basePath string) (string, error) {
-	const maxNumberOfRotations = 10000 // TODO: should this be config.json configurable? yeah why not, but then if too low then what? wrap-around and overwrite? hmmm, seems like a bad idea.
+	const maxNumberOfRotations = 10000 // Intentionally not config.json-configurable: exposing this invites an operator setting it too low (silent wraparound/overwrite of old rotated logs) for little benefit; the timestamp-suffix fallback below already prevents silent data loss if this cap is ever actually reached.
 	for i := 1; ; i++ {
 		backupName := fmt.Sprintf("%s.%d", basePath, i)
 		if _, err := os.Stat(backupName); os.IsNotExist(err) {
@@ -11301,7 +11312,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					// at the stale, pre-edit cost.
 					tagBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
 					if stagedCost, hasStaged := changes[tagBcryptCost]; hasStaged {
-						if stagedCostFloat, ok := stagedCost.(float64); ok { //TODO: I wonder why we(Gemini 3.1 Pro) used float64 here instead of say int64?!
+						if stagedCostFloat, ok := stagedCost.(float64); ok { // encoding/json always decodes JSON numbers into interface{} as float64; there is no int64 alternative to have chosen here.
 							stagedCostInt := int(stagedCostFloat)
 							cost = getValidBcryptCost(stagedCostInt, ui.getConfig().WebUIPasswordBcryptCost)
 							if cost != stagedCostInt {
@@ -12212,7 +12223,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	case "block_ip", "ipblock", "blockip": //aka aliases
 		resolvedCfg.BlockMode = blockModeIPBlock
-		shouldSaveConfig = true
+		shouldSaveConfig = true //known redundant
 
 	case blockModeDrop:
 		// already canonical
@@ -12232,7 +12243,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 	rawCfg.BlockMode = resolvedCfg.BlockMode
-	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
+	//apparentlynotTODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
 	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
 	// reset to the safe default so the server starts rather than refusing to boot.
