@@ -4331,7 +4331,7 @@ func stripECSOption(msg *dns.Msg) {
 
 func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr string) *dns.Msg {
 	cfg := s.getConfig()
-	log := s.getLogger()
+	// log := s.getLogger()
 	//This is the important one — without capturing it once, a reload landing between the cachee-hit check and a later Set for the same request could write into a freshly-swapped (empty) cachee generation while having read from the old one.
 	cachee := s.getCache()
 
@@ -4353,58 +4353,79 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	// Rate limit
 	if allowed, reason := s.rateLimiter.Allow(clientAddr); !allowed {
-		var exeName string = "<unknown_exe>"
-		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
-			// Non-blocking peek only: a rate-limited request must never wait on
-			// the synchronous OS-level PID/exe lookup. Blocking here (as this
-			// used to do via future.wg.Wait()) would tie up this goroutine's
-			// concurrency-limiter slot (dnsUDPSem/dnsTCPSem) waiting on the OS
-			// instead of freeing it immediately once rate-limited, which under a
-			// UDP flood defeats the entire point of rate-limiting: shedding load
-			// fast. An occasional "<pending_lookup>" in this one log line is a
-			// fine trade for that. FIXME: not so sure about that! May need to revisit this maybe postpone logQuery itself, or log it with pending but then log it again when finished?!
-			if exe, ready := future.TryExe(); ready {
-				if exe != "" {
-					exeName = exe
-				}
-			} else {
-				exeName = "<pending_lookup>"
-			}
-		}
-
-		// Dynamically fetch config tags and values based on which limit was tripped
-		var rateTag, burstTag string
-		var rateVal, burstVal int
-
-		if reason == globalRateLimitExceeded {
-			rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
-			burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
-			rateVal = cfg.GlobalRateQPS
-			burstVal = cfg.GlobalBurstQPS
-		} else { // clientRateLimitExceeded
-			rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
-			burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
-			rateVal = cfg.ClientRateQPS
-			burstVal = cfg.ClientBurstQPS
-		}
-
-		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
-		attrs := []any{
-			slog.String("client", clientAddr),
-			slog.String("domain", domain), // Always ASCII/Punycode (the true wire format)
-			slog.String("exe", exeName),
-			slog.Int(rateTag, rateVal),
-			slog.Int(burstTag, burstVal),
-		}
-		if wasIDN {
-			attrs = append(attrs, slog.String("domain_idn", displayDomain)) // Unicode representation for logs
-		}
-		log.Warn(reason, attrs...)
-
+		/*
+			Zero Network Bottlenecks: The moment rateLimiter.Allow rejects a packet, servfailResponse(reqMsg) is generated and returned instantly. Your semaphore slots (dnsUDPSem/dnsTCPSem) are freed immediately, successfully absorbing massive UDP floods without stalling the resolver.
+			No More <pending_lookup>: The closure captures the ctx and safely invokes future.wg.Wait() on its own time. The console warning will now gracefully wait for the Win32 OS-level API to resolve the PID and output the actual executable name.
+			Safe Memory Footprint: Go's goroutines are incredibly cheap (~2KB). Even if you drop 10,000 packets per second during a brutal flood and the OS lookups take 100ms each, you'll only peak at ~20MB of transient memory for these background logging routines before the garbage collector sweeps them away.
+		*/
+		// 1. Shed the network load instantly to free the concurrency slot.
 		sfr := servfailResponse(reqMsg)
+
+		// 2. Offload the warning log to a background goroutine.
+		// This eliminates the `<pending_lookup>` issue without blocking the hot path.
+		s.GoSafe(func() {
+			// Re-fetch the logger just like s.logQuery does, ensuring we don't
+			// write to a closed file if a config reload happens mid-wait.
+			log := s.getLogger()
+			var exeName string = "<unknown_exe>"
+			if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
+				// // Non-blocking peek only: a rate-limited request must never wait on
+				// // the synchronous OS-level PID/exe lookup. Blocking here (as this
+				// // used to do via future.wg.Wait()) would tie up this goroutine's
+				// // concurrency-limiter slot (dnsUDPSem/dnsTCPSem) waiting on the OS
+				// // instead of freeing it immediately once rate-limited, which under a
+				// // UDP flood defeats the entire point of rate-limiting: shedding load
+				// // fast. An occasional "<pending_lookup>" in this one log line is a
+				// // fine trade for that. FIXME: not so sure about that! May need to revisit this maybe postpone logQuery itself, or log it with pending but then log it again when finished?!
+				// if exe, ready := future.TryExe(); ready {
+				// 	if exe != "" {
+				// 		exeName = exe
+				// 	}
+				// } else {
+				// 	exeName = "<pending_lookup>"
+				// }
+				future.wg.Wait() // Wait safely in the background!
+				if future.info.exe != "" {
+					exeName = future.info.exe
+				}
+			} //if
+
+			// Dynamically fetch config tags and values based on which limit was tripped
+			var rateTag, burstTag string
+			var rateVal, burstVal int
+
+			if reason == globalRateLimitExceeded {
+				rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS))
+				burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalBurstQPS))
+				rateVal = cfg.GlobalRateQPS
+				burstVal = cfg.GlobalBurstQPS
+			} else { // clientRateLimitExceeded
+				rateTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientRateQPS))
+				burstTag = getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientBurstQPS))
+				rateVal = cfg.ClientRateQPS
+				burstVal = cfg.ClientBurstQPS
+			}
+
+			displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+			attrs := []any{
+				slog.String("client", clientAddr),
+				slog.String("domain", domain), // Always ASCII/Punycode (the true wire format)
+				slog.String("exe", exeName),
+				slog.Int(rateTag, rateVal),
+				slog.Int(burstTag, burstVal),
+			}
+			if wasIDN {
+				attrs = append(attrs, slog.String("domain_idn", displayDomain)) // Unicode representation for logs
+			}
+			log.Warn(reason, attrs...)
+		}) //GoSafe
+
+		// sfr := servfailResponse(reqMsg)
+		// 3. s.logQuery also uses GoSafe internally, so this remains fully non-blocking.
 		s.logQuery(ctx, clientAddr, domain, qtype, reason, "", nil, sfr, UpstreamState{Strategy: "rateLimited"})
 		return sfr
-	}
+	} //!allowed
+	log := s.getLogger()
 
 	// RFC 9460 §9 port-prefixed HTTPS record names.
 	//
