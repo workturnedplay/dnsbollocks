@@ -438,7 +438,7 @@ func TestSanitizeAndValidateConfig_WebUIIdleTimeoutClampedToDoubleRead(t *testin
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()
@@ -477,7 +477,7 @@ func TestSanitizeAndValidateConfig_LocalDoHIdleTimeoutClampedToDoubleRead(t *tes
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()

@@ -66,7 +66,7 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.
 				panicked = true
 			}
 		}()
-		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0644) //nolint:errcheck // on purpose
+		_ = fw.SafeWriteFile(targetFile, []byte("new"), 0600) //nolint:errcheck // on purpose
 	}()
 
 	// Reset permissions so t.TempDir() cleanup doesn't fail on a read-only file
@@ -166,7 +166,7 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveFails_TruncateSucceeds(
 	defer restoreHooks()
 	dir := t.TempDir()
 	targetFile := filepath.Join(dir, "config.json")
-	wrErr := os.WriteFile(targetFile, []byte("old"), 0644)
+	wrErr := os.WriteFile(targetFile, []byte("old"), 0600)
 	if wrErr != nil {
 		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
 	}
@@ -184,7 +184,7 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveFails_TruncateSucceeds(
 	liveLogger.Store(discardLogger())
 	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
 
-	err := fw.SafeWriteFile(targetFile, []byte("new"), 0644)
+	err := fw.SafeWriteFile(targetFile, []byte("new"), 0600)
 	if err != nil {
 		t.Fatalf("Expected fallback to succeed despite remove failure, got: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails(t *testing.T) {
 	fw := wincoe.NewWin11SafeFileWriter(true, 1, 10, &liveLogger)
 
 	// Rename fails -> should drop to Truncate fallback and create the file
-	err := fw.SafeWriteFile(targetFile, []byte("data"), 0644)
+	err := fw.SafeWriteFile(targetFile, []byte("data"), 0600)
 	if err != nil {
 		t.Fatalf("Expected fallback to succeed, got: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSafeFileWriter(t *testing.T) {
 
 	// --- Test 1: Normal Write ---
 	data := []byte(`{"status": "ok"}`)
-	err := fw.SafeWriteFile(targetFile, data, 0644)
+	err := fw.SafeWriteFile(targetFile, data, 0600)
 	if err != nil {
 		t.Fatalf("SafeWriteFile failed: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestSafeFileWriter(t *testing.T) {
 
 	// --- Test 4: CheckPowerLossFile (Empty Staging File) ---
 	// Truncate to 0 bytes - it should log a warning but NOT panic
-	wrErr := os.WriteFile(powerLossFile, []byte(""), 0644)
+	wrErr := os.WriteFile(powerLossFile, []byte(""), 0600)
 	if wrErr != nil {
 		t.Errorf("WriteFile failed so tests will fail, err: %v", wrErr)
 	}
@@ -324,7 +324,7 @@ func TestSafeFileWriter(t *testing.T) {
 	// --- Test 5: ExtraSafety OFF ---
 	fw.SetExtraSafety(false)
 	newData := []byte(`{"status": "updated"}`)
-	err = fw.SafeWriteFile(targetFile, newData, 0644)
+	err = fw.SafeWriteFile(targetFile, newData, 0600)
 	if err != nil {
 		t.Fatalf("SafeWriteFile failed with ExtraSafety off: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 		data := fmt.Appendf(nil, `{"iteration": %d}`, i)
 		// var data []byte
 		// data = fmt.Appendf(data, `{"iteration": %d}`, i)
-		if err := fw.SafeWriteFile(targetFile, data, 0644); err != nil {
+		if err := fw.SafeWriteFile(targetFile, data, 0600); err != nil {
 			t.Fatalf("write %d failed: %v", i, err)
 		}
 
@@ -386,7 +386,7 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 			defer wg.Done()
 			//data := []byte(fmt.Sprintf(`{"writer": %d}`, n))
 			data := fmt.Appendf(nil, `{"writer": %d}`, n)
-			if err := fw.SafeWriteFile(targetFile, data, 0644); err != nil {
+			if err := fw.SafeWriteFile(targetFile, data, 0600); err != nil {
 				errCh <- fmt.Errorf("goroutine %d: %w", n, err)
 			}
 		}(i)
@@ -421,7 +421,7 @@ func TestSafeFileWriter_ExtraSafetyOff_NoStagingFileCreated(t *testing.T) {
 	liveLogger.Store(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	fw := wincoe.NewWin11SafeFileWriter(false, 6, 100, &liveLogger)
 
-	if err := fw.SafeWriteFile(targetFile, []byte(`{"ok":true}`), 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, []byte(`{"ok":true}`), 0600); err != nil {
 		t.Fatalf("SafeWriteFile failed: %v", err)
 	}
 
@@ -440,7 +440,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	fw := wincoe.NewWin11SafeFileWriter(false, 6, 100, &liveLogger)
 
 	// --- OFF → write → no staging ---
-	if err := fw.SafeWriteFile(targetFile, []byte(`{"v":1}`), 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, []byte(`{"v":1}`), 0600); err != nil {
 		t.Fatalf("write with ExtraSafety OFF failed: %v", err)
 	}
 	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
@@ -450,7 +450,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	// --- toggle ON → write → staging cleaned up ---
 	fw.SetExtraSafety(true)
 	data2 := []byte(`{"v":2}`)
-	if err := fw.SafeWriteFile(targetFile, data2, 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, data2, 0600); err != nil {
 		t.Fatalf("write with ExtraSafety ON failed: %v", err)
 	}
 	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
@@ -467,7 +467,7 @@ func TestSafeFileWriter_SetExtraSafety_Toggle(t *testing.T) {
 	// --- toggle OFF again → staging must not reappear ---
 	fw.SetExtraSafety(false)
 	data3 := []byte(`{"v":3}`)
-	if err := fw.SafeWriteFile(targetFile, data3, 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, data3, 0600); err != nil {
 		t.Fatalf("write after second toggle failed: %v", err)
 	}
 	if _, err := os.Stat(targetFile + wincoe.PowerlossFileExtension); !os.IsNotExist(err) {
@@ -530,7 +530,7 @@ func TestWin11SafeFileWriter_PreexistingEmptyStagingFile_IsReclaimedAndWriteSucc
 	liveLogger.Store(discardLogger())
 	fw := wincoe.NewWin11SafeFileWriter(true, 3, 10, &liveLogger)
 
-	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0600); err != nil {
 		t.Fatalf("expected write to succeed by reclaiming the empty staging file, got: %v", err)
 	}
 
@@ -569,7 +569,7 @@ func TestSafeWriteFile_RefusesNonEmptyPreexistingStagingFile(t *testing.T) {
 	// SafeWriteFile must still succeed overall (it falls back to the
 	// in-place truncation path for the real target file), but the
 	// pre-existing staging file's content must be left completely untouched.
-	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0644); err != nil {
+	if err := fw.SafeWriteFile(targetFile, []byte("new"), 0600); err != nil {
 		t.Fatalf("expected fallback write to succeed despite refusing the staging file, got: %v", err)
 	}
 
