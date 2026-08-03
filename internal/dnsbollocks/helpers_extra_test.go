@@ -225,11 +225,11 @@ func TestRetryFileOp_ExhaustsAllAttempts(t *testing.T) {
 func TestTruncateStagingFileToZero_Success(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "staging.tmp")
-	if err := os.WriteFile(path, []byte("some leftover garbage data"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("some leftover garbage data"), 0600); err != nil {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
-	if err := wincoe.TruncateStagingFileToZero(path, 0644); err != nil {
+	if err := wincoe.TruncateStagingFileToZero(path, 0600); err != nil {
 		t.Fatalf("truncateStagingFileToZero failed: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestTruncateStagingFileToZero_NonexistentFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "does-not-exist.tmp")
 
-	err := wincoe.TruncateStagingFileToZero(path, 0644)
+	err := wincoe.TruncateStagingFileToZero(path, 0600)
 	if err == nil {
 		t.Fatal("expected error for nonexistent staging file, got nil")
 	}
@@ -262,7 +262,7 @@ func TestWriteSyncedFile_CreatesAndWrites(t *testing.T) {
 	path := filepath.Join(dir, "out.txt")
 	data := []byte("hello synced world")
 
-	err := wincoe.WriteSyncedFile(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	err := wincoe.WriteSyncedFile(path, data, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		t.Fatalf("writeSyncedFile failed: %v", err)
 	}
@@ -281,10 +281,10 @@ func TestWriteSyncedFile_TruncatesExistingContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.txt")
 
-	if err := wincoe.WriteSyncedFile(path, []byte("first longer payload here"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
+	if err := wincoe.WriteSyncedFile(path, []byte("first longer payload here"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err != nil {
 		t.Fatalf("first write failed: %v", err)
 	}
-	if err := wincoe.WriteSyncedFile(path, []byte("short"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
+	if err := wincoe.WriteSyncedFile(path, []byte("short"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600); err != nil {
 		t.Fatalf("second write failed: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestWriteSyncedFile_OpenFailure(t *testing.T) {
 	// Parent directory component doesn't exist -> OpenFile must fail.
 	path := filepath.Join(dir, "nonexistent-subdir", "out.txt")
 
-	err := wincoe.WriteSyncedFile(path, []byte("data"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	err := wincoe.WriteSyncedFile(path, []byte("data"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err == nil {
 		t.Fatal("expected error for missing parent directory, got nil")
 	}
@@ -554,7 +554,7 @@ func TestGetNextLogBackupName_Sequential(t *testing.T) {
 		t.Fatalf("expected %q, got %q", base+".1", first)
 	}
 
-	if err := os.WriteFile(first, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(first, []byte("x"), 0600); err != nil {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
@@ -566,7 +566,7 @@ func TestGetNextLogBackupName_Sequential(t *testing.T) {
 		t.Fatalf("expected %q, got %q", base+".2", second)
 	}
 
-	if err := os.WriteFile(second, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(second, []byte("x"), 0600); err != nil {
 		t.Fatalf("setup write failed: %v", err)
 	}
 
