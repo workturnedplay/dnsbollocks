@@ -1,0 +1,45 @@
+{
+  "telemetry.telemetryLevel": "off",
+  "workbench.enableExperiments": false,
+  "workbench.settings.enableNaturalLanguageSearch": true,
+  "extensions.autoUpdate": false,
+  "extensions.autoCheckUpdates": false,
+  "update.mode": "none",
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "[go]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "never"
+    }
+  },
+  "go.lintTool": "golangci-lint-v2",
+  "go.lintOnSave": "package",
+  "gopls": {
+    "diagnosticsDelay": "0s",
+    "analyses": {
+      "unsafeptr": true,
+      "printf": true,
+      "shadow": true
+    },
+  },
+  "go.lintFlags": [
+  ],
+  "go.vetOnSave": "off",
+  "go.useLanguageServer": true,
+  "telemetry.editStats.enabled": false,
+  "telemetry.feedback.enabled": false,
+  "go.showWelcome": false,
+  "go.survey.prompt": false,
+  "go.toolsManagement.checkForUpdates": "off",
+  "go.trace.server": "off",
+  "go.alternateTools": {},
+  "git.openRepositoryInParentFolders": "never",
+	/* 
+	"go.trace.server":
+		"off" (Recommended): This completely silences the communication log. This is the default and best for performance and disk space.
+		"messages": Only logs the headers of the communication. Still mostly useless unless you're debugging.
+		"verbose": The "Disk Killer" mode you just escaped.
+	*/
+	//Actually, you can use comments! Even though standard JSON doesn't allow them, VS Code uses JSONC (JSON with Comments) for its configuration files. Both // and /* */ style comments.
+}

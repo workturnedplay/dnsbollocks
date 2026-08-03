@@ -1,0 +1,9 @@
+ie. this is this dir:
+c:\vscode\VSCode-win32-x64-1.109.5\
+where Code.exe is!
+
+these files contain the global settings
+they're overridden by
+../.vscode/settings.json
+from repo dir
+
