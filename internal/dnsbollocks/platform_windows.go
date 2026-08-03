@@ -2157,39 +2157,39 @@ type loginRecord struct {
 	lockedUntil time.Time // zero value means no active lockout
 }
 
-// ---- old slow way
-var dnsNameRE = regexp.MustCompile(
-	`^(?i)([a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?$`,
-)
+// // ---- old slow way
+// var dnsNameRE = regexp.MustCompile(
+// 	`^(?i)([a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?\.)*[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9_])?$`,
+// )
 
-func isValidDNSName1(s string) bool {
-	if len(s) == 0 || len(s) > 253 {
-		return false
-	}
-	return dnsNameRE.MatchString(s)
-}
+// func isValidDNSName1(s string) bool {
+// 	if len(s) == 0 || len(s) > 253 {
+// 		return false
+// 	}
+// 	return dnsNameRE.MatchString(s)
+// }
 
-// sanitizeDomainInput removes any characters not explicitly allowed.
-// Safe for logs and DNS-related handling.
-func sanitizeDomainInput1(input string) (sanitized string, modified bool) {
-	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
+// // sanitizeDomainInput removes any characters not explicitly allowed.
+// // Safe for logs and DNS-related handling.
+// func sanitizeDomainInput1(input string) (sanitized string, modified bool) {
+// 	const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-{}*!?_"
 
-	var b strings.Builder
-	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
+// 	var b strings.Builder
+// 	b.Grow(len(input)) // safe over-allocation, but done only one allocation not more than once as it could happen without it.
 
-	for _, r := range input {
-		if strings.ContainsRune(allowed, r) {
-			b.WriteRune(r)
-		}
-	}
+// 	for _, r := range input {
+// 		if strings.ContainsRune(allowed, r) {
+// 			b.WriteRune(r)
+// 		}
+// 	}
 
-	sanitized = b.String()
-	modified = sanitized != input
-	// Uses named returns — do not return explicit values. like: return "something", modified
-	return
-}
+// 	sanitized = b.String()
+// 	modified = sanitized != input
+// 	// Uses named returns — do not return explicit values. like: return "something", modified
+// 	return
+// }
 
-// ---- END of --- old slow way
+// // ---- END of --- old slow way
 
 // Helper for the fast-path parser
 func isLetterOrDigit(c byte) bool {
@@ -3266,113 +3266,113 @@ func panic2(msg string) {
 	panic(msg)
 }
 
-// it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
-func matchPattern1(pattern, name string) bool {
-	if !isLowerASCII(pattern) {
-		panic2("BUG: pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
-	}
-	if !isLowerASCII(name) {
-		panic2("BUG: name was " + name + " which isn't lowercased, so bad coding somewhere!")
-	}
+// // it's assumed that pattern and name are already lowercase(d) or uppercase(d), if not they won't match due to char case difference.
+// func matchPattern1(pattern, name string) bool {
+// 	if !isLowerASCII(pattern) {
+// 		panic2("BUG: pattern was " + pattern + " which isn't lowercased, so bad coding somewhere!")
+// 	}
+// 	if !isLowerASCII(name) {
+// 		panic2("BUG: name was " + name + " which isn't lowercased, so bad coding somewhere!")
+// 	}
 
-	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
-	return recursiveMatch1(pattern, name)
-}
+// 	// Fallback to recursive matching for other tokens ({*}, *, ?, !, literal text)
+// 	return recursiveMatch1(pattern, name)
+// }
 
-// recursiveMatch1 handles all tokens recursively.
-func recursiveMatch1(pattern, name string) bool {
-	for len(pattern) > 0 {
-		switch {
-		case strings.HasPrefix(pattern, "{**}"):
-			// consume 1+ chars including dots
-			pattern = pattern[4:]
-			if len(name) < 1 {
-				return false
-			}
-			for i := 1; i <= len(name); i++ {
-				if recursiveMatch1(pattern, name[i:]) {
-					return true
-				}
-			}
-			return false
+// // recursiveMatch1 handles all tokens recursively.
+// func recursiveMatch1(pattern, name string) bool {
+// 	for len(pattern) > 0 {
+// 		switch {
+// 		case strings.HasPrefix(pattern, "{**}"):
+// 			// consume 1+ chars including dots
+// 			pattern = pattern[4:]
+// 			if len(name) < 1 {
+// 				return false
+// 			}
+// 			for i := 1; i <= len(name); i++ {
+// 				if recursiveMatch1(pattern, name[i:]) {
+// 					return true
+// 				}
+// 			}
+// 			return false
 
-		case strings.HasPrefix(pattern, "**"):
-			// consume 0+ chars including dots
-			pattern = pattern[2:]
-			if len(name) == 0 {
-				return recursiveMatch1(pattern, "")
-			}
-			for i := 0; i <= len(name); i++ {
-				if recursiveMatch1(pattern, name[i:]) {
-					return true
-				}
-			}
-			return false
+// 		case strings.HasPrefix(pattern, "**"):
+// 			// consume 0+ chars including dots
+// 			pattern = pattern[2:]
+// 			if len(name) == 0 {
+// 				return recursiveMatch1(pattern, "")
+// 			}
+// 			for i := 0; i <= len(name); i++ {
+// 				if recursiveMatch1(pattern, name[i:]) {
+// 					return true
+// 				}
+// 			}
+// 			return false
 
-		case strings.HasPrefix(pattern, "{*}"):
-			// consume 1+ chars, stop at dot
-			pattern = pattern[3:]
-			max3 := 0
-			for j := 0; j < len(name) && name[j] != '.'; j++ {
-				max3 = j + 1
-			}
-			if max3 < 1 {
-				return false
-			}
-			for i := 1; i <= max3; i++ {
-				if recursiveMatch1(pattern, name[i:]) {
-					return true
-				}
-			}
-			return false
+// 		case strings.HasPrefix(pattern, "{*}"):
+// 			// consume 1+ chars, stop at dot
+// 			pattern = pattern[3:]
+// 			max3 := 0
+// 			for j := 0; j < len(name) && name[j] != '.'; j++ {
+// 				max3 = j + 1
+// 			}
+// 			if max3 < 1 {
+// 				return false
+// 			}
+// 			for i := 1; i <= max3; i++ {
+// 				if recursiveMatch1(pattern, name[i:]) {
+// 					return true
+// 				}
+// 			}
+// 			return false
 
-		case strings.HasPrefix(pattern, "*"):
-			// consume 0+ chars, stop at dot
-			pattern = pattern[1:]
-			if len(name) == 0 {
-				return recursiveMatch1(pattern, "")
-			}
-			for i := 0; i <= len(name); i++ {
-				if i < len(name) && name[i] == '.' {
-					if recursiveMatch1(pattern, name[i:]) {
-						return true
-					}
-					break
-				}
-				if recursiveMatch1(pattern, name[i:]) {
-					return true
-				}
-			}
-			return false
+// 		case strings.HasPrefix(pattern, "*"):
+// 			// consume 0+ chars, stop at dot
+// 			pattern = pattern[1:]
+// 			if len(name) == 0 {
+// 				return recursiveMatch1(pattern, "")
+// 			}
+// 			for i := 0; i <= len(name); i++ {
+// 				if i < len(name) && name[i] == '.' {
+// 					if recursiveMatch1(pattern, name[i:]) {
+// 						return true
+// 					}
+// 					break
+// 				}
+// 				if recursiveMatch1(pattern, name[i:]) {
+// 					return true
+// 				}
+// 			}
+// 			return false
 
-		case strings.HasPrefix(pattern, "?"):
-			// consume exactly 1 char, not dot
-			if len(name) == 0 || name[0] == '.' {
-				return false
-			}
-			pattern = pattern[1:]
-			name = name[1:]
+// 		case strings.HasPrefix(pattern, "?"):
+// 			// consume exactly 1 char, not dot
+// 			if len(name) == 0 || name[0] == '.' {
+// 				return false
+// 			}
+// 			pattern = pattern[1:]
+// 			name = name[1:]
 
-		case strings.HasPrefix(pattern, "!"):
-			// consume exactly 1 char, any
-			if len(name) == 0 {
-				return false
-			}
-			pattern = pattern[1:]
-			name = name[1:]
+// 		case strings.HasPrefix(pattern, "!"):
+// 			// consume exactly 1 char, any
+// 			if len(name) == 0 {
+// 				return false
+// 			}
+// 			pattern = pattern[1:]
+// 			name = name[1:]
 
-		default:
-			// literal char match
-			if len(name) == 0 || pattern[0] != name[0] {
-				return false
-			}
-			pattern = pattern[1:]
-			name = name[1:]
-		}
-	}
+// 		default:
+// 			// literal char match
+// 			if len(name) == 0 || pattern[0] != name[0] {
+// 				return false
+// 			}
+// 			pattern = pattern[1:]
+// 			name = name[1:]
+// 		}
+// 	}
 
-	return len(name) == 0
-}
+// 	return len(name) == 0
+// }
 
 type tokenKind int
 
@@ -11758,18 +11758,18 @@ func clampIntField(log *slog.Logger, tag string, resolved, raw *int, invalid fun
 	return true
 }
 
-// clampUint32Field mirrors clampIntField for the two uint32 TTL fields
-// (BlockedResponseTTLSec, LocalHostsOverrideTTLSec).
-func clampUint32Field(log *slog.Logger, tag string, resolved, raw *uint32, invalid func(uint32) bool, fallback uint32, msgSuffix string) bool {
-	was := *resolved
-	if !invalid(was) {
-		return false
-	}
-	*resolved = fallback
-	*raw = fallback
-	log.Warn(tag+" clamped"+msgSuffix, slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
-	return true
-}
+// // clampUint32Field mirrors clampIntField for the two uint32 TTL fields
+// // (BlockedResponseTTLSec, LocalHostsOverrideTTLSec).
+// func clampUint32Field(log *slog.Logger, tag string, resolved, raw *uint32, invalid func(uint32) bool, fallback uint32, msgSuffix string) bool {
+// 	was := *resolved
+// 	if !invalid(was) {
+// 		return false
+// 	}
+// 	*resolved = fallback
+// 	*raw = fallback
+// 	log.Warn(tag+" clamped"+msgSuffix, slog.Uint64("was", uint64(was)), slog.Uint64("clamp", uint64(fallback)))
+// 	return true
+// }
 
 // sanitizeAndValidateConfig handles validation, clamping, and cleaning of configuration fields.
 
