@@ -37,8 +37,8 @@ const (
 )
 
 var (
-	user32               = syscall.NewLazyDLL("user32.dll")
-	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	user32 = syscall.NewLazyDLL("user32.dll")
+	// kernel32             = syscall.NewLazyDLL("kernel32.dll")
 	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
 	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
 	procDispatchMessageW = user32.NewProc("DispatchMessageW")
@@ -48,7 +48,7 @@ var (
 	procRegisterClassExW = user32.NewProc("RegisterClassExW")
 	procSetTimer         = user32.NewProc("SetTimer")
 	procEnableWindow     = user32.NewProc("EnableWindow")
-	procSetWindowTextW   = user32.NewProc("SetWindowTextW")
+	// procSetWindowTextW   = user32.NewProc("SetWindowTextW")
 	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 )
 

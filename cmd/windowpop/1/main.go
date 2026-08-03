@@ -39,20 +39,20 @@ const (
 )
 
 var (
-	user32                   = syscall.NewLazyDLL("user32.dll")
-	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
-	procCreateWindowExW      = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW       = user32.NewProc("DefWindowProcW")
-	procDispatchMessageW     = user32.NewProc("DispatchMessageW")
-	procGetMessageW          = user32.NewProc("GetMessageW")
-	procPostQuitMessage      = user32.NewProc("PostQuitMessage")
-	procRegisterClassExW     = user32.NewProc("RegisterClassExW")
-	procSetTimer             = user32.NewProc("SetTimer")
-	procEnableWindow         = user32.NewProc("EnableWindow")
-	procSetWindowTextW       = user32.NewProc("SetWindowTextW")
-	procGetSystemMetrics     = user32.NewProc("GetSystemMetrics")
-	procShowWindow           = user32.NewProc("ShowWindow")
-	procUpdateWindow         = user32.NewProc("UpdateWindow")
+	user32 = syscall.NewLazyDLL("user32.dll")
+	// kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
+	procDispatchMessageW = user32.NewProc("DispatchMessageW")
+	procGetMessageW      = user32.NewProc("GetMessageW")
+	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
+	procRegisterClassExW = user32.NewProc("RegisterClassExW")
+	procSetTimer         = user32.NewProc("SetTimer")
+	procEnableWindow     = user32.NewProc("EnableWindow")
+	procSetWindowTextW   = user32.NewProc("SetWindowTextW")
+	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
+	procShowWindow       = user32.NewProc("ShowWindow")
+	procUpdateWindow     = user32.NewProc("UpdateWindow")
 )
 
 type WNDCLASSEX struct {
@@ -80,18 +80,17 @@ type MSG struct {
 }
 
 var (
-	resultChan      chan Decision
-	buttonsEnabled  bool
-	textLabel       uintptr
-	buttonAllow     uintptr
-	buttonDeny      uintptr
-	buttonLookup    uintptr
-	buttonIgnore    uintptr
+	resultChan     chan Decision
+	buttonsEnabled bool
+	textLabel      uintptr
+	buttonAllow    uintptr
+	buttonDeny     uintptr
+	buttonLookup   uintptr
+	buttonIgnore   uintptr
 )
 
 func wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
-
 	case WM_TIMER:
 		enableButtons(true)
 		return 0
