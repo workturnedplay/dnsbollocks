@@ -111,6 +111,9 @@ rem but this is supposed to be v2 so like: golangci-lint has version 2.12.3-0.20
 "%lintexe%" --color always config verify
 if errorlevel 1 goto :fail
 
+echo Running %lintexe% run !LINT_MOD_FLAG! on dnsbollocks only
+"%lintexe%" --color always run !LINT_MOD_FLAG! .\internal\dnsbollocks\ .\cmd\dnsbollocks\
+if errorlevel 1 goto :fail
 echo Running %lintexe% run !LINT_MOD_FLAG! ./...
 "%lintexe%" --color always run !LINT_MOD_FLAG! ./...
 if errorlevel 1 goto :fail
