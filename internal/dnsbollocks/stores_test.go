@@ -53,8 +53,8 @@ func TestLoginTracker(t *testing.T) {
 
 func TestBlacklistStore(t *testing.T) {
 	store := newBlacklistStore()
-	_, cidr1, _ := net.ParseCIDR("10.0.0.0/8")
-	_, cidr2, _ := net.ParseCIDR("192.168.1.0/24")
+	_, cidr1, _ := net.ParseCIDR("10.0.0.0/8")     //nolint:errcheck // literal, always-valid CIDR
+	_, cidr2, _ := net.ParseCIDR("192.168.1.0/24") //nolint:errcheck // literal, always-valid CIDR
 
 	// 1. Test TryAdd
 	if added := store.TryAdd(cidr1); !added || store.Len() != 1 {
@@ -149,7 +149,9 @@ func TestHostStore(t *testing.T) {
 	}
 
 	// 4. Test Edit
-	store.EditHost("router.local", "router.home", []net.IP{net.ParseIP("192.168.1.2")})
+	if err := store.EditHost("router.local", "router.home", []net.IP{net.ParseIP("192.168.1.2")}); err != nil {
+		t.Fatalf("EditHost failed: %v", err)
+	}
 	_, match = store.Match("router.local")
 	if match {
 		t.Errorf("Expected old pattern 'router.local' to be deleted after edit")

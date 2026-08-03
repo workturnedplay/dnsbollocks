@@ -707,7 +707,7 @@ func TestAdminUI_CSRFMiddleware(t *testing.T) {
 		formData.Set("csrf_token", fixated)
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(formData.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: fixated})
+		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: fixated}) //nolint:gosec // simulating an attacker-planted cookie in a test; security attributes are irrelevant here
 		h.ServeHTTP(rec, req)
 
 		if called {

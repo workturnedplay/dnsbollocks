@@ -6718,14 +6718,16 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 
 		if err != nil || cookie.Value == "" || !verifyCSRFToken(cookie.Value, ui.csrfSecret) {
 			token = newCSRFToken(ui.csrfSecret)
-			http.SetCookie(w, &http.Cookie{
-				Name:     cookieName,
-				Value:    token,
-				Path:     "/",
-				HttpOnly: true, // Prevent client-side JS from reading the cookie
-				SameSite: http.SameSiteStrictMode,
-				Secure:   r.TLS != nil, // <-- Zero configuration dependency! //doneFIXME: actually use some other thing that tells me whether we're doing this listening over https or http on the currently running server, else if I just change the config before I relisten the server this might go from true to false if i changed from https to http, even tho it's still https until the relisten happens.
-			})
+			http.SetCookie(w,
+				//nolint:gosec // G124: HttpOnly and SameSite are set below; Secure is intentionally conditional on r.TLS to support both HTTP and HTTPS listeners without separate config
+				&http.Cookie{
+					Name:     cookieName,
+					Value:    token,
+					Path:     "/",
+					HttpOnly: true, // Prevent client-side JS from reading the cookie
+					SameSite: http.SameSiteStrictMode,
+					Secure:   r.TLS != nil, // <-- Zero configuration dependency! //doneFIXME: actually use some other thing that tells me whether we're doing this listening over https or http on the currently running server, else if I just change the config before I relisten the server this might go from true to false if i changed from https to http, even tho it's still https until the relisten happens.
+				})
 		} else {
 			token = cookie.Value
 		}
@@ -9992,7 +9994,7 @@ type rwTimeoutConn struct {
 
 func (c *rwTimeoutConn) Read(b []byte) (int, error) {
 	if c.readTimeout > 0 {
-		if err := c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout)); err != nil {
+		if err := c.SetReadDeadline(time.Now().Add(c.readTimeout)); err != nil {
 			return 0, fmt.Errorf("failed to set read deadline (%d) on upstream conn: %w", c.readTimeout, err)
 		}
 	}
@@ -10005,7 +10007,7 @@ func (c *rwTimeoutConn) Read(b []byte) (int, error) {
 
 func (c *rwTimeoutConn) Write(b []byte) (int, error) {
 	if c.writeTimeout > 0 {
-		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+		if err := c.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
 			// Return 0 bytes written and wrap the error so the caller knows exactly what failed
 			return 0, fmt.Errorf("failed to set write deadline (%d) on upstream conn, err: %w", c.writeTimeout, err)
 		}

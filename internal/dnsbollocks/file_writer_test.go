@@ -39,7 +39,7 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_CatastrophicPanic(t *testing.
 	}
 
 	// MOCK 1: ReplaceFile fails
-	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
+	wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
 		return fmt.Errorf("mock ReplaceFileW failure")
 	}
 
@@ -88,7 +88,7 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *test
 	// Target does NOT exist -> triggers initial os.Rename path
 
 	// MOCK 1: Rename fails AND sabotages the file
-	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
+	wincoe.OsRenameFunc = func(oldpath, _ string) error {
 		// THE FIX: Make read-only here so the subsequent truncate attempt crashes.
 		chmodErr := os.Chmod(oldpath, 0400)
 		if chmodErr != nil {
@@ -97,7 +97,7 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails_CatastrophicPanic(t *test
 		return fmt.Errorf("mock os.Rename failure")
 	}
 	// MOCK 2: Remove fails
-	wincoe.OsRemoveFunc = func(name string) error {
+	wincoe.OsRemoveFunc = func(_ string) error {
 		return fmt.Errorf("mock os.Remove failure")
 	}
 
@@ -138,7 +138,7 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveSucceeds(t *testing.T) 
 	}
 
 	// MOCK: ReplaceFile fails, simulating ACL issues or locked backups
-	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
+	wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
 		return fmt.Errorf("mock ReplaceFileW failure")
 	}
 
@@ -172,11 +172,11 @@ func TestWin11SafeFileWriter_Mock_ReplaceFileFails_RemoveFails_TruncateSucceeds(
 	}
 
 	// MOCK 1: ReplaceFile fails
-	wincoe.ReplaceFileFunc = func(replaced, replacement, backup string, flags uint32) error {
+	wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
 		return fmt.Errorf("mock ReplaceFileW failure")
 	}
 	// MOCK 2: Deleting staging file fails
-	wincoe.OsRemoveFunc = func(name string) error {
+	wincoe.OsRemoveFunc = func(_ string) error {
 		return fmt.Errorf("mock os.Remove failure")
 	}
 
@@ -208,7 +208,7 @@ func TestWin11SafeFileWriter_Mock_FirstBootRenameFails(t *testing.T) {
 	// Target does NOT exist -> triggers initial os.Rename path
 
 	// MOCK: Rename fails
-	wincoe.OsRenameFunc = func(oldpath, newpath string) error {
+	wincoe.OsRenameFunc = func(_, _ string) error {
 		return fmt.Errorf("mock os.Rename failure")
 	}
 

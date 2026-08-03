@@ -99,7 +99,7 @@ func TestAsyncLogWriter_WriteNeverBlocksCallerEvenWhenUnderlyingStalls(t *testin
 		// Flood well past the queue capacity; every single call must return
 		// immediately regardless of the drain goroutine being stuck.
 		for i := 0; i < asyncLogWriterQueueCapacity*2; i++ {
-			_, _ = w.Write([]byte("x"))
+			_, _ = w.Write([]byte("x")) //nolint:errcheck // AsyncLogWriter.Write never returns a non-nil error by design
 		}
 	}()
 
@@ -124,7 +124,7 @@ func TestAsyncLogWriter_CloseIsIdempotentAndSafeAfterConcurrentWrite(t *testing.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
-			_, _ = w.Write([]byte("x"))
+			_, _ = w.Write([]byte("x")) //nolint:errcheck // AsyncLogWriter.Write never returns a non-nil error by design
 		}
 	}()
 

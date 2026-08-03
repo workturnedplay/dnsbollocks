@@ -31,7 +31,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // createMockUpstream creates an Upstream configured with a specific RoundTripper behavior.
 func createMockUpstream(u string, logger *slog.Logger, handler func(*http.Request) (*http.Response, error)) Upstream {
-	parsedURL, _ := url.Parse(u)
+	parsedURL, _ := url.Parse(u) //nolint:errcheck // u is always a valid httptest server URL in these tests
 	var liveLogger atomic.Pointer[slog.Logger]
 	//liveLogger.Store(slog.Default())
 	liveLogger.Store(logger) // Store the passed-in logger instead of default
@@ -53,7 +53,7 @@ func makeDoHResponse() *http.Response {
 	msg := new(dns.Msg)
 	msg.Id = 1234
 	msg.Rcode = dns.RcodeSuccess
-	b, _ := msg.Pack()
+	b, _ := msg.Pack() //nolint:errcheck // a minimal, valid dns.Msg can never fail to pack
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

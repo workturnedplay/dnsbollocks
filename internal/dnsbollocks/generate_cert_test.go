@@ -25,7 +25,11 @@ func TestGenerateCertIfNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to change working directory: %v", err)
 	}
-	defer os.Chdir(originalWD) // Ensure we go back after the test
+	defer func() { // Ensure we go back after the test
+		if err2 := os.Chdir(originalWD); err2 != nil {
+			t.Errorf("failed to restore original working directory: %v", err2)
+		}
+	}()
 
 	// Helper to create a basic server instance
 	newTestServer := func(dohAddr, uiAddr string, delPrevCerts bool) *Server {

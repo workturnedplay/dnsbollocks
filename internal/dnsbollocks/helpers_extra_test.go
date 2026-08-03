@@ -146,7 +146,7 @@ func TestRetryFileOp_PanicsOnInvalidMaxAttempts(t *testing.T) {
 			t.Error("expected panic for maxAttempts < 1, got none")
 		}
 	}()
-	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil })
+	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil }) //nolint:errcheck // call is expected to panic before returning
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -166,7 +166,7 @@ func TestRetryFileOp_PanicOnZeroAttempts(t *testing.T) {
 	}()
 
 	// Passing 0 should trigger the safety guardrail panic
-	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil })
+	_ = wincoe.RetryFileOp(0, time.Millisecond, func() error { return nil }) //nolint:errcheck // call is expected to panic before returning
 }
 
 func TestRetryFileOp_SuccessOnFirstTry(t *testing.T) {
@@ -212,7 +212,7 @@ func TestRetryFileOp_ExhaustsAllAttempts(t *testing.T) {
 		return expectedErr
 	})
 
-	if err != expectedErr {
+	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected to return last error %v, got %v", expectedErr, err)
 	}
 	if calls != 4 {

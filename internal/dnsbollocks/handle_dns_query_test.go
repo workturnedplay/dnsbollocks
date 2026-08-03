@@ -847,7 +847,7 @@ func TestHandleDNSQuery_Forward_AllIPsBlacklisted_BlockResponse(t *testing.T) {
 	s := newQueryTestServer(t, defaultConfig(), fwd)
 	addWhitelistRule(t, s, "A", "example.com")
 
-	_, cidr, _ := net.ParseCIDR("203.0.113.0/24")
+	_, cidr, _ := net.ParseCIDR("203.0.113.0/24") //nolint:errcheck // literal, always-valid CIDR
 	s.blacklist.TryAdd(cidr)
 
 	resp := s.handleDNSQuery(context.Background(), aQuery("example.com"), testClient)
@@ -890,7 +890,7 @@ func TestHandleDNSQuery_Forward_PartialFilter_ReturnsOnlyCleanIPs(t *testing.T) 
 	s := newQueryTestServer(t, defaultConfig(), fwd)
 	addWhitelistRule(t, s, "A", "example.com")
 
-	_, cidr, _ := net.ParseCIDR("203.0.113.0/24")
+	_, cidr, _ := net.ParseCIDR("203.0.113.0/24") //nolint:errcheck // literal, always-valid CIDR
 	s.blacklist.TryAdd(cidr)
 
 	resp := s.handleDNSQuery(context.Background(), aQuery("example.com"), testClient)

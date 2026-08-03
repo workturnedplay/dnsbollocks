@@ -5,14 +5,11 @@ package dnsbollocks
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/url"
-	//"os"
-
-	//"strings"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -364,7 +361,7 @@ func createDummyDNSMsg(domain, answerIP string) *dns.Msg {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
 	if answerIP != "" {
-		rr, _ := dns.NewRR(fmt.Sprintf("%s A %s", dns.Fqdn(domain), answerIP))
+		rr, _ := dns.NewRR(fmt.Sprintf("%s A %s", dns.Fqdn(domain), answerIP)) //nolint:errcheck // format always produces a valid RR in these tests
 		msg.Answer = append(msg.Answer, rr)
 	}
 	return msg

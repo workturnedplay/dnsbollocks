@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -359,6 +360,20 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 	var literalsFound int
 	// var configVarName string
 
+	// fset := token.NewFileSet()
+
+	// _, thisFile, _, ok := runtime.Caller(0)
+	// if !ok {
+	// 	t.Fatal("runtime.Caller failed")
+	// }
+
+	// pkg, err := parser.ParseDir(fset, filepath.Dir(thisFile), nil, 0)
+	// if err != nil {
+	// 	t.Fatal(err)
+	// }
+	// // Every exported Config field that should be initialized.
+	// expected := make(map[string]struct{})
+
 	fset := token.NewFileSet()
 
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -366,9 +381,24 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 
-	pkg, err := parser.ParseDir(fset, filepath.Dir(thisFile), nil, 0)
+	// parser.ParseDir is deprecated (doesn't consider build tags); since this
+	// package is windows-only and never has mixed-build-tag ambiguity here,
+	// parse every .go file in the directory individually instead.
+	dir := filepath.Dir(thisFile)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var files []*ast.File
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, 0)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		files = append(files, file)
 	}
 	// Every exported Config field that should be initialized.
 	expected := make(map[string]struct{})
@@ -387,113 +417,43 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 
 	initialized := make(map[string]struct{})
 	foundDefaultConfig := false
-	for _, p := range pkg {
-		for _, file := range p.Files {
-			if foundDefaultConfig {
-				break
+	for _, file := range files {
+		if foundDefaultConfig {
+			break
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "defaultConfig" {
+				return true
 			}
-			ast.Inspect(file, func(n ast.Node) bool {
-				fn, ok := n.(*ast.FuncDecl)
-				if !ok || fn.Name.Name != "defaultConfig" {
-					return true
-				}
-				foundDefaultConfig = true
+			foundDefaultConfig = true
 
-				var configVarName string
+			var configVarName string
 
-				for _, stmt := range fn.Body.List {
-					switch s := stmt.(type) {
-					case *ast.AssignStmt:
-						// cfg := Config{...}
-						if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
-							lhs, lok := s.Lhs[0].(*ast.Ident)
-							cl, rok := s.Rhs[0].(*ast.CompositeLit)
+			for _, stmt := range fn.Body.List {
+				switch s := stmt.(type) {
+				case *ast.AssignStmt:
+					// cfg := Config{...}
+					if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+						lhs, lok := s.Lhs[0].(*ast.Ident)
+						cl, rok := s.Rhs[0].(*ast.CompositeLit)
 
-							if lok && rok {
-								switch typ := cl.Type.(type) {
-								case *ast.Ident:
-									if typ.Name != "Config" {
-										break
-									}
-								case *ast.SelectorExpr:
-									if typ.Sel.Name != "Config" {
-										break
-									}
-								default:
-									break
-								}
-
-								literalsFound++
-								configVarName = lhs.Name
-
-								for _, elt := range cl.Elts {
-									kv, ok := elt.(*ast.KeyValueExpr)
-									if !ok {
-										t.Fatalf("unexpected non-keyed element in Config literal")
-									}
-
-									key, ok := kv.Key.(*ast.Ident)
-									if !ok {
-										t.Fatalf("unexpected key type %T", kv.Key)
-									}
-
-									initialized[key.Name] = struct{}{}
-								}
-
-								continue
-							}
-						}
-
-						// cfg.SomeField = ...
-						if configVarName != "" {
-							for _, lhs := range s.Lhs {
-								sel, ok := lhs.(*ast.SelectorExpr)
-								if !ok {
-									continue
-								}
-
-								obj, ok := sel.X.(*ast.Ident)
-								if !ok || obj.Name != configVarName {
-									continue
-								}
-
-								initialized[sel.Sel.Name] = struct{}{}
-							}
-						}
-
-					case *ast.DeclStmt:
-						// var cfg = Config{...}
-						gen, ok := s.Decl.(*ast.GenDecl)
-						if !ok || gen.Tok != token.VAR {
-							continue
-						}
-
-						for _, spec := range gen.Specs {
-							vs, ok := spec.(*ast.ValueSpec)
-							if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
-								continue
-							}
-
-							cl, ok := vs.Values[0].(*ast.CompositeLit)
-							if !ok {
-								continue
-							}
-
+						if lok && rok {
 							switch typ := cl.Type.(type) {
 							case *ast.Ident:
 								if typ.Name != "Config" {
-									continue
+									break
 								}
 							case *ast.SelectorExpr:
 								if typ.Sel.Name != "Config" {
-									continue
+									break
 								}
 							default:
-								continue
+								break
 							}
 
 							literalsFound++
-							configVarName = vs.Names[0].Name
+							configVarName = lhs.Name
 
 							for _, elt := range cl.Elts {
 								kv, ok := elt.(*ast.KeyValueExpr)
@@ -508,12 +468,80 @@ func TestDefaultConfig_InitializesEveryConfigField(t *testing.T) {
 
 								initialized[key.Name] = struct{}{}
 							}
+
+							continue
+						}
+					}
+
+					// cfg.SomeField = ...
+					if configVarName != "" {
+						for _, lhs := range s.Lhs {
+							sel, ok := lhs.(*ast.SelectorExpr)
+							if !ok {
+								continue
+							}
+
+							obj, ok := sel.X.(*ast.Ident)
+							if !ok || obj.Name != configVarName {
+								continue
+							}
+
+							initialized[sel.Sel.Name] = struct{}{}
+						}
+					}
+
+				case *ast.DeclStmt:
+					// var cfg = Config{...}
+					gen, ok := s.Decl.(*ast.GenDecl)
+					if !ok || gen.Tok != token.VAR {
+						continue
+					}
+
+					for _, spec := range gen.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
+						if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+							continue
+						}
+
+						cl, ok := vs.Values[0].(*ast.CompositeLit)
+						if !ok {
+							continue
+						}
+
+						switch typ := cl.Type.(type) {
+						case *ast.Ident:
+							if typ.Name != "Config" {
+								continue
+							}
+						case *ast.SelectorExpr:
+							if typ.Sel.Name != "Config" {
+								continue
+							}
+						default:
+							continue
+						}
+
+						literalsFound++
+						configVarName = vs.Names[0].Name
+
+						for _, elt := range cl.Elts {
+							kv, ok := elt.(*ast.KeyValueExpr)
+							if !ok {
+								t.Fatalf("unexpected non-keyed element in Config literal")
+							}
+
+							key, ok := kv.Key.(*ast.Ident)
+							if !ok {
+								t.Fatalf("unexpected key type %T", kv.Key)
+							}
+
+							initialized[key.Name] = struct{}{}
 						}
 					}
 				}
-				return false // no need to inspect any other functions
-			})
-		}
+			}
+			return false // no need to inspect any other functions
+		})
 	}
 	if literalsFound != 1 {
 		t.Fatalf("expected exactly one Config composite literal in defaultConfig(), found %d", literalsFound)
@@ -547,6 +575,7 @@ func TestConfigCloneReferenceFieldCoverage(t *testing.T) {
 	for i := range typ.NumField() {
 		field := typ.Field(i)
 
+		//nolint:exhaustive // intentionally only checking reference-type kinds; all other kinds are value types and irrelevant here
 		switch field.Type.Kind() {
 		case reflect.Slice,
 			reflect.Map,
@@ -576,6 +605,7 @@ func TestConfigCloneReferenceFieldListHasNoStaleEntries(t *testing.T) {
 	for i := range typ.NumField() {
 		field := typ.Field(i)
 
+		//nolint:exhaustive // intentionally only checking reference-type kinds; all other kinds are value types and irrelevant here
 		switch field.Type.Kind() {
 		case reflect.Slice,
 			reflect.Map,

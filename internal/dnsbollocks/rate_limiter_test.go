@@ -4,11 +4,9 @@
 package dnsbollocks
 
 import (
-	//"context"
 	"fmt"
 	"io"
 	"log/slog"
-	//"os"
 	"testing"
 )
 
