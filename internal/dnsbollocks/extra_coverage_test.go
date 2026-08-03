@@ -442,7 +442,7 @@ func TestLoginTracker_LRUEvictionBoundsMemory(t *testing.T) {
 func TestClientRateLimiter_UpdateConfig(t *testing.T) {
 	logger := discardLogger()
 	cfg := RateLimitConfig{GlobalQPS: 100, GlobalBurst: 100, ClientQPS: 1, ClientBurst: 1}
-	rl := newClientRateLimiter(t.Context(), cfg, logger)
+	rl := newClientRateLimiter( /*t.Context(), */ cfg, logger)
 
 	client := "192.0.2.50:1234"
 	allowed, _ := rl.Allow(client)

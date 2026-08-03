@@ -161,7 +161,7 @@ func TestValidateRulePattern2(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
+		// tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -745,8 +745,8 @@ func TestSanitizeAndValidateConfig_BlockModeLowercased(t *testing.T) {
 
 	// Today this normalization doesn't request a save.
 	// If that ever changes intentionally, update this expectation.
-	if modified {
-		t.Fatal("expected modified=false")
+	if !modified {
+		t.Fatalf("expected modified=true because it changed from mixed case %s into lowercase %s", cfg.BlockMode, want)
 	}
 }
 

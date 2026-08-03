@@ -282,7 +282,7 @@ func TestRuleStore_UpdateRule_EmptyID_Panics(t *testing.T) {
 			t.Error("expected panic for empty ID, got none")
 		}
 	}()
-	//nolint:errcheck
+	//nolint:errcheck // don't care
 	rs.UpdateRule("", "A", "example.com", true, log)
 }
 

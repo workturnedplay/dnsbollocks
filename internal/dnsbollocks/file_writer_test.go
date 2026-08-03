@@ -345,7 +345,10 @@ func TestSafeFileWriter_SequentialWrites(t *testing.T) {
 	stagingFile := targetFile + wincoe.PowerlossFileExtension
 
 	for i := range 5 {
-		data := []byte(fmt.Sprintf(`{"iteration": %d}`, i))
+		// data := []byte(fmt.Sprintf(`{"iteration": %d}`, i))
+		data := fmt.Appendf(nil, `{"iteration": %d}`, i)
+		// var data []byte
+		// data = fmt.Appendf(data, `{"iteration": %d}`, i)
 		if err := fw.SafeWriteFile(targetFile, data, 0644); err != nil {
 			t.Fatalf("write %d failed: %v", i, err)
 		}
@@ -381,7 +384,8 @@ func TestSafeFileWriter_ConcurrentWrites(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			data := []byte(fmt.Sprintf(`{"writer": %d}`, n))
+			//data := []byte(fmt.Sprintf(`{"writer": %d}`, n))
+			data := fmt.Appendf(nil, `{"writer": %d}`, n)
 			if err := fw.SafeWriteFile(targetFile, data, 0644); err != nil {
 				errCh <- fmt.Errorf("goroutine %d: %w", n, err)
 			}

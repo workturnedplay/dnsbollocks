@@ -247,7 +247,7 @@ type Server struct {
 	dohCertMu      sync.RWMutex
 	certGeneration atomic.Uint64
 
-	// Simple stats, FIXME.
+	// Simple stats, TODO.
 	stats *expvar.Int
 
 	// Lifecycle & Concurrency
@@ -2501,7 +2501,7 @@ func (s *Server) Reload() {
 	log = s.getLogger() // Grab the newly initialized logger
 
 	// Update the fileWriter with the newly loaded safety parameters instantly
-	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //TODO: make these 2 lines into a helper function and call that here and in the other place
+	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //TODO: make these 2 lines into a helper function in FileWriter or Runtime and call that here and in the other place!
 	s.rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
 
 	if needsSave {
@@ -2644,7 +2644,7 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 		panic2("BUG: unreachable")
 	}
 
-	s.rateLimiter = newClientRateLimiter(s.ctx, rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
+	s.rateLimiter = newClientRateLimiter( /*s.ctx, */ rateLimitConfigFrom(*cfg /*it's a copy, not pointer to live*/), log)
 	log.Debug("Rate limiter initialized")
 
 	s.swapDNSTCPSemaphore(cfg.MaxConcurrentDNSTCPConns)
@@ -2766,7 +2766,7 @@ func OldMain() {
 	wincoe.SetBugLogger(localLogger)
 	wincoe.Logger.Store(localLogger)
 
-	// go func() {//TODO: get this back but maybe every 5 minutes or 10 or 1? but see to properly shut it down tho.
+	// go func() {//doneTODO: get this back but maybe every 5 minutes or 10 or 1? but see to properly shut it down tho.
 	//     ticker := time.NewTicker(5 * time.Second)
 	//     defer ticker.Stop()
 	//     for range ticker.C {
@@ -3219,7 +3219,7 @@ func isAdminNow() bool {
 }
 
 func getNextLogBackupName(basePath string) (string, error) {
-	const maxNumberOfRotations = 10000 // TODO: should this be config.json configurable? yeah why not
+	const maxNumberOfRotations = 10000 // TODO: should this be config.json configurable? yeah why not, but then if too low then what? wrap-around and overwrite? hmmm, seems like a bad idea.
 	for i := 1; ; i++ {
 		backupName := fmt.Sprintf("%s.%d", basePath, i)
 		if _, err := os.Stat(backupName); os.IsNotExist(err) {
@@ -3444,7 +3444,7 @@ func matchPattern(pattern, name string) bool {
 		// directly-constructed oversized name reaching here would otherwise
 		// crash the whole server — treat it as a non-match instead: no rule
 		// pattern can ever legitimately need to match a name this long anyway.
-		wincoe.GetBugLogger().Warn(fmt.Sprintf("the DNS name %q is %d chars long which is > 253", name, numChars)) //TODO: log this somehow, might need a dedicated bugs.log file in addition to wherever panic2 logs them
+		wincoe.GetBugLogger().Warn(fmt.Sprintf("the DNS name %q is %d chars long which is > 253", name, numChars)) //goodenoughTODO: log this somehow, might need a dedicated bugs.log file in addition to wherever panic2 logs them
 		return false
 	}
 	// We only need two rows to track matching states across token iterations.
@@ -4419,7 +4419,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	//}
 
-	//log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain)) //TODO: remove, this was temporary!
+	//log.Debug(fmt.Sprintf("Checking host-override match for %q (type %q), original query %q", baseDomainForHostMatch, qtype, domain)) //okTODO: remove, this was temporary!
 
 	// Local host overrides in /hosts are authoritative on their own and never
 	// gated behind the /rules whitelist: gating them would either let a stale
@@ -5232,7 +5232,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 
 	port := u.URL.Port()
 	if port == "" {
-		//TODO: replace all panics with logFatal() ?
+		//TODO: replace all panics with logFatal() ? or maybe not, gotta think more about this, for one logFatail isn't as obvious that it panics.
 		panic2("BUG: dev fail: port is empty but shoulda been set in validateUpstream() to 443")
 	}
 	addr := net.JoinHostPort(u.URL.Hostname(), port)
@@ -7576,7 +7576,7 @@ func withRuleRemovedAt(entries []RuleEntry, index int, logger *slog.Logger) []Ru
 
 	// Copy everything after the index
 	copy(newEntries[index:], entries[index+1:])
-	if logger != nil { //TODO: many other places need this guard, so maybe make helper ?
+	if logger != nil { //TODO: many other places need this guard, so maybe make helper ? and if it is nil log to stderr?!
 		logger.Debug("Deleted rule", slog.Any("rule", entries[index])) // XXX: slog.Any is no longer forbidden for this struct
 	}
 	return newEntries
@@ -8963,8 +8963,8 @@ type ClientRateLimiter struct {
 	cache   map[string]*list.Element
 }
 
-func newClientRateLimiter(ctx context.Context, cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
-	_ = ctx //TODO: because Context is no longer needed since we dropped the background janitor, remove it as arg?!
+func newClientRateLimiter(cfg RateLimitConfig, logger *slog.Logger) *ClientRateLimiter {
+	//_ = ctx //doneTODO: because Context is no longer needed since we dropped the background janitor, remove it as arg?!
 	return &ClientRateLimiter{
 		global:  rate.NewLimiter(rate.Limit(cfg.GlobalQPS), cfg.GlobalBurst),
 		cfg:     cfg,
@@ -10535,7 +10535,7 @@ func (s *Server) initAdminUI() {
 	)
 	// WebUI-request rate limiting, independent of the DNS-query rate limiter
 	// (s.rateLimiter) and of loginTracker (which only throttles failed logins).
-	ui.rateLimiter = newClientRateLimiter(s.ctx, webUIRateLimitConfigFrom(*s.getConfig()), s.getLogger())
+	ui.rateLimiter = newClientRateLimiter( /*s.ctx, */ webUIRateLimitConfigFrom(*s.getConfig()), s.getLogger())
 
 	// Wire up the side-effects
 	ui.OnSaveWhitelist = s.saveQueryWhitelist
@@ -12200,8 +12200,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	}
 	rawCfg.ConsoleLogLevel = resolvedCfg.ConsoleLogLevel
 
-	resolvedCfg.BlockMode = strings.ToLower(resolvedCfg.BlockMode) //XXX: lowercasing this for future comparisons to be easier!
-	//TODO: ^ if changed, then shouldSaveConfig = true
+	origBlockMode := resolvedCfg.BlockMode
+	resolvedCfg.BlockMode = strings.ToLower(origBlockMode) //XXX: lowercasing this for future comparisons to be easier!
+	//doneTODO: ^ if changed compared to original!, then shouldSaveConfig = true
 	switch resolvedCfg.BlockMode {
 	case blockModeNXDOMAIN:
 		// already canonical
@@ -12226,14 +12227,18 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		)
 		log.Error(msg, slog.String("blockmode", resolvedCfg.BlockMode))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
+	} //switch
+	if resolvedCfg.BlockMode != origBlockMode {
+		shouldSaveConfig = true
 	}
 	rawCfg.BlockMode = resolvedCfg.BlockMode
 	//TODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
 	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
 	// reset to the safe default so the server starts rather than refusing to boot.
-	resolvedCfg.UpstreamSelectionMode = strings.ToLower(strings.TrimSpace(resolvedCfg.UpstreamSelectionMode))
-	//TODO: ^ if changed, then shouldSaveConfig = true
+	origUpstreamSelectionMode := resolvedCfg.UpstreamSelectionMode
+	resolvedCfg.UpstreamSelectionMode = strings.ToLower(strings.TrimSpace(origUpstreamSelectionMode))
+	//doneTODO: ^ if changed, then shouldSaveConfig = true
 	switch resolvedCfg.UpstreamSelectionMode {
 	case upstreamSelectionModeFastest, upstreamSelectionModeFailover, upstreamSelectionModeStrict:
 		// valid — no action required
@@ -12247,6 +12252,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		)
 		log.Error(msg, slog.String("upstream_selection_mode", resolvedCfg.UpstreamSelectionMode))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
+	}
+	if origUpstreamSelectionMode != resolvedCfg.UpstreamSelectionMode {
+		shouldSaveConfig = true
 	}
 	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
 

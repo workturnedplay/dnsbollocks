@@ -410,7 +410,7 @@ func TestAdjustResponseCaseToQuery_NoMatchLeavesRecordsUntouched(t *testing.T) {
 	}
 }
 
-func TestAdjustResponseCaseToQuery_NilAndEmptyInputsAreSafe(t *testing.T) {
+func TestAdjustResponseCaseToQuery_NilAndEmptyInputsAreSafe(_ *testing.T) {
 	req := &dns.Msg{
 		Question: []dns.Question{{Name: "example.com."}},
 	}

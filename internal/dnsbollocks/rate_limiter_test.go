@@ -28,7 +28,7 @@ func TestClientRateLimiter_Allow(t *testing.T) {
 	// defer cancel() // <--- This cleanly shuts down the janitor goroutine when the test ends
 	// rl := newClientRateLimiter(ctx, cfg, logger)
 	// Modern Go 1.24+ approach: No manual context creation or defer cancel() required!
-	rl := newClientRateLimiter(t.Context(), cfg, logger)
+	rl := newClientRateLimiter( /*t.Context(), */ cfg, logger)
 
 	// Test 1: Client burst limit
 	clientA := "192.168.1.10:53421"

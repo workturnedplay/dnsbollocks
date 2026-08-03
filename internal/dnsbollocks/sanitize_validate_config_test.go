@@ -211,7 +211,7 @@ func TestSanitizeAndValidateConfig_ZeroLimitsClamped(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+		// tc := tc
 		t.Run(tc.field, func(t *testing.T) {
 			t.Parallel()
 			cfg := defaultConfig()

@@ -201,7 +201,6 @@ func TestLifecycleManagement(t *testing.T) {
 	if set21 == set3 {
 		t.Fatalf("expected activeSet to be different than before")
 	}
-
 }
 
 // Test 1: Verify that a wired shutdown handler triggers successfully and halts control flow
@@ -326,7 +325,7 @@ func TestUpstreamManager_BuildSet_ValidationFailureShutdown(t *testing.T) {
 	um.InitDoHClients()
 }
 
-func TestUpstreamManager_ConcurrentReInitAndForward(t *testing.T) {
+func TestUpstreamManager_ConcurrentReInitAndForward(_ *testing.T) {
 	// This test is intentionally light because Go's race detector will catch
 	// most issues when run with -race. We just exercise the hot path.
 	cfg := Config{
@@ -361,7 +360,7 @@ func TestUpstreamManager_ConcurrentReInitAndForward(t *testing.T) {
 }
 
 // createDummyDNSMsg creates a basic valid DNS message for testing
-func createDummyDNSMsg(domain string, answerIP string) *dns.Msg {
+func createDummyDNSMsg(domain, answerIP string) *dns.Msg {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
 	if answerIP != "" {
