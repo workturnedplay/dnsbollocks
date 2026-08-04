@@ -2538,6 +2538,34 @@ func (s *Server) Reload() {
 	// initial config load; toggling hide_console via the WebUI updates
 	// config.json but requires a full process restart to take effect.
 
+	// // Actually: ok nvm this is a bad idea below, stderr is used by logs and stuff.
+	// // Handle dynamic hide_console toggles
+	// if oldCfg.HideConsole != cfgNew.HideConsole {
+	// 	if cfgNew.HideConsole {
+	// 		if wincoe.HasConsole() {
+	// 			log.Info(configKeyNameForHideConsole + " toggled to true; detaching from the console immediately.")
+	// 			if freeErr := wincoe.FreeConsole(); freeErr != nil {
+	// 				log.Warn(configKeyNameForHideConsole+": FreeConsole failed", wincoe.SafeErr(freeErr))
+	// 			}
+	// 		} else {
+	// 			log.Debug(configKeyNameForHideConsole + " toggled to true; but already not having a console(due to a prev. setting or built this way), so nothing to do.")
+	// 		}
+	// 	} else {
+	// 		log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. Note: showing a hidden console again requires a full process restart to take effect.", configKeyNameForHideConsole))
+	// 	}
+	// }
+	if oldCfg.HideConsole != cfgNew.HideConsole {
+		if cfgNew.HideConsole {
+			if wincoe.HasConsole() {
+				log.Warn(configKeyNameForHideConsole + " toggled to true; but this setting only has effect after restart! so the console is still shown/kept as is until you restart!")
+			} else {
+				log.Debug(configKeyNameForHideConsole + " toggled to true; but already not having a console(due to a prev. setting or built this way), so nothing to do.")
+			}
+		} else {
+			log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. Note: showing a hidden console again requires a full process restart to take effect.", configKeyNameForHideConsole))
+		}
+	}
+
 	newCacheState := struct{ Janitor, Max int }{
 		cfgNew.CacheJanitorIntervalMinutes,
 		cfgNew.CacheMaxEntries,
@@ -10812,7 +10840,10 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 		slog.String("url", fmt.Sprintf("%s://%s", scheme, boundAddr)),
 	)
 
-	log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")
+	// ONLY log interactive controls if there is an actual console to type them into
+	if wincoe.HasConsole() {
+		log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")
+	}
 
 	return inst, nil
 }

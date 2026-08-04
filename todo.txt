@@ -1,10 +1,6 @@
 my todos:
 
-* maybe we can run it as a new process while the current process exits, when hide_console is toggled during Reload() ? this way, there wouldn't be a need to run it from a .lnk anymore when hide_console is false, because running it from a .bat makes it hang until process exits no matter what.
-
-* don't say this `log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")` when hide_console or more generically, when have no console.
-
-* say that hide_console setting after Reload() has effect only after restart, say it at Reload() time on console.
+* maybe we can run it as a new process while the current process exits, when hide_console is toggled during Reload() ? this way, there wouldn't be a need to run it from a .lnk anymore when hide_console is false, because running it from a .bat makes it hang until process exits no matter what. Maybe stopping everything (or at least listeners first) then spawning the new process with the inherited stdout/err/in then cleanly exiting the old process, might work? or exiting the old process and at the very end spawning the new, so that nothing else the old would output would intertwine with the newly run process' output, just in case.
 
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
@@ -58,3 +54,7 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 //didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
+
+//* don't say this `log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")` when hide_console or more generically, when have no console.
+
+//* say/log that hide_console setting after Reload() has effect only after restart, say it at Reload() time on console.
