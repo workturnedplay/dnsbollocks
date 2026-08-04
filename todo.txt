@@ -1,5 +1,7 @@
 my todos:
 
+* maybe we can run it as a new process while the current process exits, when hide_console is toggled during Reload() ? this way, there wouldn't be a need to run it from a .lnk anymore when hide_console is false, because running it from a .bat makes it hang until process exits no matter what.
+
 * don't say this `log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")` when hide_console or more generically, when have no console.
 
 * say that hide_console setting after Reload() has effect only after restart, say it at Reload() time on console.
