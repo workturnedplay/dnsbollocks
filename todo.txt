@@ -1,5 +1,9 @@
 my todos:
 
+* don't say this `log.Info("Interactive controls available: Ctrl+X to clean exit, Ctrl+R to reload config, Ctrl+C to break gracefully")` when hide_console or more generically, when have no console.
+
+* say that hide_console setting after Reload() has effect only after restart, say it at Reload() time on console.
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.

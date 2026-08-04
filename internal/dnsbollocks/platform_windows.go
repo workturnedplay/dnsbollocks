@@ -2896,12 +2896,12 @@ func OldMain() {
 
 	if resolvedCfg.HideConsole {
 		if wincoe.HasConsole() {
-			rt.Logger().Info("hide_console is enabled; detaching from the console now. Further console output will be silently dropped; monitor the configured log files or the WebUI instead.")
+			rt.Logger().Info(configKeyNameForHideConsole + " is enabled; detaching from the console now. Further console output will be silently dropped; monitor the configured log files or the WebUI instead.")
 			if freeErr := wincoe.FreeConsole(); freeErr != nil {
-				rt.Logger().Warn("hide_console: FreeConsole failed; continuing with the console still attached", wincoe.SafeErr(freeErr))
+				rt.Logger().Warn(configKeyNameForHideConsole+": FreeConsole failed; continuing with the console still attached", wincoe.SafeErr(freeErr))
 			}
 		} else {
-			rt.Logger().Debug("hide_console is enabled but no console was attached to begin with (e.g. a -H=windowsgui build); nothing to do")
+			rt.Logger().Debug(configKeyNameForHideConsole + " is enabled but no console was attached to begin with (e.g. a -H=windowsgui build); nothing to do")
 		}
 	}
 
@@ -8626,10 +8626,12 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 	}
 }
 
+var configKeyNameForHideConsole string = getJSONTagByOffset(unsafe.Offsetof(Config{}.HideConsole))
+
 func promptAndHashPassword(logger *slog.Logger, cost int) (string, error) {
 	if !wincoe.HasConsole() {
 		return "", errors.New("cannot prompt for a password interactively: no console is attached to this process " +
-			"(hide_console is enabled, or this is a -H=windowsgui build); set webui_password_hash in config.json " +
+			"(" + configKeyNameForHideConsole + " is enabled, or this is a -H=windowsgui build); set webui_password_hash in config.json " +
 			"beforehand, e.g. by running --hash-password once from a build/run that still has a console")
 	}
 	fd := int(os.Stdin.Fd())
