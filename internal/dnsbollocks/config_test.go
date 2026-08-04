@@ -285,8 +285,8 @@ func TestDefaultConfig_AllJSONFieldsHaveExplicitDefaults(t *testing.T) { //XXX: 
 		struct{}{}
 	*/
 	intentionalZeroDefaults := map[string]struct{}{
-
 		"AllowRunAsAdmin":   {},
+		"HideConsole":       {},
 		"WebUIPasswordHash": {},
 	}
 

@@ -52,4 +52,3 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 //didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
-//* link to Tinywall in readme and to Go lang to install Go.

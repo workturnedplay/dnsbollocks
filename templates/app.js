@@ -1684,7 +1684,7 @@
             });
         }
         
-        // ── Blocks page ───────────────────────────────────────────────────────────
+        // ── Blocks page ─────────────
         // Refresh button navigates to /blocks via GET, bypassing any cached POST state.
         const blocksRefreshBtn = document.querySelector('.js-blocks-refresh-btn');
         if (blocksRefreshBtn) {
@@ -1783,7 +1783,7 @@
             });
         });
         
-        // ── Hosts page ────────────────────────────────────────────────────────────
+        // ── Hosts page ──────────────
         // Edit buttons: pass the button element to editHost() exactly as onclick="editHost(this)" did.
         // Direct binding is safe here because rows are server-rendered; none are added dynamically
         // without a full page reload, so every .js-host-edit button exists at DOMContentLoaded time.
@@ -1899,7 +1899,7 @@
             applyHostsFilter();
         }
         
-        // ── Response-blacklist page ───────────────────────────────────────────────
+        // ── Response-blacklist page ─
         document.querySelectorAll('.js-blacklist-edit').forEach(btn => {
             btn.addEventListener('click', () => editBlacklist(btn));
         });
@@ -2037,7 +2037,7 @@
             updateTableBanner();
         });
         
-        // ── Config page ───────────────────────────────────────────────────────────
+        // ── Config page ─────────────
         // Edit buttons: key lives on the row's data-key, not repeated on the button.
         document.querySelectorAll('.js-config-edit').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2100,7 +2100,24 @@
             applyConfigFilter();
         }
         
-        // ── Logs page ─────────────────────────────────────────────────────────────
+        // ── Stats page: Shutdown ───
+        const shutdownForm = document.querySelector('.js-shutdown-form');
+        if (shutdownForm) {
+            shutdownForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                if (!confirm('Really shut down the dnsbollocks server now? All DNS resolution will stop until it is manually restarted.')) {
+                    return;
+                }
+                (async () => {
+                    const ok = await postAdminForm('/shutdown', { confirm: 'yes' }, 'Failed to shut down');
+                    if (ok) {
+                        alert('Shutdown initiated. The server will stop shortly.');
+                    }
+                })();
+            });
+        }
+        
+        // ── Logs page ───────────────
         // Clear button resets the q field and submits, matching the original
         // onclick="this.form.q.value=''; this.form.submit();" behavior exactly.
         const logsClearBtn = document.querySelector('.js-logs-clear-btn');

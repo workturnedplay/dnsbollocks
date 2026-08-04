@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // helper to spin up a clean AdminUI instance for testing
@@ -123,6 +124,56 @@ func TestAdminUI_RulesHandlerSaveCallback(t *testing.T) {
 		if !callbackFired {
 			t.Error("Expected OnSaveWhitelist callback to fire after adding a rule, but it didn't")
 		}
+	}
+}
+
+func TestAdminUI_ShutdownHandler_RequiresConfirmation(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	shutdownCalled := false
+	ui.OnShutdown = func(_ int) { shutdownCalled = true }
+
+	formData := url.Values{}
+	formData.Set("csrf_token", "mock-token-pass")
+	// deliberately omit "confirm"
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.shutdownHandler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing confirmation, got %d", rec.Code)
+	}
+	if shutdownCalled {
+		t.Error("OnShutdown must not be called without confirmation")
+	}
+}
+
+func TestAdminUI_ShutdownHandler_ConfirmedTriggersShutdownAsync(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	shutdownCh := make(chan int, 1)
+	ui.OnShutdown = func(code int) { shutdownCh <- code }
+
+	formData := url.Values{}
+	formData.Set("csrf_token", "mock-token-pass")
+	formData.Set("confirm", "yes")
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.shutdownHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 immediately (the actual shutdown runs async), got %d", rec.Code)
+	}
+
+	select {
+	case code := <-shutdownCh:
+		if code != 0 {
+			t.Errorf("expected OnShutdown to be called with exit code 0, got %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected OnShutdown to be called asynchronously within 2s, but it wasn't")
 	}
 }
 

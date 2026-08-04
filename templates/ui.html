@@ -410,6 +410,14 @@
     <p>Upstream SNIs: {{.UpstreamSNIs}}</p>
     <p>Upstream IPs: {{.UpstreamIPs}}</p>
 </div>
+
+<h2>Shutdown</h2>
+<p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits). This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.</p>
+<form method="post" action="/shutdown" class="js-shutdown-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit" class="btn-del">Shutdown Server</button>
+</form>
 {{end}}
 
 {{define "config"}}

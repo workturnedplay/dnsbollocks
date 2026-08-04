@@ -129,6 +129,7 @@ type Config struct {
 	ConsoleLogLevel         string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
 	LogMaxSizeMB            int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
 	AllowRunAsAdmin         bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
+	HideConsole             bool   `json:"hide_console" desc:"If true, detaches from the console window entirely at startup (equivalent in effect to a -H=windowsgui build): no console window is shown and no console I/O is possible for the remainder of this run. Interactive features (initial password-setup prompt, Ctrl+R/Ctrl+X/Ctrl+C/Alt+V keyboard shortcuts) become unavailable once detached, so webui_password_hash must already be set beforehand (e.g. run --hash-password once with this off first). Use the WebUI instead: Apply & Reload replaces Ctrl+R, and the Shutdown button on the Stats page replaces Ctrl+X. Logging continues to the configured log files unaffected. Re-checked only at startup, never on reload; toggling this requires a full process restart to take effect."`
 	BlockAAAAasEmptyNoError bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
 	AllowHTTPSIfAAllowed    bool   `json:"allow_https_if_a_allowed"  desc:"If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule."`
 	RemoveHTTPSIPHints      bool   `json:"remove_https_ip_hints"     desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
@@ -1499,6 +1500,7 @@ func defaultConfig() Config {
 		ConsoleLogLevel:             consoleLogLevelInfo,
 		LogMaxSizeMB:                4095, // Rotation threshold
 		AllowRunAsAdmin:             false,
+		HideConsole:                 false,
 		BlockAAAAasEmptyNoError:     true,
 		AllowHTTPSIfAAllowed:        true,
 		RemoveHTTPSIPHints:          true,
@@ -1587,9 +1589,17 @@ func defaultConfig() Config {
 // initBootstrapLogging sets up a colored console-only logger for the earliest messages.
 // Called as the FIRST thing in OldMain, before anything else.
 func initBootstrapLogging(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		panic2("passed nil logger as arg to initBootstrapLogging")
+	}
 	// Use the exact same colored handler you already have (it gracefully falls back if no console)
 	bootstrapLevel := slog.LevelDebug // hard-coded for bootstrap — only ~8 lines anyway
-	logger = slog.New(NewColoredConsoleHandler(bootstrapLevel, logger))
+
+	// Skip the colored console handler entirely when no console is attached
+	// (e.g. a -H=windowsgui build): there is nowhere for it to render.
+	if wincoe.HasConsole() {
+		logger = slog.New(NewColoredConsoleHandler(bootstrapLevel, logger))
+	}
 
 	// This line is now the very first log in the entire program
 	logger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
@@ -1616,10 +1626,17 @@ type ColoredConsoleHandler struct {
 }
 
 func NewColoredConsoleHandler(level slog.Level, logger *slog.Logger) slog.Handler {
-	// Activate Windows VT Processing globally
-	err := wincoe.EnableVirtualTerminalProcessing()
-	if err != nil {
-		logger.Warn("EnableVirtualTerminalProcessing failed", wincoe.SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
+	// Activate Windows VT Processing globally, but only if a console is
+	// actually attached -- attempting this with none (a -H=windowsgui
+	// build, or after hide_console detaches it) always fails and is
+	// pointless overhead on every reinit of this handler (every config
+	// Reload rebuilds it). Callers (initBootstrapLogging,
+	// LoggerManager.ApplyConfig) already skip constructing this handler at
+	// all in that case; this is defense-in-depth for any future call site.
+	if wincoe.HasConsole() {
+		if err := wincoe.EnableVirtualTerminalProcessing(); err != nil {
+			logger.Warn("EnableVirtualTerminalProcessing failed", wincoe.SafeErr(err)) //itwontFIXME: figure out if this would recuse infinitely
+		}
 	}
 
 	var c uint64          // Initialize the shared counter (escapes to heap, doh)
@@ -2512,9 +2529,14 @@ func (s *Server) Reload() {
 
 	cfgNew := s.getConfig()
 	if !cfgNew.AllowRunAsAdmin && isAdmin {
-		s.logFatal2("Exiting: Elevated privileges detected. Rerun without admin or change the config setting.")
+		s.logFatal2("Exiting: Reload() detected elevated privileges. Rerun without admin or change the config setting.")
 		panic2("BUG: unreachable")
 	}
+	// NOTE: cfgNew.HideConsole is intentionally NOT re-checked here (or
+	// anywhere else in Reload()). Detaching the console is a one-way,
+	// boot-time-only step performed once in OldMain right after the
+	// initial config load; toggling hide_console via the WebUI updates
+	// config.json but requires a full process restart to take effect.
 
 	newCacheState := struct{ Janitor, Max int }{
 		cfgNew.CacheJanitorIntervalMinutes,
@@ -2610,9 +2632,19 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 
 	res1 := wincoe.RegisterCtrlHandler(consoleCtrlHandler)
 	if res1.Failed() {
-		s.logFatal("Failed to register Windows console termination handler", res1.Err)
-		panic2("BUG: unreachable")
-		panic(nil)
+		if wincoe.HasConsole() {
+			s.logFatal("Failed to register Windows console termination handler", res1.Err)
+			panic2("BUG: unreachable")
+			panic(nil)
+		} else {
+			// Non-fatal: this must never take down the whole server, most
+			// notably because it can legitimately fail (or simply be moot) when
+			// no console is attached (hide_console, or a -H=windowsgui build)
+			// -- a scenario this handler exists to help with in the first
+			// place. Graceful shutdown is still reachable via SIGINT/SIGTERM
+			// below and, for a headless run, via the WebUI's Shutdown button.
+			log.Warn("Failed to register Windows console termination handler; continuing without it because there's no console", wincoe.SafeErr(res1.Err))
+		}
 	} else {
 		log.Debug("OS console termination handler successfully registered. Handling graceful shutdown for Ctrl+Break as well.")
 	}
@@ -2860,6 +2892,17 @@ func OldMain() {
 		finalShutdownSequence(rt.Logger(), 1, os.Exit, rt.FlushLogsForShutdown)
 	} else {
 		rt.Logger().Info("Config loaded", slog.String("filename", configFileName))
+	}
+
+	if resolvedCfg.HideConsole {
+		if wincoe.HasConsole() {
+			rt.Logger().Info("hide_console is enabled; detaching from the console now. Further console output will be silently dropped; monitor the configured log files or the WebUI instead.")
+			if freeErr := wincoe.FreeConsole(); freeErr != nil {
+				rt.Logger().Warn("hide_console: FreeConsole failed; continuing with the console still attached", wincoe.SafeErr(freeErr))
+			}
+		} else {
+			rt.Logger().Debug("hide_console is enabled but no console was attached to begin with (e.g. a -H=windowsgui build); nothing to do")
+		}
 	}
 
 	// ── 4. Apply the validated config to the Runtime infrastructure ──
@@ -6189,6 +6232,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
 	innerMux.HandleFunc("/logs_queries_simple", ui.logsQueriesSimpleHandler)
 	innerMux.HandleFunc("/config", ui.configHandler)
+	innerMux.HandleFunc("/shutdown", ui.shutdownHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	// Determine cache strategy based on build state
@@ -8583,6 +8627,11 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 }
 
 func promptAndHashPassword(logger *slog.Logger, cost int) (string, error) {
+	if !wincoe.HasConsole() {
+		return "", errors.New("cannot prompt for a password interactively: no console is attached to this process " +
+			"(hide_console is enabled, or this is a -H=windowsgui build); set webui_password_hash in config.json " +
+			"beforehand, e.g. by running --hash-password once from a build/run that still has a console")
+	}
 	fd := int(os.Stdin.Fd())
 
 	// 1. Create a channel to catch the Ctrl+C signal
@@ -11466,6 +11515,57 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
+// shutdownHandler lets an authenticated operator gracefully stop the
+// process from the WebUI. This is the only way to do so for a headless run
+// (see Config.HideConsole), where Ctrl+X/Ctrl+C/Ctrl+Break are physically
+// unreachable since there is no console to receive them.
+func (ui *AdminUI) shutdownHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	log := ui.getLogger()
+
+	if r.Method != http.MethodPost {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
+	if r.FormValue("confirm") != "yes" {
+		log.Warn("WebUI shutdown request rejected: missing confirmation field", slog.String("client", r.RemoteAddr))
+		http.Error(w, "missing confirmation", http.StatusBadRequest)
+		return
+	}
+
+	if ui.OnShutdown == nil {
+		log.Error("BUG: WebUI shutdown requested but no shutdown handler is wired (likely in a test environment)")
+		http.Error(w, "shutdown is not available in this environment", http.StatusServiceUnavailable)
+		return
+	}
+
+	log.Warn("Graceful shutdown requested via WebUI", slog.String("client", r.RemoteAddr))
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.WriteString(w, "Shutting down now. This connection and the WebUI will become unavailable shortly.\n"); err != nil {
+		log.Debug("client disconnected before shutdown acknowledgement write completed", wincoe.SafeErr(err))
+	}
+
+	// Delay slightly and run off this request-handling goroutine so the
+	// response above has a real chance to reach the client before the
+	// WebUI listener (and then the whole process) tears down; OnShutdown
+	// never returns normally (it ends in os.Exit), so it must not run
+	// synchronously here.
+	//
+	// Intentionally a bare `go`, not GoSafe: GoSafe tracks goroutines in
+	// Server.shutdownWG, which s.shutdown() itself waits on -- tracking the
+	// very goroutine that *initiates* shutdown would deadlock.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		ui.OnShutdown(0)
+	}()
+}
+
 func isValidBcryptHash(s string) bool {
 	// A standard bcrypt string is always exactly 60 characters long
 	if len(s) != 60 {
@@ -13336,15 +13436,26 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		Level:       slog.LevelDebug, // full log gets EVERYTHING
 		ReplaceAttr: stripColorTags,  // Strips tags safely for files
 	})
-	consoleH := NewColoredConsoleHandler(consoleLevel, log) // now uses the real config level
 	queryH := queryFilterHandler{
 		Handler: slog.NewJSONHandler(queriesWriter, &slog.HandlerOptions{
 			ReplaceAttr: stripColorTags, // Strips tags safely for files
 		}),
 	}
 
+	// Skip building the colored console handler entirely when no console is
+	// attached (a -H=windowsgui build, or after hide_console detached it):
+	// every DNS query logs at least one line, so constructing and then
+	// discarding a colored console string per query would be pure wasted
+	// CPU on the hot path with nothing able to display it.
+	handlers := []slog.Handler{fullHandler, queryH}
+	if wincoe.HasConsole() {
+		handlers = append(handlers, NewColoredConsoleHandler(consoleLevel, log)) // now uses the real config level
+	} else {
+		log.Debug("No console attached; skipping the colored console log handler")
+	}
+
 	improvedLogger := slog.New(multiHandler{
-		handlers: []slog.Handler{fullHandler, consoleH, queryH},
+		handlers: handlers,
 	})
 
 	// Reinit closes old async log writers (if any) and registers these new ones.
