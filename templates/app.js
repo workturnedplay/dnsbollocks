@@ -17,7 +17,7 @@
         "color: #0078d4; font-weight: bold; font-family: sans-serif; font-size: 11px;"
     );
     
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    let csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     if (!csrfToken) {
         console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
     }
@@ -419,7 +419,7 @@
 
     // postAdminForm sends a POST with fields, injecting csrf_token automatically,
     // and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
-    async function postAdminForm(action, fields, errorPrefix) {
+    async function postAdminForm(action, fields, errorPrefix, isRetry = false) {
         const formData = new FormData();
         formData.append('csrf_token', csrfToken);
         
@@ -439,6 +439,28 @@
         const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
         if (!res.ok && !isSuccessRedirect) {
             const errMsg = await res.text();
+
+            // --- CSRF Auto-Recovery ---
+            if (res.status === 403 && errMsg.includes('CSRF') && !isRetry) {
+                console.log("CSRF token invalid/expired. Attempting to fetch a new token and retry...");
+                try {
+                    const tokenRes = await fetch(window.location.pathname);
+                    if (tokenRes.ok) {
+                        const html = await tokenRes.text();
+                        const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
+                        if (match && match[1]) {
+                            csrfToken = match[1];
+                            console.log("Successfully obtained new CSRF token. Retrying request...");
+                            const meta = document.querySelector('meta[name="csrf-token"]');
+                            if (meta) meta.content = csrfToken;
+                            return await postAdminForm(action, fields, errorPrefix, true);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to recover CSRF token:", e);
+                }
+            }
+            
             alert(errorPrefix + ':\n' + errMsg);
             return false;
         }
@@ -477,7 +499,7 @@
     // per-row actions where an inline status message is preferable to a
     // blocking dialog. The server recognizes the X-DNSBollocks-Ajax header
     // and responds with a plain status code instead of a redirect.
-    async function postBlocksAction(domain, type, action) {
+    async function postBlocksAction(domain, type, action, isRetry = false) {
         const formData = new FormData();
         formData.append('csrf_token', csrfToken);
         formData.append('domain', domain);
@@ -496,6 +518,27 @@
         }
         
         const bodyText = await res.text();
+
+        // --- CSRF Auto-Recovery ---
+        if (!res.ok && res.status === 403 && bodyText.includes('CSRF') && !isRetry) {
+            console.log("CSRF token invalid/expired in blocks AJAX. Attempting recovery...");
+            try {
+                const tokenRes = await fetch(window.location.pathname);
+                if (tokenRes.ok) {
+                    const html = await tokenRes.text();
+                    const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
+                    if (match && match[1]) {
+                        csrfToken = match[1];
+                        const meta = document.querySelector('meta[name="csrf-token"]');
+                        if (meta) meta.content = csrfToken;
+                        return await postBlocksAction(domain, type, action, true);
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to recover CSRF token:", e);
+            }
+        }
+        
         if (res.ok) {
             return { ok: true, message: bodyText };
         }
