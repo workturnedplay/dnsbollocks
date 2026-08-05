@@ -56,6 +56,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -264,6 +265,8 @@ type Server struct {
 	onReloadHooks []func() // Subsystem actions to run on Ctrl+R / operator reloads
 
 	exitFn func(int) // set to os.Exit by default; override in tests
+
+	autoRestart atomic.Bool // Flag to indicate an automatic restart is requested
 }
 
 // AdminUI handles all the web control panel routes.
@@ -975,7 +978,7 @@ func (s *Server) loadLocalHosts() error {
 		log.Warn("Hosts file not found, starting with empty local hosts", slog.String("path", hostsFileName))
 		// Pass nil or an empty slice to atomically reset the store
 		s.hostStore.ReplaceAll(nil)
-		s.flushCache()
+		s.flushDNSCache()
 		return s.saveLocalHosts() // creates empty default file
 	}
 	if err != nil {
@@ -1130,7 +1133,7 @@ func (s *Server) loadLocalHosts() error {
 	}
 
 	s.hostStore.ReplaceAll(parsed)
-	s.flushCache()
+	s.flushDNSCache()
 
 	log.Info("Loaded host rules",
 		slog.Int("count", s.hostStore.Len()),
@@ -1269,7 +1272,7 @@ func (s *Server) loadQueryWhitelist() error {
 		log.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
 		// Atomically set the internal map to an empty one
 		s.ruleStore.ReplaceAll(make(map[string][]RuleEntry))
-		s.flushCache()
+		s.flushDNSCache()
 		return s.saveQueryWhitelist() // create "empty" file; uses lock
 	}
 	if err != nil {
@@ -1433,7 +1436,7 @@ func (s *Server) loadQueryWhitelist() error {
 
 	// ── Atomic swap ──
 	s.ruleStore.ReplaceAll(newRules)
-	s.flushCache()
+	s.flushDNSCache()
 
 	hmn := s.ruleStore.CountAll()
 	log.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
@@ -2557,12 +2560,20 @@ func (s *Server) Reload() {
 	if oldCfg.HideConsole != cfgNew.HideConsole {
 		if cfgNew.HideConsole {
 			if wincoe.HasConsole() {
-				log.Warn(configKeyNameForHideConsole + " toggled to true; but this setting only has effect after restart! so the console is still shown/kept as is until you restart!")
+				log.Warn(configKeyNameForHideConsole + " toggled to true; but this setting only has effect after restart, auto-restarting now...")
+				s.issueAutoRestart()
+				return // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
 			} else {
 				log.Debug(configKeyNameForHideConsole + " toggled to true; but already not having a console(due to a prev. setting or built this way), so nothing to do.")
 			}
 		} else {
-			log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. Note: showing a hidden console again requires a full process restart to take effect.", configKeyNameForHideConsole))
+			if wincoe.HasConsole() {
+				log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. But console is already shown, so nothing to do", configKeyNameForHideConsole))
+			} else {
+				log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. Note: showing a hidden console again requires a full process restart to take effect, auto-restarting now...", configKeyNameForHideConsole))
+				s.issueAutoRestart()
+				return // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
+			}
 		}
 	}
 
@@ -2582,7 +2593,7 @@ func (s *Server) Reload() {
 		)
 	}
 	// 3. Flush the cache to apply new TTLs/rules
-	s.flushCache()
+	s.flushDNSCache()
 
 	if err := s.loadDependentStores(); err != nil {
 		s.logFatal("Dependent stores reload failed:", err)
@@ -2794,12 +2805,33 @@ func OldMain() {
 
 	var localLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: envLvl,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Intercept the built-in time key
+			if a.Key == slog.TimeKey && len(groups) == 0 {
+				t := a.Value.Time()
+				// ".0000000" forces exactly 7 digits of zero-padded fractional seconds
+				formattedTime := t.Format(TimeStampsFormat) //"2006-01-02T15:04:05.0000000Z07:00")
+				return slog.String(slog.TimeKey, formattedTime)
+			}
+			return a
+		},
 	}))
 
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the default
 	wincoe.SetBugLogger(localLogger)
 	wincoe.Logger.Store(localLogger)
+
+	handlesErr := EnsureConsoleHandles()
+
+	// Defensive: If this process was spawned by an auto-restart, wait for the parent to die
+	// so that file locks (loggers) and TCP/UDP ports are completely released by Windows.
+	if os.Getenv("DNSBOLLOCKS_IS_RESTARTING") == "1" {
+		const waitHowLong time.Duration = 1000 * time.Millisecond // 1 second is plenty of time for the parent to exit cleanly
+		localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitHowLong))
+		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0") //or else it might get inherited by a future process run? unsure, can't think atm heh
+		time.Sleep(waitHowLong)
+	}
 
 	// wincoe.InstallCrashSink()
 	// if true {
@@ -2825,6 +2857,12 @@ func OldMain() {
 	// during bootstrap uses the colored bootstrap logger, not the silent default.
 	wincoe.SetBugLogger(localLogger)
 	wincoe.Logger.Store(localLogger)
+
+	if handlesErr != nil {
+		localLogger.Warn("new process: failed to set the handles", wincoe.SafeErr(handlesErr))
+	} else {
+		localLogger.Debug("new process: console handles were set ok")
+	}
 
 	// go func() {//doneTODO: get this back but maybe every 5 minutes or 10 or 1? but see to properly shut it down tho.
 	//     ticker := time.NewTicker(5 * time.Second)
@@ -2957,6 +2995,12 @@ func OldMain() {
 			rt.Logger().Error("Failed to save initial configuration", wincoe.SafeErr(err))
 			srv.shutdown(1)
 		}
+	}
+
+	if handlesErr != nil {
+		rt.Logger().Warn("new process2: failed to set the handles", slog.Any("err", handlesErr))
+	} else {
+		rt.Logger().Debug("new process2: console handler were set ok")
 	}
 
 	if err3 := srv.Run(sigChan); err3 != nil {
@@ -4891,7 +4935,7 @@ var memoizedVersion = func() string {
 			case "vcs.time":
 				if setting.Value != "" {
 					// Parse standard RFC3339 layout: "2026-06-20T20:49:57Z"
-					if t, err := time.Parse(time.RFC3339, setting.Value); err == nil {
+					if t, err := time.Parse(TimeStampsFormat /*time.RFC3339*/, setting.Value); err == nil {
 						// // Formats to a compact, human-readable slug: "20260620.204957"
 						// vcsTime = t.Format("20060102.150405")
 						// Formats to exact pseudo-version layout: "20260620204957"
@@ -5867,7 +5911,13 @@ func formatColorTags(s, baseColor string) string {
 
 // stripColorTags will be used by the JSON (File) handlers to strip out <color> tags entirely
 var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
-	_ = groups
+	// 1. Force zero-padded timestamp (7 decimal places for Windows precision)
+	if a.Key == slog.TimeKey && len(groups) == 0 {
+		t := a.Value.Time()
+		formattedTime := t.Format("2006-01-02T15:04:05.0000000Z07:00")
+		return slog.String(slog.TimeKey, formattedTime)
+	}
+
 	if a.Value.Kind() == slog.KindString {
 		str := a.Value.String()
 		if strings.Contains(str, "<") {
@@ -8418,15 +8468,14 @@ func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) shutdown(exitCode int) {
-	log := s.getLogger()
-
 	s.shutdownOnce.Do(func() { //guarantees that the code inside the function runs exactly once.
+		log := s.getLogger()
 		log.Info("Shutting down...")
 		// 1. Cancel the context immediately so all other listeners stop
 		s.cancel() //Calling cancel() multiple times is perfectly safe and is actually the expected behavior in Go. In case anything else just called cancel() itself (should be currently happening)
 		log.Debug("Context cancelled... this triggers DoH and webUI shutdowns in their own goroutines!")
 
-		s.flushCache()
+		s.flushDNSCache()
 		//doneTODO: webUI shutdown (done via cancel() above)
 		//log.Debug("webUI shutdown(fake)")
 		//sleep 1 sec to allow "quitting on shutdown" message to show.
@@ -8445,6 +8494,14 @@ func (s *Server) shutdown(exitCode int) {
 		// //bufio.NewReader(os.Stdin).ReadBytes('\n') //done: make it for any key not just Enter!
 		// log.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 		// os.Exit(exitCode)
+
+		// --- AUTO RESTART TRIGGER ---
+		if s.autoRestart.Load() {
+			cfg := s.getConfig()
+			spawnRestartProcess(log, cfg.HideConsole)
+		}
+		// ---------------------------
+
 		finalShutdownSequence(log, exitCode, s.exitFn, s.rt.FlushLogsForShutdown)
 		panic2("BUG: shoulda been unreachable after finalShutdownSequence, which means it didn't os.Exit!")
 	})
@@ -10130,7 +10187,7 @@ func (s *Server) swapDNSCache(janitorIntervalMinutes, maxEntries int) {
 	newCache := newGoCacheStore(time.Duration(janitorIntervalMinutes)*time.Minute, maxEntries, logPtr)
 	s.liveDNSCache.Store(&newCache)
 }
-func (s *Server) flushCache() {
+func (s *Server) flushDNSCache() {
 	log := s.getLogger()
 
 	c := s.liveDNSCache.Load()
@@ -13487,9 +13544,11 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		log.Debug("No console attached; skipping the colored console log handler")
 	}
 
+	// Bind the PID globally across all handlers managed by this logger
+	//(Note regarding key order: Because Go's native slog.JSONHandler hardcodes its internal attribute serialization sequence to time $\rightarrow$ level $\rightarrow$ source $\rightarrow$ msg, any attributes added via .With() will serialize at the end of the JSON object. This is standard behavior and fully compatible with all log parsers.)
 	improvedLogger := slog.New(multiHandler{
 		handlers: handlers,
-	})
+	}).With(slog.Int("pid", os.Getpid()))
 
 	// Reinit closes old async log writers (if any) and registers these new ones.
 	closers := make([]io.Closer, len(asyncWriters))
@@ -14269,5 +14328,245 @@ func clampBcryptCostField(log *slog.Logger, tag string, resolved, raw *int, defa
 		log.Warn(tag+" clamped to valid bounds", slog.Int("was", was), slog.Int("clamp", valid))
 		return true
 	}
+	return false
+}
+
+var initialCWD string
+
+func init() {
+	var err error
+	initialCWD, err = os.Getwd()
+	if err != nil {
+		// Fallback to current directory if os.Getwd() fails for any reason
+		initialCWD = "."
+	}
+}
+
+func spawnRestartProcess(log *slog.Logger, hideConsole bool) {
+	rawExe, err := os.Executable()
+	if err != nil {
+		if log != nil {
+			log.Error("Auto-restart failed: could not get executable path", wincoe.SafeErr(err))
+		}
+		return
+	}
+	// 2. Resolve absolute path safely with explicit error fallback
+	exe, err := filepath.Abs(rawExe)
+	if err != nil {
+		if log != nil {
+			log.Warn("Auto-restart warning: could not determine absolute path, falling back to raw path",
+				slog.String("raw_exe", rawExe),
+				wincoe.SafeErr(err),
+			)
+		}
+		exe = rawExe
+	}
+	// Sanitize path for defensive filesystem handling
+	exe = filepath.Clean(exe)
+	// Forward original arguments so any flags passed via CLI are preserved
+	// #nosec G702 G204 -- Self-restart: exe is derived from os.Executable() and args are original CLI arguments
+	cmd := exec.Command(exe, os.Args[1:]...)
+	//If you don't explicitly assign anything to cmd.Stdout, cmd.Stderr, and cmd.Stdin in the parent, Go defaults to connecting them to the null device (NUL).
+	//remember any possible file redirects
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Preserve the exact working directory the user had when they
+	// originally launched the app (e.g., project root), rather than .\bin\
+	cmd.Dir = initialCWD
+
+	// Inject clone flag to handle file-lock grace period on boot
+	cmd.Env = append(os.Environ(), "DNSBOLLOCKS_IS_RESTARTING=1")
+
+	// 6. Set process creation flags based on hide_console setting
+	var flags uint32
+	if hideConsole {
+		flags = windows.DETACHED_PROCESS
+	} else {
+		flags = windows.CREATE_NEW_CONSOLE
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: flags,
+	}
+
+	if log != nil {
+		log.Info("Spawning new process for auto-restart...",
+			slog.String("exe", exe),
+			slog.String("cwd", initialCWD),
+			slog.Bool(configKeyNameForHideConsole, hideConsole),
+		)
+	}
+
+	// 7. Spawn child process
+	if err := cmd.Start(); err != nil {
+		if log != nil {
+			log.Error("Auto-restart failed: could not start new process", wincoe.SafeErr(err))
+		}
+		return
+	}
+
+	skipInteractivePause.Store(true) // Bypass "Press any key to exit..." so the old process dies instantly
+
+	// 8. Safely release process handle and handle potential release errors
+	if cmd.Process != nil {
+		if log != nil {
+			log.Debug("New process spawned successfully", slog.Int("pid", cmd.Process.Pid))
+		}
+		// Detach so the child doesn't become a zombie
+		if err := cmd.Process.Release(); err != nil && log != nil {
+			log.Warn("Failed to release handle for spawned process",
+				slog.Int("pid", cmd.Process.Pid),
+				wincoe.SafeErr(err),
+			)
+		}
+	}
+}
+
+func (s *Server) issueAutoRestart() {
+	s.autoRestart.Store(true)
+	// Asynchronously trigger shutdown to let the current HTTP request (if triggered via WebUI) finish returning.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		s.shutdown(0) // Clean exit
+	}()
+}
+
+// EnsureConsoleHandles checks if a console window is present but standard handles
+// are invalid (e.g., when spawned from a DETACHED_PROCESS with CREATE_NEW_CONSOLE).
+// If so, it re-binds os.Stdout, os.Stderr, and os.Stdin to CONOUT$ and CONIN$.
+// It returns a joined error if any of the recovery steps fail. Use errors.Is() to check.
+func EnsureConsoleHandles() error {
+	// If no console window is allocated to this process, there's nothing to attach to
+	if wincoe.GetConsoleWindow() == 0 {
+		return fmt.Errorf("no console allocated, no handles to ensure")
+	}
+
+	var errs []error
+
+	// // 1. Repair STDOUT
+	// if hOut, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE); err != nil || hOut == 0 || hOut == windows.InvalidHandle {
+	// 	if fOut, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
+	// 		errs = append(errs, fmt.Errorf("open CONOUT$ for stdout failed: %w", openErr))
+	// 	} else {
+	// 		if setErr := windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(fOut.Fd())); setErr != nil {
+	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stdout failed: %w", setErr))
+	// 		}
+	// 		os.Stdout = fOut
+	// 	}
+	// }
+
+	// // 2. Repair STDERR
+	// if hErr, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE); err != nil || hErr == 0 || hErr == windows.InvalidHandle {
+	// 	if fErr, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
+	// 		errs = append(errs, fmt.Errorf("open CONOUT$ for stderr failed: %w", openErr))
+	// 	} else {
+	// 		if setErr := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(fErr.Fd())); setErr != nil {
+	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stderr failed: %w", setErr))
+	// 		}
+	// 		os.Stderr = fErr
+	// 	}
+	// }
+
+	// // 3. Repair STDIN
+	// if hIn, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE); err != nil || hIn == 0 || hIn == windows.InvalidHandle {
+	// 	if fIn, openErr := os.OpenFile("CONIN$", os.O_RDWR, 0); openErr != nil {
+	// 		errs = append(errs, fmt.Errorf("open CONIN$ for stdin failed: %w", openErr))
+	// 	} else {
+	// 		if setErr := windows.SetStdHandle(windows.STD_INPUT_HANDLE, windows.Handle(fIn.Fd())); setErr != nil {
+	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stdin failed: %w", setErr))
+	// 		}
+	// 		os.Stdin = fIn
+	// 	}
+	// }
+
+	/*
+		Behavior Matrix:
+
+		Launch / Execution State,GetFileType,GetConsoleMode,Action Taken,Result
+		Normal Terminal (cmd / PowerShell),FILE_TYPE_CHAR,Succeeds,Stream kept intact,Logs display in terminal window
+		File Redirection (> log.txt),FILE_TYPE_DISK,Fails (File),Stream kept intact,Logs continue writing to log.txt across restarts
+		Pipe Redirection (| tee),FILE_TYPE_PIPE,Fails (Pipe),Stream kept intact,Pipe stays open across restarts
+		Unattached / WebUI spawned,FILE_TYPE_CHAR or UNKNOWN,Fails (NUL),Repaired via CONOUT$ / CONIN$,Logs print cleanly to the new console window
+	*/
+
+	// 1. Repair STDOUT
+	hOut, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	// var outMode uint32
+	// Check if the handle is 0, invalid, OR not attached to a console buffer
+	if err != nil || !isStreamValidOrRedirected(hOut) { // || hOut == 0 || hOut == windows.InvalidHandle || windows.GetConsoleMode(hOut, &outMode) != nil {
+		if fOut, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
+			errs = append(errs, fmt.Errorf("open CONOUT$ for stdout failed: %w", openErr))
+		} else {
+			if setErr := windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(fOut.Fd())); setErr != nil {
+				errs = append(errs, fmt.Errorf("SetStdHandle for stdout failed: %w", setErr))
+			}
+			os.Stdout = fOut
+		}
+	}
+
+	// 2. Repair STDERR
+	hErr, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+	// var errMode uint32
+	if err != nil || !isStreamValidOrRedirected(hErr) { //|| hErr == 0 || hErr == windows.InvalidHandle || windows.GetConsoleMode(hErr, &errMode) != nil {
+		if fErr, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
+			errs = append(errs, fmt.Errorf("open CONOUT$ for stderr failed: %w", openErr))
+		} else {
+			if setErr := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(fErr.Fd())); setErr != nil {
+				errs = append(errs, fmt.Errorf("SetStdHandle for stderr failed: %w", setErr))
+			}
+			os.Stderr = fErr
+		}
+	}
+
+	// 3. Repair STDIN
+	hIn, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	// var inMode uint32
+	if err != nil || !isStreamValidOrRedirected(hIn) { // || hIn == 0 || hIn == windows.InvalidHandle || windows.GetConsoleMode(hIn, &inMode) != nil {
+		if fIn, openErr := os.OpenFile("CONIN$", os.O_RDWR, 0); openErr != nil {
+			errs = append(errs, fmt.Errorf("open CONIN$ for stdin failed: %w", openErr))
+		} else {
+			if setErr := windows.SetStdHandle(windows.STD_INPUT_HANDLE, windows.Handle(fIn.Fd())); setErr != nil {
+				errs = append(errs, fmt.Errorf("SetStdHandle for stdin failed: %w", setErr))
+			}
+			os.Stdin = fIn
+		}
+	}
+
+	if len(errs) > 0 {
+		// Wrapping errors.Join satisfies wrapcheck without needing a //nolint comment
+		return fmt.Errorf("failed to ensure console handles: %w", errors.Join(errs...))
+	}
+
+	return nil
+}
+
+// isStreamValidOrRedirected checks if a standard handle is attached to a real console
+// OR has been intentionally redirected by the user to a file or pipe.
+func isStreamValidOrRedirected(h windows.Handle) bool {
+	if h == 0 || h == windows.InvalidHandle {
+		return false
+	}
+
+	fileType, err := windows.GetFileType(h)
+	if err != nil {
+		return false
+	}
+
+	// 1. User redirected to a file on disk (>) or a pipe (|) -> KEEP IT
+	if fileType == windows.FILE_TYPE_DISK || fileType == windows.FILE_TYPE_PIPE {
+		return true
+	}
+
+	// 2. Character device (CONOUT$, CONIN$, NUL)
+	if fileType == windows.FILE_TYPE_CHAR {
+		var mode uint32
+		// If GetConsoleMode succeeds, it's a real interactive console window
+		if err := windows.GetConsoleMode(h, &mode); err == nil {
+			return true
+		}
+	}
+
+	// 3. Otherwise, it's NUL or an orphaned handle -> REPAIR IT
 	return false
 }
