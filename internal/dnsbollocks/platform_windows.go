@@ -2827,8 +2827,9 @@ func OldMain() {
 	}
 
 	var bootLogFile *os.File
+	cleanedLogPath := filepath.Clean(bootLogPath)
 	// Open with FILE_SHARE_READ|FILE_SHARE_WRITE implicitly via Go os.OpenFile on Windows
-	if f, err := os.OpenFile(bootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+	if f, err := os.OpenFile(cleanedLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
 		logDest = io.MultiWriter(os.Stderr, f)
 		bootLogFile = f
 	}
