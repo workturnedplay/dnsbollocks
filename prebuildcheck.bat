@@ -114,10 +114,16 @@ if errorlevel 1 goto :fail
 echo Running %lintexe% run !LINT_MOD_FLAG! on dnsbollocks only
 "%lintexe%" --color always run !LINT_MOD_FLAG! .\internal\dnsbollocks\ .\cmd\dnsbollocks\
 if errorlevel 1 goto :fail
+
+rem "Since build.bat calls prebuildcheck.bat by passing the argument silent (call .\prebuildcheck.bat silent), you can check whether %1 is set to silent to determine if the script is running standalone or being called by a build script." - Gemini 3.5 Flash-Lite Extended Thinking
+if /i "%1" == "silent" goto skip_full_lint
+
 echo Running %lintexe% run !LINT_MOD_FLAG! ./...
 "%lintexe%" --color always run !LINT_MOD_FLAG! ./...
 if errorlevel 1 goto :fail
 rem popd
+
+:skip_full_lint
 
 rem echo Running: go build ... 
 rem "%goexe%" build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
