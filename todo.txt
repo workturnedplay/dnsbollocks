@@ -1,7 +1,5 @@
 my todos:
 
-* somehow we should, if having console, while spawning a new process, the old one should pause for press a key not bypass it! but only if having console! Also, somehow during the press any key msg, the spawning should still happen but not sure how we would handle the waiting for old to exit since it's waiting for a keypress and could be forever... and I know it times out waiting after 15 sec but that's 15 sec of no service in the new process and the old one doesn't server during press any key.
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -65,3 +63,4 @@ done:
 
 //* after applying the new hide_console setting, it seems it's loading the page from the old process thus uses old csrf thus any future changes will have bad csrf! we should ensure before editing that a ping is sent to backend to ask if the csrf is good or page needs refresh?! to avoid user editing 100 fields then being unable to submit due to bad csrf thus being forced to reload and lose all changes. Alternatively, since the submit fails due to csrf, maybe the new csrf could be gotten and updated thus a retry would be able to succeed submitting! Maybe both this and the check when Edit is tried could be implemented, to protect even when an edit already happened and something restarted the process thus csrf is not invalid, thus on next submit it would fail, so get the csrf when it failed and tell the user to retry ? or what? does this defeat the security purpose of csrf?!
 
+//* somehow we should, if having console, while spawning a new process, the old one should pause for press a key not bypass it! but only if having console! Also, somehow during the press any key msg, the spawning should still happen but not sure how we would handle the waiting for old to exit since it's waiting for a keypress and could be forever... and I know it times out waiting after 15 sec but that's 15 sec of no service in the new process and the old one doesn't server during press any key.

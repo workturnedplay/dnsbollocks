@@ -2905,7 +2905,9 @@ func OldMain() {
 	// so that file locks (loggers) and TCP/UDP ports are completely released by Windows.
 	if os.Getenv("DNSBOLLOCKS_IS_RESTARTING") == "1" {
 		const waitMilliseconds = 15000
-		const waitDuration time.Duration = waitMilliseconds * time.Millisecond // 1 second is plenty of time for the parent to exit cleanly
+		const waitDuration time.Duration = waitMilliseconds * time.Millisecond // 15 seconds is plenty of time for the parent to exit cleanly
+
+		waitedSuccessfully := false
 
 		// //doneFIXME: the dnsbollocks.log file format is different due to this line(and any potential ones like it), see how all are json except this?:
 		// //{"time":"2026-08-05T14:46:17.6567118+02:00","level":"INFO","msg":"exitting with exit code","pid":10220,"exitCode":0}
@@ -2916,47 +2918,120 @@ func OldMain() {
 		// os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0") //or else it might get inherited by a future process run? unsure, can't think atm heh
 		// time.Sleep(waitHowLong)
 
-		if parentPIDStr := os.Getenv("DNSBOLLOCKS_PARENT_PID"); parentPIDStr != "" {
-			// [FIXED G115]: Validate that parentPID fits within uint32 bounds before casting
-			if parentPID, err := strconv.Atoi(parentPIDStr); err == nil && parentPID > 0 && parentPID <= math.MaxUint32 {
-				// 0x00100000 is SYNCHRONIZE access, required for WaitForSingleObject
-				const SYNCHRONIZE = 0x00100000
-				if hProcess, err := windows.OpenProcess(SYNCHRONIZE, false, uint32(parentPID)); err == nil {
-					defer func() {
-						saved := hProcess
-						hProcess = 0
-						// wincoe.CloseHandle(saved)
-						// Defensive error handling for CloseHandle
-						if closeErr := windows.CloseHandle(saved); closeErr != nil {
-							localLogger.Debug("new process: failed to close parent process handle", wincoe.SafeErr(closeErr))
-						}
-					}()
-					localLogger.Debug("new process: Waiting for the old process to exit...", slog.Int("parent_pid", parentPID))
+		// if os.Getenv("DNSBOLLOCKS_NO_WAIT") == "1" {
+		// eventOpened := false
 
-					// Block exactly until parent dies (Max 15 seconds safety net)
-					event, waitErr := windows.WaitForSingleObject(hProcess, waitMilliseconds)
-					if waitErr != nil {
-						localLogger.Warn("new process: WaitForSingleObject encountered an error", wincoe.SafeErr(waitErr))
-					} else if event == uint32(windows.WAIT_TIMEOUT) {
-						localLogger.Warn("new process: Timed out waiting for parent process to exit.")
-					}
-					// windows.CloseHandle(hProcess)
+		// 1. Try Event-based synchronization first (deterministic flush wait)
+		if syncEventName := os.Getenv("DNSBOLLOCKS_SYNC_EVENT"); syncEventName != "" {
+			if eventNamePtr, err := windows.UTF16PtrFromString(syncEventName); err == nil {
+				//At Spawn: The event is guaranteed to exist the exact millisecond the child process boots up because old process made it before spawning! search for windows.CreateEvent( !
+				//so the only way it doesn't exist here is if old process exited already by this time, which is what 'else' block catches!
+				// 0x00100000 is SYNCHRONIZE access, required for WaitForSingleObject
+				if hEvent, err := windows.OpenEvent(windows.SYNCHRONIZE, false, eventNamePtr); err == nil {
+					func() {
+						defer wincoe.CloseHandleLogged(&hEvent, "OldMain:WaitForSingleObject hEvent the flush logs event from old process")
+						localLogger.Debug("new process: Waiting deterministically for parent to flush logs...")
+						// Block precisely until the parent fires SetEvent() (Max 15 seconds safety net)
+						if event, waitErr := windows.WaitForSingleObject(hEvent, waitMilliseconds); waitErr != nil {
+							localLogger.Warn("new process: while waiting for flush event of old process, WaitForSingleObject encountered an error", wincoe.SafeErr(waitErr))
+						} else {
+							if event == uint32(windows.WAIT_TIMEOUT) {
+								localLogger.Warn("new process: Timed out waiting for parent process' flush event.")
+							}
+							// Whether it woke up instantly or timed out after 15s,
+							// the wait phase is complete. Prevent cascading fallback delays.
+							waitedSuccessfully = true
+						}
+					}() //call
+					// eventOpened = true
 				} else {
-					localLogger.Warn("new process: Could not open parent process handle, waiting briefly instead.", wincoe.SafeErr(err), slog.Duration("wait_duration", waitDuration))
+					// OpenEvent failed. This means the old process already closed its
+					// handles and exited. Because it's gone, its file locks are already
+					// released by the OS kernel. We can proceed instantly with zero delay!
+					localLogger.Debug("new process: Sync event already dissolved (parent already exited). Proceeding immediately.")
+				}
+			} else {
+				localLogger.Error("failed to UFT16 this", slog.String("syncEventName", syncEventName))
+			}
+		}
+
+		// 2. Fallback: If event was missing or dissolved, try waiting on the Parent Process PID handle
+		if !waitedSuccessfully {
+			// Fallback just in case the OS failed to create/open the event
+			// if !eventOpened {
+			//okTODO:the event could've been reap'd by OS if old process exited too quickly, we should ensure the old PID is gone
+			// }
+
+			// localLogger.Debug("new process: Skipping full wait for parent process because it paused for interactive keypress. Yielding briefly for log flush...")
+			// time.Sleep(500 * time.Millisecond) // Give parent a tiny window to finish flushLogs
+			// //okFIXME: we need to make this dependent on somehow the parent having finished the flushing! I dno how atm, but it should be doable!
+			// } else {
+			if parentPIDStr := os.Getenv("DNSBOLLOCKS_PARENT_PID"); parentPIDStr != "" {
+				// [FIXED G115]: Validate that parentPID fits within uint32 bounds before casting
+				const rangeMin = 1
+				const rangeMax = math.MaxUint32
+				if parentPID, err := strconv.Atoi(parentPIDStr); err == nil && parentPID >= rangeMin && parentPID <= rangeMax {
+					// const SYNCHRONIZE = 0x00100000
+					if hProcess, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(parentPID)); err == nil {
+						func() {
+							defer wincoe.CloseHandleLogged(&hProcess, "OldMain:OpenProcess hProcess for old pid")
+
+							// defer func() { //okFIXME: this should run sooner!
+							// 	saved := hProcess
+							// 	hProcess = 0
+							// 	// wincoe.CloseHandle(saved)
+							// 	// Defensive error handling for CloseHandle
+							// 	if closeErr := windows.CloseHandle(saved); closeErr != nil {
+							// 		localLogger.Debug("new process: failed to close parent process handle", wincoe.SafeErr(closeErr))
+							// 	}
+							// }()
+							localLogger.Debug("new process: Waiting for the old process to exit...", slog.Int("parent_pid", parentPID))
+
+							// Block exactly until parent dies (Max 15 seconds safety net)
+							if event, waitErr := windows.WaitForSingleObject(hProcess, waitMilliseconds); waitErr != nil {
+								localLogger.Warn("new process: WaitForSingleObject encountered an error", wincoe.SafeErr(waitErr))
+							} else {
+								if event == uint32(windows.WAIT_TIMEOUT) {
+									localLogger.Warn("new process: Timed out waiting for parent process to exit.")
+								}
+								// Whether it woke up instantly or timed out after 15s,
+								// the wait phase is complete. Prevent cascading fallback delays.
+								waitedSuccessfully = true
+							}
+						}() //call
+					} else {
+						// localLogger.Warn("new process: Could not open parent process handle, waiting briefly instead.", wincoe.SafeErr(err), slog.Duration("wait_duration", waitDuration))
+						// time.Sleep(waitDuration)
+
+						// OpenProcess failing confirms the old process is already fully dead and gone
+						localLogger.Debug("new process: Parent process already dead (OpenProcess failed). Proceeding immediately.")
+						waitedSuccessfully = true
+					}
+				} else {
+					localLogger.Error("new process: Invalid or out-of-range parent PID string, waiting briefly instead.",
+						slog.String("pid_str", parentPIDStr),
+						slog.Int("range_min", rangeMin), slog.Int("range_max", rangeMax),
+						slog.Duration("wait_duration", waitDuration))
 					time.Sleep(waitDuration)
 				}
 			} else {
-				localLogger.Warn("new process: Invalid or out-of-range parent PID string", slog.String("pid_str", parentPIDStr))
+				localLogger.Debug("new process: Waiting for the old process to exit...",
+					slog.Duration("wait_duration", waitDuration))
 				time.Sleep(waitDuration)
 			}
-		} else {
-			localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitDuration))
+		}
+
+		// 3. Ultimate Fallback: If neither kernel handle could be opened, fallback to a brief sleep
+		if !waitedSuccessfully {
+			localLogger.Debug("new process: Falling back to brief sleep for parent exit...", slog.Duration("wait_duration", waitDuration))
 			time.Sleep(waitDuration)
 		}
 
 		// Clean up the environment for any future sub-processes
 		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0")
 		os.Setenv("DNSBOLLOCKS_PARENT_PID", "")
+		os.Setenv("DNSBOLLOCKS_SYNC_EVENT", "")
+		// os.Setenv("DNSBOLLOCKS_NO_WAIT", "")
 	}
 
 	// wincoe.InstallCrashSink()
@@ -8641,15 +8716,14 @@ func (s *Server) shutdown(exitCode int) {
 
 func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int), flushLogs func()) {
 	UnstickStdinRead(logger)
-	// NEW: Check if the OS is forcefully terminating us
+	// Check if the OS is forcefully terminating us
 	if skipInteractivePause.Load() {
-		logger.Debug("Skipping 'Press any key' pause because either the OS or we are forcefully terminating the session.")
-	} else { //nolint:gocritic // i want the braces
-		// Normal exit (like Ctrl+C or clean UI shutdown) - pause as usual
-		if !wincoe.WaitAnyKeyIfInteractive() {
-			logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
-		}
-	} //ifelse
+		logger.Debug("Skipping 'Press any key' pause because either the OS or we are forcefully terminating the session (ie. it's a headless auto-restart).")
+	} else if wincoe.IsStdinConsoleInteractive() {
+		logger.Debug("Will wait for keypress after flushing logs...")
+	} else {
+		logger.Debug("Won't wait for keypress due to not an interactive/terminal.")
+	}
 
 	logger.Info("exitting with exit code", slog.Int("exitCode", exitCode))
 
@@ -8663,6 +8737,39 @@ func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int), 
 	// the underlying disk is currently stuck.
 	if flushLogs != nil {
 		flushLogs()
+	}
+
+	// --- NEW: Signal the child process that logs are flushed ---
+	if hEvent := windows.Handle(atomic.LoadUintptr(&flushSyncEvent)); hEvent != 0 {
+		if err := windows.SetEvent(hEvent); err != nil {
+			// //okFIXME: how do we log this?! since logs are closed and os.Stderr may not be available at all!
+			// //localLogger.Warn("failed to set sync event", wincoe.SafeErr(err))
+			// if wincoe.HasConsole() { //this is too dumb of a check
+			// 	fmt.Fprintf(os.Stderr, "failed to set flush-sync event, windows.SetEvent err: %v", err)
+			// }
+
+			// os.Stderr is always safe to write to in Go on Windows.
+			// If there is no console, the OS handles/discards it gracefully without panicking.
+			// but well, i lose the log
+			fmt.Fprintf(os.Stderr, "failed to set flush-sync event, windows.SetEvent err: %v\n", err)
+		}
+
+		// CRITICAL FIX: Defer the close. This keeps the event object alive in
+		// the OS kernel (and permanently Signaled) while we sit at the
+		// "Press any key" prompt, allowing a slow-starting child to find it.
+		defer wincoe.CloseHandleLogged(&hEvent, "finalShutdownSequence:SetEvent hEvent flushSyncEvent")
+		atomic.StoreUintptr(&flushSyncEvent, 0)
+	}
+	// ---
+
+	if !skipInteractivePause.Load() {
+		// Normal exit (like Ctrl+C or clean UI shutdown) - pause as usual
+		wincoe.WaitAnyKeyIfInteractive() //does that IsStdinConsoleInteractive inside, and only waits if true
+		// if !wincoe.WaitAnyKeyIfInteractive() {
+		// 	// // Since logger's async writers are closed/flushed, use stderr directly
+		// 	// fmt.Fprintln(os.Stderr, "Didn't wait for keypress due to not an interactive/terminal.")
+		// 	// // logger.Debug("Didn't wait for keypress due to not an interactive/terminal.")
+		// }
 	}
 
 	//os.Exit(exitCode)
@@ -14494,6 +14601,10 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 	}
 	// Sanitize path for defensive filesystem handling
 	exe = filepath.Clean(exe)
+
+	// Determine if the OLD process will pause for a keypress
+	willPause := wincoe.HasConsole()
+
 	// Forward original arguments so any flags passed via CLI are preserved
 	// #nosec G702 G204 -- Self-restart: exe is derived from os.Executable() and args are original CLI arguments
 	cmd := exec.Command(exe, os.Args[1:]...)
@@ -14508,11 +14619,47 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 	cmd.Dir = initialCWD
 
 	// Inject clone flag to handle file-lock grace period on boot, and pass the log file
-	cmd.Env = append(os.Environ(),
+	env := os.Environ()
+	env = append(env,
 		"DNSBOLLOCKS_IS_RESTARTING=1",
 		"DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess,
+	)
+
+	// --- NEW: Deterministic Sync Event ---
+	syncEventName := fmt.Sprintf("Local\\DNSBollocks_FlushSync_%d", os.Getpid())
+	if eventNamePtr, err := windows.UTF16PtrFromString(syncEventName); err == nil {
+		// CreateEvent(security, manualReset, initialState, name)
+		if hEvent, err := windows.CreateEvent(nil, uint32(1), uint32(0), eventNamePtr); err == nil {
+			atomic.StoreUintptr(&flushSyncEvent, uintptr(hEvent))
+		}
+	}
+	// -------------------------------------
+
+	// // Only pass the Parent PID to block the child if the parent is actually going to exit instantly
+	// if willPause {
+	// 	// Only pass the Sync Event to block the child if the parent is actually going to pause
+	// 	env = append(env,
+	// 		//"DNSBOLLOCKS_NO_WAIT=1",
+	// 		"DNSBOLLOCKS_SYNC_EVENT="+syncEventName,
+	// 	)
+	// } else {
+	// 	//TODO: we can/should pass the old pid unconditionally because then we can check if it's gone if sync event is not existing!
+	// 	env = append(env, fmt.Sprintf("DNSBOLLOCKS_PARENT_PID=%d", os.Getpid()))
+	// }
+
+	// Unconditionally pass both the Sync Event and the Parent PID.
+	// This enables the child's dual-fallback synchronization strategy regardless
+	// of whether this parent process plans to pause or exit instantly.
+	env = append(env,
+		"DNSBOLLOCKS_SYNC_EVENT="+syncEventName,
 		fmt.Sprintf("DNSBOLLOCKS_PARENT_PID=%d", os.Getpid()),
 	)
+	cmd.Env = env
+	// cmd.Env = append(os.Environ(),
+	// 	"DNSBOLLOCKS_IS_RESTARTING=1",
+	// 	"DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess,
+	// 	fmt.Sprintf("DNSBOLLOCKS_PARENT_PID=%d", os.Getpid()),
+	// )
 
 	// 6. Set process creation flags based on hide_console setting
 	var flags uint32
@@ -14530,6 +14677,7 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 			slog.String("exe", exe),
 			slog.String("cwd", initialCWD),
 			slog.Bool(configKeyNameForHideConsole, hideConsole),
+			slog.Bool("parent_will_pause", willPause),
 		)
 	}
 
@@ -14541,7 +14689,9 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 		return
 	}
 
-	skipInteractivePause.Store(true) // Bypass "Press any key to exit..." so the old process dies instantly
+	if !willPause {
+		skipInteractivePause.Store(true) // Bypass "Press any key to exit..." so this old process dies instantly
+	}
 
 	// 8. Safely release process handle and handle potential release errors
 	if cmd.Process != nil {
@@ -14556,7 +14706,7 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 			)
 		}
 	}
-}
+} //spawn
 
 func (s *Server) issueAutoRestart() {
 	s.autoRestart.Store(true)
@@ -14670,3 +14820,7 @@ func isStreamValidOrRedirected(h windows.Handle) bool {
 	// 3. Otherwise, it's NUL or an orphaned handle -> REPAIR IT
 	return false
 }
+
+// flushSyncEvent holds a windows.Handle used to signal a spawned child
+// process that this parent process has finished flushing its logs.
+var flushSyncEvent uintptr

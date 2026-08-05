@@ -1679,7 +1679,7 @@ func QueryFullProcessName(pid uint32) (string, error) {
 		return "", fmt.Errorf("OpenProcess failed for PID %d: %w", pid, err0)
 	}
 	//defer windows.CloseHandle(hProc)
-	defer closeHandleLogged(&hProc, "QueryFullProcessName:OpenProcess hProc")
+	defer CloseHandleLogged(&hProc, "QueryFullProcessName:OpenProcess hProc")
 
 	// Start with MAX_PATH (260)
 	//Yes, size remains a uint32 on both x86 and x64. This is because the Windows API function QueryFullProcessImageNameW
@@ -1875,7 +1875,7 @@ func GetProcessName(pid uint32) (string, error) {
 		return "", err
 	}
 	//defer windows.CloseHandle(snapshot)
-	defer closeHandleLogged(&snapshot, "GetProcessName:CreateToolhelp32Snapshot snapshot")
+	defer CloseHandleLogged(&snapshot, "GetProcessName:CreateToolhelp32Snapshot snapshot")
 
 	var entry windows.ProcessEntry32
 	entry.Size = uint32(unsafe.Sizeof(entry))
@@ -3162,7 +3162,7 @@ var (
 // 	}
 // }
 
-// closeHandleLogged closes *h (if non-zero), zeroing *h immediately
+// CloseHandleLogged closes *h (if non-zero), zeroing *h immediately
 // beforehand so no caller can ever observe or reuse a handle value that's
 // already been handed to CloseHandle -- whether or not the close itself
 // succeeds. Logs (via logf) if CloseHandle fails, but never returns an
@@ -3178,7 +3178,7 @@ var (
 //
 // A nil h or a zero *h is treated as "nothing to close" and is a silent
 // no-op.
-func closeHandleLogged(h *windows.Handle, context string) {
+func CloseHandleLogged(h *windows.Handle, context string) {
 	if h == nil || *h == 0 {
 		return
 	}
@@ -3315,7 +3315,7 @@ func inspectExistingStagingFile(path string) (safeToReclaim bool, reason string,
 	if cerr != nil {
 		return false, "", fmt.Errorf("CreateFile failed: %w", cerr)
 	}
-	defer closeHandleLogged(&h, "inspectExistingStagingFile:CreateFile h")
+	defer CloseHandleLogged(&h, "inspectExistingStagingFile:CreateFile h")
 
 	var info windows.ByHandleFileInformation
 	if gerr := windows.GetFileInformationByHandle(h, &info); gerr != nil {
