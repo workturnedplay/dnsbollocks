@@ -2806,22 +2806,33 @@ func OldMain() {
 		envLvl = slog.LevelDebug
 	}
 
-	var logDest io.Writer = os.Stderr
+	// var logDest io.Writer = os.Stderr
 	var bootLogPath string
 
 	// If restarting, prefer the explicitly passed env var
 	if envLog := os.Getenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE"); envLog != "" {
-		//FIXME: handle the case when user set this before first process ran and the spawned process thus overwrites this but don't we wanna keep this? even though well I guess it has same effect since we would still apply the same log file that parent said we should(so the one from config.json)
+		//doneFIXME: handle the case when user set this before first process ran and the spawned process thus overwrites this but don't we wanna keep this? even though well I guess it has same effect since we would still apply the same log file that parent said we should(so the one from config.json)
+		// [RESOLVED FIXME 1]: The parent process explicitly passes the correct log file to use.
+		// Overwriting any user-provided env var here is intentional so the child logs to
+		// the most up-to-date configured destination after a config reload.
 		bootLogPath = envLog
 	} else {
 		// Attempt to peek at the log file path from config.json to capture very early boot logs
 		bootLogPath = "dnsbollocks.log" // Default
 		if data, err := os.ReadFile(configFileName); err == nil {
-			var peek struct {
-				LogFile string `json:"log_file"` //FIXME: so this is a dup, if the original gets renamed, it has to be done here too!
-			}
-			if json.Unmarshal(data, &peek) == nil && peek.LogFile != "" {
-				bootLogPath = peek.LogFile
+			// var peek struct {
+			// 	LogFile string `json:"log_file"` //doneFIXME: so this is a dup, if the original gets renamed, it has to be done here too!
+			// }
+			var peek map[string]any
+			// if json.Unmarshal(data, &peek) == nil && peek.LogFile != "" {
+			// 	bootLogPath = peek.LogFile
+			// }
+			if json.Unmarshal(data, &peek) == nil {
+				// [RESOLVED FIXME 2]: Extract tag dynamically instead of hardcoding "log_file"
+				tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile))
+				if val, ok := peek[tag].(string); ok && val != "" {
+					bootLogPath = val
+				}
 			}
 		}
 	}
@@ -2830,42 +2841,122 @@ func OldMain() {
 	cleanedLogPath := filepath.Clean(bootLogPath)
 	// Open with FILE_SHARE_READ|FILE_SHARE_WRITE implicitly via Go os.OpenFile on Windows
 	if f, err := os.OpenFile(cleanedLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
-		logDest = io.MultiWriter(os.Stderr, f)
+		// logDest = io.MultiWriter(os.Stderr, f)
 		bootLogFile = f
 	}
 
-	var localLogger = slog.New(slog.NewTextHandler(logDest, &slog.HandlerOptions{
-		Level: envLvl,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Intercept the built-in time key
-			if a.Key == slog.TimeKey && len(groups) == 0 {
-				t := a.Value.Time()
-				// ".0000000" forces exactly 7 digits of zero-padded fractional seconds
-				formattedTime := t.Format(TimeStampsFormat) //"2006-01-02T15:04:05.0000000Z07:00")
-				return slog.String(slog.TimeKey, formattedTime)
-			}
-			return a
-		},
-	}))
+	timeReplacer := func(groups []string, a slog.Attr) slog.Attr {
+		// Intercept the built-in time key
+		if a.Key == slog.TimeKey && len(groups) == 0 {
+			t := a.Value.Time()
+			// ".0000000" forces exactly 7 digits of zero-padded fractional seconds
+			formattedTime := t.Format(TimeStampsFormat) //"2006-01-02T15:04:05.0000000Z07:00")
+			return slog.String(slog.TimeKey, formattedTime)
+		}
+		return a
+	}
+
+	// var localLogger = slog.New(slog.NewTextHandler(logDest, &slog.HandlerOptions{
+	// 	Level: envLvl,
+	// 	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+	// 		// Intercept the built-in time key
+	// 		if a.Key == slog.TimeKey && len(groups) == 0 {
+	// 			t := a.Value.Time()
+	// 			// ".0000000" forces exactly 7 digits of zero-padded fractional seconds
+	// 			formattedTime := t.Format(TimeStampsFormat) //"2006-01-02T15:04:05.0000000Z07:00")
+	// 			return slog.String(slog.TimeKey, formattedTime)
+	// 		}
+	// 		return a
+	// 	},
+	// }))
+
+	var handlers []slog.Handler
+
+	// [RESOLVED FIXME 3]: Multiplex properly so the file stays pure JSON while the console gets colors.
+	if wincoe.HasConsole() {
+		if err := wincoe.EnableVirtualTerminalProcessing(); err != nil {
+			panic2(fmt.Sprintf("EnableVirtualTerminalProcessing failed, err:%v", err))
+			panic(nil)
+		}
+		handlers = append(handlers, NewColoredConsoleHandler(envLvl, nil))
+	} else {
+		handlers = append(handlers, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: envLvl, ReplaceAttr: timeReplacer}))
+	}
+
+	if bootLogFile != nil {
+		handlers = append(handlers, slog.NewJSONHandler(bootLogFile, &slog.HandlerOptions{Level: envLvl, ReplaceAttr: timeReplacer}))
+	}
+
+	var localLogger = slog.New(multiHandler{handlers: handlers})
+	localLogger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
 
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the default
 	wincoe.SetBugLogger(localLogger)
 	wincoe.Logger.Store(localLogger)
 
+	if handlesErr != nil {
+		localLogger.Warn("new process: failed to set the handles", wincoe.SafeErr(handlesErr))
+	} else {
+		localLogger.Debug("new process: console handles were set ok")
+	}
+
 	// Defensive: If this process was spawned by an auto-restart, wait for the parent to die
 	// so that file locks (loggers) and TCP/UDP ports are completely released by Windows.
 	if os.Getenv("DNSBOLLOCKS_IS_RESTARTING") == "1" {
-		const waitHowLong time.Duration = 1000 * time.Millisecond // 1 second is plenty of time for the parent to exit cleanly
+		const waitMilliseconds = 15000
+		const waitDuration time.Duration = waitMilliseconds * time.Millisecond // 1 second is plenty of time for the parent to exit cleanly
 
-		//FIXME: the dnsbollocks.log file format is different due to this line(and any potential ones like it), see how all are json except this?:
-		//{"time":"2026-08-05T14:46:17.6567118+02:00","level":"INFO","msg":"exitting with exit code","pid":10220,"exitCode":0}
-		//time="2026-08-05 14:46:17.906651600+02:00 CEST" level=DEBUG msg="new process: Waiting for the old process to exit..." wait_duration=1s
-		//{"time":"2026-08-05T14:46:18.9146614+02:00","level":"INFO","msg":"Logging (re)initialized","pid":10280,"full_log":"dnsbollocks.log","queries_log":"queries.log","queries_simple_log":"queries_simple.log","console_level":"debug"}
+		// //doneFIXME: the dnsbollocks.log file format is different due to this line(and any potential ones like it), see how all are json except this?:
+		// //{"time":"2026-08-05T14:46:17.6567118+02:00","level":"INFO","msg":"exitting with exit code","pid":10220,"exitCode":0}
+		// //time="2026-08-05 14:46:17.906651600+02:00 CEST" level=DEBUG msg="new process: Waiting for the old process to exit..." wait_duration=1s
+		// //{"time":"2026-08-05T14:46:18.9146614+02:00","level":"INFO","msg":"Logging (re)initialized","pid":10280,"full_log":"dnsbollocks.log","queries_log":"queries.log","queries_simple_log":"queries_simple.log","console_level":"debug"}
 
-		localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitHowLong))
-		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0") //or else it might get inherited by a future process run? unsure, can't think atm heh
-		time.Sleep(waitHowLong)
+		// localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitHowLong))
+		// os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0") //or else it might get inherited by a future process run? unsure, can't think atm heh
+		// time.Sleep(waitHowLong)
+
+		if parentPIDStr := os.Getenv("DNSBOLLOCKS_PARENT_PID"); parentPIDStr != "" {
+			// [FIXED G115]: Validate that parentPID fits within uint32 bounds before casting
+			if parentPID, err := strconv.Atoi(parentPIDStr); err == nil && parentPID > 0 && parentPID <= math.MaxUint32 {
+				// 0x00100000 is SYNCHRONIZE access, required for WaitForSingleObject
+				const SYNCHRONIZE = 0x00100000
+				if hProcess, err := windows.OpenProcess(SYNCHRONIZE, false, uint32(parentPID)); err == nil {
+					defer func() {
+						saved := hProcess
+						hProcess = 0
+						// wincoe.CloseHandle(saved)
+						// Defensive error handling for CloseHandle
+						if closeErr := windows.CloseHandle(saved); closeErr != nil {
+							localLogger.Debug("new process: failed to close parent process handle", wincoe.SafeErr(closeErr))
+						}
+					}()
+					localLogger.Debug("new process: Waiting for the old process to exit...", slog.Int("parent_pid", parentPID))
+
+					// Block exactly until parent dies (Max 15 seconds safety net)
+					event, waitErr := windows.WaitForSingleObject(hProcess, waitMilliseconds)
+					if waitErr != nil {
+						localLogger.Warn("new process: WaitForSingleObject encountered an error", wincoe.SafeErr(waitErr))
+					} else if event == uint32(windows.WAIT_TIMEOUT) {
+						localLogger.Warn("new process: Timed out waiting for parent process to exit.")
+					}
+					// windows.CloseHandle(hProcess)
+				} else {
+					localLogger.Warn("new process: Could not open parent process handle, waiting briefly instead.", wincoe.SafeErr(err), slog.Duration("wait_duration", waitDuration))
+					time.Sleep(waitDuration)
+				}
+			} else {
+				localLogger.Warn("new process: Invalid or out-of-range parent PID string", slog.String("pid_str", parentPIDStr))
+				time.Sleep(waitDuration)
+			}
+		} else {
+			localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitDuration))
+			time.Sleep(waitDuration)
+		}
+
+		// Clean up the environment for any future sub-processes
+		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0")
+		os.Setenv("DNSBOLLOCKS_PARENT_PID", "")
 	}
 
 	// wincoe.InstallCrashSink()
@@ -14417,7 +14508,11 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 	cmd.Dir = initialCWD
 
 	// Inject clone flag to handle file-lock grace period on boot, and pass the log file
-	cmd.Env = append(os.Environ(), "DNSBOLLOCKS_IS_RESTARTING=1", "DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess)
+	cmd.Env = append(os.Environ(),
+		"DNSBOLLOCKS_IS_RESTARTING=1",
+		"DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess,
+		fmt.Sprintf("DNSBOLLOCKS_PARENT_PID=%d", os.Getpid()),
+	)
 
 	// 6. Set process creation flags based on hide_console setting
 	var flags uint32
@@ -14478,7 +14573,8 @@ func (s *Server) issueAutoRestart() {
 // It returns a joined error if any of the recovery steps fail. Use errors.Is() to check.
 func EnsureConsoleHandles() error {
 	// If no console window is allocated to this process, there's nothing to attach to
-	if wincoe.GetConsoleWindow() == 0 { //FIXME: this can fail ie. panic2() and use os.Stderr to print the fail!
+	// "[RESOLVED FIXME 4]: GetConsoleWindow is bound with CheckNone; it naturally returns 0 and does not panic." - Gemini 3.1 Pro Extended Thinking (refused to "fix" it, like that)
+	if wincoe.GetConsoleWindow() == 0 { //FIXME: this can fail at least in theory, ie. panic2() and use os.Stderr to print the fail!
 		return fmt.Errorf("no console allocated, no handles to ensure")
 	}
 
