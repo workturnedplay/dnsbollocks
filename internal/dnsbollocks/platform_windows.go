@@ -2857,6 +2857,12 @@ func OldMain() {
 	// so that file locks (loggers) and TCP/UDP ports are completely released by Windows.
 	if os.Getenv("DNSBOLLOCKS_IS_RESTARTING") == "1" {
 		const waitHowLong time.Duration = 1000 * time.Millisecond // 1 second is plenty of time for the parent to exit cleanly
+
+		//FIXME: the dnsbollocks.log file format is different due to this line(and any potential ones like it), see how all are json except this?:
+		//{"time":"2026-08-05T14:46:17.6567118+02:00","level":"INFO","msg":"exitting with exit code","pid":10220,"exitCode":0}
+		//time="2026-08-05 14:46:17.906651600+02:00 CEST" level=DEBUG msg="new process: Waiting for the old process to exit..." wait_duration=1s
+		//{"time":"2026-08-05T14:46:18.9146614+02:00","level":"INFO","msg":"Logging (re)initialized","pid":10280,"full_log":"dnsbollocks.log","queries_log":"queries.log","queries_simple_log":"queries_simple.log","console_level":"debug"}
+
 		localLogger.Debug("new process: Waiting for the old process to exit...", slog.Duration("wait_duration", waitHowLong))
 		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0") //or else it might get inherited by a future process run? unsure, can't think atm heh
 		time.Sleep(waitHowLong)
