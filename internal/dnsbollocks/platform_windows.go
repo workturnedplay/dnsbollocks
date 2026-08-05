@@ -1589,25 +1589,25 @@ func defaultConfig() Config {
 	return cfg
 }
 
-// initBootstrapLogging sets up a colored console-only logger for the earliest messages.
-// Called as the FIRST thing in OldMain, before anything else.
-func initBootstrapLogging(logger *slog.Logger) *slog.Logger {
-	if logger == nil {
-		panic2("passed nil logger as arg to initBootstrapLogging")
-	}
-	// Use the exact same colored handler you already have (it gracefully falls back if no console)
-	bootstrapLevel := slog.LevelDebug // hard-coded for bootstrap — only ~8 lines anyway
+// // initBootstrapLogging sets up a colored console-only logger for the earliest messages.
+// // Called as the FIRST thing in OldMain, before anything else.
+// func initBootstrapLogging(logger *slog.Logger) *slog.Logger {
+// 	if logger == nil {
+// 		panic2("passed nil logger as arg to initBootstrapLogging")
+// 	}
+// 	// Use the exact same colored handler you already have (it gracefully falls back if no console)
+// 	bootstrapLevel := slog.LevelDebug // hard-coded for bootstrap — only ~8 lines anyway
 
-	// Skip the colored console handler entirely when no console is attached
-	// (e.g. a -H=windowsgui build): there is nowhere for it to render.
-	if wincoe.HasConsole() {
-		logger = slog.New(NewColoredConsoleHandler(bootstrapLevel, logger))
-	}
+// 	// Skip the colored console handler entirely when no console is attached
+// 	// (e.g. a -H=windowsgui build): there is nowhere for it to render.
+// 	if wincoe.HasConsole() {
+// 		logger = slog.New(NewColoredConsoleHandler(bootstrapLevel, logger))
+// 	}
 
-	// This line is now the very first log in the entire program
-	logger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
-	return logger
-}
+// 	// This line is now the very first log in the entire program
+// 	logger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
+// 	return logger
+// }
 
 // -----------------------------------------------------------------------------
 // Colored console handler (Windows-only, uses your exact color request)
@@ -2803,7 +2803,7 @@ func OldMain() {
 	case "error", "e":
 		envLvl = slog.LevelError
 	default:
-		envLvl = slog.LevelDebug
+		envLvl = slog.LevelDebug // hard-coded for bootstrap
 	}
 
 	// var logDest io.Writer = os.Stderr
@@ -2887,8 +2887,12 @@ func OldMain() {
 		handlers = append(handlers, slog.NewJSONHandler(bootLogFile, &slog.HandlerOptions{Level: envLvl, ReplaceAttr: timeReplacer}))
 	}
 
-	var localLogger = slog.New(multiHandler{handlers: handlers})
-	localLogger.Info("DNSbollocks starting... (pre-bootstrap-logging inited)", slog.String("version", GetVersion()))
+	// Inject the PID globally across all early bootstrap handlers
+	var localLogger = slog.New(multiHandler{handlers: handlers}).With(slog.Int("pid", os.Getpid()))
+	if localLogger == nil {
+		panic2("BUG: unexpected nil return from initBootstrapLogging")
+	}
+	localLogger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
 
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the default
@@ -2936,7 +2940,9 @@ func OldMain() {
 							localLogger.Warn("new process: while waiting for flush event of old process, WaitForSingleObject encountered an error", wincoe.SafeErr(waitErr))
 						} else {
 							if event == uint32(windows.WAIT_TIMEOUT) {
-								localLogger.Warn("new process: Timed out waiting for parent process' flush event.")
+								localLogger.Warn("new process: Timed out waiting for parent process' flush event.",
+									slog.Duration("waited_duration", waitMilliseconds),
+								)
 							}
 							// Whether it woke up instantly or timed out after 15s,
 							// the wait phase is complete. Prevent cascading fallback delays.
@@ -3022,7 +3028,9 @@ func OldMain() {
 		}
 
 		// 3. Ultimate Fallback: If neither kernel handle could be opened, fallback to a brief sleep
-		if !waitedSuccessfully {
+		if waitedSuccessfully {
+			localLogger.Debug("new process: done waiting.")
+		} else {
 			localLogger.Debug("new process: Falling back to brief sleep for parent exit...", slog.Duration("wait_duration", waitDuration))
 			time.Sleep(waitDuration)
 		}
@@ -3050,10 +3058,8 @@ func OldMain() {
 	//     _ = raceTest
 	// temporary placeholder — will be overwritten in initBootstrapLogging
 
-	localLogger = initBootstrapLogging(localLogger) // ← FIRST LINE — colored console, log now exists
-	if localLogger == nil {
-		panic2("BUG: unexpected nil return from initBootstrapLogging")
-	}
+	// localLogger = initBootstrapLogging(localLogger) // ← FIRST LINE — colored console, log now exists
+
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the colored bootstrap logger, not the silent default.
 	wincoe.SetBugLogger(localLogger)
@@ -6120,7 +6126,7 @@ var stripColorTags = func(groups []string, a slog.Attr) slog.Attr {
 	// 1. Force zero-padded timestamp (7 decimal places for Windows precision)
 	if a.Key == slog.TimeKey && len(groups) == 0 {
 		t := a.Value.Time()
-		formattedTime := t.Format("2006-01-02T15:04:05.0000000Z07:00")
+		formattedTime := t.Format(TimeStampsFormat) //"2006-01-02T15:04:05.0000000Z07:00")
 		return slog.String(slog.TimeKey, formattedTime)
 	}
 
@@ -6186,10 +6192,10 @@ func formatSimpleQueryLogLine(ts time.Time, typ, domain, action string, ips []st
 
 	// Replaced time.RFC3339Nano with a custom format using .000000000
 	// to force fixed-width trailing zeroes for perfect column alignment.
-	return fmt.Sprintf("%s %s %s %s %v\n", ts.Format("2006-01-02T15:04:05.000000000Z07:00"), typ, domain, action, ips)
+	return fmt.Sprintf("%s %s %s %s %v\n", ts.Format(TimeStampsFormat /*"2006-01-02T15:04:05.000000000Z07:00"*/), typ, domain, action, ips)
 }
 
-const TimeStampsFormat string = "2006-01-02 15:04:05.000000000-07:00 MST" // old: /*time.RFC3339*/
+const TimeStampsFormat string = "2006-01-02T15:04:05.0000000Z07:00" //old: "2006-01-02 15:04:05.000000000-07:00 MST" // older: /*time.RFC3339*/
 
 func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, respMsg *dns.Msg, upstreamState2 UpstreamState) {
 	log := s.getLogger()
@@ -14696,7 +14702,7 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 	// 8. Safely release process handle and handle potential release errors
 	if cmd.Process != nil {
 		if log != nil {
-			log.Debug("New process spawned successfully", slog.Int("pid", cmd.Process.Pid))
+			log.Debug("New process spawned successfully", slog.Int("new_pid", cmd.Process.Pid))
 		}
 		// Detach so the child doesn't become a zombie
 		if err := cmd.Process.Release(); err != nil && log != nil {
