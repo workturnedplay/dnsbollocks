@@ -2888,7 +2888,7 @@ func OldMain() {
 	}
 
 	var localLogger = slog.New(multiHandler{handlers: handlers})
-	localLogger.Info("DNSbollocks starting... (bootstrap-logging inited)", slog.String("version", GetVersion()))
+	localLogger.Info("DNSbollocks starting... (pre-bootstrap-logging inited)", slog.String("version", GetVersion()))
 
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the default
@@ -2896,9 +2896,9 @@ func OldMain() {
 	wincoe.Logger.Store(localLogger)
 
 	if handlesErr != nil {
-		localLogger.Warn("new process: failed to set the handles", wincoe.SafeErr(handlesErr))
+		localLogger.Warn("new process((re)iterating1of3): failed to set the handles", wincoe.SafeErr(handlesErr))
 	} else {
-		localLogger.Debug("new process: console handles were set ok")
+		localLogger.Debug("new process((re)iterating1of3): console handles were set ok")
 	}
 
 	// Defensive: If this process was spawned by an auto-restart, wait for the parent to die
@@ -2985,9 +2985,9 @@ func OldMain() {
 	wincoe.Logger.Store(localLogger)
 
 	if handlesErr != nil {
-		localLogger.Warn("new process: failed to set the handles", wincoe.SafeErr(handlesErr))
+		localLogger.Warn("new process((re)iterating2of3): failed to set the handles", wincoe.SafeErr(handlesErr))
 	} else {
-		localLogger.Debug("new process: console handles were set ok")
+		localLogger.Debug("new process((re)iterating2of3): console handles were set ok")
 	}
 
 	// go func() {//doneTODO: get this back but maybe every 5 minutes or 10 or 1? but see to properly shut it down tho.
@@ -3129,9 +3129,9 @@ func OldMain() {
 	}
 
 	if handlesErr != nil {
-		rt.Logger().Warn("new process2: failed to set the handles", slog.Any("err", handlesErr))
+		rt.Logger().Warn("new process((re)iterating3of3): failed to set the handles", slog.Any("err", handlesErr))
 	} else {
-		rt.Logger().Debug("new process2: console handler were set ok")
+		rt.Logger().Debug("new process((re)iterating3of3): console handler were set ok")
 	}
 
 	if err3 := srv.Run(sigChan); err3 != nil {
@@ -8643,7 +8643,7 @@ func finalShutdownSequence(logger *slog.Logger, exitCode int, exitFn func(int), 
 	UnstickStdinRead(logger)
 	// NEW: Check if the OS is forcefully terminating us
 	if skipInteractivePause.Load() {
-		logger.Debug("Skipping 'Press any key' pause because OS is forcefully terminating the session.")
+		logger.Debug("Skipping 'Press any key' pause because either the OS or we are forcefully terminating the session.")
 	} else { //nolint:gocritic // i want the braces
 		// Normal exit (like Ctrl+C or clean UI shutdown) - pause as usual
 		if !wincoe.WaitAnyKeyIfInteractive() {

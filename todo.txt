@@ -1,5 +1,7 @@
 my todos:
 
+* somehow we should, if having console, while spawning a new process, the old one should pause for press a key not bypass it! but only if having console! Also, somehow during the press any key msg, the spawning should still happen but not sure how we would handle the waiting for old to exit since it's waiting for a keypress and could be forever... and I know it times out waiting after 15 sec but that's 15 sec of no service in the new process and the old one doesn't server during press any key.
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
