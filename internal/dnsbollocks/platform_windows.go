@@ -2780,6 +2780,9 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 }
 
 func OldMain() {
+	//must do this first because localLogger below uses os.Stderr which is set here:
+	handlesErr := EnsureConsoleHandles()
+
 	// log is the single source of truth. Every log event goes through ONE call here.
 	// The multiHandler then fans it out to:
 	//   - dnsbollocks.log (JSON, everything)
@@ -2803,7 +2806,34 @@ func OldMain() {
 		envLvl = slog.LevelDebug
 	}
 
-	var localLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	var logDest io.Writer = os.Stderr
+	var bootLogPath string
+
+	// If restarting, prefer the explicitly passed env var
+	if envLog := os.Getenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE"); envLog != "" {
+		//FIXME: handle the case when user set this before first process ran and the spawned process thus overwrites this but don't we wanna keep this? even though well I guess it has same effect since we would still apply the same log file that parent said we should(so the one from config.json)
+		bootLogPath = envLog
+	} else {
+		// Attempt to peek at the log file path from config.json to capture very early boot logs
+		bootLogPath = "dnsbollocks.log" // Default
+		if data, err := os.ReadFile(configFileName); err == nil {
+			var peek struct {
+				LogFile string `json:"log_file"` //FIXME: so this is a dup, if the original gets renamed, it has to be done here too!
+			}
+			if json.Unmarshal(data, &peek) == nil && peek.LogFile != "" {
+				bootLogPath = peek.LogFile
+			}
+		}
+	}
+
+	var bootLogFile *os.File
+	// Open with FILE_SHARE_READ|FILE_SHARE_WRITE implicitly via Go os.OpenFile on Windows
+	if f, err := os.OpenFile(bootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+		logDest = io.MultiWriter(os.Stderr, f)
+		bootLogFile = f
+	}
+
+	var localLogger = slog.New(slog.NewTextHandler(logDest, &slog.HandlerOptions{
 		Level: envLvl,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Intercept the built-in time key
@@ -2821,8 +2851,6 @@ func OldMain() {
 	// during bootstrap uses the default
 	wincoe.SetBugLogger(localLogger)
 	wincoe.Logger.Store(localLogger)
-
-	handlesErr := EnsureConsoleHandles()
 
 	// Defensive: If this process was spawned by an auto-restart, wait for the parent to die
 	// so that file locks (loggers) and TCP/UDP ports are completely released by Windows.
@@ -2975,6 +3003,11 @@ func OldMain() {
 	// Update FileWriter safety settings now that we have the real config values.
 	rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
 	rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+
+	// Close the temporary bootstrap log file handle so the real LoggerManager can own it cleanly
+	if bootLogFile != nil {
+		bootLogFile.Close()
+	}
 
 	// Initialize full logging (file handlers, correct console level).
 	// After this call, bugLogger and wincoe.Logger are updated to the full logger.
@@ -8498,7 +8531,7 @@ func (s *Server) shutdown(exitCode int) {
 		// --- AUTO RESTART TRIGGER ---
 		if s.autoRestart.Load() {
 			cfg := s.getConfig()
-			spawnRestartProcess(log, cfg.HideConsole)
+			spawnRestartProcess(log, cfg.HideConsole, cfg.LogEverythingFile)
 		}
 		// ---------------------------
 
@@ -14342,7 +14375,7 @@ func init() {
 	}
 }
 
-func spawnRestartProcess(log *slog.Logger, hideConsole bool) {
+func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringStartupOfNewProcess string) {
 	rawExe, err := os.Executable()
 	if err != nil {
 		if log != nil {
@@ -14376,8 +14409,8 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool) {
 	// originally launched the app (e.g., project root), rather than .\bin\
 	cmd.Dir = initialCWD
 
-	// Inject clone flag to handle file-lock grace period on boot
-	cmd.Env = append(os.Environ(), "DNSBOLLOCKS_IS_RESTARTING=1")
+	// Inject clone flag to handle file-lock grace period on boot, and pass the log file
+	cmd.Env = append(os.Environ(), "DNSBOLLOCKS_IS_RESTARTING=1", "DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess)
 
 	// 6. Set process creation flags based on hide_console setting
 	var flags uint32
@@ -14438,47 +14471,11 @@ func (s *Server) issueAutoRestart() {
 // It returns a joined error if any of the recovery steps fail. Use errors.Is() to check.
 func EnsureConsoleHandles() error {
 	// If no console window is allocated to this process, there's nothing to attach to
-	if wincoe.GetConsoleWindow() == 0 {
+	if wincoe.GetConsoleWindow() == 0 { //FIXME: this can fail ie. panic2() and use os.Stderr to print the fail!
 		return fmt.Errorf("no console allocated, no handles to ensure")
 	}
 
 	var errs []error
-
-	// // 1. Repair STDOUT
-	// if hOut, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE); err != nil || hOut == 0 || hOut == windows.InvalidHandle {
-	// 	if fOut, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
-	// 		errs = append(errs, fmt.Errorf("open CONOUT$ for stdout failed: %w", openErr))
-	// 	} else {
-	// 		if setErr := windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(fOut.Fd())); setErr != nil {
-	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stdout failed: %w", setErr))
-	// 		}
-	// 		os.Stdout = fOut
-	// 	}
-	// }
-
-	// // 2. Repair STDERR
-	// if hErr, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE); err != nil || hErr == 0 || hErr == windows.InvalidHandle {
-	// 	if fErr, openErr := os.OpenFile("CONOUT$", os.O_RDWR, 0); openErr != nil {
-	// 		errs = append(errs, fmt.Errorf("open CONOUT$ for stderr failed: %w", openErr))
-	// 	} else {
-	// 		if setErr := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(fErr.Fd())); setErr != nil {
-	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stderr failed: %w", setErr))
-	// 		}
-	// 		os.Stderr = fErr
-	// 	}
-	// }
-
-	// // 3. Repair STDIN
-	// if hIn, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE); err != nil || hIn == 0 || hIn == windows.InvalidHandle {
-	// 	if fIn, openErr := os.OpenFile("CONIN$", os.O_RDWR, 0); openErr != nil {
-	// 		errs = append(errs, fmt.Errorf("open CONIN$ for stdin failed: %w", openErr))
-	// 	} else {
-	// 		if setErr := windows.SetStdHandle(windows.STD_INPUT_HANDLE, windows.Handle(fIn.Fd())); setErr != nil {
-	// 			errs = append(errs, fmt.Errorf("SetStdHandle for stdin failed: %w", setErr))
-	// 		}
-	// 		os.Stdin = fIn
-	// 	}
-	// }
 
 	/*
 		Behavior Matrix:
