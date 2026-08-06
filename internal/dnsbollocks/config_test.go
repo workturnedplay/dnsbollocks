@@ -288,6 +288,7 @@ func TestDefaultConfig_AllJSONFieldsHaveExplicitDefaults(t *testing.T) { //XXX: 
 		"AllowRunAsAdmin":   {},
 		"HideConsole":       {},
 		"WebUIPasswordHash": {},
+		"LogDir":            {},
 	}
 
 	cfg := defaultConfig()

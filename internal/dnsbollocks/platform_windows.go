@@ -124,9 +124,10 @@ type Config struct {
 	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
 	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
 	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. A domain must also match a whitelist rule before these overrides apply."`
-	LogQueriesFile          string `json:"log_queries" desc:"Path to the DNS query-only log file (JSON lines). Created automatically."`
-	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"Path to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
-	LogEverythingFile       string `json:"log_file"    desc:"Path to the full system log file (JSON lines, all levels including debug). Created automatically."`
+	LogDir                  string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
+	LogQueriesFile          string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
+	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"filename(no path!) to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
+	LogEverythingFile       string `json:"log_file"    desc:"filename(no path!) to the full system log file (JSON lines, all levels including debug). Created automatically."`
 	ConsoleLogLevel         string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
 	LogMaxSizeMB            int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
 	AllowRunAsAdmin         bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
@@ -181,7 +182,7 @@ type Config struct {
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
 
-	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response. 0 means instruct clients not to cache the blocked response at all; blocked responses are never stored in this proxy's own internal cache regardless of this value."`
+	BlockedResponseTTLSec    uint32 `json:"blocked_response_ttl_sec"       desc:"TTL (seconds) embedded in DNS records returned for blocked queries, controlling how long clients cache the block response. 0 means instruct clients not to cache the blocked response at all; blocked responses are also stored in this proxy's own internal cache for this amount for time."`
 	LocalHostsOverrideTTLSec uint32 `json:"localhosts_override_ttl_sec" desc:"TTL (seconds) embedded in DNS records synthesised from the local host-override file (hosts2ip.json), and how long this proxy's own internal cache retains that synthesized response. 0 means don't cache the response internally (every query re-evaluates the override fresh) and instructs clients not to cache it either."`
 
 	UILogMaxLines int `json:"ui_log_max_lines" desc:"Maximum log lines shown per page in the WebUI log viewer. Older lines are omitted to prevent excessive RAM usage and browser freezes."`
@@ -1497,6 +1498,7 @@ func defaultConfig() Config {
 		BlacklistFile: "response_blacklist.json",
 		HostsFile:     "hosts2ip.json",
 
+		LogDir:                      "", //in config dir
 		LogQueriesFile:              "queries.log",
 		LogQueriesSimpleFile:        "queries_simple.log",
 		LogEverythingFile:           "dnsbollocks.log",
@@ -4694,7 +4696,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 			// Re-fetch the logger just like s.logQuery does, ensuring we don't
 			// write to a closed file if a config reload happens mid-wait.
 			log := s.getLogger()
-			var exeName string = "<unknown_exe>"
+			var exeName string = unknownExePlaceHolder
 			if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
 				// // Non-blocking peek only: a rate-limited request must never wait on
 				// // the synchronous OS-level PID/exe lookup. Blocking here (as this
@@ -4711,9 +4713,22 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 				// } else {
 				// 	exeName = "<pending_lookup>"
 				// }
-				future.wg.Wait() // Wait safely in the background!
-				if future.info.exe != "" {
-					exeName = future.info.exe
+				//future.wg.Wait() // Wait safely in the background! blocks unconditionally! Because logQuery uses s.GoSafe, this goroutine is added to s.shutdownWG. If the Win32 call hangs forever, this goroutine hangs forever, which means s.shutdownWG.Wait() inside your s.shutdown() method will deadlock. Your server will refuse to shut down gracefully and will hang indefinitely.
+				select {
+				case <-future.done:
+					// log with metadata
+					if future.info.exe != "" {
+						exeName = future.info.exe
+					}
+				case <-s.ctx.Done():
+					// server is shutting down, abort the wait
+					log.Warn("Not waiting for a pid/exe metadata to be resolved due to server is shutting down, but will still log the query below, with exe name as " + exeName)
+					// return
+				case <-time.After(clientMetadataLookupTimeout):
+					// The OS API hung. Abort to prevent a permanent goroutine memory leak.
+					log.Warn("timed out waiting for client pid/exe metadata lookup for logging, but will still log the query below, with exe name as "+exeName,
+						slog.String("clientAddr", clientAddr), slog.Duration("timeout", clientMetadataLookupTimeout))
+					// exeName remains its default fallback (e.g., "<unknown_exe>")
 				}
 			} //if
 
@@ -5049,6 +5064,16 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		s.logQuery(ctx, clientAddr, domain, qtype,
 			filterReason+returnedModifiedSTR, //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
 			matchedID, blockedIPs, blocked, upstreamState3)
+
+		//The Bug: You return blocked directly to the client, but you never cache it.
+		//Because it isn't cached, the forwardInFlight leader finishes, unlocks the followers, and the followers check the cache. They miss the cache, and all of them instantly hammer the upstream resolver again. If a malicious script aggressively queries a domain that resolves to a blacklisted IP, it will bypass your cache entirely and DoS your upstream provider.
+		//The Fix: Cache the blocked response using your cfg.BlockedResponseTTLSec or cfg.CacheNegativeTTLSec before returning it:
+		if cfg.BlockedResponseTTLSec > 0 { // Or whatever negative TTL applies
+			cachee.Set(key, CacheEntry{
+				Msg:   blocked.Copy(),
+				State: upstreamState3,
+			}, time.Duration(cfg.BlockedResponseTTLSec)*time.Second)
+		}
 		return blocked
 	}
 
@@ -5069,6 +5094,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	return filtered
 }
+
+const unknownExePlaceHolder string = "<unknown_exe>"
+const unknownExePlaceHolderForURL string = "unknown-process"
 
 func computeTTLForCaching(msg *dns.Msg) time.Duration {
 	//To correctly handle upstream negative caching responses (like NXDOMAIN or NODATA), we need to check both the Answer section and the Ns (Authority) section. Additionally, if an SOA (Start of Authority) record is found in the Authority section, RFC 2308 mandates that the negative cache TTL should be capped by the SOA's Minttl value.
@@ -5334,7 +5362,7 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			// 1. Pass the merged context to the HTTP request
 			// Check if the user configured either variant of the placeholder in their upstream URL
 			if strings.Contains(targetURLStr, templateClientExe) || strings.Contains(targetURLStr, templateClientExeEscaped) {
-				exeName := "unknown-process"
+				var exeName string = unknownExePlaceHolderForURL //"unknown-process"
 
 				// Extract the metadata from the context. startMetadataLookup always
 				// stores a *ClientMetadataFuture (never a bare clientMetadata value),
@@ -6062,6 +6090,9 @@ func adjustResponseCaseToQuery(msg, reqMsg *dns.Msg) {
 	}
 	fixSection(msg.Answer)
 	fixSection(msg.Ns)
+	//The Bug: You missed the Extra (Additional) section. If the upstream provider returns an A/AAAA glue record or an EDNS0 OPT record in the Extra section that happens to match the query name, its casing will not be adjusted. Extremely strict 0x20-aware stub resolvers might reject the packet if the casing in the Extra section mismaths the Question section.
+	//The Fix: Add fixSection(msg.Extra) for completeness.
+	fixSection(msg.Extra)
 }
 
 const originalSTR string = "_ORIGINAL"
@@ -6247,12 +6278,30 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		}
 
 		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
-			future.wg.Wait()
+			var exeName string = unknownExePlaceHolder
+			// future.wg.Wait()//so this blocks forever, in theory, do I need to FIXME ? yea
+			select {
+			case <-future.done:
+				// Lookups completed normally
+				// log with metadata
+				if future.info.exe != "" {
+					exeName = future.info.exe
+				}
+			case <-s.ctx.Done():
+				// server is shutting down, abort the wait
+				log.Warn("Not waiting for an exe to be resolved due to server is shutting down, but will still log the query below")
+				//return
+			case <-time.After(clientMetadataLookupTimeout):
+				// The OS API hung. Abort to prevent a permanent goroutine memory leak.
+				log.Warn("timed out waiting for client pid/exe metadata lookup for logging",
+					slog.String("client", client), slog.Duration("timeout", clientMetadataLookupTimeout))
+				// exeName remains its default fallback (e.g., "<unknown_exe>")
+			}
 			//if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
 			info := future.info
 			elapsed := time.Since(info.startTime)
 			attrs = append(attrs,
-				slog.String("exe", info.exe))
+				slog.String("exe", exeName))
 			//To avoid cluttering the console, at least.
 			numServices := len(info.services)
 			if numServices != 0 {
@@ -12778,6 +12827,33 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	rawCfg.UpstreamSNIs = make([]string, len(upstreamSNIs))
 	copy(rawCfg.UpstreamSNIs, upstreamSNIs)
 
+	// Create a specific closure for logs
+	checkAndCleanLog := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {
+		if cleaned, changed := cleanLogFileName(log, *resolvedTarget, configKey, fallback); changed {
+			if *resolvedTarget != *rawTarget {
+				errStr := fmt.Sprintf("Won't overwrite template %q with cleaned value %q, you must do it manually then rerun.", *rawTarget, cleaned)
+				if isWebUI {
+					return errors.New(errStr)
+				} else {
+					return errors.New("FATAL: " + errStr)
+				}
+			}
+			*resolvedTarget = cleaned
+			*rawTarget = cleaned
+			shouldSaveConfig = true
+		}
+		return nil
+	}
+	if err := checkAndCleanLog(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultCfg.LogQueriesFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	if err := checkAndCleanLog(&resolvedCfg.LogQueriesSimpleFile, &rawCfg.LogQueriesSimpleFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)), defaultCfg.LogQueriesSimpleFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	if err := checkAndCleanLog(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultCfg.LogEverythingFile); err != nil {
+		return shouldSaveConfig, err
+	}
+
 	// Helper closure to apply the cleaning and track if a save is needed
 	checkAndClean := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {
 		if cleaned, changed := cleanFileName(log, *resolvedTarget, configKey, fallback); changed {
@@ -12802,15 +12878,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, err
 	}
 	if err := checkAndClean(&resolvedCfg.WhitelistFile, &rawCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultCfg.WhitelistFile); err != nil {
-		return shouldSaveConfig, err
-	}
-	if err := checkAndClean(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultCfg.LogQueriesFile); err != nil {
-		return shouldSaveConfig, err
-	}
-	if err := checkAndClean(&resolvedCfg.LogQueriesSimpleFile, &rawCfg.LogQueriesSimpleFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)), defaultCfg.LogQueriesSimpleFile); err != nil {
-		return shouldSaveConfig, err
-	}
-	if err := checkAndClean(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultCfg.LogEverythingFile); err != nil {
 		return shouldSaveConfig, err
 	}
 	if err := checkAndClean(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultCfg.HostsFile); err != nil {
@@ -12847,15 +12914,56 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	return shouldSaveConfig, nil
 }
 
+func cleanLogFileName(log *slog.Logger, original, configKey, fallback string) (string, bool) {
+	if fallback == "" {
+		msg := fmt.Sprintf("BUG: dev fail: passed empty filename to clean for config key %q and the fallback was also empty!", configKey)
+		log.Error(msg, slog.String("config_key", configKey))
+		panic(msg)
+	}
+	if original == "" {
+		return filepath.Base(filepath.Clean(fallback)), true
+	}
+
+	// Force extraction of JUST the filename.
+	// e.g., "C:\Windows\System32\evil.log" -> "evil.log"
+	// e.g., "../../../evil.log" -> "evil.log"
+	baseName := filepath.Base(filepath.Clean(original))
+
+	// If they passed something bizarre like "/" or ".", revert to fallback
+	if baseName == "." || baseName == string(filepath.Separator) {
+		baseName = filepath.Base(filepath.Clean(fallback))
+	}
+
+	// Standard Windows reserved name check
+	upperBase := strings.ToUpper(strings.TrimRight(baseName, ". "))
+	if _, reserved := wincoe.ReservedFileNames[upperBase]; reserved {
+		log.Warn("Log filename is a reserved Windows device name; using fallback",
+			slog.String("config_key", configKey),
+			slog.String("reserved", baseName),
+			slog.String("fallback", fallback))
+		return filepath.Base(filepath.Clean(fallback)), true
+	}
+
+	if baseName != original {
+		log.Warn("Directory paths are not allowed in log file settings to prevent arbitrary file writes. Stripped path.",
+			slog.String("config_key", configKey),
+			slog.String("original", original),
+			slog.String("forced_to", baseName))
+		return baseName, true
+	}
+
+	return original, false
+}
+
 // cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
 // //extracted this method to be a free function so the standalone logic can use it independently
 func cleanFileName(log *slog.Logger, original, configKey, fallback string) (string, bool) {
+	if fallback == "" {
+		msg := fmt.Sprintf("BUG: dev fail: passed empty filename to clean for config key %q and the fallback was also empty!", configKey)
+		log.Error(msg, slog.String("config_key", configKey))
+		panic(msg)
+	}
 	if original == "" {
-		if fallback == "" {
-			msg := fmt.Sprintf("BUG: dev fail: passed empty filename to clean for config key %q and the fallback was also empty!", configKey)
-			log.Error(msg, slog.String("config_key", configKey))
-			panic(msg)
-		}
 		log.Warn("Bad filename in config, used fallback",
 			slog.String("for_config_key", configKey),
 			slog.String("bad_filename", original),
@@ -13730,11 +13838,28 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// through here, so the raw rotatingLogWriter (which can itself block
 	// for a long time under disk contention) is wrapped in asyncLogWriter
 	// before being handed to slog; see asyncLogWriter's doc comment for why.
-	openLog := func(path string) (*AsyncLogWriter, error) {
-		if path == "" {
+	// openLog := func(path string) (*AsyncLogWriter, error) {
+	openLog := func(filename string) (*AsyncLogWriter, error) {
+		if filename == "" {
 			return nil, errors.New("empty logging filename")
 		}
+
+		// 1. Determine the active log directory:
+		// If cfg.LogDir is empty, default it to the config file's directory.
+		targetDir := cfg.LogDir
+		if targetDir == "" {
+			configDir := filepath.Dir(configFileName) //ie. current dir., ohkthenFIXME: although this might fail is the config file got removed since! actually it doesn't because it acts on the arg and arg is filename only! So it's current dir!
+			targetDir = configDir
+		}
+		// If LogDir doesn't exist, create it
+		if err := os.MkdirAll(targetDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
+			return nil, fmt.Errorf("failed to create log directory %q: %w", targetDir, err)
+		}
+
+		// Join the safely stripped filename with the configured Log Directory
+		path := filepath.Join(cfg.LogDir, filename)
 		path = filepath.Clean(path)
+
 		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
 		if err != nil {
 			return nil, fmt.Errorf("cannot open log file %q: %w", path, err)
