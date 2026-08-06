@@ -1,5 +1,9 @@
 my todos:
 
+* list the current process's PID in the /stats webUI page.
+
+* maybe move the Shutdown button from /stats into something else, like /control (a new thing) ?
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
