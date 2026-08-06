@@ -2810,7 +2810,8 @@ func OldMain() {
 
 	// var logDest io.Writer = os.Stderr
 	var bootLogPath string
-
+	var configuredLogDir string = filepath.Dir(configFileName) //default
+	const defaultBootLogFilename = "dnsbollocks.log"           // should match the one in Config.LogEverythingFile
 	// If restarting, prefer the explicitly passed env var
 	if envLog := os.Getenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE"); envLog != "" {
 		//doneFIXME: handle the case when user set this before first process ran and the spawned process thus overwrites this but don't we wanna keep this? even though well I guess it has same effect since we would still apply the same log file that parent said we should(so the one from config.json)
@@ -2820,7 +2821,7 @@ func OldMain() {
 		bootLogPath = envLog
 	} else {
 		// Attempt to peek at the log file path from config.json to capture very early boot logs
-		bootLogPath = "dnsbollocks.log" // Default
+		bootLogPath = defaultBootLogFilename // Default
 		if data, err := os.ReadFile(configFileName); err == nil {
 			// var peek struct {
 			// 	LogFile string `json:"log_file"` //doneFIXME: so this is a dup, if the original gets renamed, it has to be done here too!
@@ -2830,7 +2831,13 @@ func OldMain() {
 			// 	bootLogPath = peek.LogFile
 			// }
 			if json.Unmarshal(data, &peek) == nil {
-				// [RESOLVED FIXME 2]: Extract tag dynamically instead of hardcoding "log_file"
+				// 1. Extract log_dir tag dynamically
+				logDirTag := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogDir))
+				if val, ok := peek[logDirTag].(string); ok {
+					configuredLogDir = val
+				}
+
+				// 2. Extract log file tag dynamically (e.g., LogEverythingFile)
 				tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile))
 				if val, ok := peek[tag].(string); ok && val != "" {
 					bootLogPath = val
@@ -2839,10 +2846,28 @@ func OldMain() {
 		}
 	}
 
+	targetDir := configuredLogDir
+
+	// Force base filename only to prevent path traversal / arbitrary file writes during early boot
+	baseName := filepath.Base(filepath.Clean(bootLogPath))
+	if baseName == "." || baseName == string(filepath.Separator) {
+		baseName = defaultBootLogFilename
+	}
+
+	// Ensure the log directory exists before opening the file
+	if targetDir != "" {
+		// If LogDir doesn't exist, create it
+		if err := os.MkdirAll(targetDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
+			panic2(fmt.Sprintf("failed to create log directory %q: %v", targetDir, err))
+		}
+	}
+
+	finalBootLogPath := filepath.Join(targetDir, baseName)
+
 	var bootLogFile *os.File
-	cleanedLogPath := filepath.Clean(bootLogPath)
+	// cleanedLogPath := filepath.Clean(bootLogPath)
 	// Open with FILE_SHARE_READ|FILE_SHARE_WRITE implicitly via Go os.OpenFile on Windows
-	if f, err := os.OpenFile(cleanedLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+	if f, err := os.OpenFile(finalBootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
 		// logDest = io.MultiWriter(os.Stderr, f)
 		bootLogFile = f
 	}

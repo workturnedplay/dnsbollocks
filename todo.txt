@@ -1,5 +1,7 @@
 my todos:
 
+* the use of log_dir and Config.LogEverythingFile aka log_file at startup before config is even read is too flakey! and yet I want the ability to write those early logs to file (considering the potential for a panic/exit before the full logging is actually inited, is not viable to hold them in a memory buffer and write them then) and it is very non-DRY, not to mention how parsing the config may fail (while not even having a console because we just toggled it from hide_console false to true; so it's not happening on first run of the .exe which does log on console initially)
+
 * list the current process's PID in the /stats webUI page.
 
 * maybe move the Shutdown button from /stats into something else, like /control (a new thing) ?
