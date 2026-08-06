@@ -1433,8 +1433,12 @@ var (
 
 	// procGetTopWindow/procGetWindow: like procGetForegroundWindow, 0 is a
 	// legitimate "no such window in that relationship" result (empty
-	// desktop, no more siblings, etc.), not an unambiguous failure signal,
-	// so these are bound CheckNone and callers must check the HWND itself.
+	// desktop, no more siblings, etc.), not an unambiguous failure signal.
+	// Bound CheckNullWithLastError rather than CheckNone: a genuine failure
+	// (e.g. an invalid/destroyed hwnd) does set GetLastError, so this lets
+	// WinResult.Failed() distinguish "no window in that relationship" (r1==0,
+	// no error) from "the call actually failed" (r1==0, error set) — callers
+	// should still treat r1==0 as "nothing found" whenever .Succeeded().
 	procGetTopWindow = NewBoundProc1(User32, "GetTopWindow", CheckNullWithLastError) // was CheckNone
 	procGetWindow    = NewBoundProc2(User32, "GetWindow", CheckNullWithLastError)    // was CheckNone
 
