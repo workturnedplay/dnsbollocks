@@ -373,7 +373,8 @@
 <h2>{{.Title}}</h2>
 
 <form method="get" class="mb-20">
-    <input type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." class="w-300">
+    <label class="visually-hidden" for="logsSearchQuery">Search logs</label>
+    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." class="w-300">
     <button type="submit">Filter</button>
     <button type="button" class="btn-cancel js-logs-clear-btn">Clear</button>
 </form>

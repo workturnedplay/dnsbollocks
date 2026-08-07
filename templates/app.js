@@ -110,11 +110,15 @@
 
     const tableVersionElement = document.getElementById('tableVersionData');
 
-    const tableVersions = Object.freeze({
+    // Not frozen: applyStagedTableChanges()'s updateTableVersions() helper
+    // updates these in place after a partial (422) batch-apply, so a
+    // subsequent reload's staged-change restore matches the server's actual
+    // post-mutation state instead of the stale versions captured at page load.
+    const tableVersions = {
         rules: tableVersionElement?.dataset.rulesVersion || '0',
         hosts: tableVersionElement?.dataset.hostsVersion || '0',
         blacklist: tableVersionElement?.dataset.blacklistVersion || '0',
-    });
+    };
 
     const tablePageKey = location.pathname;
 
@@ -821,6 +825,20 @@
 
         return { response, redirectSuccess };
     }
+    // updateTableVersions adopts the server's authoritative post-mutation
+    // generation numbers onto the page's working copy of tableVersions, so a
+    // subsequent persistStagedTableChanges() records what the server is
+    // actually at. Without this, reloading after a partial (422) batch
+    // failure would make loadStoredStagedTableChanges()'s version-match
+    // check fail on the very next load, silently discarding the remaining
+    // still-valid staged changes.
+    function updateTableVersions(serverVersions) {
+        if (!serverVersions) return;
+        if (typeof serverVersions.rules === 'string') tableVersions.rules = serverVersions.rules;
+        if (typeof serverVersions.hosts === 'string') tableVersions.hosts = serverVersions.hosts;
+        if (typeof serverVersions.blacklist === 'string') tableVersions.blacklist = serverVersions.blacklist;
+    }
+
     async function applyStagedTableChanges() {
         const payload = JSON.stringify({
             versions: tableVersions,
@@ -859,18 +877,19 @@
         if (res.status === 422) {
             const appliedIds = new Set(body?.applied_client_ids || []);
             stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
+            // Adopt the server's authoritative post-mutation versions before
+            // persisting, so the reload below's restore-matching succeeds for
+            // the remaining, still-staged changes instead of discarding them.
+            updateTableVersions(body?.versions);
             persistStagedTableChanges();
             updateTableBanner();
 
             alert(
                 `Applied ${appliedIds.size} staged change(s), but some entries failed.\n` +
-                `The failed entries remain staged.`
+                `The failed entries remain staged. Reloading to refresh the table...`
             );
 
-            // Safe choice: do not auto-reload here.
-            // With the current version-gated restore logic, reloading now would
-            // usually discard the remaining staged entries because the page
-            // versions will have changed after successful mutations.
+            location.reload();
             return false;
         }
 
@@ -1109,15 +1128,17 @@
             // stay visible regardless of the current filter text, so the user
             // never loses track of what they've queued up.
             if (opts.alwaysShowStaged && row.classList.contains('staged')) {
-                // row.style.display = '';
-                row.hidden = false;
+                // Filtering only ever toggles .filtered-out, never the `hidden`
+                // attribute — `hidden` is reserved for edit-mode row-swapping
+                // and component visibility (banners), so the two mechanisms
+                // can never fight over the same row.
+                row.classList.remove('filtered-out');
                 return;
             }
             
             const searchTargetText = normalizeStr(opts.getSearchText(row).toLowerCase());
             const isMatch = rawNorm.length === 0 || matchesFilterExpression(searchTargetText, rawNorm);
-            // row.style.display = isMatch ? '' : 'none';
-            row.hidden = !isMatch;
+            row.classList.toggle('filtered-out', !isMatch);
             
             if (opts.highlightTerms) {
                 opts.highlightTerms(row, isMatch ? terms : []);
@@ -1259,10 +1280,12 @@
         const patternInput = clone.querySelector('.edit-host-pattern');
         patternInput.value = pat;
         patternInput.setAttribute('form', formId);
+        patternInput.setAttribute('aria-label', 'Host pattern');
         
         const ipsInput = clone.querySelector('.edit-host-ips');
         ipsInput.value = ips;
         ipsInput.setAttribute('form', formId);
+        ipsInput.setAttribute('aria-label', 'Host IP addresses');
         
         // 4. Save the new pattern and submit via AJAX
         form.addEventListener('submit', async function(eSubmit) {
@@ -1378,6 +1401,7 @@
         const cidrInput = clone.querySelector('.edit-blacklist-cidr');
         cidrInput.value = cidr;
         cidrInput.setAttribute('form', formId);
+        cidrInput.setAttribute('aria-label', 'Blacklisted IP or CIDR');
         
         // Save target CIDR signature and submit via AJAX
         form.addEventListener('submit', async function(eSubmit) {
@@ -1450,7 +1474,7 @@
     // Defense-in-depth: if options is empty (e.g. template failed to render), falls back
     //   to a plain text input so the field is still editable rather than silently broken.
     // Uses createElement/textContent throughout — no innerHTML, no string escaping needed.
-    function buildSelectElement(options, currentValue) {
+    function buildSelectElement(options, currentValue, ariaLabel) {
         if (!Array.isArray(options) || options.length === 0) {
             console.warn('buildSelectElement: empty or missing options list; falling back to plain text input. ' +
                 'This likely means the Go template did not inject the expected data-opts-* attribute.');
@@ -1458,11 +1482,13 @@
             input.type = 'text';
             input.className = 'config-input w-100';
             input.value = currentValue;
+            if (ariaLabel) input.setAttribute('aria-label', ariaLabel);
             return input;
         }
 
         const select = document.createElement('select');
         select.className = 'config-input w-100';
+        if (ariaLabel) select.setAttribute('aria-label', ariaLabel);
 
         // If the live value is not in the known enum (e.g. hand-edited config or written by a
         // newer Go version), prepend it as a clearly-labelled option so the user can see what
@@ -1551,15 +1577,15 @@
         // All branches use createElement + .value/.textContent — no innerHTML, no string escaping.
         if (key === CONFIG_KEYS.upstreamSelectionMode) {
             // Option values come from Go's upstreamSelectionMode* constants via CONFIG_KEYS.
-            container.appendChild(buildSelectElement(CONFIG_KEYS.optsUpstreamSelectionMode, currentDisplay));
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsUpstreamSelectionMode, currentDisplay, key + ' value'));
             hint.innerText = "Strategy for querying upstreams";
         } else if (key === CONFIG_KEYS.consoleLogLevel) {
             // Option values come from Go's consoleLogLevel* constants via CONFIG_KEYS.
-            container.appendChild(buildSelectElement(CONFIG_KEYS.optsConsoleLogLevel, currentDisplay));
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsConsoleLogLevel, currentDisplay, key + ' value'));
             hint.innerText = "Console output verbosity";
         } else if (key === CONFIG_KEYS.blockMode) {
             // Option values come from Go's blockMode* constants via CONFIG_KEYS.
-            container.appendChild(buildSelectElement(CONFIG_KEYS.optsBlockMode, currentDisplay));
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsBlockMode, currentDisplay, key + ' value'));
             hint.innerText = "Action taken when blocking queries";
         } else if (key === CONFIG_KEYS.webuiPasswordHash) {
             // Both fields are type="password" (masked) rather than plain text,
@@ -1572,6 +1598,7 @@
             pwdInput.autocomplete = 'new-password';
             pwdInput.className = 'config-input monospace-code2';
             pwdInput.placeholder = 'Enter NEW password here...';
+            pwdInput.setAttribute('aria-label', 'New password for ' + key);
             container.appendChild(pwdInput);
 
             const pwdConfirmInput = document.createElement('input');
@@ -1580,12 +1607,14 @@
             pwdConfirmInput.className = 'config-input-confirm monospace-code2';
             pwdConfirmInput.placeholder = 'Confirm new password...';
             pwdConfirmInput.style.marginTop = '6px';
+            pwdConfirmInput.setAttribute('aria-label', 'Confirm new password for ' + key);
             container.appendChild(pwdConfirmInput);
 
             hint.innerText = "Type a password (or paste a hash prefixed with $2) in both fields above; leave both empty to keep the current password.";
         } else if (type === 'bool') {
             const boolSelect = document.createElement('select');
             boolSelect.className = 'config-input w-100';
+            boolSelect.setAttribute('aria-label', key + ' value');
             const isTrue = currentDisplay === 'true';
             for (const val of ['true', 'false']) {
                 const opt = document.createElement('option');
@@ -1600,6 +1629,7 @@
             // Swap to textarea and format the current comma-string into 2xnewlines for easier editing and visually delimit each logical line (needed due to wrapping)
             const listTA = document.createElement('textarea');
             listTA.className = 'config-input config-textarea';
+            listTA.setAttribute('aria-label', key + ' value');
             // .value assignment never interprets HTML — safe even if entries contain < > & etc.
             listTA.value = currentDisplay.split(',').map(s => s.trim()).join('\n\n');
             container.appendChild(listTA);
@@ -1609,6 +1639,7 @@
             const numInput = document.createElement('input');
             numInput.type = 'number';
             numInput.className = 'config-input w-100';
+            numInput.setAttribute('aria-label', key + ' value');
             numInput.value = currentDisplay;
             container.appendChild(numInput);
             hint.innerText = "Integer value";
@@ -1616,6 +1647,7 @@
             const textInput = document.createElement('input');
             textInput.type = 'text';
             textInput.className = 'config-input w-100';
+            textInput.setAttribute('aria-label', key + ' value');
             textInput.value = currentDisplay;
             container.appendChild(textInput);
             hint.innerText = "BUG: FIXME: unhandled type '"+type+"', fallback to:String value";
@@ -1943,10 +1975,13 @@
                 const cancelBtn = clone.querySelector('.btn-cancel');
                 
                 // 3. Populate values securely as object properties (no string escaping needed)
+                typeSelect.setAttribute('aria-label', 'DNS record type');
                 typeSelect.value = typ;
                 idDisplay.textContent = isStagedAdd ? '(pending)' : id;
                 idDisplay.title = isStagedAdd ? '(pending \u2014 assigned on Apply)' : id;
+                patternInput.setAttribute('aria-label', 'Rule pattern');
                 patternInput.value = oldPattern;
+                enabledCheck.setAttribute('aria-label', 'Enabled');
                 enabledCheck.checked = enabled;
                 idInput.value = id;
                 
@@ -2456,41 +2491,48 @@
             }
             
             try {
-                const response = await fetchWithTimeout(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
-                if (response.ok) {
-                    const data = await response.json();
+                const response = await fetchWithTimeout(
+                    `/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`,
+                    {},
+                    ADMIN_CHECK_FETCH_TIMEOUT_MS
+                );
+
+                let data = null;
+                try {
+                    data = await response.json();
+                } catch (parseErr) {
+                    console.error('Blacklist overlap check returned a non-JSON response:', parseErr);
+                }
+
+                if (!response.ok) {
+                    alert(
+                        (data && data.error) ||
+                        `The blacklist overlap check rejected this input (HTTP ${response.status}).\n\nThe entry was not staged.`
+                    );
+                    return;
+                }
+
+                if (data && data.matches && data.matches.length > 0) {
+                    // Double-ask user confirmation showing exact matching filters
+                    const message = `This target is already covered or matched by these existing filters:\n• ` +
+                    data.matches.join('\n• ') +
+                    `\n\nDo you still want to add it as a separate redundant entry?`;
                     
-                    if (data.matches && data.matches.length > 0) {
-                        // Double-ask user confirmation showing exact matching filters
-                        const message = `This target is already covered or matched by these existing filters:\n• ` +
-                        data.matches.join('\n• ') +
-                        `\n\nDo you still want to add it as a separate redundant entry?`;
-                        
-                        if (!confirm(message)) {
-                            return; // User clicked "Cancel" -> abort
-                        }
+                    if (!confirm(message)) {
+                        return; // User clicked "Cancel" -> abort
                     }
                 }
             } catch (err) {
+                // Genuine network/timeout/protocol failure (not a server-side
+                // validation rejection, which is handled above via !response.ok).
+                // Deliberately conservative: never offer a "continue anyway"
+                // bypass here, since this catch covers everything from a
+                // browser-extension block to auth expiry to a 5xx to a code
+                // bug, and those warrant different handling than a simple retry.
                 console.error('Blacklist overlap validation check failed:', err);
-
-                // const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
-                // `Error details: ${err}\n\n` +
-                // `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
-                
-                // // If user clicks "Cancel" (No), abort form submission.
-                // // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
-                
-                // if (!confirm(msg)) {
-                //     console.log("chose to NOT add it without validation, cidrValue=" + cidrValue);
-                //     return; 
-                // } else {
-                //     console.log("chose to add it without validation, cidrValue=" + cidrValue);
-                // }
-                
                 const message = err instanceof Error ? err.message : String(err);
                 alert(
-                    'The blacklist overlap check could not be completed. (you must allow "fetch" (under "Custom") in NoScript Firefox extension)\n\n' +
+                    'The blacklist overlap check could not be completed (network error, timeout, or the request was blocked by browser/extension policy).\n\n' +
                     message +
                     '\n\nThe entry was not staged. Retry after resolving the error.'
                 );
@@ -2583,9 +2625,25 @@
                     return;
                 }
                 (async () => {
-                    const ok = await postAdminForm('/shutdown', { confirm: 'yes' }, 'Failed to shut down');
-                    if (ok) {
-                        alert('Shutdown initiated. The server will stop shortly.');
+                    try {
+                        const result = await sendAdminForm('/shutdown', { confirm: 'yes' }, { allowRedirectSuccess: false });
+                        if (result.response.ok) {
+                            alert('Shutdown initiated. The server will stop shortly.');
+                        } else {
+                            const errMsg = await result.response.text();
+                            alert('Failed to shut down:\n' + errMsg);
+                        }
+                    } catch (err) {
+                        // A network-level failure here (connection reset, timeout) is
+                        // ambiguous, not a clear failure: shutdownHandler writes and
+                        // flushes its 200 response, then waits 500ms before actually
+                        // exiting, specifically to let the response reach the client
+                        // first — but if the listener itself tears down mid-flight the
+                        // fetch can still fail even though shutdown genuinely succeeded.
+                        // Don't alarm the user with a scary "network error" for exactly
+                        // what they just asked to happen.
+                        console.warn('Shutdown request did not complete cleanly (this can be normal if the server already stopped):', err);
+                        alert('Shutdown request sent. If the server does not respond, it likely already stopped.');
                     }
                 })();
             });
@@ -2786,6 +2844,17 @@
                 for (const change of stagedTableChanges) {
                     renderStoredStagedChange(change);
                 }
+                // A restored staged EDIT of an existing row only updates that
+                // row's display and adds the 'staged' class — it never touches
+                // .filtered-out. If that row was hidden by a filter restored
+                // earlier in this same DOMContentLoaded pass (before this
+                // restore ran), it would otherwise stay invisible even though
+                // it's now staged and must always be shown. Re-running the
+                // filters clears .filtered-out on every staged row via the
+                // alwaysShowStaged branch above.
+                applyRulesFilter();
+                applyHostsFilter();
+                applyBlacklistFilter();
                 updateTableBanner();
             } else {
                 stagedStorage.removeItem(stagedStorageKey);

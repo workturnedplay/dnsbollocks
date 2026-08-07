@@ -6499,6 +6499,18 @@ func (ui *AdminUI) checkBlacklistMatches(n *net.IPNet) []string {
 	return ui.blacklist.CheckMatches(n)
 }
 
+// blacklistCheckResponse is the consistent JSON envelope returned by
+// responseBlacklistCheckHandler for every outcome: success (ok:true, with
+// Matches, possibly empty) and failure (ok:false, with Error and an
+// appropriate non-2xx HTTP status), so callers can distinguish "genuinely no
+// overlap" from "the input itself was rejected" instead of both silently
+// looking identical.
+type blacklistCheckResponse struct {
+	OK      bool     `json:"ok"`
+	Matches []string `json:"matches,omitempty"`
+	Error   string   `json:"error,omitempty"`
+}
+
 func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.Request) {
 	const allowedMethods = "GET, HEAD, OPTIONS"
 	if writeAllowHeaderResponse(w, r, allowedMethods) {
@@ -6509,22 +6521,27 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	log := ui.getLogger()
+
+	writeJSON := func(status int, resp blacklistCheckResponse) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Debug("failed to encode/write json response", wincoe.SafeErr(err))
+		}
+	}
 
 	cidrStr := strings.TrimSpace(r.URL.Query().Get("cidr"))
 	if cidrStr == "" {
-		if _, err := w.Write([]byte(`{"matches":[]}`)); err != nil {
-			log.Debug("client disconnected before write completed", wincoe.SafeErr(err))
-		}
+		writeJSON(http.StatusOK, blacklistCheckResponse{OK: true, Matches: []string{}})
 		return
 	}
 
-	// Parse incoming string to a network block
+	// Parse incoming string to a network block, accepting either a bare IP
+	// (auto-widened to /32 or /128) or an explicit CIDR.
 	_, n, err := net.ParseCIDR(cidrStr)
 	if err != nil {
-		ip := net.ParseIP(cidrStr)
-		if ip != nil {
+		if ip := net.ParseIP(cidrStr); ip != nil {
 			if ip.To4() != nil {
 				_, n, _ = net.ParseCIDR(cidrStr + "/32") //nolint:errcheck // IP is already validated above
 			} else {
@@ -6532,16 +6549,17 @@ func (ui *AdminUI) responseBlacklistCheckHandler(w http.ResponseWriter, r *http.
 			}
 		}
 	}
-
-	matches := []string{} // 👈 Initialize explicitly empty
-	if n != nil {
-		matches = ui.checkBlacklistMatches(n)
+	if n == nil {
+		writeJSON(http.StatusBadRequest, blacklistCheckResponse{
+			OK:    false,
+			Error: fmt.Sprintf("invalid IP address or CIDR: %q", cidrStr),
+		})
+		return
 	}
 
-	// Return array of matching filters to frontend
-	if err := json.NewEncoder(w).Encode(map[string][]string{"matches": matches}); err != nil {
-		log.Debug("failed to encode/write json response", wincoe.SafeErr(err))
-	}
+	// checkBlacklistMatches (via BlacklistStore.CheckMatches) always returns
+	// a non-nil, possibly-empty slice.
+	writeJSON(http.StatusOK, blacklistCheckResponse{OK: true, Matches: ui.checkBlacklistMatches(n)})
 }
 
 // faviconHandler serves an empty response for /favicon.ico.
@@ -14509,13 +14527,26 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// currentVersions() snapshots the CURRENT (post-mutation, whether that
+	// mutation fully succeeded, partially succeeded, or succeeded in-memory
+	// but failed to persist) generation numbers, so the client can adopt them
+	// and safely reload afterward without a stale-version mismatch discarding
+	// still-valid staged changes it never got to apply.
+	currentVersions := func() applyTablesResponseVersions {
+		return applyTablesResponseVersions{
+			Rules:     strconv.FormatUint(ui.ruleStore.Generation(), 10),
+			Hosts:     strconv.FormatUint(ui.hostStore.Generation(), 10),
+			Blacklist: strconv.FormatUint(ui.blacklist.Generation(), 10),
+		}
+	}
+
 	if flushErr := flushDirty(); flushErr != nil {
-		// http.Error(w, flushErr.Error(), http.StatusInternalServerError)
-		writeJSON(http.StatusInternalServerError, map[string]any{
-			"ok":                 false,
-			"applied_client_ids": appliedClientIDs,
-			"persistence_failed": true,
-			"error":              flushErr.Error(),
+		writeJSON(http.StatusInternalServerError, applyTablesResponse{
+			OK:                false,
+			Applied:           appliedClientIDs,
+			PersistenceFailed: true,
+			Error:             flushErr.Error(),
+			Versions:          currentVersions(),
 		})
 		return
 	}
@@ -14526,17 +14557,6 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	if blacklistTouched && ui.OnInvalidateBlacklist != nil {
 		ui.OnInvalidateBlacklist()
 	}
-
-	// if len(failures) > 0 {
-	// 	first := failures[0]
-	// 	msg := fmt.Sprintf(
-	// 		"%d of %d staged change(s) failed to apply; %d succeeded and were already persisted to disk (reload to see the current state). First failure at batch index %d for %q: %v",
-	// 		len(failures), len(changes), appliedCount, first.index, first.url, first.err,
-	// 	)
-	// 	log.Warn("Batch apply completed with partial failures", slog.Int("failed", len(failures)), slog.Int("applied", appliedCount), slog.Int("total", len(changes)))
-	// 	http.Error(w, msg, http.StatusUnprocessableEntity)
-	// 	return
-	// }
 
 	if len(failures) > 0 {
 		responseFailures := make([]batchFailureResponse, 0, len(failures))
@@ -14558,18 +14578,19 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		)
 
 		writeJSON(http.StatusUnprocessableEntity, applyTablesResponse{
-			OK:      false,
-			Applied: appliedClientIDs,
-			Failed:  responseFailures,
+			OK:       false,
+			Applied:  appliedClientIDs,
+			Failed:   responseFailures,
+			Versions: currentVersions(),
 		})
 		return
 	}
 
 	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
-	// w.WriteHeader(http.StatusOK)
 	writeJSON(http.StatusOK, applyTablesResponse{
-		OK:      true,
-		Applied: appliedClientIDs,
+		OK:       true,
+		Applied:  appliedClientIDs,
+		Versions: currentVersions(),
 	})
 }
 
@@ -15355,12 +15376,12 @@ func (ui *AdminUI) csrfTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// csrfMiddleware (which wraps this handler via innerMux) already resolved
-	// or minted the token for this exact request and stashed it in the
-	// context — reuse that instead of calling getOrCreateCSRFToken() a
-	// second time, which would risk emitting two conflicting Set-Cookie
-	// headers (and generating two different random tokens) for the same
-	// cookie name whenever no valid cookie existed yet on this request.
+	// csrfMiddleware (which wraps this handler via innerMux, ahead of it in
+	// the SetupRoutes chain) already resolved-or-minted the token for this
+	// exact request and stashed it in context. Reuse that instead of calling
+	// getOrCreateCSRFToken() a second time here, which could otherwise emit
+	// two conflicting Set-Cookie headers (and two different random tokens)
+	// for the same cookie name whenever no valid cookie existed yet.
 	token, ok := r.Context().Value(csrfTokenKey{}).(string)
 	if !ok || token == "" {
 		ui.getLogger().Error("BUG: csrfTokenHandler reached without a token in context; csrfMiddleware should always set one")
@@ -15440,8 +15461,23 @@ type batchFailureResponse struct {
 	Error    string `json:"error"`
 }
 
+// applyTablesResponseVersions mirrors tableVersions on the client: the
+// post-mutation generation numbers for each store, encoded as decimal
+// strings for symmetry with how the client already represents them
+// (data-*-version attributes are always strings) and with the request's own
+// tableVersions struct (also string fields) — no numeric/string coercion
+// needed on either side of the round trip.
+type applyTablesResponseVersions struct {
+	Rules     string `json:"rules"`
+	Hosts     string `json:"hosts"`
+	Blacklist string `json:"blacklist"`
+}
+
 type applyTablesResponse struct {
-	OK      bool                   `json:"ok"`
-	Applied []string               `json:"applied_client_ids,omitempty"`
-	Failed  []batchFailureResponse `json:"failed,omitempty"`
+	OK                bool                        `json:"ok"`
+	Applied           []string                    `json:"applied_client_ids,omitempty"`
+	Failed            []batchFailureResponse      `json:"failed,omitempty"`
+	Versions          applyTablesResponseVersions `json:"versions"`
+	PersistenceFailed bool                        `json:"persistence_failed,omitempty"`
+	Error             string                      `json:"error,omitempty"`
 }
