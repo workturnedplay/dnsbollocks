@@ -1748,6 +1748,14 @@
             numInput.value = currentDisplay;
             container.appendChild(numInput);
             hint.innerText = "Integer value";
+        } else if (type === 'string') {
+            const textInput = document.createElement('input');
+            textInput.type = 'text';
+            textInput.className = 'config-input w-100';
+            textInput.setAttribute('aria-label', key + ' value');
+            textInput.value = currentDisplay;
+            container.appendChild(textInput);
+            hint.innerText = "String value";
         } else {
             const textInput = document.createElement('input');
             textInput.type = 'text';

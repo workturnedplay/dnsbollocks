@@ -1,6 +1,10 @@
 my todos:
 
-* in app.js editConfig are we handling the log_dir string value? or only bool, []string and int ?!
+* see why all 3 logs buttons in webUI aren't showing, eg. they're empty! maybe they're not using log_dir ?!
+
+* Debug Vars in webui replaces the whole page, so can only get back to webUI by doing a Back button. Not good.
+
+* in config.json webui page the banner is "Unsaved Changes! You have staged 0 modification(s). " showing on first navigation! Correctly goes away if i stage 1 change then discard it! Has no effect (keeps showing) after a Discard All because it's showing for 0 modifs anyway.
 
 * show program version in webUI next to the big title ideally!
 
@@ -87,3 +91,6 @@ done:
 //* somehow we should, if having console, while spawning a new process, the old one should pause for press a key not bypass it! but only if having console! Also, somehow during the press any key msg, the spawning should still happen but not sure how we would handle the waiting for old to exit since it's waiting for a keypress and could be forever... and I know it times out waiting after 15 sec but that's 15 sec of no service in the new process and the old one doesn't server during press any key.
 
 //* fix bads from https://gemini.google.com/app/60f8cd2753c9b9bb  (todo:  done: 2,3,4,5  hallucinated: 1)
+
+//* in app.js editConfig are we handling the log_dir string value? or only bool, []string and int ?!
+
