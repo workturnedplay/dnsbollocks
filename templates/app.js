@@ -342,7 +342,7 @@
     // Blacklist "Add" form handlers.
     function stageNewEntry(url, fields) {
         const clientId = generateClientId();
-        stagedTableChanges.push({ url: url, fields: fields, clientId: clientId, clientId: generateClientId() });
+        stagedTableChanges.push({ url, fields, clientId });
         return clientId;
     }
 
@@ -739,33 +739,7 @@
     //     return true;
     // }
 
-    async function refreshCSRFToken() {
-        try {
-            const tokenRes = await fetch(window.location.pathname, {
-                method: 'GET',
-                credentials: 'same-origin',
-                cache: 'no-store',
-            });
-
-            if (!tokenRes.ok) {
-                return false;
-            }
-
-            const html = await tokenRes.text();
-            const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
-            if (!match || !match[1]) {
-                return false;
-            }
-
-            csrfToken = match[1];
-            const meta = document.querySelector('meta[name="csrf-token"]');
-            if (meta) meta.content = csrfToken;
-            return true;
-        } catch (err) {
-            console.error("Failed to recover CSRF token:", err);
-            return false;
-        }
-    }
+    
     async function postAdminForm(action, fields, errorPrefix) {
         let result;
         try {
@@ -836,6 +810,63 @@
 
         return { response, redirectSuccess };
     }
+    async function applyStagedTableChanges() {
+        const payload = JSON.stringify({
+            versions: tableVersions,
+            changes: stagedTableChanges.map(change => ({
+                url: change.url,
+                fields: change.fields,
+                client_id: change.clientId,
+            })),
+        });
+
+        let result;
+        try {
+            result = await sendAdminForm('/apply-tables', { payload }, { allowRedirectSuccess: false });
+        } catch (err) {
+            console.error('Failed to save staged changes:', err);
+            alert('Failed to save staged changes:\n' + (err instanceof Error ? err.message : String(err)));
+            return false;
+        }
+
+        const { response: res } = result;
+        const contentType = res.headers.get('Content-Type') || '';
+        const body = contentType.includes('application/json') ? await res.json() : null;
+
+        if (res.status === 409) {
+            alert(body?.error || 'The table changed since this page was loaded. Reload before applying again.');
+            return false;
+        }
+
+        if (res.status === 422) {
+            const appliedIds = new Set(body?.applied_client_ids || []);
+            stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
+            persistStagedTableChanges();
+            updateTableBanner();
+
+            alert(
+                `Applied ${appliedIds.size} staged change(s), but some entries failed.\n` +
+                `The failed entries remain staged.`
+            );
+
+            // Safe choice: do not auto-reload here.
+            // With the current version-gated restore logic, reloading now would
+            // usually discard the remaining staged entries because the page
+            // versions will have changed after successful mutations.
+            return false;
+        }
+
+        if (!res.ok) {
+            alert(body?.error || (await res.text()) || `HTTP ${res.status}`);
+            return false;
+        }
+
+        stagedTableChanges = [];
+        stagedStorage.removeItem(stagedStorageKey);
+        updateTableBanner();
+        location.reload();
+        return true;
+    }
 
 
     // withApplyButtonBusy disables `button` and swaps in `busyLabel` for the
@@ -890,22 +921,13 @@
         const bodyText = await res.text();
 
         // --- CSRF Auto-Recovery ---
-        if (!res.ok && res.status === 403 && bodyText.includes('CSRF') && !isRetry) {
+        if (!res.ok && res.status === 403 &&
+            res.headers.get('X-DNSbollocks-Error') === 'csrf' &&
+            !isRetry) {
             console.log("CSRF token invalid/expired in blocks AJAX. Attempting recovery...");
-            try {
-                const tokenRes = await fetchWithTimeout(window.location.pathname);
-                if (tokenRes.ok) {
-                    const html = await tokenRes.text();
-                    const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
-                    if (match && match[1]) {
-                        csrfToken = match[1];
-                        const meta = document.querySelector('meta[name="csrf-token"]');
-                        if (meta) meta.content = csrfToken;
-                        return await postBlocksAction(domain, type, action, true);
-                    }
-                }
-            } catch (e) {
-                console.error("Failed to recover CSRF token:", e);
+            if (await refreshCSRFToken()) {
+                console.log("Successfully obtained new CSRF token. Retrying request...");
+                return await postBlocksAction(domain, type, action, true);
             }
         }
         
@@ -1845,11 +1867,12 @@
                 (async () => {
                     await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
                         // const payload = JSON.stringify(stagedTableChanges);
-                        const payload = JSON.stringify({
-                            versions: tableVersions,
-                            changes: stagedTableChanges,
-                        });
-                        return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
+                        // const payload = JSON.stringify({
+                        //     versions: tableVersions,
+                        //     changes: stagedTableChanges,
+                        // });
+                        // return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
+                        return applyStagedTableChanges();
                     });
                     // Always clear staged changes and reload: even a reported
                     // failure may reflect a batch where some earlier entries
@@ -2582,7 +2605,182 @@
             window.history.replaceState({}, document.title, window.location.pathname);
         }
         
+        function cssEscapeAttrValue(value) {
+            const s = String(value ?? '');
+            if (window.CSS && typeof CSS.escape === 'function') {
+                return CSS.escape(s);
+            }
+            // Fallback for older browsers: good enough for our stored patterns/CIDs.
+            return s.replace(/["\\]/g, '\\$&');
+        }
+
+        function findRulesRowById(id) {
+            return document.querySelector(
+                `#rulesTable tbody tr[data-rule-id="${cssEscapeAttrValue(id)}"]`
+            );
+        }
+
+        function findHostsRowByOriginalPattern(pattern) {
+            return document.querySelector(
+                `#hostsTable tbody tr[data-orig-pattern="${cssEscapeAttrValue(pattern)}"]`
+            );
+        }
+
+        function findBlacklistRowByOriginalCidr(cidr) {
+            return document.querySelector(
+                `#blacklistTable tbody tr[data-orig-cidr="${cssEscapeAttrValue(cidr)}"]`
+            );
+        }
+
+        function renderStagedRuleChange(change) {
+            const fields = change?.fields || {};
+            const tbody = document.querySelector('#rulesTable tbody');
+            if (!tbody) return;
+
+            // Staged add: no server-side ID yet, so recreate the row from scratch.
+            if (!fields.id && !fields.delete && !fields.edit) {
+                const type = fields.type || 'A';
+                const pattern = fields.pattern || '';
+                const enabled = fields.enabled !== 'false';
+                tbody.insertBefore(
+                    buildRuleRowElement(change.clientId, type, pattern, enabled),
+                    tbody.firstChild
+                );
+                return;
+            }
+
+            const row = findRulesRowById(fields.id || '');
+            if (!row) {
+                console.warn('renderStagedRuleChange: could not find row for restored change', change);
+                return;
+            }
+
+            if (fields.delete === '1') {
+                // Staged delete: restore the original visible values, then strike through.
+                applyRuleRowDisplay(
+                    row,
+                    row.dataset.origType,
+                    row.dataset.origPattern,
+                    row.dataset.origEnabled === 'true'
+                );
+                row.classList.remove('staged-add');
+                row.classList.add('staged-delete', 'staged');
+                return;
+            }
+
+            // Staged edit: apply the staged values directly to the existing row.
+            const type = fields.type || row.dataset.origType;
+            const pattern = fields.pattern || row.dataset.origPattern;
+            const enabled = fields.enabled === 'true';
+
+            applyRuleRowDisplay(row, type, pattern, enabled);
+            row.classList.add('staged');
+        }
+
+        function renderStagedHostChange(change) {
+            const fields = change?.fields || {};
+            const tbody = document.querySelector('#hostsTable tbody');
+            if (!tbody) return;
+
+            // Staged add: create a brand-new row.
+            if (!fields.old_pattern && !fields.edit && !fields.delete) {
+                const pattern = fields.pattern || '';
+                const ips = fields.ips || '';
+                tbody.appendChild(buildHostRowElement(change.clientId, pattern, ips));
+                return;
+            }
+
+            const origPattern = fields.old_pattern || fields.pattern || '';
+            const row = findHostsRowByOriginalPattern(origPattern);
+            if (!row) {
+                console.warn('renderStagedHostChange: could not find row for restored change', change);
+                return;
+            }
+
+            if (fields.delete === '1') {
+                applyHostRowDisplay(row, row.dataset.origPattern, row.dataset.origIps);
+                row.classList.remove('staged-add');
+                row.classList.add('staged-delete', 'staged');
+                return;
+            }
+
+            // Staged edit of an existing row.
+            const pattern = fields.pattern || row.dataset.origPattern;
+            const ips = fields.ips || row.dataset.origIps;
+
+            applyHostRowDisplay(row, pattern, ips);
+            row.classList.add('staged');
+        }
+
+        function renderStagedBlacklistChange(change) {
+            const fields = change?.fields || {};
+            const tbody = document.querySelector('#blacklistTable tbody');
+            if (!tbody) return;
+
+            // Staged add.
+            if (fields.action === 'add') {
+                const cidr = fields.cidr || '';
+                tbody.insertBefore(
+                    buildBlacklistRowElement(change.clientId, cidr),
+                    tbody.firstChild
+                );
+                return;
+            }
+
+            const origCidr = fields.old_cidr || fields.cidr || '';
+            const row = findBlacklistRowByOriginalCidr(origCidr);
+            if (!row) {
+                console.warn('renderStagedBlacklistChange: could not find row for restored change', change);
+                return;
+            }
+
+            if (fields.action === 'delete') {
+                applyBlacklistRowDisplay(row, row.dataset.origCidr);
+                row.classList.remove('staged-add');
+                row.classList.add('staged-delete', 'staged');
+                return;
+            }
+
+            // Staged edit.
+            if (fields.action === 'edit') {
+                const cidr = fields.cidr || row.dataset.origCidr;
+                applyBlacklistRowDisplay(row, cidr);
+                row.classList.add('staged');
+                return;
+            }
+
+            console.warn('renderStagedBlacklistChange: unrecognized restored change', change);
+        }
         
+        function renderStoredStagedChange(change) {
+            switch (change.url) {
+                case '/rules':
+                    renderStagedRuleChange(change);
+                    break;
+                case '/hosts':
+                    renderStagedHostChange(change);
+                    break;
+                case '/response-blacklist':
+                    renderStagedBlacklistChange(change);
+                    break;
+                default:
+                    throw new Error(`Unsupported staged-change URL: ${change.url}`);
+            }
+        }
+
+        const restoredChanges = loadStoredStagedTableChanges();
+        if (restoredChanges) {
+            if (confirm(`Restore ${restoredChanges.length} staged change(s) from this tab's previous session?`)) {
+                stagedTableChanges = restoredChanges;
+                for (const change of stagedTableChanges) {
+                    renderStoredStagedChange(change);
+                }
+                updateTableBanner();
+            } else {
+                stagedStorage.removeItem(stagedStorageKey);
+            }
+        }
+
         // --- Generic Sorting Framework Initialization ---
         function setupTableSorting(tableId, storageKeyPrefix, postSortCallback) {
             const table = document.getElementById(tableId);
