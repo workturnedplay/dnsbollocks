@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,7 +60,8 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 		Raw:      &cfg, // In tests raw == resolved (no tokens), so share the same pointer.
 	})
 
-	ui := NewAdminUI(&liveConfigs, &liveLogger, rs, hs, bl, lt, rb, stats, tpls)
+	var tableMutationMu sync.Mutex
+	ui := NewAdminUI(&liveConfigs, &liveLogger, rs, hs, bl, &tableMutationMu, lt, rb, stats, tpls)
 	rec := httptest.NewRecorder()
 
 	return ui, rec

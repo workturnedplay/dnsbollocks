@@ -123,7 +123,7 @@ type Config struct {
 	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
 	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
 	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
-	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. A domain must also match a whitelist rule before these overrides apply."`
+	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. Resolved locally without needing to match the whitelist rules first."`
 	LogDir                  string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
 	LogQueriesFile          string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
 	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"filename(no path!) to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
@@ -268,6 +268,8 @@ type Server struct {
 	exitFn func(int) // set to os.Exit by default; override in tests
 
 	autoRestart atomic.Bool // Flag to indicate an automatic restart is requested
+
+	tableMutationMu sync.Mutex
 }
 
 // AdminUI handles all the web control panel routes.
@@ -319,6 +321,8 @@ type AdminUI struct {
 	//UI calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
 	//getExpectedHost func() string // used by hostValidation
+
+	tableMutationMu *sync.Mutex
 }
 
 // pointer to live logger via Runtime
@@ -781,6 +785,8 @@ type BlacklistFileFormat struct {
 
 // Call once during startup (inside loadConfig or after it)
 func (s *Server) loadResponseBlacklist() error {
+	s.tableMutationMu.Lock()
+	defer s.tableMutationMu.Unlock()
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -965,6 +971,9 @@ func detectDuplicateJSONObjectKeysAtTopLevelOnly(data []byte) (duplicates []stri
 }
 
 func (s *Server) loadLocalHosts() error {
+	s.tableMutationMu.Lock()
+	defer s.tableMutationMu.Unlock()
+
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -1259,6 +1268,9 @@ func (s *Server) saveQueryWhitelist() error {
 
 // Loads whitelist rules from dedicated file
 func (s *Server) loadQueryWhitelist() error {
+	s.tableMutationMu.Lock()
+	defer s.tableMutationMu.Unlock()
+
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -2924,7 +2936,7 @@ func OldMain() {
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the default
 	wincoe.SetBugLogger(localLogger)
-	wincoe.Logger.Store(localLogger)
+	wincoe.SetLogger(localLogger)
 
 	if handlesErr != nil {
 		localLogger.Warn("new process((re)iterating1of3): failed to set the handles", wincoe.SafeErr(handlesErr))
@@ -3090,7 +3102,7 @@ func OldMain() {
 	// Wire the global fallback logger immediately so any panic2/getBugLogger call
 	// during bootstrap uses the colored bootstrap logger, not the silent default.
 	wincoe.SetBugLogger(localLogger)
-	wincoe.Logger.Store(localLogger)
+	wincoe.SetLogger(localLogger)
 
 	if handlesErr != nil {
 		localLogger.Warn("new process((re)iterating2of3): failed to set the handles", wincoe.SafeErr(handlesErr))
@@ -6597,6 +6609,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/logs_queries_simple", ui.logsQueriesSimpleHandler)
 	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.HandleFunc("/shutdown", ui.shutdownHandler)
+	innerMux.HandleFunc("/csrf-token", ui.csrfTokenHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
 	// Determine cache strategy based on build state
@@ -6634,16 +6647,18 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	outerMux.Handle(
 		"/favicon.ico",
 		ui.securityHeadersMiddleware(
-			ui.fetchMetadataWhitelistMiddleware(
-				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(faviconHandler))),
+			ui.requestBodyLimitMiddleware(
+				ui.fetchMetadataWhitelistMiddleware(
+					ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(faviconHandler)))),
 		),
 	)
 
 	outerMux.Handle(
 		"/robots.txt",
 		ui.securityHeadersMiddleware(
-			ui.fetchMetadataWhitelistMiddleware(
-				ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(ui.robotsTxtHandler))),
+			ui.requestBodyLimitMiddleware(
+				ui.fetchMetadataWhitelistMiddleware(
+					ui.hostValidationMiddleware(boundAddr, http.HandlerFunc(ui.robotsTxtHandler)))),
 		),
 	)
 
@@ -6654,6 +6669,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	h = ui.originValidationMiddleware(boundAddr, usedTLS, h)
 	h = ui.hostValidationMiddleware(boundAddr, h)
 	h = ui.fetchMetadataWhitelistMiddleware(h)
+	h = ui.requestBodyLimitMiddleware(h)
 	h = ui.securityHeadersMiddleware(h)
 	outerMux.Handle("/", h)
 	//outerMux.Handle("/", ui.hostValidation(ui.authMiddleware(ui.csrfMiddleware(innerMux))))
@@ -6968,9 +6984,39 @@ func (ui *AdminUI) originValidationMiddleware(expectedHost string, useTLS bool, 
 	})
 }
 
+func (ui *AdminUI) requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil ||
+			(r.Method != http.MethodPost &&
+				r.Method != http.MethodPut &&
+				r.Method != http.MethodPatch) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		limit := maxWebUIFormBodyBytes
+		if r.URL.Path == "/apply-tables" {
+			limit = maxWebUIBatchBodyBytes
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+
+		// Authenticated HTML/API responses may contain CSRF tokens, logs,
+		// configuration values, and other operator-only state. Static assets are
+		// versioned separately and retain their existing cache policy.
+		if !strings.HasPrefix(r.URL.Path, "/static/") &&
+			r.URL.Path != "/favicon.ico" &&
+			r.URL.Path != "/robots.txt" {
+			h.Set("Cache-Control", "no-store")
+			h.Set("Pragma", "no-cache")
+		}
 
 		// Prevent embedding the UI in <iframe>, <frame>, <object>, etc.
 		// CSP is the modern standard; X-Frame-Options helps older browsers.
@@ -6994,7 +7040,13 @@ func (ui *AdminUI) securityHeadersMiddleware(next http.Handler) http.Handler {
 					Content-Security-Policy: The page’s settings blocked the loading of a resource (media-src) at data: because it violates the following directive: “media-src http: file:”
 				*/
 				//"media-src 'self' data:; "+ //(untested) <--- Restores peace with NoScript placeholders XXX: Adding "media-src 'self' data:;" tells the browser: "It's completely fine to execute audio/video tags coming from our own domain or from local data-blobs loaded inside the browser." This satisfies NoScript's safety checks completely, and your console logs will be perfectly quiet again.
-				"media-src 'none'; "+ // <--- Explicitly locked down, NoScript will complain like:
+				"media-src 'none'; "+ // <--- Explicitly locked down, NoScript will complain like: (I forgot to add this)
+
+				"frame-src 'none'; "+
+				"worker-src 'none'; "+
+				"manifest-src 'none'; "+
+
+				//Do not add upgrade-insecure-requests; it could interfere with intentional HTTP loopback operation. TODO: maybe add this upgrade-insecure-requests only when it's known https? r.TLS!=nil(is the way used in another place) ?!
 
 				"frame-ancestors 'none'; "+
 				"form-action 'self'; "+
@@ -7093,7 +7145,6 @@ func verifyCSRFToken(token string, secret []byte) bool {
 	return hmac.Equal(sig, expected)
 }
 
-// const csrfTokenKey contextKey = "csrfToken"
 type csrfTokenKey struct{}
 
 func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
@@ -7101,44 +7152,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		log := ui.getLogger()
 		//cfg := ui.getConfig()
 
-		// The __Host- cookie name prefix (RFC 6265bis) forces the browser to
-		// require Secure, Path=/, and no Domain attribute, and — crucially —
-		// makes the cookie strictly host-locked: no other origin, including a
-		// same-registrable-domain subdomain (e.g. via a subdomain XSS bug),
-		// can ever set or override it. This only works when actually served
-		// over HTTPS (the prefix requires Secure, which the browser also then
-		// requires to accept the Set-Cookie at all), so fall back to an
-		// unprefixed name on the plain-HTTP path.
-		var cookieName string
-		if r.TLS != nil {
-			cookieName = "__Host-csrf_token"
-		} else {
-			cookieName = "csrf_token"
-		}
-
-		// 1. Get or generate the CSRF cookie. A cookie is only trusted as
-		// "the" token if it carries a valid HMAC signature under this
-		// process's in-memory csrfSecret — see verifyCSRFToken's doc comment
-		// for why blindly trusting an existing cookie value is a token
-		// fixation vulnerability.
-		cookie, err := r.Cookie(cookieName)
-		var token string
-
-		if err != nil || cookie.Value == "" || !verifyCSRFToken(cookie.Value, ui.csrfSecret) {
-			token = newCSRFToken(ui.csrfSecret)
-			http.SetCookie(w,
-				//nolint:gosec // G124: HttpOnly and SameSite are set below; Secure is intentionally conditional on r.TLS to support both HTTP and HTTPS listeners without separate config
-				&http.Cookie{
-					Name:     cookieName,
-					Value:    token,
-					Path:     "/",
-					HttpOnly: true, // Prevent client-side JS from reading the cookie
-					SameSite: http.SameSiteStrictMode,
-					Secure:   r.TLS != nil, // <-- Zero configuration dependency! //doneFIXME: actually use some other thing that tells me whether we're doing this listening over https or http on the currently running server, else if I just change the config before I relisten the server this might go from true to false if i changed from https to http, even tho it's still https until the relisten happens.
-				})
-		} else {
-			token = cookie.Value
-		}
+		token := ui.getOrCreateCSRFToken(w, r)
 
 		// 2. Pass token down the context so the template renderer can grab it
 		ctx := context.WithValue(r.Context(), csrfTokenKey{}, token)
@@ -7166,6 +7180,7 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 					slog.String("referer", refererHeader), // The exact URL making the request
 					slog.String("user_agent", userAgent),
 				)
+				w.Header().Set("X-DNSbollocks-Error", "csrf")
 				http.Error(w, "403 Forbidden - CSRF Verification Failed", http.StatusForbidden)
 				return
 			}
@@ -7198,8 +7213,13 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 // RuleStore manages the in-memory DNS query whitelist.
 // Persistence (loadQueryWhitelist / saveQueryWhitelist) stays on Server.
 type RuleStore struct {
-	mu    sync.Mutex                             // Serializes writers (Add, Update, Delete, ReplaceAll)
-	rules atomic.Pointer[map[string][]RuleEntry] // type -> rules
+	mu         sync.Mutex                             // Serializes writers (Add, Update, Delete, ReplaceAll)
+	rules      atomic.Pointer[map[string][]RuleEntry] // type -> rules
+	generation atomic.Uint64
+}
+
+func (rs *RuleStore) Generation() uint64 {
+	return rs.generation.Load()
 }
 
 // only use once, before server start, never on reloads(Ctrl+R) tho
@@ -7207,6 +7227,7 @@ func newRuleStore() *RuleStore {
 	rs := &RuleStore{}
 	empty := make(map[string][]RuleEntry)
 	rs.rules.Store(&empty)
+	rs.generation.Add(1)
 	return rs
 }
 
@@ -7227,6 +7248,7 @@ func (rs *RuleStore) ReplaceAll(newRules map[string][]RuleEntry) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.rules.Store(&newRules)
+	rs.generation.Add(1)
 }
 
 // Snapshot returns a full deep copy (for the web UI and for saving).
@@ -7280,6 +7302,7 @@ func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Log
 	next := cloneRuleMap(current)
 	next[typ] = withRulePrepended(next[typ], newRule, logger)
 	rs.rules.Store(&next)
+	rs.generation.Add(1)
 
 	//logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
 	//slog.String("id", id), slog.Bool("enabled", enabled))
@@ -7304,12 +7327,14 @@ func (rs *RuleStore) DeleteRule(typ, id string, logger *slog.Logger) (pattern st
 		return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
 	}
 	for i, rule := range rules {
-		if rule.ID == id {
-			next := cloneRuleMap(current)
-			next[typ] = withRuleRemovedAt(rules, i, logger)
-			rs.rules.Store(&next)
-			return rule.Pattern, nil
+		if rule.ID != id {
+			continue
 		}
+		next := cloneRuleMap(current)
+		next[typ] = withRuleRemovedAt(rules, i, logger)
+		rs.rules.Store(&next)
+		rs.generation.Add(1)
+		return rule.Pattern, nil
 	}
 	return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
 }
@@ -7364,6 +7389,7 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 		next[newType] = withRulePrepended(next[newType], newRule, logger)
 	}
 	rs.rules.Store(&next)
+	rs.generation.Add(1)
 
 	// logger.Info("Rule updated", slog.String("id", id),
 	// 	slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
@@ -7407,6 +7433,7 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.L
 		updatedRule.Enabled = enabled
 		next[typ] = withRuleUpdatedAtIndex(next[typ], i, updatedRule, logger)
 		rs.rules.Store(&next)
+		rs.generation.Add(1)
 
 		return true, true
 	}
@@ -7415,8 +7442,13 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.L
 
 // HostStore manages local hostname overrides.
 type HostStore struct {
-	mu    sync.RWMutex
-	hosts []LocalHostRule
+	mu         sync.RWMutex
+	hosts      []LocalHostRule
+	generation atomic.Uint64
+}
+
+func (hs *HostStore) Generation() uint64 {
+	return hs.generation.Load()
 }
 
 func newHostStore() *HostStore { return &HostStore{} }
@@ -7425,6 +7457,7 @@ func (hs *HostStore) ReplaceAll(hosts []LocalHostRule) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 	hs.hosts = hosts
+	hs.generation.Add(1)
 }
 
 // Match returns the IPs for the first rule whose pattern matches domain, or nil.
@@ -7482,6 +7515,7 @@ func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
 		}
 	}
 	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips})
+	hs.generation.Add(1)
 	return nil
 }
 
@@ -7503,6 +7537,7 @@ func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error
 	hs.hosts = deleteHostEntry(hs.hosts, oldPattern)
 	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // safe eviction
 	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips})
+	hs.generation.Add(1)
 	return nil
 }
 
@@ -7512,7 +7547,12 @@ func (hs *HostStore) DeleteHost(pattern string) bool {
 	defer hs.mu.Unlock()
 	before := len(hs.hosts)
 	hs.hosts = deleteHostEntry(hs.hosts, pattern)
-	return len(hs.hosts) < before
+	// return len(hs.hosts) < before
+	removed := len(hs.hosts) < before
+	if removed {
+		hs.generation.Add(1)
+	}
+	return removed
 }
 
 func (hs *HostStore) Len() int {
@@ -7533,8 +7573,13 @@ func deleteHostEntry(hosts []LocalHostRule, pattern string) []LocalHostRule {
 
 // BlacklistStore manages the response-IP blacklist.
 type BlacklistStore struct {
-	mu   sync.RWMutex
-	nets []*net.IPNet // parsed and ready-to-use form
+	mu         sync.RWMutex
+	nets       []*net.IPNet // parsed and ready-to-use form
+	generation atomic.Uint64
+}
+
+func (bs *BlacklistStore) Generation() uint64 {
+	return bs.generation.Load()
 }
 
 func newBlacklistStore() *BlacklistStore { return &BlacklistStore{} }
@@ -7543,6 +7588,7 @@ func (bs *BlacklistStore) ReplaceAll(nets []*net.IPNet) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs.nets = nets
+	bs.generation.Add(1)
 }
 
 func (bs *BlacklistStore) Contains(ip net.IP) bool {
@@ -7588,6 +7634,7 @@ func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
 	//bs.nets = append(bs.nets, n)//appends
 	// Prepend so newly added entries show up first, mirroring RuleStore.AddRule's behavior.
 	bs.nets = append([]*net.IPNet{n}, bs.nets...)
+	bs.generation.Add(1)
 	return true // Added successfully
 }
 
@@ -7620,6 +7667,7 @@ func (bs *BlacklistStore) TryEdit(oldCIDR string, newNet *net.IPNet) error {
 
 	bs.nets = append(bs.nets[:idx:idx], bs.nets[idx+1:]...)
 	bs.nets = append([]*net.IPNet{newNet}, bs.nets...)
+	bs.generation.Add(1)
 	return nil
 }
 
@@ -7628,18 +7676,20 @@ func (bs *BlacklistStore) TryDelete(cidrStr string) bool {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	for i, existing := range bs.nets {
-		if existing.String() == cidrStr {
-			// 1. Slide elements left to overwrite index i
-			bs.nets = append(bs.nets[:i], bs.nets[i+1:]...)
-
-			// 2. Clear the old trailing slot to let the Garbage Collector free the memory!
-			bs.nets = bs.nets[:len(bs.nets):cap(bs.nets)] // Optional: strictly bounds checking
-			if len(bs.nets) < cap(bs.nets) {
-				// Since bs.nets shrank by 1, the old last element is at the new len(bs.nets)
-				bs.nets[:len(bs.nets)+1][len(bs.nets)] = nil
-			}
-			return true
+		if existing.String() != cidrStr {
+			continue
 		}
+		// 1. Slide elements left to overwrite index i
+		bs.nets = append(bs.nets[:i], bs.nets[i+1:]...)
+
+		// 2. Clear the old trailing slot to let the Garbage Collector free the memory!
+		bs.nets = bs.nets[:len(bs.nets):cap(bs.nets)] // Optional: strictly bounds checking
+		if len(bs.nets) < cap(bs.nets) {
+			// Since bs.nets shrank by 1, the old last element is at the new len(bs.nets)
+			bs.nets[:len(bs.nets)+1][len(bs.nets)] = nil
+		}
+		bs.generation.Add(1)
+		return true
 	}
 	return false
 }
@@ -8293,6 +8343,10 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
 	data["Path"] = r.URL.Path
 	data["Version"] = GetVersion() //cache-busting
+
+	data["RulesVersion"] = ui.ruleStore.Generation()
+	data["HostsVersion"] = ui.hostStore.Generation()
+	data["BlacklistVersion"] = ui.blacklist.Generation()
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey{}).(string); ok {
@@ -9744,6 +9798,7 @@ func NewAdminUI(
 	rs *RuleStore,
 	hs *HostStore,
 	bl *BlacklistStore,
+	tableMutationMu *sync.Mutex,
 	lt *LoginTracker,
 	rb *RecentBlocksTracker,
 	stats *expvar.Int,
@@ -9756,6 +9811,7 @@ func NewAdminUI(
 		ruleStore:         rs,
 		hostStore:         hs,
 		blacklist:         bl,
+		tableMutationMu:   tableMutationMu,
 		loginTracker:      lt,
 		recentBlocks:      rb,
 		stats:             stats,
@@ -11016,6 +11072,7 @@ func (s *Server) initAdminUI() {
 		s.ruleStore,
 		s.hostStore,
 		s.blacklist,
+		&s.tableMutationMu,
 		newLoginTracker(),
 		s.recentBlocks,
 		s.stats,
@@ -13517,7 +13574,13 @@ type AsyncLogWriter struct {
 	queue      chan []byte
 	done       chan struct{} // closed once the drain goroutine has exited
 
-	mu        sync.RWMutex // guards closed; see Write/Close for why this can never panic on a closed channel
+	mu sync.RWMutex // guards closed; see Write/Close for why this can never panic on a closed channel
+
+	// underlyingCloseErr is written by drainLoop before it closes done.
+	// A receive from done establishes the happens-before relationship needed
+	// for Close to read this field safely without another mutex.
+	underlyingCloseErr error
+
 	closed    bool
 	closeOnce sync.Once
 
@@ -13639,7 +13702,22 @@ func (w *AsyncLogWriter) DroppedCount() int64 {
 // per-file write ordering is preserved exactly as if writes were
 // synchronous, with no additional locking required here.
 func (w *AsyncLogWriter) drainLoop() {
-	defer close(w.done)
+	defer func() {
+		// drainLoop owns the underlying writer for its entire lifetime.
+		// Closing it here preserves that single-owner invariant even when
+		// Close times out while an underlying Write remains blocked.
+		if closer, ok := w.underlying.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				w.underlyingCloseErr = fmt.Errorf(
+					"asyncLogWriter %q: close underlying writer: %w",
+					w.name,
+					err,
+				)
+			}
+		}
+		close(w.done)
+	}()
+
 	for p := range w.queue {
 		// 1. Safely extract an independent string copy of the log context BEFORE writing
 		// because it's a copy, it avoids holding onto 'p' after the write finishes.
@@ -13672,40 +13750,63 @@ func (w *AsyncLogWriter) drainLoop() {
 	}
 }
 
-// Close stops accepting new writes, waits (up to
-// asyncLogWriterCloseDrainTimeout) for the background goroutine to flush
-// whatever is still queued, and then closes the underlying writer if it
-// implements io.Closer. Safe to call more than once; only the first call
-// does anything.
+// Close stops accepting new writes and waits up to
+// asyncLogWriterCloseDrainTimeout for drainLoop to flush the queue and close
+// the underlying writer.
+//
+// If the timeout expires, Close returns without touching the underlying
+// writer. drainLoop retains ownership and will close it if the blocked write
+// eventually completes. This intentionally prefers a temporarily leaked file
+// handle over racing Close against an in-progress Write.
+//
+// Close is idempotent. Subsequent callers wait on the same done channel and
+// observe the same underlying close result once draining completes.
 func (w *AsyncLogWriter) Close() error {
-	var closeErr error
 	w.closeOnce.Do(func() {
 		w.mu.Lock()
 		w.closed = true
 		close(w.queue)
 		w.mu.Unlock()
+	})
 
-		select {
-		case <-w.done:
-			// drained cleanly
-		case <-time.After(asyncLogWriterCloseDrainTimeout):
-			fmt.Fprintf(os.Stderr,
-				"[asyncLogWriter %q] WARNING: drain goroutine did not finish within %s during Close(); "+
-					"some buffered log lines may be lost (underlying sink appears stuck)\n",
-				w.name, asyncLogWriterCloseDrainTimeout)
+	timer := time.NewTimer(asyncLogWriterCloseDrainTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-w.done:
+		if dropped := w.dropped.Load(); dropped > 0 {
+			fmt.Fprintf(
+				os.Stderr,
+				"[asyncLogWriter %q] total dropped log lines this session: %d\n",
+				w.name,
+				dropped,
+			)
 		}
+		return w.underlyingCloseErr
+
+	case <-timer.C:
+		fmt.Fprintf(
+			os.Stderr,
+			"[asyncLogWriter %q] WARNING: drain goroutine did not finish within %s during Close(); "+
+				"the underlying writer remains owned by the drain goroutine and will be closed if it recovers\n",
+			w.name,
+			asyncLogWriterCloseDrainTimeout,
+		)
 
 		if dropped := w.dropped.Load(); dropped > 0 {
-			fmt.Fprintf(os.Stderr, "[asyncLogWriter %q] total dropped log lines this session: %d\n", w.name, dropped)
+			fmt.Fprintf(
+				os.Stderr,
+				"[asyncLogWriter %q] total dropped log lines so far: %d\n",
+				w.name,
+				dropped,
+			)
 		}
 
-		if closer, ok := w.underlying.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				closeErr = fmt.Errorf("asyncLogWriter %q: failed to close underlying writer: %w", w.name, err)
-			}
-		}
-	})
-	return closeErr
+		// Preserve existing bounded-close behavior. Returning an error here
+		// could cause reload/shutdown callers to treat a logging stall as a
+		// failure of the primary operation even though ownership remains safe.
+		return nil
+	}
 }
 
 var _ io.Writer = (*AsyncLogWriter)(nil)
@@ -13803,7 +13904,7 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, simpleQueriesWriter *AsyncLogWri
 	lm.set(l) // readers see the new logger from this point
 	lm.simpleQueriesWriter.Store(simpleQueriesWriter)
 	wincoe.SetBugLogger(l)
-	wincoe.Logger.Store(l)
+	wincoe.SetLogger(l)
 
 	var errs []error
 	for _, c := range old {
@@ -14058,6 +14159,20 @@ func (s *Server) saveConfig() error {
 	return saveConfig(s.rt.FileWriter, s.getLogger(), rawCfg)
 }
 
+const (
+	// Ordinary admin forms contain only a small number of short fields.
+	maxWebUIFormBodyBytes int64 = 256 << 10 // 256 KiB
+
+	// Batch table application can legitimately contain many staged entries,
+	// but must remain bounded to prevent authenticated memory exhaustion.
+	maxWebUIBatchBodyBytes int64 = 4 << 20 // 4 MiB
+
+	maxBatchTableChanges    = 10_000
+	maxBatchFieldsPerChange = 16
+	maxBatchFieldNameBytes  = 64
+	maxBatchFieldValueBytes = 64 << 10
+)
+
 func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	const allowedMethods = "POST, OPTIONS"
 	if writeAllowHeaderResponse(w, r, allowedMethods) {
@@ -14070,22 +14185,188 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := r.FormValue("payload")
+	// payload := r.FormValue("payload")
+	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			// if errors.AsType[*http.MaxBytesError] {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		log.Warn("Failed to parse batch-apply form", wincoe.SafeErr(err))
+		http.Error(w, "invalid form body", http.StatusBadRequest)
+		return
+	}
+
+	payload := r.PostForm.Get("payload") // Using PostForm prevents URL query parameters from masquerading as body fields.
 	if payload == "" {
 		http.Error(w, "empty payload", http.StatusBadRequest)
 		return
 	}
 
-	type TableChange struct {
-		URL    string            `json:"url"`
-		Fields map[string]string `json:"fields"`
+	type tableChange struct {
+		URL      string            `json:"url"`
+		Fields   map[string]string `json:"fields"`
+		ClientID string            `json:"client_id"`
 	}
 
-	var changes []TableChange
-	if err := json.Unmarshal([]byte(payload), &changes); err != nil {
+	type tableVersions struct {
+		Rules     string `json:"rules"`
+		Hosts     string `json:"hosts"`
+		Blacklist string `json:"blacklist"`
+	}
+
+	type applyTablesRequest struct {
+		Versions tableVersions `json:"versions"`
+		Changes  []tableChange `json:"changes"`
+	}
+
+	var request applyTablesRequest
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
 		log.Warn("Invalid JSON in batch apply", wincoe.SafeErr(err))
 		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 		return
+	}
+
+	changes := request.Changes
+
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		http.Error(w, "invalid trailing JSON data", http.StatusBadRequest)
+		return
+	}
+
+	if len(changes) == 0 {
+		http.Error(w, "batch must contain at least one change", http.StatusBadRequest)
+		return
+	}
+	if len(changes) > maxBatchTableChanges {
+		http.Error(
+			w,
+			fmt.Sprintf("batch exceeds maximum of %d changes", maxBatchTableChanges),
+			http.StatusRequestEntityTooLarge,
+		)
+		return
+	}
+
+	for i, change := range changes {
+		if len(change.Fields) == 0 {
+			http.Error(
+				w,
+				fmt.Sprintf("batch change %d contains no fields", i),
+				http.StatusBadRequest,
+			)
+			return
+		}
+		if len(change.Fields) > maxBatchFieldsPerChange {
+			http.Error(
+				w,
+				fmt.Sprintf(
+					"batch change %d exceeds maximum of %d fields",
+					i,
+					maxBatchFieldsPerChange,
+				),
+				http.StatusBadRequest,
+			)
+			return
+		}
+
+		for name, value := range change.Fields {
+			if name == "" || len(name) > maxBatchFieldNameBytes {
+				http.Error(
+					w,
+					fmt.Sprintf("batch change %d contains an invalid field name", i),
+					http.StatusBadRequest,
+				)
+				return
+			}
+			if len(value) > maxBatchFieldValueBytes {
+				http.Error(
+					w,
+					fmt.Sprintf(
+						"batch change %d field %q exceeds maximum size",
+						i,
+						name,
+					),
+					http.StatusRequestEntityTooLarge,
+				)
+				return
+			}
+		}
+	}
+
+	touchesRules := false
+	touchesHosts := false
+	touchesBlacklist := false
+
+	for _, change := range changes {
+		switch change.URL {
+		case "/rules":
+			touchesRules = true
+		case "/hosts":
+			touchesHosts = true
+		case "/response-blacklist":
+			touchesBlacklist = true
+		default:
+			http.Error(w, "unknown target URL in batch", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Hold the shared table-mutation lock from version check through
+	// mutation, persistence, and invalidation so reload/load paths cannot
+	// interleave and create a stale-write race.
+	ui.tableMutationMu.Lock()
+	defer ui.tableMutationMu.Unlock()
+
+	parseVersion := func(name, raw string) (uint64, error) {
+		if raw == "" {
+			return 0, fmt.Errorf("missing %s version", name)
+		}
+		v, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s version %q: %w", name, raw, err)
+		}
+		return v, nil
+	}
+
+	if touchesRules {
+		v, err := parseVersion("rules", request.Versions.Rules)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if current := ui.ruleStore.Generation(); v != current {
+			http.Error(w, "rules changed since this page was loaded; reload before applying", http.StatusConflict)
+			return
+		}
+	}
+
+	if touchesHosts {
+		v, err := parseVersion("hosts", request.Versions.Hosts)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if current := ui.hostStore.Generation(); v != current {
+			http.Error(w, "hosts changed since this page was loaded; reload before applying", http.StatusConflict)
+			return
+		}
+	}
+
+	if touchesBlacklist {
+		v, err := parseVersion("blacklist", request.Versions.Blacklist)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if current := ui.blacklist.Generation(); v != current {
+			http.Error(w, "response blacklist changed since this page was loaded; reload before applying", http.StatusConflict)
+			return
+		}
 	}
 
 	// Track which files got dirtied so we only incur disk I/O once per file
@@ -14128,12 +14409,15 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	// staged-changes list out of sync with what was actually written to
 	// disk. See todonow.txt "Partial Batch Commits in WebUI".
 	type batchFailure struct {
-		index int
-		url   string
-		err   error
+		index    int
+		clientID string
+		url      string
+		status   int
+		err      error
 	}
 	var failures []batchFailure
 	appliedCount := 0
+	var appliedClientIDs []string
 
 	// Cache invalidation is coalesced across the whole batch instead of
 	// happening once per changed entry (which used to mean N full O(cache
@@ -14176,14 +14460,38 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			log.Warn("Batch apply failed for a record", slog.Int("index", i), slog.String("url", change.URL), wincoe.SafeErr(err))
-			failures = append(failures, batchFailure{index: i, url: change.URL, err: fmt.Errorf("status %d: %w", status, err)})
+			// failures = append(failures, batchFailure{index: i, url: change.URL, err: fmt.Errorf("status %d: %w", status, err)})
+			failures = append(failures, batchFailure{
+				index:    i,
+				clientID: change.ClientID,
+				url:      change.URL,
+				status:   status,
+				err:      err,
+			})
 			continue
 		}
 		appliedCount++
+		if change.ClientID != "" {
+			appliedClientIDs = append(appliedClientIDs, change.ClientID)
+		}
 	} // for
 
+	writeJSON := func(status int, value any) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(value); err != nil {
+			log.Debug("Failed to write batch response", wincoe.SafeErr(err))
+		}
+	}
+
 	if flushErr := flushDirty(); flushErr != nil {
-		http.Error(w, flushErr.Error(), http.StatusInternalServerError)
+		// http.Error(w, flushErr.Error(), http.StatusInternalServerError)
+		writeJSON(http.StatusInternalServerError, map[string]any{
+			"ok":                 false,
+			"applied_client_ids": appliedClientIDs,
+			"persistence_failed": true,
+			"error":              flushErr.Error(),
+		})
 		return
 	}
 
@@ -14194,19 +14502,50 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		ui.OnInvalidateBlacklist()
 	}
 
+	// if len(failures) > 0 {
+	// 	first := failures[0]
+	// 	msg := fmt.Sprintf(
+	// 		"%d of %d staged change(s) failed to apply; %d succeeded and were already persisted to disk (reload to see the current state). First failure at batch index %d for %q: %v",
+	// 		len(failures), len(changes), appliedCount, first.index, first.url, first.err,
+	// 	)
+	// 	log.Warn("Batch apply completed with partial failures", slog.Int("failed", len(failures)), slog.Int("applied", appliedCount), slog.Int("total", len(changes)))
+	// 	http.Error(w, msg, http.StatusUnprocessableEntity)
+	// 	return
+	// }
+
 	if len(failures) > 0 {
-		first := failures[0]
-		msg := fmt.Sprintf(
-			"%d of %d staged change(s) failed to apply; %d succeeded and were already persisted to disk (reload to see the current state). First failure at batch index %d for %q: %v",
-			len(failures), len(changes), appliedCount, first.index, first.url, first.err,
+		responseFailures := make([]batchFailureResponse, 0, len(failures))
+		for _, failure := range failures {
+			responseFailures = append(responseFailures, batchFailureResponse{
+				Index:    failure.index,
+				ClientID: failure.clientID,
+				URL:      failure.url,
+				Status:   failure.status,
+				Error:    failure.err.Error(),
+			})
+		}
+
+		log.Warn(
+			"Batch apply completed with partial failures",
+			slog.Int("failed", len(failures)),
+			slog.Int("applied", appliedCount),
+			slog.Int("total", len(changes)),
 		)
-		log.Warn("Batch apply completed with partial failures", slog.Int("failed", len(failures)), slog.Int("applied", appliedCount), slog.Int("total", len(changes)))
-		http.Error(w, msg, http.StatusUnprocessableEntity)
+
+		writeJSON(http.StatusUnprocessableEntity, applyTablesResponse{
+			OK:      false,
+			Applied: appliedClientIDs,
+			Failed:  responseFailures,
+		})
 		return
 	}
 
 	log.Info("Successfully batch-applied staged table changes", slog.Int("changes", len(changes)))
-	w.WriteHeader(http.StatusOK)
+	// w.WriteHeader(http.StatusOK)
+	writeJSON(http.StatusOK, applyTablesResponse{
+		OK:      true,
+		Applied: appliedClientIDs,
+	})
 }
 
 func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(pattern string)) (int, error) {
@@ -14980,3 +15319,100 @@ func isStreamValidOrRedirected(h windows.Handle) bool {
 // flushSyncEvent holds a windows.Handle used to signal a spawned child
 // process that this parent process has finished flushing its logs.
 var flushSyncEvent uintptr
+
+func (ui *AdminUI) csrfTokenHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
+	token := ui.getOrCreateCSRFToken(w, r)
+	//well it can't fail anymore
+	// if err != nil {
+	// 	ui.getLogger().Error("Failed to issue CSRF token", wincoe.SafeErr(err))
+	// 	http.Error(w, "failed to issue CSRF token", http.StatusInternalServerError)
+	// 	return
+	// }
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if err := json.NewEncoder(w).Encode(map[string]string{
+		"csrf_token": token,
+	}); err != nil {
+		ui.getLogger().Debug("Failed to write CSRF token response", wincoe.SafeErr(err))
+	}
+}
+
+func (ui *AdminUI) csrfCookieName(r *http.Request) string {
+	// The __Host- cookie name prefix (RFC 6265bis) forces the browser to
+	// require Secure, Path=/, and no Domain attribute, and — crucially —
+	// makes the cookie strictly host-locked: no other origin, including a
+	// same-registrable-domain subdomain (e.g. via a subdomain XSS bug),
+	// can ever set or override it. This only works when actually served
+	// over HTTPS (the prefix requires Secure, which the browser also then
+	// requires to accept the Set-Cookie at all), so fall back to an
+	// unprefixed name on the plain-HTTP path.
+
+	// Keep the cookie name decision in one place so middleware and any future
+	// token-refresh endpoint use the exact same rule.
+	if r.TLS != nil {
+		return "__Host-csrf_token"
+	}
+	return "csrf_token"
+}
+
+func (ui *AdminUI) getOrCreateCSRFToken(w http.ResponseWriter, r *http.Request) string {
+	// 1. Get or generate the CSRF cookie. A cookie is only trusted as
+	// "the" token if it carries a valid HMAC signature under this
+	// process's in-memory csrfSecret — see verifyCSRFToken's doc comment
+	// for why blindly trusting an existing cookie value is a token
+	// fixation vulnerability.
+
+	cookieName := ui.csrfCookieName(r)
+
+	// A cookie is only trusted if it verifies under the in-memory secret.
+	cookie, err := r.Cookie(cookieName)
+	if err == nil && cookie.Value != "" && verifyCSRFToken(cookie.Value, ui.csrfSecret) {
+		return cookie.Value
+	}
+
+	token := newCSRFToken(ui.csrfSecret)
+
+	http.SetCookie(w,
+		//nolint:gosec // HttpOnly and SameSite are set; Secure is conditional on HTTPS support.
+		&http.Cookie{
+			Name:     cookieName,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   r.TLS != nil,
+		},
+	)
+
+	return token
+}
+
+type batchFailureResponse struct {
+	Index    int    `json:"index"`
+	ClientID string `json:"client_id,omitempty"`
+	URL      string `json:"url"`
+	Status   int    `json:"status"`
+	Error    string `json:"error"`
+}
+
+type applyTablesResponse struct {
+	OK      bool                   `json:"ok"`
+	Applied []string               `json:"applied_client_ids,omitempty"`
+	Failed  []batchFailureResponse `json:"failed,omitempty"`
+}

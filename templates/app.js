@@ -4,8 +4,58 @@
     // --- UI State Storage Config ---
     // Change this to `localStorage` to persist UI states (like table sorting 
     // and textarea heights) across new tabs and browser restarts.
-    // or keep using `sessionStorage`
-    const uiStorage = localStorage;
+    // UI preferences should never be able to prevent the admin interface from
+    // initializing. Browsers may deny Web Storage in hardened/private contexts.
+    function createSafeStorage(storageName) {
+        try {
+            const storage = window[storageName];
+            const probeKey = '__dnsbollocks_storage_probe__';
+
+            storage.setItem(probeKey, '1');
+            storage.removeItem(probeKey);
+
+            return {
+                getItem(key) {
+                    try {
+                        return storage.getItem(key);
+                    } catch (err) {
+                        console.warn(`Failed to read ${storageName}:`, err);
+                        return null;
+                    }
+                },
+                setItem(key, value) {
+                    try {
+                        storage.setItem(key, value);
+                        return true;
+                    } catch (err) {
+                        console.warn(`Failed to write ${storageName}:`, err);
+                        return false;
+                    }
+                },
+                removeItem(key) {
+                    try {
+                        storage.removeItem(key);
+                    } catch (err) {
+                        console.warn(`Failed to remove ${storageName} item:`, err);
+                    }
+                },
+            };
+        } catch (err) {
+            console.warn(`${storageName} is unavailable:`, err);
+            return {
+                getItem() {
+                    return null;
+                },
+                setItem() {
+                    return false;
+                },
+                removeItem() {},
+            };
+        }
+    }
+
+    const uiStorage = createSafeStorage('localStorage');
+    const stagedStorage = createSafeStorage('sessionStorage');//unused currently
 
     // --- Security & Extension Notices ---
     //FIXME: this doesn't seem to appear anymore, unclear what and when I've change something!:
@@ -21,6 +71,8 @@
     if (!csrfToken) {
         console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
     }
+
+
     
     // Config field key names are injected by Go into data-* attributes on #configKeysData
     // (only present on the /config page). Falls back to empty strings on other pages so
@@ -55,6 +107,139 @@
         // optsConsoleLogLevel: [],
         // optsBlockMode: []
     };
+
+    const tableVersionElement = document.getElementById('tableVersionData');
+
+    const tableVersions = Object.freeze({
+        rules: tableVersionElement?.dataset.rulesVersion || '0',
+        hosts: tableVersionElement?.dataset.hostsVersion || '0',
+        blacklist: tableVersionElement?.dataset.blacklistVersion || '0',
+    });
+
+    const tablePageKey = location.pathname;
+
+    const ADMIN_FETCH_TIMEOUT_MS = 30_000;
+    const ADMIN_CHECK_FETCH_TIMEOUT_MS = 10_000;
+
+    const STAGED_STORAGE_VERSION = 1;
+    const MAX_STORED_STAGED_CHANGES = 10_000;
+    const stagedStorageKey = `dnsbollocks:staged:${tablePageKey}`;
+
+    function isPlainObject(value) {
+        return value !== null &&
+            typeof value === 'object' &&
+            Object.getPrototypeOf(value) === Object.prototype;
+    }
+
+    function isValidStoredChange(change) {
+        if (!isPlainObject(change)) return false;
+        if (
+            change.url !== '/rules' &&
+            change.url !== '/hosts' &&
+            change.url !== '/response-blacklist'
+        ) {
+            return false;
+        }
+        if (typeof change.clientId !== 'string' || !change.clientId) return false;
+        if (!isPlainObject(change.fields)) return false;
+
+        return Object.entries(change.fields).every(([key, value]) => (
+            typeof key === 'string' &&
+            key.length > 0 &&
+            key.length <= 64 &&
+            typeof value === 'string' &&
+            value.length <= 65_536
+        ));
+    }
+
+    function persistStagedTableChanges() {
+        if (stagedTableChanges.length === 0) {
+            stagedStorage.removeItem(stagedStorageKey);
+            return;
+        }
+
+        const record = {
+            schema: STAGED_STORAGE_VERSION,
+            pathname: tablePageKey,
+            versions: tableVersions,
+            changes: stagedTableChanges,
+        };
+
+        stagedStorage.setItem(stagedStorageKey, JSON.stringify(record));
+    }
+
+    function loadStoredStagedTableChanges() {
+        const raw = stagedStorage.getItem(stagedStorageKey);
+        if (!raw) return null;
+
+        let record;
+        try {
+            record = JSON.parse(raw);
+        } catch {
+            stagedStorage.removeItem(stagedStorageKey);
+            return null;
+        }
+
+        if (
+            !isPlainObject(record) ||
+            record.schema !== STAGED_STORAGE_VERSION ||
+            record.pathname !== tablePageKey ||
+            !isPlainObject(record.versions) ||
+            !Array.isArray(record.changes) ||
+            record.changes.length === 0 ||
+            record.changes.length > MAX_STORED_STAGED_CHANGES ||
+            !record.changes.every(isValidStoredChange)
+        ) {
+            stagedStorage.removeItem(stagedStorageKey);
+            return null;
+        }
+
+        const versionsMatch =
+            record.versions.rules === tableVersions.rules &&
+            record.versions.hosts === tableVersions.hosts &&
+            record.versions.blacklist === tableVersions.blacklist;
+
+        if (!versionsMatch) {
+            stagedStorage.removeItem(stagedStorageKey);
+            return null;
+        }
+
+        return record.changes;
+    }
+
+    function createTimeoutSignal(timeoutMs) {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => {
+            controller.abort(new DOMException('Request timed out', 'TimeoutError'));
+        }, timeoutMs);
+
+        return {
+            signal: controller.signal,
+            cancel() {
+                window.clearTimeout(timer);
+            },
+        };
+    }
+
+    async function fetchWithTimeout(url, options = {}, timeoutMs = ADMIN_FETCH_TIMEOUT_MS) {
+        const timeout = createTimeoutSignal(timeoutMs);
+
+        try {
+            return await fetch(url, {
+                ...options,
+                signal: timeout.signal,
+            });
+        } catch (err) {
+            if (timeout.signal.aborted) {
+                throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`, {
+                    cause: err,
+                });
+            }
+            throw err;
+        } finally {
+            timeout.cancel();
+        }
+    }
     
     // --- Table-edit staging queue (rules / hosts / blacklist) ---
     // Works identically to the /config page staging system: Add, Edit, and Delete
@@ -68,10 +253,17 @@
     function updateTableBanner() {
         const count = stagedTableChanges.length;
         document.querySelectorAll('.staged-table-banner').forEach(banner => {
-            banner.style.display = count > 0 ? 'block' : 'none';
+            // banner.style.display = count > 0 ? 'block' : 'none';
+            banner.hidden = count === 0;
+            
             const countEl = banner.querySelector('.staged-table-count');
             if (countEl) countEl.textContent = count;
+            
+            const applyButton = banner.querySelector('.js-apply-table-btn');
+            if (applyButton) applyButton.disabled = count === 0;
         });
+
+        persistStagedTableChanges();
     }
 
     // --- Filter Expression Parser ---
@@ -95,13 +287,38 @@
         };
     }
 
+    let fallbackClientIdCounter = 0;
+
     // generateClientId produces a short, session-unique token used to track a
     // staged "Add" entry (rule/host/blacklist) before it has a real server-assigned
     // identity, so a subsequent staged Edit/Delete of that same not-yet-applied
     // row can find and mutate/remove the correct stagedTableChanges entry instead
     // of sending a bogus reference to the server.
+    // function generateClientId() {
+    //     return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    // }
     function generateClientId() {
-        return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        for (let attempt = 0; attempt < 10; attempt++) {
+            let id;
+
+            if (typeof crypto?.randomUUID === 'function') {
+                id = `c-${crypto.randomUUID()}`;
+            } else {
+                fallbackClientIdCounter++;
+                id = [
+                    'c',
+                    Date.now().toString(36),
+                    fallbackClientIdCounter.toString(36),
+                    Math.random().toString(36).slice(2),
+                ].join('-');
+            }
+
+            if (!stagedTableChanges.some(change => change.clientId === id)) {
+                return id;
+            }
+        }
+
+        throw new Error('Unable to generate a unique staged-change client ID');
     }
 
     // normalizeIPListString parses a comma-separated IP list input (arbitrary
@@ -125,7 +342,7 @@
     // Blacklist "Add" form handlers.
     function stageNewEntry(url, fields) {
         const clientId = generateClientId();
-        stagedTableChanges.push({ url: url, fields: fields, clientId: clientId });
+        stagedTableChanges.push({ url: url, fields: fields, clientId: clientId, clientId: generateClientId() });
         return clientId;
     }
 
@@ -180,7 +397,7 @@
         if (existingIdx !== -1) {
             stagedTableChanges[existingIdx].fields = fields;
         } else {
-            stagedTableChanges.push({ url: url, fields: fields });
+            stagedTableChanges.push({ url: url, fields: fields, clientId: generateClientId() });
         }
         applyDisplay();
         row.classList.add('staged');
@@ -193,7 +410,7 @@
     // from the DOM outright.
     function stageRowDeletion(url, staleEditIdx, deleteFields, row, restoreDisplay) {
         if (staleEditIdx !== -1) stagedTableChanges.splice(staleEditIdx, 1);
-        stagedTableChanges.push({ url: url, fields: deleteFields });
+        stagedTableChanges.push({ url: url, fields: deleteFields, clientId: generateClientId() });
         if (row) {
             restoreDisplay();
             row.classList.add('staged-delete', 'staged');
@@ -417,56 +634,209 @@
         }
     }
 
-    // postAdminForm sends a POST with fields, injecting csrf_token automatically,
-    // and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
-    async function postAdminForm(action, fields, errorPrefix, isRetry = false) {
-        const formData = new FormData();
-        formData.append('csrf_token', csrfToken);
-        
-        for (const [key, value] of Object.entries(fields)) {
-            formData.append(key, value);
+    let csrfRefreshPromise = null;
+
+    async function refreshCSRFToken() {
+        if (csrfRefreshPromise) {
+            return csrfRefreshPromise;
         }
-        
-        let res;
+
+        csrfRefreshPromise = (async () => {
+            const response = await fetchWithTimeout(
+                '/csrf-token',
+                {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: {
+                        Accept: 'application/json',
+                    },
+                    cache: 'no-store',
+                },
+                ADMIN_CHECK_FETCH_TIMEOUT_MS
+            );
+
+            if (!response.ok) {
+                throw new Error(`CSRF refresh failed with HTTP ${response.status}`);
+            }
+
+            const contentType = response.headers.get('Content-Type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('CSRF refresh returned a non-JSON response');
+            }
+
+            const body = await response.json();
+            if (!body || typeof body.csrf_token !== 'string' || !body.csrf_token) {
+                throw new Error('CSRF refresh response did not contain a token');
+            }
+
+            csrfToken = body.csrf_token;
+
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) meta.content = csrfToken;
+
+            return csrfToken;
+        })();
+
         try {
-            res = await fetch(action, { method: 'POST', body: formData, redirect: 'manual' });
+            return await csrfRefreshPromise;
+        } finally {
+            csrfRefreshPromise = null;
+        }
+    }
+
+    // // postAdminForm sends a POST with fields, injecting csrf_token automatically,
+    // // and treats redirect/opaqueredirect/2xx as success per this app's handler convention.
+    // async function postAdminForm(action, fields, errorPrefix, isRetry = false) {
+    //     const formData = new FormData();
+    //     formData.append('csrf_token', csrfToken);
+        
+    //     for (const [key, value] of Object.entries(fields)) {
+    //         formData.append(key, value);
+    //     }
+        
+    //     let res;
+    //     try {
+    //         res = await fetchWithTimeout(action, { method: 'POST', body: formData, redirect: 'manual' });
+    //     } catch (err) {
+    //         console.error(errorPrefix + ' network error:', err);
+    //         alert('A network error occurred: ' + errorPrefix+"\nerr: "+err);
+    //         return false;
+    //     }
+        
+    //     const isSuccessRedirect = res.status === 303 || res.type === 'opaqueredirect';
+    //     if (!res.ok && !isSuccessRedirect) {
+    //         const errMsg = await res.text();
+
+    //         // --- CSRF Auto-Recovery ---
+    //         if (
+    //             res.status === 403 &&
+    //             res.headers.get('X-DNSbollocks-Error') === 'csrf' &&
+    //             !isRetry
+    //         ) {
+    //             console.log("CSRF token invalid/expired. Attempting to fetch a new token and retry...");
+    //             try {
+    //                 const tokenRes = await fetch(window.location.pathname);
+    //                 if (tokenRes.ok) {
+    //                     const html = await tokenRes.text();
+    //                     const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
+    //                     if (match && match[1]) {
+    //                         csrfToken = match[1];
+    //                         console.log("Successfully obtained new CSRF token. Retrying request...");
+    //                         const meta = document.querySelector('meta[name="csrf-token"]');
+    //                         if (meta) meta.content = csrfToken;
+    //                         return await postAdminForm(action, fields, errorPrefix, true);
+    //                     }
+    //                 }
+    //             } catch (e) {
+    //                 console.error("Failed to recover CSRF token:", e);
+    //             }
+    //         }
+            
+    //         alert(errorPrefix + ':\n' + errMsg);
+    //         return false;
+    //     }
+        
+    //     return true;
+    // }
+
+    async function refreshCSRFToken() {
+        try {
+            const tokenRes = await fetch(window.location.pathname, {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+
+            if (!tokenRes.ok) {
+                return false;
+            }
+
+            const html = await tokenRes.text();
+            const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
+            if (!match || !match[1]) {
+                return false;
+            }
+
+            csrfToken = match[1];
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) meta.content = csrfToken;
+            return true;
+        } catch (err) {
+            console.error("Failed to recover CSRF token:", err);
+            return false;
+        }
+    }
+    async function postAdminForm(action, fields, errorPrefix) {
+        let result;
+        try {
+            result = await sendAdminForm(action, fields);
         } catch (err) {
             console.error(errorPrefix + ' network error:', err);
-            alert('A network error occurred: ' + errorPrefix+"\nerr: "+err);
+            alert('A network error occurred: ' + errorPrefix + "\nerr: " + err);
             return false;
         }
-        
-        const isSuccessRedirect = res.status === 0 || res.status === 303 || res.type === 'opaqueredirect';
-        if (!res.ok && !isSuccessRedirect) {
-            const errMsg = await res.text();
 
-            // --- CSRF Auto-Recovery ---
-            if (res.status === 403 && errMsg.includes('CSRF') && !isRetry) {
-                console.log("CSRF token invalid/expired. Attempting to fetch a new token and retry...");
-                try {
-                    const tokenRes = await fetch(window.location.pathname);
-                    if (tokenRes.ok) {
-                        const html = await tokenRes.text();
-                        const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
-                        if (match && match[1]) {
-                            csrfToken = match[1];
-                            console.log("Successfully obtained new CSRF token. Retrying request...");
-                            const meta = document.querySelector('meta[name="csrf-token"]');
-                            if (meta) meta.content = csrfToken;
-                            return await postAdminForm(action, fields, errorPrefix, true);
-                        }
-                    }
-                } catch (e) {
-                    console.error("Failed to recover CSRF token:", e);
-                }
-            }
-            
-            alert(errorPrefix + ':\n' + errMsg);
-            return false;
+        const { response: res, redirectSuccess } = result;
+
+        if (res.ok || redirectSuccess) {
+            return true;
         }
-        
-        return true;
+
+        const errMsg = await res.text();
+
+        alert(errorPrefix + ':\n' + errMsg);
+        return false;
     }
+    async function sendAdminForm(
+        action,
+        fields,
+        {
+            allowRedirectSuccess = true,
+            retryCSRF = true,
+            timeoutMs = ADMIN_FETCH_TIMEOUT_MS,
+        } = {}
+    ) {
+        const body = new URLSearchParams({
+            ...fields,
+            csrf_token: csrfToken,
+        });
+
+        const response = await fetchWithTimeout(
+            action,
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                redirect: 'manual',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    Accept: 'application/json, text/plain;q=0.9, */*;q=0.1',
+                },
+                body,
+            },
+            timeoutMs
+        );
+
+        if (retryCSRF && response.status === 403 &&
+            response.headers.get('X-DNSbollocks-Error') === 'csrf') {
+            console.log("CSRF token invalid/expired. Attempting to fetch a new token and retry...");
+            if (await refreshCSRFToken()) {
+                console.log("Successfully obtained new CSRF token. Retrying request...");
+                return sendAdminForm(action, fields, {
+                    allowRedirectSuccess,
+                    retryCSRF: false,
+                    timeoutMs,
+                });
+            }
+        }
+
+        const redirectSuccess =
+            allowRedirectSuccess &&
+            (response.status === 303 || response.type === 'opaqueredirect');
+
+        return { response, redirectSuccess };
+    }
+
 
     // withApplyButtonBusy disables `button` and swaps in `busyLabel` for the
     // duration of the async `fn`, guarding against a second click firing a
@@ -508,7 +878,7 @@
         
         let res;
         try {
-            res = await fetch('/blocks', {
+            res = await fetchWithTimeout('/blocks', {
                 method: 'POST',
                 body: formData,
                 headers: { 'X-DNSBollocks-Ajax': '1' },
@@ -523,7 +893,7 @@
         if (!res.ok && res.status === 403 && bodyText.includes('CSRF') && !isRetry) {
             console.log("CSRF token invalid/expired in blocks AJAX. Attempting recovery...");
             try {
-                const tokenRes = await fetch(window.location.pathname);
+                const tokenRes = await fetchWithTimeout(window.location.pathname);
                 if (tokenRes.ok) {
                     const html = await tokenRes.text();
                     const match = html.match(/<meta name="csrf-token" content="([^"]+)">/);
@@ -699,13 +1069,15 @@
             // stay visible regardless of the current filter text, so the user
             // never loses track of what they've queued up.
             if (opts.alwaysShowStaged && row.classList.contains('staged')) {
-                row.style.display = '';
+                // row.style.display = '';
+                row.hidden = false;
                 return;
             }
             
             const searchTargetText = normalizeStr(opts.getSearchText(row).toLowerCase());
             const isMatch = rawNorm.length === 0 || matchesFilterExpression(searchTargetText, rawNorm);
-            row.style.display = isMatch ? '' : 'none';
+            // row.style.display = isMatch ? '' : 'none';
+            row.hidden = !isMatch;
             
             if (opts.highlightTerms) {
                 opts.highlightTerms(row, isMatch ? terms : []);
@@ -785,7 +1157,8 @@
         
         const row = document.getElementById(rowId);
         if (row) {
-            row.style.display = '';
+            // row.style.display = '';
+            row.hidden = false;
             row.classList.remove('being-edited');
             if (resetRowId) row.removeAttribute('id'); // Clean up the temporary ID
         }
@@ -818,7 +1191,8 @@
         const clientId = row.dataset.stagedClientId;
         const origPattern = row.dataset.origPattern;
         const origIps = row.dataset.origIps;
-        row.style.display = 'none';
+        // row.style.display = 'none';
+        row.hidden = true;
         row.classList.add('being-edited');
         
         // 1. Clone the template
@@ -883,7 +1257,8 @@
             }
 
             row.classList.remove('being-edited');
-            row.style.display = '';
+            // row.style.display = '';
+            row.hidden = false;
 
             editRow.remove();
             applyHostsFilter();
@@ -904,7 +1279,8 @@
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
                 discardHostEdits(row, origPattern, origIps);
                 row.classList.remove('being-edited');
-                row.style.display = '';
+                // row.style.display = '';
+                row.hidden = false;
                 editRow.remove();
             }
             applyHostsFilter();
@@ -938,7 +1314,8 @@
         const isStagedAdd = row.classList.contains('staged-add');
         const clientId = row.dataset.stagedClientId;
         const origCidr = row.dataset.origCidr;
-        row.style.display = 'none';
+        // row.style.display = 'none';
+        row.hidden = true;
         row.classList.add('being-edited');
         
         const tmpl = document.getElementById('editBlacklistTemplate');
@@ -988,7 +1365,8 @@
             }
 
             row.classList.remove('being-edited');
-            row.style.display = '';
+            // row.style.display = '';
+            row.hidden = false;
 
             editRow.remove();
             applyBlacklistFilter();
@@ -1008,7 +1386,8 @@
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
                 discardBlacklistEdits(row, origCidr);
                 row.classList.remove('being-edited');
-                row.style.display = '';
+                // row.style.display = '';
+                row.hidden = false;
                 editRow.remove();
             }
             applyBlacklistFilter();
@@ -1092,7 +1471,8 @@
         // somehow unmeasurable (e.g., hidden by an active filter).
         const rowHeight = Math.max(64, row.getBoundingClientRect().height);
         
-        row.style.display = 'none';
+        // row.style.display = 'none';
+        row.hidden = true;
         row.classList.add('being-edited');
         
         // Setup Template
@@ -1216,7 +1596,8 @@
         // Handle Cancel
         clone.querySelector('.config-cancel-btn').addEventListener('click', () => {
             editRow.remove();
-            row.style.display = '';
+            // row.style.display = '';
+            row.hidden = false;
             row.classList.remove('being-edited');
             applyConfigFilter();
         }, { once: true });
@@ -1277,7 +1658,8 @@
             row.classList.remove('being-edited'); 
             
             editRow.remove();
-            row.style.display = '';
+            // row.style.display = '';
+            row.hidden = false;
             
             applyConfigFilter();
             // Pop the banner
@@ -1462,7 +1844,11 @@
                 if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
                 (async () => {
                     await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
-                        const payload = JSON.stringify(stagedTableChanges);
+                        // const payload = JSON.stringify(stagedTableChanges);
+                        const payload = JSON.stringify({
+                            versions: tableVersions,
+                            changes: stagedTableChanges,
+                        });
                         return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
                     });
                     // Always clear staged changes and reload: even a reported
@@ -1501,7 +1887,8 @@
                 
                 // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
                 row.id = 'rule-row-' + id;
-                row.style.display = 'none';
+                // row.style.display = 'none';
+                row.hidden = true;
                 row.classList.add('being-edited');
                 
                 // 1. Clone the template natively
@@ -1567,7 +1954,8 @@
                     }
 
                     row.classList.remove('being-edited');
-                    row.style.display = '';
+                    // row.style.display = '';
+                    row.hidden = false;
 
                     editRow.remove();
                     applyRulesFilter();
@@ -1586,7 +1974,8 @@
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
                         discardStagedEdit(existingIdx, row, () => applyRuleRowDisplay(row, origType, origPattern, origEnabled));
                         row.classList.remove('being-edited');
-                        row.style.display = '';
+                        // row.style.display = '';
+                        row.hidden = false;
                         editRow.remove();
                     }
                     applyRulesFilter();
@@ -1764,7 +2153,7 @@
             });
         }
         
-        // Unblock/Re-block buttons: submit in the background via fetch() instead
+        // Unblock/Re-block buttons: submit in the background via fetchWithTimeout() instead
         // of a full page POST+redirect+reload, so several clicks in quick
         // succession each resolve independently without blocking on a full page
         // re-render. Falls back to a normal form submission (full page reload)
@@ -2033,7 +2422,7 @@
             }
             
             try {
-                const response = await fetch(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
+                const response = await fetchWithTimeout(`/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`);
                 if (response.ok) {
                     const data = await response.json();
                     
@@ -2051,19 +2440,27 @@
             } catch (err) {
                 console.error('Blacklist overlap validation check failed:', err);
 
-                const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
-                `Error details: ${err}\n\n` +
-                `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
+                // const msg = `Validation check failed (you must allow "fetch" (under "Custom") in NoScript Firefox extension).\n\n` +
+                // `Error details: ${err}\n\n` +
+                // `Would you like to bypass validation and add this entry anyway? (Note: It might be redundant if other filters already cover it.)`;
                 
-                // If user clicks "Cancel" (No), abort form submission.
-                // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
+                // // If user clicks "Cancel" (No), abort form submission.
+                // // If they click "OK" (Yes), execution drops below the try/catch and hits form.submit()
                 
-                if (!confirm(msg)) {
-                    console.log("chose to NOT add it without validation, cidrValue=" + cidrValue);
-                    return; 
-                } else {
-                    console.log("chose to add it without validation, cidrValue=" + cidrValue);
-                }
+                // if (!confirm(msg)) {
+                //     console.log("chose to NOT add it without validation, cidrValue=" + cidrValue);
+                //     return; 
+                // } else {
+                //     console.log("chose to add it without validation, cidrValue=" + cidrValue);
+                // }
+                
+                const message = err instanceof Error ? err.message : String(err);
+                alert(
+                    'The blacklist overlap check could not be completed. (you must allow "fetch" (under "Custom") in NoScript Firefox extension)\n\n' +
+                    message +
+                    '\n\nThe entry was not staged. Retry after resolving the error.'
+                );
+                return;
             }
             
             const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue });
@@ -2208,6 +2605,7 @@
                 
                 // Reset all headers
                 headers.forEach(h => {
+                    h.setAttribute('aria-sort', 'none');
                     h.dataset.sortDir = 'none';
                     const icon = h.querySelector('.sort-icon');
                     if (icon) icon.textContent = '';
@@ -2215,6 +2613,13 @@
                 
                 // Update clicked header
                 th.dataset.sortDir = newDir;
+                // th.setAttribute('aria-sort', newDir);
+                th.setAttribute(
+                    'aria-sort',
+                    newDir === 'asc' ? 'ascending' :
+                    newDir === 'desc' ? 'descending' :
+                    'none'
+                );
                 const icon = th.querySelector('.sort-icon');
                 if (icon) {
                     if (newDir === 'asc') icon.textContent = '▲';
@@ -2251,8 +2656,11 @@
             }
             
             headers.forEach(th => {
+                const button = th.querySelector('.sort-button');
+                if (!button) return;
                 th.dataset.sortDir = 'none'; // none, asc, desc
-                th.addEventListener('click', () => {
+                th.setAttribute('aria-sort', 'none');// none, asc, desc
+                button.addEventListener('click', () => {
                     // 1. Cancel any active inline edits so they don't break during sort
                     document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
                     const currentDir = th.dataset.sortDir;

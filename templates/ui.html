@@ -1,5 +1,6 @@
 <!DOCTYPE html><html><head><title>DNSbollocks UI</title>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="csrf-token" content="{{.CSRFToken}}">
     <link rel="stylesheet" href="/static/style.css?v={{.Version}}">
@@ -18,6 +19,13 @@
     </noscript>
     <div class="container">
         <h1>DNSbollocks</h1>
+        <div
+            id="tableVersionData"
+            hidden
+            data-rules-version="{{.RulesVersion}}"
+            data-hosts-version="{{.HostsVersion}}"
+            data-blacklist-version="{{.BlacklistVersion}}"
+        ></div>
         <nav>
             <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
             <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Local Hosts</a>
@@ -55,10 +63,10 @@
 </body></html>
 
 {{define "staged-table-banner"}}
-<div class="staged-table-banner staged-changes-banner">
+<div class="staged-table-banner staged-changes-banner" hidden>
     <strong>Unsaved Changes!</strong> You have staged <span class="staged-table-count">0</span> modification(s).
     <div class="config-banner-actions">
-        <button type="button" class="btn-save btn-padded js-apply-table-btn">Apply &amp; Reload</button>
+        <button type="button" class="btn-save btn-padded js-apply-table-btn" disabled>Apply &amp; Reload</button>
         <button type="button" class="btn-discard-all js-discard-table-btn">Discard All</button>
     </div>
 </div>
@@ -68,18 +76,27 @@
 {{define "rules"}}
 <h2>Add New Rule</h2>
 <form id="addRuleForm" method="post" action="/rules">
-    <select name="type">
+    <label class="visually-hidden" for="addRuleType">DNS record type</label>
+    <select id="addRuleType" name="type">
         {{range .DNSTypes}}
         <option value="{{.}}">{{.}}</option>
         {{end}}
     </select>
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <input type="text" name="pattern" placeholder="pattern" required> 
+    <label class="visually-hidden" for="addRulePattern">Rule pattern</label>
+    <input
+        id="addRulePattern"
+        type="text"
+        name="pattern"
+        placeholder="pattern"
+        required
+    > 
     <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
     <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
 <div class="filter-spacer">
+    <label class="visually-hidden" for="rulesFilter">Filter whitelist rules</label>
     <input
     type="text"
     id="rulesFilter"
@@ -100,11 +117,32 @@
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0">Type <span class="sort-icon"></span></th>
-            <th class="sortable" data-col="1">ID <span class="sort-icon"></span></th>
-            <th class="sortable" data-col="2">Pattern <span class="sort-icon"></span></th>
-            <th class="sortable" data-col="3">Enabled <span class="sort-icon"></span></th>
-            <th>Actions</th>
+            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Type</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>ID</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Pattern</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Enabled</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+           
+            <th scope="col">Actions</th>
         </tr>
     </thead>
     <tbody>
@@ -223,12 +261,31 @@
 <h2>Add New Local Host</h2>
 <form id="addHostForm" method="post" action="/hosts">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <input type="text" name="pattern" placeholder="pattern (e.g. router.local)" required> 
-    <input type="text" name="ips" placeholder="IPs (comma separated, e.g. 192.168.1.1)" class="w-280" required> 
+    
+    <label class="visually-hidden" for="addHostPattern">Host pattern</label>
+    <input
+        id="addHostPattern"
+        type="text"
+        name="pattern"
+        placeholder="pattern (e.g. router.local)"
+        required
+    >
+
+    <label class="visually-hidden" for="addHostIPs">Host IP addresses</label>
+    <input
+        id="addHostIPs"
+        type="text"
+        name="ips"
+        placeholder="IPs (comma separated, e.g. 192.168.1.1)"
+        class="w-280"
+        required
+    >
+
     <button type="submit">Add Host</button>
 </form>
 
 <div class="filter-spacer">
+    <label class="visually-hidden" for="hostsFilter">Filter local hosts</label>
     <input
     type="text"
     id="hostsFilter"
@@ -247,9 +304,19 @@
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0">Pattern <span class="sort-icon"></span></th>
-            <th class="sortable" data-col="1">IPs <span class="sort-icon"></span></th>
-            <th>Actions</th>
+            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Pattern</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>IPs</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th scope="col">Actions</th>
         </tr>
     </thead>
     <tbody>
@@ -327,12 +394,21 @@
     <form id="add-blacklist-form" method="POST" action="/response-blacklist" class="d-flex gap-10">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="add">
-        <input type="text" name="cidr" placeholder="e.g. 192.168.1.5 or 10.0.0.0/8" required class="flex-1 w-300">
+        <label class="visually-hidden" for="addBlacklistCIDR">Blacklisted IP or CIDR</label>
+        <input
+            id="addBlacklistCIDR"
+            type="text"
+            name="cidr"
+            placeholder="e.g. 192.168.1.5 or 10.0.0.0/8"
+            class="flex-1 w-300"
+            required
+        >
         <button type="submit">Add IP / CIDR</button>
     </form>
 </div>
 
 <div class="filter-spacer">
+    <label class="visually-hidden" for="blacklistFilter">Filter response blacklist</label>
     <input
     type="text"
     id="blacklistFilter"
@@ -350,8 +426,13 @@
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0">IP / CIDR Block <span class="sort-icon"></span></th>
-            <th class="text-center">Actions</th>
+            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>IP / CIDR Block</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="text-center" scope="col">Actions</th>
         </tr>
     </thead>
     <tbody>
@@ -448,6 +529,7 @@
 </div>
 
 <div class="mb-20">
+    <label class="visually-hidden" for="configFilter">Filter configuration settings</label>
     <input type="text" id="configFilter" class="table-filter-input w-100"
     placeholder="Filter settings... space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'timeout | rate !sec')"
     >
@@ -472,9 +554,19 @@
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0">Setting (Key) <span class="sort-icon"></span></th>
-            <th class="sortable" data-col="1">Current Value <span class="sort-icon"></span></th>
-            <th class="text-center">Actions</th>
+            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Setting (Key)</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Current Value</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="text-center" scope="col">Actions</th>
         </tr>
     </thead>
     <tbody>
