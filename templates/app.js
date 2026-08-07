@@ -55,7 +55,7 @@
     }
 
     const uiStorage = createSafeStorage('localStorage');
-    const stagedStorage = createSafeStorage('sessionStorage');//unused currently
+    const stagedStorage = createSafeStorage('sessionStorage');
 
     // --- Security & Extension Notices ---
     //FIXME: this doesn't seem to appear anymore, unclear what and when I've change something!:
@@ -156,9 +156,56 @@
         ));
     }
 
+    // storagePersistenceWarningEl lazily holds a DOM banner warning the user
+    // that staged changes can no longer be saved to sessionStorage (e.g.
+    // quota exceeded or storage unavailable), so a page refresh/crash/close
+    // would lose them even though they're still safely queued in memory for
+    // this tab. Built once on first failure and shown/hidden afterward;
+    // resets naturally on every full page (re)load since this is a fresh
+    // script run.
+    let storagePersistenceWarningEl = null;
+
+    function ensureStoragePersistenceWarningEl() {
+        if (storagePersistenceWarningEl) return storagePersistenceWarningEl;
+        const el = document.createElement('div');
+        el.className = 'alert-error storage-persistence-warning';
+        el.setAttribute('role', 'alert');
+        el.hidden = true;
+
+        const strong = document.createElement('strong');
+        strong.textContent = 'Warning:';
+        el.appendChild(strong);
+        el.appendChild(document.createTextNode(
+            ' Staged changes could not be saved to this browser tab\'s storage ' +
+            '(quota exceeded or storage unavailable). They still exist in memory and can ' +
+            'still be applied, but will be LOST if you reload, close, or navigate away from ' +
+            'this tab before clicking "Apply & Reload". Consider applying soon, or staging fewer changes at once.'
+        ));
+
+        const container = document.querySelector('.container');
+        const h1 = container ? container.querySelector('h1') : null;
+        if (h1) {
+            h1.after(el);
+        } else if (container) {
+            container.insertBefore(el, container.firstChild);
+        } else {
+            document.body.insertBefore(el, document.body.firstChild);
+        }
+        storagePersistenceWarningEl = el;
+        return el;
+    }
+
+    function setStoragePersistenceWarningVisible(visible) {
+        // Avoid creating the (hidden) element at all if we've never needed to
+        // show it — keeps the common, healthy-storage case free of DOM churn.
+        if (!visible && !storagePersistenceWarningEl) return;
+        ensureStoragePersistenceWarningEl().hidden = !visible;
+    }
+
     function persistStagedTableChanges() {
         if (stagedTableChanges.length === 0) {
             stagedStorage.removeItem(stagedStorageKey);
+            setStoragePersistenceWarningVisible(false);
             return;
         }
 
@@ -169,7 +216,18 @@
             changes: stagedTableChanges,
         };
 
-        stagedStorage.setItem(stagedStorageKey, JSON.stringify(record));
+        let persisted = false;
+        try {
+            persisted = stagedStorage.setItem(stagedStorageKey, JSON.stringify(record));
+        } catch (err) {
+            // Defensive: stagedTableChanges entries are always plain
+            // string-keyed/valued objects (see isValidStoredChange), so
+            // JSON.stringify should never throw here in practice, but treat
+            // it exactly like a storage-write failure if it somehow does.
+            console.error('Failed to serialize staged changes for storage:', err);
+            persisted = false;
+        }
+        setStoragePersistenceWarningVisible(!persisted);
     }
 
     function loadStoredStagedTableChanges() {
@@ -264,6 +322,22 @@
     // data-staged-client-id) rather than being queued as additional operations
     // referencing an identity the server doesn't know about yet.
     let stagedTableChanges = [];
+
+    // suppressUnloadWarning disables the beforeunload "unsaved changes"
+    // confirmation for exactly one upcoming navigation. Only ever set right
+    // before a reload we trigger ourselves after already persisting/applying
+    // staged state and telling the user via alert() — never for a manual
+    // user-initiated refresh (F5/Ctrl+R), which must keep warning normally.
+    let suppressUnloadWarning = false;
+
+    // reloadPageBypassingUnsavedWarning triggers a full page reload while
+    // suppressing the native "leave site?" prompt for that one navigation.
+    // Resets automatically on the next page load since this is a fresh
+    // script run each time.
+    function reloadPageBypassingUnsavedWarning() {
+        suppressUnloadWarning = true;
+        location.reload();
+    }
 
     function updateTableBanner() {
         const count = stagedTableChanges.length;
@@ -860,17 +934,24 @@
 
         const { response: res } = result;
         const contentType = res.headers.get('Content-Type') || '';
+        // Read the body exactly once as text, then attempt JSON.parse on it.
+        // Calling res.json() and later (conditionally) res.text() on the same
+        // Response throws "body stream already read" on the second call —
+        // that was reachable here whenever a JSON response's `error` field
+        // was falsy/missing and execution fell through to the text fallback,
+        // silently swallowing the real failure reason.
+        const rawBody = await res.text();
         let body = null;
         if (contentType.includes('application/json')) {
             try {
-                body = await res.json();
+                body = JSON.parse(rawBody);
             } catch (err) {
                 console.error('Failed to parse /apply-tables JSON response:', err);
             }
         }
 
         if (res.status === 409) {
-            alert(body?.error || 'The table changed since this page was loaded. Reload before applying again.');
+            alert(body?.error || rawBody || 'The table changed since this page was loaded. Reload before applying again.');
             return false;
         }
 
@@ -881,27 +962,51 @@
             // persisting, so the reload below's restore-matching succeeds for
             // the remaining, still-staged changes instead of discarding them.
             updateTableVersions(body?.versions);
-            persistStagedTableChanges();
-            updateTableBanner();
+            updateTableBanner(); // also persists the trimmed staged list
 
             alert(
                 `Applied ${appliedIds.size} staged change(s), but some entries failed.\n` +
                 `The failed entries remain staged. Reloading to refresh the table...`
             );
 
-            location.reload();
+            reloadPageBypassingUnsavedWarning();
             return false;
         }
 
         if (!res.ok) {
-            alert(body?.error || (await res.text()) || `HTTP ${res.status}`);
+            if (body?.persistence_failed) {
+                // Every change in the batch was applied to the server's live,
+                // in-memory state (appliedIds reflects exactly that), but
+                // saving it to disk failed. Treat this like a 422: drop the
+                // applied entries from the staged queue, adopt the server's
+                // now-bumped versions, and reload — otherwise the client would
+                // keep showing these changes as "unsaved" even though they're
+                // already live, and any retry would be rejected as a stale
+                // version conflict.
+                const appliedIds = new Set(body?.applied_client_ids || []);
+                stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
+                updateTableVersions(body?.versions);
+                updateTableBanner();
+
+                alert(
+                    `${appliedIds.size} staged change(s) were applied on the running server, but could ` +
+                    `NOT be saved to disk, so they may be lost if the server restarts before the next ` +
+                    `successful save.\nServer error: ${body?.error || rawBody || ('HTTP ' + res.status)}\n` +
+                    `Reloading to refresh the table...`
+                );
+
+                reloadPageBypassingUnsavedWarning();
+                return false;
+            }
+
+            alert(body?.error || rawBody || `HTTP ${res.status}`);
             return false;
         }
 
         stagedTableChanges = [];
         stagedStorage.removeItem(stagedStorageKey);
         updateTableBanner();
-        location.reload();
+        reloadPageBypassingUnsavedWarning();
         return true;
     }
 
@@ -1841,10 +1946,10 @@
         }, 'Failed to apply configuration'));
         
         if (success) {
-            // CRITICAL: Clear the object to disarm the beforeunload listener before reloading!
+            // Clear the object to disarm the beforeunload listener before reloading!
             for (const key in stagedChanges) { delete stagedChanges[key]; }
 
-            location.reload();
+            reloadPageBypassingUnsavedWarning();
         }
     }
     
@@ -1888,7 +1993,13 @@
 
         // Warn before navigating away while table edits are staged
         window.addEventListener('beforeunload', function(e) {
-           const hasTableChanges = stagedTableChanges.length > 0;
+            // Programmatic reloads triggered via reloadPageBypassingUnsavedWarning()
+            // (after we've already persisted/communicated the outcome to the
+            // user, e.g. post-apply or post-discard) must never re-trigger this
+            // native "leave site?" prompt.
+            if (suppressUnloadWarning) return;
+
+            const hasTableChanges = stagedTableChanges.length > 0;
             const hasConfigChanges = Object.keys(stagedChanges).length > 0;
 
             if (hasTableChanges || hasConfigChanges) {
@@ -1909,7 +2020,7 @@
                 if (!confirm('Discard all staged changes?')) return;
                 stagedTableChanges = []; // Bypass the beforeunload block!
                 stagedStorage.removeItem(stagedStorageKey);
-                location.reload();
+                reloadPageBypassingUnsavedWarning();
                 return;
             }
             if (e.target.closest('.js-apply-table-btn')) {
@@ -2603,7 +2714,7 @@
                 if (confirm('Discard all staged config changes?')) {
                     // Empty the staged changes object safely, else beforeunload will prevent reload!
                     for (const key in stagedChanges) { delete stagedChanges[key]; }
-                    location.reload();
+                    reloadPageBypassingUnsavedWarning();
                 }
             });
         }

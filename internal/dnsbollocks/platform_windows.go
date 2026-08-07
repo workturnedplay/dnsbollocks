@@ -13909,14 +13909,18 @@ func (lm *LoggerManager) set(l *slog.Logger) {
 	lm.ptr.Store(l)
 }
 
-// joinCloseErrors combines zero or more Close() failures into a single
-// wrapped error, or nil if errs is empty. Returning errors.Join's result
-// directly would trip wrapcheck ("error returned from external package is
-// unwrapped"), so it's always routed through fmt.Errorf here; errors.Is/As
-// still traverse into each individual closer's error afterward, since
-// errors.Join's result implements Unwrap() []error and fmt.Errorf's %w
-// wrapping doesn't hide that from the traversal.
-func joinCloseErrors(prefix string, errs []error) error {
+// joinErrorsWithPrefix combines zero or more failures into a single wrapped
+// error prefixed with a caller-supplied description, or nil if errs is
+// empty. Returning errors.Join's result directly would trip wrapcheck
+// ("error returned from external package is unwrapped"), so it's always
+// routed through fmt.Errorf here; errors.Is/As still traverse into each
+// individual error afterward, since errors.Join's result implements
+// Unwrap() []error and fmt.Errorf's %w wrapping doesn't hide that from the
+// traversal. Originally written for combining multiple Close() failures
+// (hence callers passing a "failed to close ..." prefix), but the logic
+// itself is generic and is also used for combining independent persistence
+// failures (see applyTablesHandler's flushDirty).
+func joinErrorsWithPrefix(prefix string, errs []error) error {
 	if joined := errors.Join(errs...); joined != nil {
 		return fmt.Errorf("%s, joinedErrs: %w", prefix, joined)
 	}
@@ -13955,7 +13959,7 @@ func (lm *LoggerManager) Reinit(l *slog.Logger, simpleQueriesWriter *AsyncLogWri
 			errs = append(errs, err)
 		}
 	}
-	return joinCloseErrors("LoggerManager.Reinit(..) failed to close one or more previous log writers", errs)
+	return joinErrorsWithPrefix("LoggerManager.Reinit(..) failed to close one or more previous log writers", errs)
 }
 
 // Close closes all registered file handles. Safe to call multiple times.
@@ -13973,7 +13977,7 @@ func (lm *LoggerManager) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	return joinCloseErrors("LoggerManager.Close() failed to close one or more log writers", errs)
+	return joinErrorsWithPrefix("LoggerManager.Close() failed to close one or more log writers", errs)
 }
 
 // ApplyConfig initializes the multi-handler logger (file writers, console level,
@@ -14417,29 +14421,33 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	saveHosts := false
 	saveBlacklist := false
 
-	// flushDirty persists whichever stores were actually mutated so far and
-	// returns the first persistence error encountered (if any). A save
-	// failure here is logged (via logPersistFailure) but does not crash the
-	// process: the in-memory stores were already mutated successfully, so
-	// DNS resolution continues correctly with the new state; only the
-	// on-disk copy may be stale until the next successful save.
+	// flushDirty persists every store that was actually mutated so far,
+	// attempting ALL of them independently rather than stopping at the first
+	// failure (whitelist/hosts/blacklist live in separate files, so a
+	// transient failure writing one must not also skip the other two), and
+	// returns a combined error if any failed. Each individual failure is
+	// logged (via logPersistFailure) but does not crash the process: the
+	// in-memory stores were already mutated successfully, so DNS resolution
+	// continues correctly with the new state; only the on-disk copy(ies) may
+	// be stale until the next successful save.
 	flushDirty := func() error {
+		var errs []error
 		if saveRules {
 			if err := ui.OnSaveWhitelist(); err != nil {
-				return ui.logPersistFailure("whitelist", err)
+				errs = append(errs, ui.logPersistFailure("whitelist", err))
 			}
 		}
 		if saveHosts {
 			if err := ui.OnSaveHosts(); err != nil {
-				return ui.logPersistFailure("hosts", err)
+				errs = append(errs, ui.logPersistFailure("hosts", err))
 			}
 		}
 		if saveBlacklist {
 			if err := ui.OnSaveBlacklist(); err != nil {
-				return ui.logPersistFailure("response blacklist", err)
+				errs = append(errs, ui.logPersistFailure("response blacklist", err))
 			}
 		}
-		return nil
+		return joinErrorsWithPrefix("batch apply: one or more staged-table stores failed to persist to disk", errs)
 	}
 
 	// Every change in the batch is an independent rule/host/blacklist entry,
@@ -14540,10 +14548,29 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// buildResponseFailures converts the accumulated per-item failures into
+	// their JSON-response shape. Shared by the persistence-failure (500) and
+	// partial-validation-failure (422) responses below, since either can
+	// leave a non-empty failures slice the client needs to see.
+	buildResponseFailures := func() []batchFailureResponse {
+		responseFailures := make([]batchFailureResponse, 0, len(failures))
+		for _, failure := range failures {
+			responseFailures = append(responseFailures, batchFailureResponse{
+				Index:    failure.index,
+				ClientID: failure.clientID,
+				URL:      failure.url,
+				Status:   failure.status,
+				Error:    failure.err.Error(),
+			})
+		}
+		return responseFailures
+	}
+
 	if flushErr := flushDirty(); flushErr != nil {
 		writeJSON(http.StatusInternalServerError, applyTablesResponse{
 			OK:                false,
 			Applied:           appliedClientIDs,
+			Failed:            buildResponseFailures(),
 			PersistenceFailed: true,
 			Error:             flushErr.Error(),
 			Versions:          currentVersions(),
@@ -14559,17 +14586,6 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(failures) > 0 {
-		responseFailures := make([]batchFailureResponse, 0, len(failures))
-		for _, failure := range failures {
-			responseFailures = append(responseFailures, batchFailureResponse{
-				Index:    failure.index,
-				ClientID: failure.clientID,
-				URL:      failure.url,
-				Status:   failure.status,
-				Error:    failure.err.Error(),
-			})
-		}
-
 		log.Warn(
 			"Batch apply completed with partial failures",
 			slog.Int("failed", len(failures)),
@@ -14580,7 +14596,7 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(http.StatusUnprocessableEntity, applyTablesResponse{
 			OK:       false,
 			Applied:  appliedClientIDs,
-			Failed:   responseFailures,
+			Failed:   buildResponseFailures(),
 			Versions: currentVersions(),
 		})
 		return
