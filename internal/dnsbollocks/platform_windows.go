@@ -6459,6 +6459,11 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST" {
+		// See the identical lock in rulesHandler's POST branch for why this
+		// single-item path must also serialize against Reload()/batch-apply.
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
+
 		fields := map[string]string{
 			"action":   r.FormValue("action"),
 			"cidr":     r.FormValue("cidr"),
@@ -8027,6 +8032,14 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST"
+		// Serialize against a concurrent config Reload's loadQueryWhitelist()
+		// (or a concurrent /apply-tables batch), exactly like applyTablesHandler
+		// already does — this single-item path mutates+persists the same
+		// RuleStore and is reachable whenever JavaScript is disabled (the
+		// staged-batch UI is a JS-only affordance; see ui.html's noscript banner).
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
+
 		fields := map[string]string{
 			"delete":  r.FormValue("delete"),
 			"id":      r.FormValue("id"),
@@ -8310,6 +8323,11 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 	} //end "GET" or "HEAD"
 
 	if r.Method == http.MethodPost { //"POST" {
+		// See the identical lock in rulesHandler's POST branch for why this
+		// single-item path must also serialize against Reload()/batch-apply.
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
+
 		fields := map[string]string{
 			"delete":      r.FormValue("delete"),
 			"pattern":     r.FormValue("pattern"),
@@ -8507,6 +8525,13 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// --- END NEW ---
+
+		// Quick unblock/reblock mutates the RuleStore and persists it, exactly
+		// like the single-item /rules POST path — serialize against a
+		// concurrent Reload()/batch-apply for the same reason (see the lock
+		// in rulesHandler's POST branch).
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
 
 		raw := r.FormValue("domain")
 
@@ -15330,13 +15355,17 @@ func (ui *AdminUI) csrfTokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := ui.getOrCreateCSRFToken(w, r)
-	//well it can't fail anymore
-	// if err != nil {
-	// 	ui.getLogger().Error("Failed to issue CSRF token", wincoe.SafeErr(err))
-	// 	http.Error(w, "failed to issue CSRF token", http.StatusInternalServerError)
-	// 	return
-	// }
+	// csrfMiddleware (which wraps this handler via innerMux) already resolved
+	// or minted the token for this exact request and stashed it in the
+	// context — reuse that instead of calling getOrCreateCSRFToken() a
+	// second time, which would risk emitting two conflicting Set-Cookie
+	// headers (and generating two different random tokens) for the same
+	// cookie name whenever no valid cookie existed yet on this request.
+	token, ok := r.Context().Value(csrfTokenKey{}).(string)
+	if !ok || token == "" {
+		ui.getLogger().Error("BUG: csrfTokenHandler reached without a token in context; csrfMiddleware should always set one")
+		token = ui.getOrCreateCSRFToken(w, r)
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

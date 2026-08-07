@@ -194,10 +194,21 @@
             return null;
         }
 
-        const versionsMatch =
-            record.versions.rules === tableVersions.rules &&
-            record.versions.hosts === tableVersions.hosts &&
-            record.versions.blacklist === tableVersions.blacklist;
+        // Only the version(s) of the table(s) actually touched by these
+        // staged changes need to still match — an unrelated table changing
+        // in another tab (e.g. rules edited while this page only ever staged
+        // host changes) must not discard an otherwise still-valid restore.
+        const versionKeyForUrl = {
+            '/rules': 'rules',
+            '/hosts': 'hosts',
+            '/response-blacklist': 'blacklist',
+        };
+        const touchedVersionKeys = new Set(
+            record.changes.map(change => versionKeyForUrl[change.url])
+        );
+        const versionsMatch = [...touchedVersionKeys].every(
+            key => record.versions[key] === tableVersions[key]
+        );
 
         if (!versionsMatch) {
             stagedStorage.removeItem(stagedStorageKey);
@@ -831,7 +842,14 @@
 
         const { response: res } = result;
         const contentType = res.headers.get('Content-Type') || '';
-        const body = contentType.includes('application/json') ? await res.json() : null;
+        let body = null;
+        if (contentType.includes('application/json')) {
+            try {
+                body = await res.json();
+            } catch (err) {
+                console.error('Failed to parse /apply-tables JSON response:', err);
+            }
+        }
 
         if (res.status === 409) {
             alert(body?.error || 'The table changed since this page was loaded. Reload before applying again.');
@@ -1858,31 +1876,24 @@
             if (e.target.closest('.js-discard-table-btn')) {
                 if (!confirm('Discard all staged changes?')) return;
                 stagedTableChanges = []; // Bypass the beforeunload block!
+                stagedStorage.removeItem(stagedStorageKey);
                 location.reload();
                 return;
             }
             if (e.target.closest('.js-apply-table-btn')) {
                 const applyBtn = e.target.closest('.js-apply-table-btn');
                 if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
-                (async () => {
-                    await withApplyButtonBusy(applyBtn, 'Applying\u2026', () => {
-                        // const payload = JSON.stringify(stagedTableChanges);
-                        // const payload = JSON.stringify({
-                        //     versions: tableVersions,
-                        //     changes: stagedTableChanges,
-                        // });
-                        // return postAdminForm('/apply-tables', { payload: payload }, 'Failed to save staged changes\n(if using NoScript ensure "fetch" is allowed)');
-                        return applyStagedTableChanges();
-                    });
-                    // Always clear staged changes and reload: even a reported
-                    // failure may reflect a batch where some earlier entries
-                    // were already applied and persisted to disk before the
-                    // failing one was hit (see applyTablesHandler), so the
-                    // client's staged-changes array can no longer be trusted
-                    // to accurately describe what's still pending.
-                    stagedTableChanges = []; // Bypass the beforeunload block!
-                    location.reload();
-                })();
+                // applyStagedTableChanges() already handles every outcome on its
+                // own: it clears stagedTableChanges, clears sessionStorage,
+                // updates the banner, and reloads on full success; on a 409
+                // (version conflict) it leaves everything untouched so the user
+                // can manually refresh; on a 422 (partial failure) it filters
+                // out only the entries that succeeded, re-persists the rest,
+                // and deliberately does NOT reload, so the surviving staged
+                // entries aren't wiped out from under the user. Don't
+                // second-guess that here with an unconditional clear+reload.
+                withApplyButtonBusy(applyBtn, 'Applying\u2026', () => applyStagedTableChanges())
+                    .catch(err => console.error('Unexpected error while applying staged changes:', err));
                 return;
             }
 
