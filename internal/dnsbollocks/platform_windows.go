@@ -2372,6 +2372,34 @@ var uiTemplates0 = template.Must(template.ParseFS(templates.FS, "ui.html"))
 
 const configFileName = "config.json"
 
+// resolveLogDir returns the directory that log files should live in, given
+// Config.LogDir's raw value: an empty string (the default) means "the same
+// directory as config.json", matching Config.LogDir's own desc tag ("If
+// empty aka \"\" then it defaults_to/uses config dir").
+func resolveLogDir(logDir string) string {
+	if logDir == "" {
+		return filepath.Dir(configFileName)
+	}
+	return logDir
+}
+
+// resolveLogFilePath computes the full on-disk path for a log file given the
+// configured log directory (Config.LogDir) and a bare filename (Config.LogDir's
+// desc tag documents that log filenames never carry a path component of their
+// own). This is the single source of truth for turning a Config log-file
+// field into an actual on-disk path, shared by:
+//   - the very-early bootstrap logger in OldMain (before config.json has even
+//     been fully validated),
+//   - LoggerManager.ApplyConfig, which opens the real, rotating log writers,
+//   - AdminUI's log-viewer handlers (renderLogPage), which read those same
+//     files back for display in the WebUI.
+//
+// Routing every one of those call sites through this single function means
+// they can never again disagree about where a given log file actually lives.
+func resolveLogFilePath(logDir, filename string) string {
+	return filepath.Join(resolveLogDir(logDir), filename) // filepath.Join already Cleans the result
+}
+
 func (s *Server) logFatal(msg string, err error) {
 	log := s.getLogger()
 	log.Error(msg, wincoe.SafeErr(err))
@@ -2793,6 +2821,37 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 	panic(nil)
 }
 
+// peekBootstrapLogSettings performs a best-effort, unvalidated read of
+// config.json purely to recover which log directory and log filename the
+// full, validated config will eventually resolve to, so this process's very
+// first log lines — written before LoadAndValidateConfig has run at all —
+// land in the same file the rest of this run will use. It intentionally
+// skips every one of LoadAndValidateConfig's real validation steps
+// (duplicate-key detection, description-key stripping, template
+// resolution, etc.): a malformed, corrupt, or not-yet-existing config.json
+// simply leaves the two returned values at defaultDir/defaultFile, exactly
+// like an absent file would, since the real parse — which DOES report a
+// proper, actionable error either to the console or to this same bootstrap
+// log file — runs moments later in LoadAndValidateConfig.
+func peekBootstrapLogSettings(defaultDir, defaultFile string) (logDir, logFile string) {
+	logDir, logFile = defaultDir, defaultFile
+	data, err := os.ReadFile(configFileName)
+	if err != nil {
+		return logDir, logFile
+	}
+	var peek map[string]any
+	if json.Unmarshal(data, &peek) != nil {
+		return logDir, logFile
+	}
+	if val, ok := peek[getJSONTagByOffset(unsafe.Offsetof(Config{}.LogDir))].(string); ok {
+		logDir = val
+	}
+	if val, ok := peek[getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile))].(string); ok && val != "" {
+		logFile = val
+	}
+	return logDir, logFile
+}
+
 func OldMain() {
 	//must do this first because localLogger below uses os.Stderr which is set here:
 	handlesErr := EnsureConsoleHandles()
@@ -2820,68 +2879,52 @@ func OldMain() {
 		envLvl = slog.LevelDebug // hard-coded for bootstrap
 	}
 
-	// var logDest io.Writer = os.Stderr
-	var bootLogPath string
-	var configuredLogDir string = filepath.Dir(configFileName) //default
-	const defaultBootLogFilename = "dnsbollocks.log"           // should match the one in Config.LogEverythingFile
-	// If restarting, prefer the explicitly passed env var
+	// Determine where this process's very-first log lines should land,
+	// before config.json has even been fully loaded and validated. Always
+	// start from a best-effort peek of config.json (see
+	// peekBootstrapLogSettings's doc comment), then let an auto-restarting
+	// parent's explicit env vars override either piece. This is what lets a
+	// hide_console-detached child — which will never have a console to fall
+	// back on if config parsing itself then fails — still honor whatever
+	// log_dir the parent was actually configured with, instead of silently
+	// reverting to the config-file directory the way an env-var-only,
+	// peek-skipping scheme previously did.
+	const defaultBootLogFilename = "dnsbollocks.log" // should match the one in Config.LogEverythingFile
+	bootLogDir, bootLogFilename := peekBootstrapLogSettings(filepath.Dir(configFileName), defaultBootLogFilename)
 	if envLog := os.Getenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE"); envLog != "" {
-		//doneFIXME: handle the case when user set this before first process ran and the spawned process thus overwrites this but don't we wanna keep this? even though well I guess it has same effect since we would still apply the same log file that parent said we should(so the one from config.json)
-		// [RESOLVED FIXME 1]: The parent process explicitly passes the correct log file to use.
-		// Overwriting any user-provided env var here is intentional so the child logs to
-		// the most up-to-date configured destination after a config reload.
-		bootLogPath = envLog
-	} else {
-		// Attempt to peek at the log file path from config.json to capture very early boot logs
-		bootLogPath = defaultBootLogFilename // Default
-		if data, err := os.ReadFile(configFileName); err == nil {
-			// var peek struct {
-			// 	LogFile string `json:"log_file"` //doneFIXME: so this is a dup, if the original gets renamed, it has to be done here too!
-			// }
-			var peek map[string]any
-			// if json.Unmarshal(data, &peek) == nil && peek.LogFile != "" {
-			// 	bootLogPath = peek.LogFile
-			// }
-			if json.Unmarshal(data, &peek) == nil {
-				// 1. Extract log_dir tag dynamically
-				logDirTag := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogDir))
-				if val, ok := peek[logDirTag].(string); ok {
-					configuredLogDir = val
-				}
-
-				// 2. Extract log file tag dynamically (e.g., LogEverythingFile)
-				tag := getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile))
-				if val, ok := peek[tag].(string); ok && val != "" {
-					bootLogPath = val
-				}
-			}
-		}
+		// The parent process explicitly passes the correct log file to use.
+		// Overwriting any peeked value here is intentional so the child logs
+		// to the most up-to-date configured destination after a config reload.
+		bootLogFilename = envLog
+	}
+	if envDir, ok := os.LookupEnv("DNSBOLLOCKS_BOOTSTRAP_LOG_DIR"); ok {
+		bootLogDir = envDir
 	}
 
-	targetDir := configuredLogDir
-
 	// Force base filename only to prevent path traversal / arbitrary file writes during early boot
-	baseName := filepath.Base(filepath.Clean(bootLogPath))
+	baseName := filepath.Base(filepath.Clean(bootLogFilename))
 	if baseName == "." || baseName == string(filepath.Separator) {
 		baseName = defaultBootLogFilename
 	}
 
 	// Ensure the log directory exists before opening the file
-	if targetDir != "" {
-		// If LogDir doesn't exist, create it
-		if err := os.MkdirAll(targetDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
-			panic2(fmt.Sprintf("failed to create log directory %q: %v", targetDir, err))
-		}
+	targetDir := resolveLogDir(bootLogDir)
+	if err := os.MkdirAll(targetDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
+		panic2(fmt.Sprintf("failed to create log directory %q: %v", targetDir, err))
 	}
 
-	finalBootLogPath := filepath.Join(targetDir, baseName)
+	finalBootLogPath := resolveLogFilePath(bootLogDir, baseName)
 
 	var bootLogFile *os.File
-	// cleanedLogPath := filepath.Clean(bootLogPath)
 	// Open with FILE_SHARE_READ|FILE_SHARE_WRITE implicitly via Go os.OpenFile on Windows
 	if f, err := os.OpenFile(finalBootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
-		// logDest = io.MultiWriter(os.Stderr, f)
 		bootLogFile = f
+	} else {
+		// Best-effort only: on a hide_console-detached restart there may be
+		// no console for this diagnostic to reach either, but on a normal
+		// boot it at least explains why early logs won't be written to disk
+		// this run.
+		fmt.Fprintf(os.Stderr, "warning: failed to open bootstrap log file %q: %v\n", finalBootLogPath, err)
 	}
 
 	timeReplacer := func(groups []string, a slog.Attr) slog.Attr {
@@ -3078,6 +3121,8 @@ func OldMain() {
 		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0")
 		os.Setenv("DNSBOLLOCKS_PARENT_PID", "")
 		os.Setenv("DNSBOLLOCKS_SYNC_EVENT", "")
+		os.Setenv("DNSBOLLOCKS_BOOTSTRAP_LOG_DIR", "")
+		os.Setenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE", "")
 		// os.Setenv("DNSBOLLOCKS_NO_WAIT", "")
 	}
 
@@ -6621,6 +6666,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 		http.NotFound(w, r)
 	})
 	innerMux.HandleFunc("/stats", ui.statsHandler)
+	innerMux.HandleFunc("/control", ui.controlHandler)
 	innerMux.HandleFunc("/rules", ui.rulesHandler)
 	innerMux.HandleFunc("/hosts", ui.hostsHandler)
 	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
@@ -7225,12 +7271,29 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := ui.getConfig()
 	data := map[string]any{
+		"PID":          os.Getpid(),
 		"Blocks":       ui.stats.String(),
 		"UpstreamURLs": cfg.UpstreamURLsParsed,
 		"UpstreamSNIs": cfg.UpstreamSNIHostnames,
 		"UpstreamIPs":  cfg.UpstreamIPs,
 	}
 	ui.renderTemplate(w, r, "stats", data)
+}
+
+// controlHandler serves the /control page, which groups process-lifecycle
+// actions (currently just Shutdown) separately from the purely informational,
+// read-only /stats page.
+func (ui *AdminUI) controlHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
+	ui.renderTemplate(w, r, "control", map[string]any{})
 }
 
 // RuleStore manages the in-memory DNS query whitelist.
@@ -8814,7 +8877,7 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	//     filter = r.URL.Query().Get("domain")
 	// }
 
-	ui.renderLogPage(w, r, "logs_queries", "Query Logs", cfg.LogQueriesFile, filter)
+	ui.renderLogPage(w, r, "logs_queries", "Query Logs", resolveLogFilePath(cfg.LogDir, cfg.LogQueriesFile), filter)
 }
 
 // logsQueriesSimpleHandler serves the plain-text, single-line-per-query
@@ -8832,7 +8895,7 @@ func (ui *AdminUI) logsQueriesSimpleHandler(w http.ResponseWriter, r *http.Reque
 
 	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", cfg.LogQueriesSimpleFile, filter)
+	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", resolveLogFilePath(cfg.LogDir, cfg.LogQueriesSimpleFile), filter)
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -8847,7 +8910,7 @@ func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "logs", "System & Error Logs", cfg.LogEverythingFile, filter)
+	ui.renderLogPage(w, r, "logs", "System & Error Logs", resolveLogFilePath(cfg.LogDir, cfg.LogEverythingFile), filter)
 }
 
 func (s *Server) shutdown(exitCode int) {
@@ -8881,7 +8944,7 @@ func (s *Server) shutdown(exitCode int) {
 		// --- AUTO RESTART TRIGGER ---
 		if s.autoRestart.Load() {
 			cfg := s.getConfig()
-			spawnRestartProcess(log, cfg.HideConsole, cfg.LogEverythingFile)
+			spawnRestartProcess(log, cfg.HideConsole, cfg.LogDir, cfg.LogEverythingFile)
 		}
 		// ---------------------------
 
@@ -14006,32 +14069,29 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		}
 	}
 
+	// All three log files below share the same configured directory (see
+	// Config.LogDir's desc tag); create it once up front rather than
+	// redundantly re-creating it on every openLog call.
+	logDir := resolveLogDir(cfg.LogDir)
+	if err := os.MkdirAll(logDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
+		return fmt.Errorf("failed to create log directory %q: %w", logDir, err)
+	}
+
 	// Simple rotation on each log line write (respects your LogMaxSizeMB).
 	// Every log line — including ones on the DNS UDP/TCP hot paths — passes
 	// through here, so the raw rotatingLogWriter (which can itself block
 	// for a long time under disk contention) is wrapped in asyncLogWriter
 	// before being handed to slog; see asyncLogWriter's doc comment for why.
-	// openLog := func(path string) (*AsyncLogWriter, error) {
 	openLog := func(filename string) (*AsyncLogWriter, error) {
 		if filename == "" {
 			return nil, errors.New("empty logging filename")
 		}
 
-		// 1. Determine the active log directory:
-		// If cfg.LogDir is empty, default it to the config file's directory.
-		targetDir := cfg.LogDir
-		if targetDir == "" {
-			configDir := filepath.Dir(configFileName) //ie. current dir., ohkthenFIXME: although this might fail is the config file got removed since! actually it doesn't because it acts on the arg and arg is filename only! So it's current dir!
-			targetDir = configDir
-		}
-		// If LogDir doesn't exist, create it
-		if err := os.MkdirAll(targetDir, 0755); err != nil { //If path is already a directory, MkdirAll does nothing and returns nil.
-			return nil, fmt.Errorf("failed to create log directory %q: %w", targetDir, err)
-		}
-
-		// Join the safely stripped filename with the configured Log Directory
-		path := filepath.Join(cfg.LogDir, filename)
-		path = filepath.Clean(path)
+		// Resolve via the single shared helper (see resolveLogFilePath's
+		// doc comment) so this can never again silently diverge from where
+		// AdminUI's log viewer or the early bootstrap logger look for the
+		// same file.
+		path := resolveLogFilePath(cfg.LogDir, filename)
 
 		writer, err := newRotatingLogWriter(path, cfg.LogMaxSizeMB, log)
 		if err != nil {
@@ -15137,7 +15197,7 @@ func init() {
 	}
 }
 
-func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringStartupOfNewProcess string) {
+func spawnRestartProcess(log *slog.Logger, hideConsole bool, logDirToUseDuringStartupOfNewProcess, logFileToUseDuringStartupOfNewProcess string) {
 	rawExe, err := os.Executable()
 	if err != nil {
 		if log != nil {
@@ -15175,10 +15235,14 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 	// originally launched the app (e.g., project root), rather than .\bin\
 	cmd.Dir = initialCWD
 
-	// Inject clone flag to handle file-lock grace period on boot, and pass the log file
+	// Inject clone flag to handle file-lock grace period on boot, and pass
+	// the log directory/file to use during the new process's own bootstrap
+	// phase (see peekBootstrapLogSettings's doc comment for why passing the
+	// directory explicitly, not just the filename, matters here).
 	env := os.Environ()
 	env = append(env,
 		"DNSBOLLOCKS_IS_RESTARTING=1",
+		"DNSBOLLOCKS_BOOTSTRAP_LOG_DIR="+logDirToUseDuringStartupOfNewProcess,
 		"DNSBOLLOCKS_BOOTSTRAP_LOG_FILE="+logFileToUseDuringStartupOfNewProcess,
 	)
 
@@ -15233,6 +15297,8 @@ func spawnRestartProcess(log *slog.Logger, hideConsole bool, logFileToUseDuringS
 		log.Info("Spawning new process for auto-restart...",
 			slog.String("exe", exe),
 			slog.String("cwd", initialCWD),
+			slog.String("log_dir", logDirToUseDuringStartupOfNewProcess),
+			slog.String("log_file", logFileToUseDuringStartupOfNewProcess),
 			slog.Bool(configKeyNameForHideConsole, hideConsole),
 			slog.Bool("parent_will_pause", willPause),
 		)

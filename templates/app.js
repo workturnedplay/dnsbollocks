@@ -1933,12 +1933,17 @@
     function updateBanner() {
         const count = Object.keys(stagedChanges).length;
         const banner = document.getElementById('stagedChangesBanner');
-        if (count > 0) {
-            banner.style.display = 'block';
-            document.getElementById('stagedCount').innerText = count;
-        } else {
-            banner.style.display = 'none';
-        }
+        // Use the `hidden` attribute (matching updateTableBanner's approach
+        // for the Rules/Hosts/Blacklist staged-table banners) instead of an
+        // inline style, so the banner's default HTML state and its
+        // JS-driven state can never disagree — this is what was leaving
+        // "Unsaved Changes! 0 modification(s)" visible on first load and
+        // after Discard All (which reloads the page without ever calling
+        // this function).
+        banner.hidden = count === 0;
+        document.getElementById('stagedCount').innerText = count;
+        const applyBtn = document.getElementById('js-apply-config-btn');
+        if (applyBtn) applyBtn.disabled = count === 0;
     }
     
     async function applyConfigChanges(e) {

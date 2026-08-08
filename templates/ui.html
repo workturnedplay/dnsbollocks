@@ -18,7 +18,7 @@
         </div>
     </noscript>
     <div class="container">
-        <h1>DNSbollocks</h1>
+        <h1>DNSbollocks <span class="version-badge" title="Build version">{{.Version}}</span></h1>
         <div
             id="tableVersionData"
             hidden
@@ -35,8 +35,9 @@
             <a href="/logs_queries" {{if eq .Page "logs_queries" }} class="active" {{end}}>Query(only) Log</a>
             <a href="/logs_queries_simple" {{if eq .Page "logs_queries_simple" }} class="active" {{end}}>Simple-Query Log</a>
             <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
+            <a href="/control" {{if eq .Page "control" }} class="active" {{end}}>Control</a>
             <a href="/config" {{if eq .Page "config" }} class="active" {{end}}>config.json</a>
-            <a href="/debug/vars">Debug Vars</a>
+            <a href="/debug/vars" target="_blank" rel="noopener noreferrer">Debug Vars ↗</a>
         </nav>
         <hr>
         
@@ -53,6 +54,8 @@
         {{template "logs" .}}
         {{else if eq .Page "stats" }}
         {{template "stats" .}}
+        {{else if eq .Page "control" }}
+        {{template "control" .}}
         {{else if eq .Page "config" }}
         {{template "config" .}}
         {{end}}
@@ -487,11 +490,17 @@
 {{define "stats"}}
 <h2>Engine Statistics</h2>
 <div class="stats-container">
+    <p>Process ID (PID): {{.PID}}</p>
     <p>Blocks: "{{.Blocks}}"</p>
     <p>Upstream URLs: {{.UpstreamURLs}}</p>
     <p>Upstream SNIs: {{.UpstreamSNIs}}</p>
     <p>Upstream IPs: {{.UpstreamIPs}}</p>
 </div>
+{{end}}
+
+{{define "control"}}
+<h2>Server Control</h2>
+<p class="section-desc">Actions that affect the entire running dnsbollocks process. See the Stats page for read-only engine statistics.</p>
 
 <h2>Shutdown</h2>
 <p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits). This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.</p>
@@ -521,10 +530,10 @@
     Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload" button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
 </p>
 
-<div id="stagedChangesBanner" class="staged-changes-banner">
+<div id="stagedChangesBanner" class="staged-changes-banner" hidden>
     <strong>Unsaved Changes!</strong> You have staged <span id="stagedCount">0</span> modification(s).
     <div class="config-banner-actions">
-        <button class="btn-save btn-padded" id="js-apply-config-btn">Apply &amp; Reload</button>
+        <button class="btn-save btn-padded" id="js-apply-config-btn" disabled>Apply &amp; Reload</button>
         <button id="js-discard-config-btn" class="btn-discard-all">Discard All</button>
     </div>
 </div>

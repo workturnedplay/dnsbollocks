@@ -1,13 +1,5 @@
 my todos:
 
-* see why all 3 logs buttons in webUI aren't showing, eg. they're empty! maybe they're not using log_dir ?!
-
-* Debug Vars in webui replaces the whole page, so can only get back to webUI by doing a Back button. Not good.
-
-* in config.json webui page the banner is "Unsaved Changes! You have staged 0 modification(s). " showing on first navigation! Correctly goes away if i stage 1 change then discard it! Has no effect (keeps showing) after a Discard All because it's showing for 0 modifs anyway.
-
-* show program version in webUI next to the big title ideally!
-
 * fix things that GPT-5.4 Thinking Mini (High Thinking Level) found(in 1 prompt, fixed in another 1 prompt; on free tier!) in v0.40.0: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a747896-9034-83eb-90c5-21afdd169692?tab=chats
   (dontdo: 36,34,30,27,26,22,20
   todo: 6,
@@ -18,12 +10,6 @@ my todos:
   donenow_but_it_halfassed_it: 24,14,4,5,18, 16,17,23,31
   at_currently: done
   )
-
-* the use of log_dir and Config.LogEverythingFile aka log_file at startup before config is even read is too flakey! and yet I want the ability to write those early logs to file (considering the potential for a panic/exit before the full logging is actually inited, is not viable to hold them in a memory buffer and write them then) and it is very non-DRY, not to mention how parsing the config may fail (while not even having a console because we just toggled it from hide_console false to true; so it's not happening on first run of the .exe which does log on console initially)
-
-* list the current process's PID in the /stats webUI page.
-
-* maybe move the Shutdown button from /stats into something else, like /control (a new thing) ?
 
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
@@ -93,4 +79,18 @@ done:
 //* fix bads from https://gemini.google.com/app/60f8cd2753c9b9bb  (todo:  done: 2,3,4,5  hallucinated: 1)
 
 //* in app.js editConfig are we handling the log_dir string value? or only bool, []string and int ?!
+
+//* see why all 3 logs buttons in webUI aren't showing, eg. they're empty! maybe they're not using log_dir ?!
+
+//* Debug Vars in webui replaces the whole page, so can only get back to webUI by doing a Back button. Not good.
+
+//* in config.json webui page the banner is "Unsaved Changes! You have staged 0 modification(s). " showing on first navigation! Correctly goes away if i stage 1 change then discard it! Has no effect (keeps showing) after a Discard All because it's showing for 0 modifs anyway.
+
+//* show program version in webUI next to the big title ideally!
+
+//* the use of log_dir and Config.LogEverythingFile aka log_file at startup before config is even read is too flakey! and yet I want the ability to write those early logs to file (considering the potential for a panic/exit before the full logging is actually inited, is not viable to hold them in a memory buffer and write them then) and it is very non-DRY, not to mention how parsing the config may fail (while not even having a console because we just toggled it from hide_console false to true; so it's not happening on first run of the .exe which does log on console initially)
+
+//* list the current process's PID in the /stats webUI page.
+
+//* maybe move the Shutdown button from /stats into something else, like /control (a new thing) ?
 
