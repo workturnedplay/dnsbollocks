@@ -87,7 +87,7 @@ import (
 type Config struct {
 	ListenDNS               string   `json:"listen_dns"    desc:"IP:port for the plain DNS (UDP and TCP) listener. Must be an IP literal, never a hostname."`
 	ListenDoH               string   `json:"listen_doh"    desc:"IP:port for the local DNS-over-HTTPS (DoH) listener. Must be an IP literal. A TLS certificate is auto-generated for this IP."`
-	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be an IP literal. TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
+	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be a specific interface IP literal (not the 0.0.0.0/:: wildcard, which would make the WebUI unreachable). TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
 	TLSCertFile             string   `json:"tls_cert_file" desc:"Path to the TLS certificate file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
 	TLSKeyFile              string   `json:"tls_key_file"  desc:"Path to the TLS private key file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
 	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority. If you use the template '{builtin:clientexe}'(without the single quotes, doh) it will be replaced with the querying executable name (useful for NextDNS URLs)"`
@@ -306,6 +306,13 @@ type AdminUI struct {
 	// Never persisted or logged; a fresh one is generated every process
 	// start via NewAdminUI.
 	csrfSecret []byte
+
+	// configApplyMu serializes the entire check-version -> read -> merge ->
+	// validate -> write -> reload sequence in configHandler's "apply" action
+	// against itself (e.g. two browser tabs applying config.json changes at
+	// the same time), closing a TOCTOU race the mtime-based version check
+	// alone cannot close on its own. See configHandler's use of it.
+	configApplyMu sync.Mutex
 
 	uiTemplates *template.Template
 
@@ -6069,6 +6076,33 @@ func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool,
 	return respMsg, ""
 }
 
+// httpsHintIPs returns the IP list carried by an SVCBIPv4Hint or SVCBIPv6Hint
+// HTTPS/SVCB parameter, and whether param was actually one of those two
+// types. Used by processRR to apply response-blacklist filtering to hint IPs
+// even when remove_https_ip_hints is false (hints aren't unconditionally
+// stripped in that case, so a blacklisted IP embedded in one must still be
+// caught the same way a plain A/AAAA record would be).
+func httpsHintIPs(param dns.SVCBKeyValue) ([]net.IP, bool) {
+	switch h := param.(type) {
+	case *dns.SVCBIPv4Hint:
+		return h.Hint, true
+	case *dns.SVCBIPv6Hint:
+		return h.Hint, true
+	default:
+		return nil, false
+	}
+}
+
+// containsBlacklistedIP reports whether any IP in ips matches blacklist.
+func containsBlacklistedIP(ips []net.IP, blacklist IPChecker) bool {
+	for _, ip := range ips {
+		if blacklist.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // filters out unwanteds like the IPs that are returned or ip hints in HTTPS dns types.
 // mutates the passed arg!
 func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPHints bool, blacklist IPChecker) (bool, dns.RR, string) {
@@ -6107,36 +6141,53 @@ func processRR(log *slog.Logger, rr dns.RR, removeHTTPSIPHints bool, blacklist I
 			domain = header.Name
 		}
 
-		//doneTODO: make this configurable in config.json so only if 'true' do this:
-		if removeHTTPSIPHints {
-			// Strip ipv4hint (Key 4) and ipv6hint (Key 6)
-			// This keeps ALPN (h3) and ECH (privacy) but forces IP lookup via A/AAAA
-			// Filter the SVCB/HTTPS parameters
-			newParams := []dns.SVCBKeyValue{}
-			for _, param := range r.Value {
-				k := param.Key()
-				// Key 4 = ipv4hint, Key 6 = ipv6hint
-				// We only keep keys that AREN'T hints
-				if k != dns.SVCB_IPV4HINT && k != dns.SVCB_IPV6HINT {
-					newParams = append(newParams, param)
-				} else {
-					displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
-					attrs := []any{
-						slog.String("domain", domain),   // if domain is "claude.ai."
-						slog.String("target", r.Target), // then target is "." here
-						slog.String("param", param.String() /*non nil*/),
-						slog.String("config_filename", configFileName),
-						slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPHints))),
-					}
-					if wasIDN {
-						attrs = append(attrs, slog.String("domain_idn", displayDomain))
-					}
-					log.Warn("Dropping IP hint from the HTTPS reply", attrs...)
+		// Filter the SVCB/HTTPS parameters. Two independent reasons a hint
+		// parameter can be dropped here:
+		//   1. remove_https_ip_hints unconditionally strips every ipv4hint/
+		//      ipv6hint (Keys 4/6), forcing IP lookup via A/AAAA instead.
+		//   2. Regardless of that setting, a hint embedding an IP that's on
+		//      the response blacklist must never bypass filtering just
+		//      because it's carried inside an HTTPS/SVCB record instead of a
+		//      plain A/AAAA record — the same BlockedBlacklistedIP invariant
+		//      already enforced for ordinary answers above.
+		newParams := make([]dns.SVCBKeyValue, 0, len(r.Value))
+		for _, param := range r.Value {
+			k := param.Key()
+
+			//doneTODO: make this configurable in config.json so only if 'true' do this:
+			if removeHTTPSIPHints && (k == dns.SVCB_IPV4HINT || k == dns.SVCB_IPV6HINT) {
+				displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+				attrs := []any{
+					slog.String("domain", domain),   // if domain is "claude.ai."
+					slog.String("target", r.Target), // then target is "." here
+					slog.String("param", param.String() /*non nil*/),
+					slog.String("config_filename", configFileName),
+					slog.String("config_key_name", getJSONTagByOffset(unsafe.Offsetof(Config{}.RemoveHTTPSIPHints))),
 				}
+				if wasIDN {
+					attrs = append(attrs, slog.String("domain_idn", displayDomain))
+				}
+				log.Warn("Dropping IP hint from the HTTPS reply", attrs...)
+				continue
 			}
-			r.Value = newParams
-			//return true, r, "" //XXX: (already doing this below)
-		} //else keep as is
+
+			if hintIPs, isHint := httpsHintIPs(param); isHint && containsBlacklistedIP(hintIPs, blacklist) {
+				displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+				attrs := []any{
+					slog.String("domain", domain),
+					slog.String("target", r.Target),
+					slog.String("param", param.String() /*non nil*/),
+				}
+				if wasIDN {
+					attrs = append(attrs, slog.String("domain_idn", displayDomain))
+				}
+				log.Warn("Dropping HTTPS IP hint containing a blacklisted IP", attrs...)
+				continue
+			}
+
+			newParams = append(newParams, param)
+		}
+		r.Value = newParams
 		return true, r, ""
 
 	case *dns.RRSIG:
@@ -8381,51 +8432,34 @@ func (s *Server) invalidateCacheForPatterns(patterns map[string]struct{}) {
 	}
 }
 
+// invalidateCacheForBlacklistedIPs invalidates every DNS cache entry whose
+// contents could have been produced under the PREVIOUS blacklist state,
+// following any add/edit/delete mutation to the response blacklist.
+//
+// This must be a full cache flush, not a surgical scan for currently-
+// blacklisted IPs in cached Answer sections: a domain that was blocked
+// because its upstream response contained a blacklisted IP is cached as the
+// SYNTHETIC blockResponse() output (an NXDOMAIN or the configured block_ip,
+// e.g. 0.0.0.0/::), not as the original filtered-out response — so the
+// actual blacklisted IP is never present in the cached entry to scan for in
+// the first place. A surgical "does this cached Answer still contain an IP
+// that's still in the CURRENT blacklist" scan can therefore never detect
+// that a blocked response's underlying cause was just removed (the
+// blacklist entry is gone by the time this runs), silently keeping a
+// domain blocked until its cache entry naturally expires — the inverse of
+// what an admin just asked for by deleting the entry. The same blind spot
+// also applies to HTTPS/SVCB ipv4hint/ipv6hint values when
+// remove_https_ip_hints is false, since those never surface as *dns.A/AAAA
+// records either. A full flush sidesteps all of this by construction.
+//
+// This is only reachable from single-item and batch WebUI blacklist
+// mutations; on config Reload() the entire cache is already flushed
+// unconditionally before the blacklist file is reloaded (see Reload()'s
+// call to flushDNSCache before loadDependentStores), and at startup the
+// cache is freshly created and empty, so this is a no-op in both of those
+// cases regardless of implementation.
 func (s *Server) invalidateCacheForBlacklistedIPs() {
-	cachee := s.getCache()
-	log := s.getLogger()
-
-	// 1. Grab a snapshot of pointers under a microsecond single lock
-	//Instead of a single s.blacklist.Contains(ip) call hitting a mutex over and over, you pull the whole list out once into blacklistedNets. Then, inside the loops, you do plain, local array iterations (for _, netEntry := range blacklistedNets).
-	blacklistedNets := s.blacklist.Snapshot()
-
-	for key, item := range cachee.Items() { //iterates on a snapshot of cache
-		entry, ok := item.Object.(CacheEntry)
-		if !ok {
-			continue
-		}
-		msg := entry.Msg
-		if msg == nil {
-			continue
-		}
-
-		shouldEvict := false
-		for _, rr := range msg.Answer {
-			if aRecord, ok := rr.(*dns.A); ok {
-				// 👇 Loop through your snapshot slice lock-free
-				for _, netEntry := range blacklistedNets {
-					if netEntry.Contains(aRecord.A) {
-						shouldEvict = true
-						break
-					}
-				}
-			}
-			if aaaaRecord, ok := rr.(*dns.AAAA); ok {
-				// 👇 Same thing for IPv6 records
-				for _, netEntry := range blacklistedNets {
-					if netEntry.Contains(aaaaRecord.AAAA) {
-						shouldEvict = true
-						break
-					}
-				}
-			}
-		}
-
-		if shouldEvict {
-			cachee.Delete(key)
-			log.Debug("Evicted cached response: contained newly blacklisted IP", slog.String("key", key))
-		}
-	}
+	s.flushDNSCache()
 }
 
 func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
@@ -10186,11 +10220,48 @@ func (um *UpstreamManager) updateInnerState() error {
 // whose computed retry budget would exceed that ceiling is itself clamped
 // to it as a hard defense-in-depth cap, which takes precedence over the
 // per-upstream budget in that case.
+//
+// Every quantity below is an operator-controlled int field with no
+// upper-bound validation (only "> 0" is enforced elsewhere), reachable via a
+// hand-edited config.json even though the WebUI's own Number handling can't
+// represent such extreme values safely (see app.js's Number.isSafeInteger
+// check on the config-editing path). A large enough value could overflow
+// time.Duration's int64 nanosecond range in a naive multiplication, wrapping
+// the total to a small or negative number and silently defeating the entire
+// point of this function. Every seconds/milliseconds-denominated quantity is
+// therefore bound-checked against the ceiling, expressed in the same unit,
+// before it's ever multiplied by time.Second/time.Millisecond, so an
+// overflow-prone input saturates at the ceiling instead of wrapping.
 func computeForwardOverallTimeout(cfg *Config) time.Duration {
-	perAttempt := time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second
-	backoff := time.Duration(cfg.UpstreamRetriesPerQuery) * time.Duration(cfg.UpstreamRetryBackoffMs) * time.Millisecond
-	total := perAttempt*time.Duration(1+cfg.UpstreamRetriesPerQuery) + backoff + time.Second // scheduling slack
-	const ceiling = 60 * time.Second
+	const (
+		ceiling    = 60 * time.Second
+		ceilingSec = int64(ceiling / time.Second)
+		ceilingMs  = int64(ceiling / time.Millisecond)
+	)
+
+	clientTimeoutSec := int64(cfg.UpstreamClientTimeoutSec)
+	attempts := int64(1 + cfg.UpstreamRetriesPerQuery)
+	if clientTimeoutSec <= 0 || attempts <= 0 || clientTimeoutSec > ceilingSec || attempts > ceilingSec {
+		return ceiling
+	}
+	perAttemptTotalSec := clientTimeoutSec * attempts
+	if perAttemptTotalSec > ceilingSec {
+		return ceiling
+	}
+
+	retries := int64(cfg.UpstreamRetriesPerQuery)
+	backoffMs := int64(cfg.UpstreamRetryBackoffMs)
+	if retries < 0 || backoffMs < 0 || retries > ceilingMs || backoffMs > ceilingMs {
+		return ceiling
+	}
+	totalBackoffMs := retries * backoffMs
+	if totalBackoffMs > ceilingMs {
+		return ceiling
+	}
+
+	total := time.Duration(perAttemptTotalSec)*time.Second +
+		time.Duration(totalBackoffMs)*time.Millisecond +
+		time.Second // scheduling slack
 	if total > ceiling {
 		return ceiling
 	}
@@ -11919,6 +11990,27 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		action := r.FormValue("action")
 		if action == "apply" {
+			// Serialize the entire check-version -> read -> merge -> validate ->
+			// write -> reload sequence against other concurrent WebUI config
+			// applies (e.g. two browser tabs, or a background timer). Without
+			// this, the mtime-based optimistic-concurrency check below can be
+			// defeated by two requests each passing their own check before
+			// either one writes, letting one tab's change silently overwrite
+			// the other's despite the version check.
+			ui.configApplyMu.Lock()
+			defer ui.configApplyMu.Unlock()
+
+			// Computed once up front and reused everywhere a "default value"
+			// fallback is needed in this handler (the password-hashing
+			// interceptor below, and the sanitizeAndValidateConfig call further
+			// down), so a staged-but-invalid bcrypt cost is hashed against the
+			// exact same fallback that sanitizeAndValidateConfig will later
+			// persist for it — otherwise the two could disagree (see
+			// clampBcryptCostField) and the saved config.json would describe a
+			// different bcrypt cost than the one actually baked into the hash
+			// just created.
+			defCfg := defaultConfig()
+
 			payload := r.FormValue("payload")
 			if payload == "" {
 				http.Error(w, "empty payload", http.StatusBadRequest)
@@ -12014,7 +12106,15 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 					if stagedCost, hasStaged := changes[tagBcryptCost]; hasStaged {
 						if stagedCostFloat, ok := stagedCost.(float64); ok { // encoding/json always decodes JSON numbers into interface{} as float64; there is no int64 alternative to have chosen here.
 							stagedCostInt := int(stagedCostFloat)
-							cost = getValidBcryptCost(stagedCostInt, ui.getConfig().WebUIPasswordBcryptCost)
+							// Fall back to the compiled-in default cost (not the
+							// currently-configured one) when the staged value is
+							// out of bcrypt's valid range: sanitizeAndValidateConfig's
+							// clampBcryptCostField (invoked further below on this
+							// same request) clamps an out-of-range persisted value
+							// to defCfg.WebUIPasswordBcryptCost too, so matching that
+							// fallback here keeps the hash we're about to create and
+							// the bcrypt cost we're about to persist in agreement.
+							cost = getValidBcryptCost(stagedCostInt, defCfg.WebUIPasswordBcryptCost)
 							if cost != stagedCostInt {
 								log.Info(fmt.Sprintf("Using different %q than the staged/specified", tagBcryptCost), slog.Int("specified", stagedCostInt), slog.Int("actual_used", cost))
 							}
@@ -12120,7 +12220,9 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 
 			// --- RUN UNIFIED SANITIZE AND VALIDATE ---
 			// Ensure it receives identical clamping, normalization, and bounds checking.
-			defCfg := defaultConfig()
+			// defCfg was already computed once at the top of this "apply" branch
+			// and reused by the password-hashing interceptor above; see its doc
+			// comment for why reusing the same value here matters.
 			_, errValid := sanitizeAndValidateConfig(log, resolved, &rawCfg, &defCfg, true)
 			if errValid != nil {
 				http.Error(w, "Validation failed: "+errValid.Error(), http.StatusBadRequest)
@@ -12371,6 +12473,37 @@ func resolveConfigTags(raw *Config) (*Config, error) {
 	return resolved, nil
 }
 
+// float64ToWholeInt64 converts a JSON-decoded float64 into an int64,
+// requiring it to represent an exact whole number. encoding/json always
+// decodes JSON numbers into interface{} as float64 (see the identical
+// observation elsewhere in this file, near the WebUI bcrypt-cost staging
+// logic), so a staged config field's numeric value arrives this way
+// regardless of whether the browser-side JS validation (which does check
+// Number.isSafeInteger) was ever exercised at all — a direct authenticated
+// POST to /config bypasses it entirely. Silently truncating a fractional
+// value (e.g. 12.9 -> 12, via a bare int64(n) conversion) would let such a
+// request corrupt an integer config field without any error ever surfacing.
+func float64ToWholeInt64(n float64) (int64, error) {
+	if n != math.Trunc(n) {
+		return 0, fmt.Errorf("value %v is not a whole number", n)
+	}
+	if n < math.MinInt64 || n > math.MaxInt64 {
+		return 0, fmt.Errorf("value %v is out of range for a 64-bit integer", n)
+	}
+	return int64(n), nil
+}
+
+// float64ToWholeUint64 mirrors float64ToWholeInt64 for unsigned fields.
+func float64ToWholeUint64(n float64) (uint64, error) {
+	if n != math.Trunc(n) {
+		return 0, fmt.Errorf("value %v is not a whole number", n)
+	}
+	if n < 0 || n > math.MaxUint64 {
+		return 0, fmt.Errorf("value %v is out of range for an unsigned 64-bit integer", n)
+	}
+	return uint64(n), nil
+}
+
 // applyConfigChangesToStruct applies the key→value pairs from changes (as
 // produced by json.Unmarshal into map[string]any) onto cfg using the json
 // struct tags to locate each field.  Only fields whose json tag appears in
@@ -12409,29 +12542,44 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 			fv.SetString(s)
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			var whole int64
 			switch n := rawVal.(type) {
 			case float64:
-				fv.SetInt(int64(n))
+				w, err := float64ToWholeInt64(n)
+				if err != nil {
+					return fmt.Errorf("field %q: %w", jsonKey, err)
+				}
+				whole = w
 			case int:
-				fv.SetInt(int64(n))
+				whole = int64(n)
 			case int64:
-				fv.SetInt(n)
+				whole = n
 			default:
 				return fmt.Errorf("field %q: expected int, got %T", jsonKey, rawVal)
 			}
+			if fv.OverflowInt(whole) {
+				return fmt.Errorf("field %q: value %d overflows field type %s", jsonKey, whole, fv.Kind())
+			}
+			fv.SetInt(whole)
 
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			var whole uint64
 			switch n := rawVal.(type) {
 			case float64:
-				if n < 0 {
-					return fmt.Errorf("field %q: negative value %v for unsigned field", jsonKey, n)
+				w, err := float64ToWholeUint64(n)
+				if err != nil {
+					return fmt.Errorf("field %q: %w", jsonKey, err)
 				}
-				fv.SetUint(uint64(n))
+				whole = w
 			case uint64:
-				fv.SetUint(n)
+				whole = n
 			default:
 				return fmt.Errorf("field %q: expected uint, got %T", jsonKey, rawVal)
 			}
+			if fv.OverflowUint(whole) {
+				return fmt.Errorf("field %q: value %d overflows field type %s", jsonKey, whole, fv.Kind())
+			}
+			fv.SetUint(whole)
 
 		case reflect.Bool:
 			b, ok := rawVal.(bool)
@@ -12469,6 +12617,25 @@ func applyConfigChangesToStruct(cfg *Config, changes map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// doubleWithoutOverflow returns v*2, saturating at math.MaxInt/math.MinInt
+// instead of silently wrapping when v is large enough that v*2 would
+// overflow the platform int. Used by the "idle timeout must be at least 2x
+// the corresponding read timeout" clamp checks in sanitizeAndValidateConfig:
+// an int overflow there would make the "<" comparison spuriously false for
+// an enormous, hand-edited-config.json-supplied read-timeout value (the
+// WebUI's own Number handling can't even represent such a value safely —
+// see app.js's Number.isSafeInteger check on the config-editing path),
+// letting an invalid idle/read timeout pair silently pass validation.
+func doubleWithoutOverflow(v int) int {
+	if v > math.MaxInt/2 {
+		return math.MaxInt
+	}
+	if v < math.MinInt/2 {
+		return math.MinInt
+	}
+	return v * 2
 }
 
 // clampIntField is the shared implementation behind sanitizeAndValidateConfig's many
@@ -12569,7 +12736,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec)),
 		&resolvedCfg.WebUIIdleTimeoutSec, &rawCfg.WebUIIdleTimeoutSec,
-		func(v int) bool { return v < resolvedCfg.WebUIReadTimeoutSec*2 }, resolvedCfg.WebUIReadTimeoutSec*2,
+		func(v int) bool { return v < doubleWithoutOverflow(resolvedCfg.WebUIReadTimeoutSec) }, doubleWithoutOverflow(resolvedCfg.WebUIReadTimeoutSec),
 		"(to double the read timeout) to prevent aggressive keep-alive disconnects") {
 		shouldSaveConfig = true
 	}
@@ -12609,7 +12776,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec)),
 		&resolvedCfg.LocalDoHIdleTimeoutSec, &rawCfg.LocalDoHIdleTimeoutSec,
-		func(v int) bool { return v < resolvedCfg.LocalDoHReadTimeoutSec*2 }, resolvedCfg.LocalDoHReadTimeoutSec*2,
+		func(v int) bool { return v < doubleWithoutOverflow(resolvedCfg.LocalDoHReadTimeoutSec) }, doubleWithoutOverflow(resolvedCfg.LocalDoHReadTimeoutSec),
 		"(to double the read timeout) to prevent premature keep-alive drops") {
 		shouldSaveConfig = true
 	}
@@ -12887,6 +13054,20 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		func(v int) bool { return v <= 0 }, defaultCfg.UILogMaxLines, "") {
 		shouldSaveConfig = true
 	}
+	// renderLogPage allocates a ring buffer sized exactly to this field
+	// (`ring := make([]string, maxLines)`) on every /logs* request; without an
+	// upper bound, a hand-edited (or fat-fingered) config.json value near the
+	// platform int's range would attempt a multi-gigabyte-or-larger allocation
+	// per request despite the field's own description calling it a RAM-usage
+	// cap. uiLogMaxLinesHardCap is generous enough for any realistic use while
+	// keeping the worst-case allocation bounded and sane.
+	const uiLogMaxLinesHardCap = 1_000_000
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.UILogMaxLines)),
+		&resolvedCfg.UILogMaxLines, &rawCfg.UILogMaxLines,
+		func(v int) bool { return v > uiLogMaxLinesHardCap }, uiLogMaxLinesHardCap,
+		fmt.Sprintf(" (capped at %d to bound the WebUI log-viewer's per-request memory allocation)", uiLogMaxLinesHardCap)) {
+		shouldSaveConfig = true
+	}
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogMaxSizeMB)),
 		&resolvedCfg.LogMaxSizeMB, &rawCfg.LogMaxSizeMB,
@@ -12945,8 +13126,22 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	//tagListenUI := getJSONTagByOffset(unsafe.Offsetof(Config{}.ListenUI)) // dup
 	if uiHost, _, splitErr := net.SplitHostPort(resolvedCfg.ListenUI); splitErr != nil {
 		return shouldSaveConfig, fmt.Errorf("%q %q is not a valid host:port, actually must be IP:port, err: %w", tagListenUI, resolvedCfg.ListenUI, splitErr)
-	} else if net.ParseIP(uiHost) == nil {
+	} else if parsedUIHost := net.ParseIP(uiHost); parsedUIHost == nil {
 		return shouldSaveConfig, fmt.Errorf("%q host %q must be an IP literal with no surrounding spaces (not a hostname(because we can't look it up without DNS)) for TLS cert generation", tagListenUI, uiHost)
+	} else if parsedUIHost.IsUnspecified() {
+		// hostValidationMiddleware/originValidationMiddleware compare the
+		// request's Host/Origin header against the address the WebUI listener
+		// actually bound to (see startWebUIListenerInstance's boundAddr, taken
+		// from baseListener.Addr().String()). For a wildcard bind, that string
+		// is literally "0.0.0.0:port" or "[::]:port" — a value no real client
+		// can ever send as its own Host/Origin, since a client always connects
+		// to one specific interface IP. Every request would then be rejected
+		// with 403, making the WebUI completely unreachable despite having
+		// "successfully" started. Reject the wildcard bind outright here
+		// instead of weakening Host/Origin validation to accommodate it: the
+		// operator must bind to a specific interface IP (use 127.0.0.1 for
+		// loopback-only, or the machine's actual LAN IP to expose it).
+		return shouldSaveConfig, fmt.Errorf("%q host %q must be a specific interface IP, not the unspecified/wildcard address; binding to it would make the WebUI unreachable (every request would fail Host/Origin validation) — use 127.0.0.1 or a specific interface IP instead", tagListenUI, uiHost)
 	}
 
 	origLevel := resolvedCfg.ConsoleLogLevel
@@ -13150,17 +13345,37 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	// log entries must be run through resolveLogFilePath here too; comparing
 	// bare filenames directly would falsely flag two same-named files living
 	// in different directories as colliding on disk.
-	if err := validateDistinctConfigFilePaths(map[string]string{
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):        resolvedCfg.WhitelistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):        resolvedCfg.BlacklistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):            resolvedCfg.HostsFile,
+	// Files persisted via wincoe's win11SafeFileWriter (config.json, and the
+	// whitelist/blacklist/hosts files saved via Server.save*) each
+	// transactionally create two derived sidecar paths of their own on every
+	// write — see win11SafeFileWriter.SafeWriteFile and
+	// wincoe.BackupFileExtension/PowerlossFileExtension — so a configured
+	// path that happens to literally equal one of THOSE derived paths would
+	// collide with it even though the two primary paths look distinct from
+	// each other. Build the base set of primaries first, then derive and add
+	// their sidecar paths before the single distinctness check below, so a
+	// collision against a derived path is caught exactly like any other.
+	safeWriterProtectedPrimaries := map[string]string{
+		"(fixed) main config file":                                  configFileName,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)): resolvedCfg.WhitelistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)): resolvedCfg.BlacklistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):     resolvedCfg.HostsFile,
+	}
+
+	distinctPaths := map[string]string{
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):       resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogQueriesFile),
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)): resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogQueriesSimpleFile),
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)):    resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogEverythingFile),
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)):          resolvedCfg.TLSCertFile,
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)):           resolvedCfg.TLSKeyFile,
-		"(fixed) main config file":                                         configFileName,
-	}); err != nil {
+	}
+	for key, primary := range safeWriterProtectedPrimaries {
+		distinctPaths[key] = primary
+		distinctPaths["(derived backup of) "+key] = primary + wincoe.BackupFileExtension
+		distinctPaths["(derived staging of) "+key] = primary + wincoe.PowerlossFileExtension
+	}
+
+	if err := validateDistinctConfigFilePaths(distinctPaths); err != nil {
 		return shouldSaveConfig, err
 	}
 
@@ -13282,6 +13497,24 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 // must be pre-joined with Config.LogDir via resolveLogFilePath before being
 // passed in here); this function only compares the strings it's given and
 // has no notion of which config field implies which base directory.
+// normalizeConfigFilePathForComparison resolves p to an absolute, cleaned,
+// lowercased form so that two differently-spelled paths pointing at the same
+// file (e.g. a relative path and its equivalent absolute path) are still
+// recognized as colliding by validateDistinctConfigFilePaths. This does NOT
+// resolve symlinks/junctions/hardlinks — an NTFS reparse point could still
+// alias two "distinct"-looking paths onto the same underlying file — but
+// every caller here only ever deals with plain files this process itself
+// creates directly beneath the working/config directory, so that residual
+// gap is accepted rather than paying for an os.Stat+SameFile round trip
+// against files that, at validation time, may not exist on disk at all yet.
+func normalizeConfigFilePathForComparison(p string) string {
+	cleaned := filepath.Clean(p)
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		cleaned = abs
+	}
+	return strings.ToLower(cleaned)
+}
+
 func validateDistinctConfigFilePaths(paths map[string]string) error {
 	seen := make(map[string]string, len(paths))
 	keys := make([]string, 0, len(paths))
@@ -13290,7 +13523,7 @@ func validateDistinctConfigFilePaths(paths map[string]string) error {
 	}
 	sort.Strings(keys) // deterministic error message regardless of map iteration order
 	for _, key := range keys {
-		norm := strings.ToLower(filepath.Clean(paths[key]))
+		norm := normalizeConfigFilePathForComparison(paths[key])
 		if otherKey, dup := seen[norm]; dup {
 			return fmt.Errorf("config keys %q and %q both resolve to the same file %q; every file-path setting must point at a distinct file", otherKey, key, paths[key])
 		}

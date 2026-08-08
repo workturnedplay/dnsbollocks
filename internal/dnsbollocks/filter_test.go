@@ -102,6 +102,21 @@ func TestProcessRR(t *testing.T) {
 			wantKeep:           true,
 			wantReason:         "",
 		},
+		{
+			name: "HTTPS Record (Blacklisted Hint, Hints Kept)",
+			rr: &dns.HTTPS{
+				SVCB: dns.SVCB{
+					Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 300},
+					Value: []dns.SVCBKeyValue{
+						&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("192.168.1.1")}},
+						&dns.SVCBAlpn{Alpn: []string{"h2", "h3"}},
+					},
+				},
+			},
+			removeHTTPSIPHints: false,
+			wantKeep:           true,
+			wantReason:         "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -125,6 +140,28 @@ func TestProcessRR(t *testing.T) {
 					if param.Key() == dns.SVCB_IPV4HINT || param.Key() == dns.SVCB_IPV6HINT {
 						t.Errorf("expected HTTPS hints to be removed, but found %d", param.Key())
 					}
+				}
+			}
+
+			// Specific check for blacklisted-hint filtering when hints are kept
+			if tc.name == "HTTPS Record (Blacklisted Hint, Hints Kept)" && keep {
+				httpsRR, ok4 := modifiedRR.(*dns.HTTPS)
+				if !ok4 {
+					t.Errorf("this cast or wtw: modifiedRR.(*dns.HTTPS) , failed!")
+				}
+				for _, param := range httpsRR.Value {
+					if param.Key() == dns.SVCB_IPV4HINT {
+						t.Errorf("expected blacklisted ipv4hint to be dropped even though removeHTTPSIPHints=false, but found %v", param)
+					}
+				}
+				foundAlpn := false
+				for _, param := range httpsRR.Value {
+					if param.Key() == dns.SVCB_ALPN {
+						foundAlpn = true
+					}
+				}
+				if !foundAlpn {
+					t.Errorf("expected non-hint ALPN param to survive filtering, but it was also dropped")
 				}
 			}
 		})

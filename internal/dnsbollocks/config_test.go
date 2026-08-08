@@ -633,7 +633,7 @@ func TestSanitizeAndValidateConfig_WebUITLSPromotion(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := defaultConfig()
-	cfg.ListenUI = "0.0.0.0:5380"
+	cfg.ListenUI = "192.168.1.50:5380"
 	cfg.WebUIUseTLS = false
 	cfg.WebUIForceTLSOnNonLocalhost = true
 

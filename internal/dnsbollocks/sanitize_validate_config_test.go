@@ -972,6 +972,8 @@ func TestSanitizeAndValidateConfig_ListenUIInvalid_ReturnsError(t *testing.T) {
 		{"localhost hostname", "localhost:8080"},
 		{"no port", "192.168.1.1"},
 		{"empty string", ""},
+		{"IPv4 wildcard (0.0.0.0)", "0.0.0.0:8080"},
+		{"IPv6 wildcard (::)", "[::]:8080"},
 	}
 
 	for _, tc := range cases {

@@ -1910,8 +1910,13 @@
 
                 const numericValue = Number(integerText);
 
-                if (!Number.isInteger(numericValue)) {
-                    alert('Value must be a valid integer.');
+                // Number.isSafeInteger (not just isInteger) rejects values beyond
+                // +/-(2^53-1): JavaScript's Number type cannot represent every
+                // 64-bit Go int exactly above that threshold, so isInteger alone
+                // would let e.g. 9007199254740993 silently arrive at the server
+                // as 9007199254740992.
+                if (!Number.isSafeInteger(numericValue)) {
+                    alert('Value must be a valid whole number that fits safely in a JavaScript number (magnitude below 2^53).');
                     return;
                 }
 

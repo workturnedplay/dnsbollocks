@@ -1,10 +1,11 @@
 my todos:
 
-* see how to fix 7. in this https://claude.ai/chat/ca9439de-86ed-411e-8d28-13418fd0ebed  it's the "binding the WebUI to 0.0.0.0" case with "hostValidationMiddleware/originValidationMiddleware"
+//* see how to fix 7. in this https://claude.ai/chat/ca9439de-86ed-411e-8d28-13418fd0ebed  it's the "binding the WebUI to 0.0.0.0" case with "hostValidationMiddleware/originValidationMiddleware". Yeah let's "reject 0.0.0.0 and :: rather than weaken Host validation." as per https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a7777f9-dc6c-83eb-a696-66e25aeeffa2
 
-* fix things in v0.43.0 that GPT-5.6 Luna found: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a777048-d6b8-83eb-9e20-7ccc759207f8
-  (todo: 1,2,3,4,5,6,7,8,9,10,11,12
-   done:
+//* fix things in v0.43.0 that GPT-5.6 Luna found: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a777048-d6b8-83eb-9e20-7ccc759207f8
+  (todo: 
+   done(by claude): 1,2,3,4,5,6,7,8,9,10,12
+   notdone(by claude): 11
   )
 
 * fix things that GPT-5.4 Thinking Mini (High Thinking Level) found(in 1 prompt, fixed in another 1 prompt; on free tier!) in v0.40.0: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a747896-9034-83eb-90c5-21afdd169692?tab=chats
