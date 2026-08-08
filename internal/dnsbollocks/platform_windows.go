@@ -6477,7 +6477,12 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		)
 
 		if respMsgStr != "" {
-			attrs = append(attrs, slog.String("blocked_dnsMsg", respMsgStr))
+			// NOTE: despite the historical field name this used, respMsgStr is
+			// populated for every logged query action (cache hits, successful
+			// forwards, etc.), not only blocked ones — it's set above whenever
+			// respMsg != nil, which is true for essentially every action except
+			// BlockMode "drop". Use a name that reflects that.
+			attrs = append(attrs, slog.String("dns_response", respMsgStr))
 		}
 
 		// Inject the upstream-state payload
@@ -12017,7 +12022,13 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 							log.Error(fmt.Sprintf("Failed to get staged bcrypt cost %q it's not float64", tagBcryptCost))
 						}
 					} else {
-						log.Error(fmt.Sprintf("Using already configured %q", tagBcryptCost), slog.Int("current_cost", cost))
+						// Normal/expected case: most password changes don't also
+						// stage a new bcrypt cost in the same batch, so falling
+						// back to the currently configured cost is routine, not
+						// an error — logging it at Error level would spam
+						// error-level logs (and any alerting built on them) for
+						// every single ordinary password change via the WebUI.
+						log.Debug(fmt.Sprintf("Using already configured %q", tagBcryptCost), slog.Int("current_cost", cost))
 					}
 					//log.Debug("Hashing the webUI-entered plaintext password, ie. it's not a hash already", slog.Int("cost", cost))
 					log.Debug("Hashing the webUI-entered plaintext password", slog.Int("cost", cost), slog.String(configFileName, tagWebUIPwd))
@@ -13131,13 +13142,21 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		return shouldSaveConfig, err
 	}
 
+	// Log files (LogQueriesFile/LogQueriesSimpleFile/LogEverythingFile) are
+	// resolved relative to Config.LogDir (see resolveLogFilePath), while
+	// every other file below is resolved relative to config.json's own
+	// directory (always "." — see configFileName's declaration). These are
+	// NOT necessarily the same directory once log_dir is customized, so the
+	// log entries must be run through resolveLogFilePath here too; comparing
+	// bare filenames directly would falsely flag two same-named files living
+	// in different directories as colliding on disk.
 	if err := validateDistinctConfigFilePaths(map[string]string{
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):        resolvedCfg.WhitelistFile,
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):        resolvedCfg.BlacklistFile,
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):            resolvedCfg.HostsFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):       resolvedCfg.LogQueriesFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)): resolvedCfg.LogQueriesSimpleFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)):    resolvedCfg.LogEverythingFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)):       resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogQueriesFile),
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)): resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogQueriesSimpleFile),
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)):    resolveLogFilePath(resolvedCfg.LogDir, resolvedCfg.LogEverythingFile),
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)):          resolvedCfg.TLSCertFile,
 		getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)):           resolvedCfg.TLSKeyFile,
 		"(fixed) main config file":                                         configFileName,
@@ -13256,6 +13275,13 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 // rotation purposes, or a log rotation renaming a file out from under a
 // concurrent SafeWriteFile targeting what is "coincidentally" the same file
 // via a differently-cased setting.
+//
+// Callers are responsible for passing already fully-resolved paths (i.e.
+// joined with whatever base directory each field is actually relative to —
+// see the call site in sanitizeAndValidateConfig for why log-file fields
+// must be pre-joined with Config.LogDir via resolveLogFilePath before being
+// passed in here); this function only compares the strings it's given and
+// has no notion of which config field implies which base directory.
 func validateDistinctConfigFilePaths(paths map[string]string) error {
 	seen := make(map[string]string, len(paths))
 	keys := make([]string, 0, len(paths))
@@ -14920,6 +14946,16 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 	if patternLowercased == "" {
 		log.Warn("Failed to add/edit local host: hostname required")
 		return http.StatusBadRequest, errors.New("hostname/pattern required")
+	}
+	// Mirrors processRuleChange's "id required for edit" guard and
+	// processBlacklistChange's "old_cidr ... required" guard: an edit
+	// request must always identify which existing entry it's editing.
+	// Without this, EditHost("", patternLowercased, netIPs) below would
+	// silently behave like an Add (deleteHostEntry("") is a no-op) instead
+	// of being rejected as a malformed request.
+	if isEdit && oldPatternLowercased == "" {
+		log.Warn("Failed to edit local host: edit flag set but old_pattern is empty")
+		return http.StatusBadRequest, errors.New("old_pattern required for edit")
 	}
 
 	// Convert any Unicode (IDN) labels (e.g. "café.com") into punycode/ASCII

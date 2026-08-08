@@ -174,6 +174,30 @@ func TestSanitizeAndValidateConfig_ZeroLimitsClamped(t *testing.T) {
 			func(c *Config) int { return c.ClientBurstQPS },
 			func(c *Config) int { return c.ClientBurstQPS },
 			def.ClientBurstQPS},
+		{"WebUIRateQPS",
+			func(c *Config) { c.WebUIRateQPS = 0 },
+			func(c *Config) int { return c.WebUIRateQPS },
+			func(c *Config) int { return c.WebUIRateQPS },
+			def.WebUIRateQPS},
+		// WebUIBurstQPS: after zero-clamp (→ default) the cross-field guard
+		// (default < WebUIRateQPS=default?) does not fire.
+		{"WebUIBurstQPS",
+			func(c *Config) { c.WebUIBurstQPS = 0 },
+			func(c *Config) int { return c.WebUIBurstQPS },
+			func(c *Config) int { return c.WebUIBurstQPS },
+			def.WebUIBurstQPS},
+		{"WebUIClientRateQPS",
+			func(c *Config) { c.WebUIClientRateQPS = 0 },
+			func(c *Config) int { return c.WebUIClientRateQPS },
+			func(c *Config) int { return c.WebUIClientRateQPS },
+			def.WebUIClientRateQPS},
+		// WebUIClientBurstQPS: after zero-clamp (→ default) the cross-field
+		// guard does not fire.
+		{"WebUIClientBurstQPS",
+			func(c *Config) { c.WebUIClientBurstQPS = 0 },
+			func(c *Config) int { return c.WebUIClientBurstQPS },
+			func(c *Config) int { return c.WebUIClientBurstQPS },
+			def.WebUIClientBurstQPS},
 		// payload / buffer
 		{"DoHMaxRequestBodyBytes",
 			func(c *Config) { c.DoHMaxRequestBodyBytes = 0 },
@@ -589,6 +613,76 @@ func TestSanitizeAndValidateConfig_ClientBurstQPS_ClampedToRateWhenBelow(t *test
 			}
 			if raw.ClientBurstQPS != tc.wantBurst {
 				t.Errorf("raw.ClientBurstQPS: got %d, want %d", raw.ClientBurstQPS, tc.wantBurst)
+			}
+		})
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUIBurstQPS_ClampedToRateWhenBelow(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		rate      int
+		burst     int
+		wantBurst int
+	}{
+		{"burst=1 rate=20 clamped", 20, 1, 20},
+		{"burst=19 rate=20 clamped", 20, 19, 20},
+		{"burst=rate=20 unchanged", 20, 20, 20},
+		{"burst=50 rate=20 unchanged", 20, 50, 50},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := defaultConfig()
+			cfg.WebUIRateQPS = tc.rate
+			cfg.WebUIBurstQPS = tc.burst
+			resolved, raw, _, err := sanitizeHelper(t, cfg, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.WebUIBurstQPS != tc.wantBurst {
+				t.Errorf("resolved.WebUIBurstQPS: got %d, want %d", resolved.WebUIBurstQPS, tc.wantBurst)
+			}
+			if raw.WebUIBurstQPS != tc.wantBurst {
+				t.Errorf("raw.WebUIBurstQPS: got %d, want %d", raw.WebUIBurstQPS, tc.wantBurst)
+			}
+		})
+	}
+}
+
+func TestSanitizeAndValidateConfig_WebUIClientBurstQPS_ClampedToRateWhenBelow(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		rate      int
+		burst     int
+		wantBurst int
+	}{
+		{"burst=1 rate=5 clamped", 5, 1, 5},
+		{"burst=4 rate=5 clamped", 5, 4, 5},
+		{"burst=rate=5 unchanged", 5, 5, 5},
+		{"burst=20 rate=5 unchanged", 5, 20, 20},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := defaultConfig()
+			cfg.WebUIClientRateQPS = tc.rate
+			cfg.WebUIClientBurstQPS = tc.burst
+			resolved, raw, _, err := sanitizeHelper(t, cfg, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.WebUIClientBurstQPS != tc.wantBurst {
+				t.Errorf("resolved.WebUIClientBurstQPS: got %d, want %d", resolved.WebUIClientBurstQPS, tc.wantBurst)
+			}
+			if raw.WebUIClientBurstQPS != tc.wantBurst {
+				t.Errorf("raw.WebUIClientBurstQPS: got %d, want %d", raw.WebUIClientBurstQPS, tc.wantBurst)
 			}
 		})
 	}
@@ -1191,5 +1285,39 @@ func TestSanitizeAndValidateConfig_ValidDefaultConfig_NotModified(t *testing.T) 
 	if modified {
 		t.Error("expected modified=false for an unmodified defaultConfig; " +
 			"some field is being unnecessarily auto-corrected or auto-populated")
+	}
+}
+
+// TestSanitizeAndValidateConfig_DistinctFilePaths_LogDirAccountedFor verifies
+// that a log filename sharing a basename with another file-path field is NOT
+// treated as a collision once log_dir moves it into a different directory.
+func TestSanitizeAndValidateConfig_DistinctFilePaths_LogDirAccountedFor(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.LogDir = "separate-log-dir"
+	// Deliberately reuse WhitelistFile's basename as a log filename; this is
+	// only safe because LogDir moves it into a different directory.
+	cfg.LogQueriesFile = cfg.WhitelistFile
+
+	_, _, _, err := sanitizeHelper(t, cfg, false)
+	if err != nil {
+		t.Fatalf("expected no collision error when log_dir separates the files, got: %v", err)
+	}
+}
+
+// TestSanitizeAndValidateConfig_DistinctFilePaths_StillCatchesRealCollision
+// verifies a genuine collision (default log_dir="", which resolves to the
+// same directory as WhitelistFile) is still rejected.
+func TestSanitizeAndValidateConfig_DistinctFilePaths_StillCatchesRealCollision(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.LogDir = ""
+	cfg.LogQueriesFile = cfg.WhitelistFile
+
+	_, _, _, err := sanitizeHelper(t, cfg, false)
+	if err == nil {
+		t.Fatal("expected a collision error when log_dir is empty (same directory as WhitelistFile), got nil")
 	}
 }

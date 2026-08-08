@@ -90,17 +90,23 @@ func TestComputeTTL_MinOfMultipleAnswerRecords(t *testing.T) {
 	}
 }
 
-func TestComputeTTL_FloorOf10s(t *testing.T) {
-	// TTL of 5 while 0 should return 5
+func TestComputeTTL_SmallNonzeroTTL_PassedThroughUnclamped(t *testing.T) {
+	// A small nonzero TTL (5s) is passed through as-is — there is no lower-bound
+	// clamp in computeTTLForCaching (the old 10s floor, cacheMinTTLClamp, was
+	// removed; see the commented-out "const cacheMinTTLClamp = 10" near the end
+	// of platform_windows.go).
 	const five = 5
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", five))
 	got := computeTTLForCaching(m)
 	if got != five*time.Second {
-		t.Errorf("expected floor of 0s, got %v", got)
+		t.Errorf("expected %ds unclamped, got %v", five, got)
 	}
 }
 
-func TestComputeTTL_ZeroTTL_ClampsTo10s(t *testing.T) {
+func TestComputeTTL_ZeroTTL_PassedThroughAsZero(t *testing.T) {
+	// A TTL of 0 is passed through as 0, not floored to any minimum — the
+	// caller (handleDNSQuery) is what decides whether a 0 result means
+	// "don't cache".
 	m := msgWithAnswer(makeA("example.com.", "1.2.3.4", 0))
 	got := computeTTLForCaching(m)
 	if got != 0*time.Second {
