@@ -250,7 +250,7 @@ type Server struct {
 	dohCertMu      sync.RWMutex
 	certGeneration atomic.Uint64
 
-	// Simple stats counter (expvar-based); TODO: extend with richer metrics if/when needed.
+	// Simple stats counter (expvar-based); TODO: extend with richer metrics if/when needed. FIXME: so this counts the number of unique blocks then rename it properly! also TODO: add number of non-unique blocks too!
 	stats *expvar.Int
 
 	// Lifecycle & Concurrency
@@ -2827,8 +2827,12 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 // first log lines — written before LoadAndValidateConfig has run at all —
 // land in the same file the rest of this run will use. It intentionally
 // skips every one of LoadAndValidateConfig's real validation steps
-// (duplicate-key detection, description-key stripping, template
-// resolution, etc.): a malformed, corrupt, or not-yet-existing config.json
+// (duplicate-key detection, description-key stripping, etc.), with one
+// narrow exception: log_dir and log_file are each passed through resolveTag
+// on a best-effort basis (silently keeping the caller-supplied default on
+// any resolution error), so a {file:...}/{env:...}-templated value still
+// resolves to the same directory/filename the real, fully-validated config
+// load will use moments later. A malformed, corrupt, or not-yet-existing config.json
 // simply leaves the two returned values at defaultDir/defaultFile, exactly
 // like an absent file would, since the real parse — which DOES report a
 // proper, actionable error either to the console or to this same bootstrap
@@ -4760,6 +4764,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
+	// Cache key is derived from domain+qtype alone (see stripECSOption's doc
+	// comment below for why every client shares one cache key here); computed
+	// once, up front, so both the "blocked by lack of whitelist rule" branch
+	// further below and the main allowed-query cache lookup can share it
+	// instead of maintaining two independently-computed key strings.
+	key := domain + ":" + qtype
+
 	// Strip any client-supplied EDNS0 Client Subnet (ECS) option before this
 	// query ever reaches an upstream or gets cached — see stripECSOption's
 	// doc comment for why sharing one cache key (domain+qtype) across every
@@ -4900,10 +4911,36 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 
 	if !allowed {
+		// A domain blocked by policy deserves a cache entry just like any other
+		// response — see Config.BlockedResponseTTLSec's desc tag ("blocked
+		// responses are also stored in this proxy's own internal cache for this
+		// amount of time"), which already documented this but the code never
+		// actually did it for this branch (only the "upstream returned a
+		// blacklisted/zero IP" branch further below cached its blocked result).
+		// A cache hit is checked first so a domain whitelisted later is served
+		// fresh again: every WebUI rule add/edit/delete already calls
+		// invalidateCacheForPattern/invalidateCacheForPatterns, which evicts
+		// exactly this kind of now-stale "blocked" entry.
+		if entry, ok := cachee.Get(key); ok {
+			resp := entry.Msg.Copy()
+			resp.Id = reqMsg.Id
+			adjustResponseCaseToQuery(resp, reqMsg)
+			ips := extractIPs(resp)
+			s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, "", ips, resp, entry.State)
+			return resp
+		}
+
 		s.stats.Add(1)
 		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
 		blocked := s.blockResponse(reqMsg)
-		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"})
+		blockedState := UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"}
+		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, blockedState)
+		if cfg.BlockedResponseTTLSec > 0 {
+			cachee.Set(key, CacheEntry{
+				Msg:   blocked.Copy(),
+				State: blockedState,
+			}, time.Duration(cfg.BlockedResponseTTLSec)*time.Second)
+		}
 		return blocked
 	}
 
@@ -4913,7 +4950,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	// "example.com", "Example.COM", "EXAMPLE.com") shares one cache entry instead of
 	// one entry per casing variant seen. See adjustResponseCaseToQuery below for how
 	// the served response still gets the CURRENT query's exact casing on a cache hit.
-	key := domain + ":" + qtype
+	// (key was already computed earlier, right after qtype, so the "blocked by
+	// lack of whitelist rule" branch above can share it.)
+	// key := domain + ":" + qtype
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
 	if entry, ok := cachee.Get(key); ok {
@@ -12519,7 +12558,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIIdleTimeoutSec)),
 		&resolvedCfg.WebUIIdleTimeoutSec, &rawCfg.WebUIIdleTimeoutSec,
-		func(v int) bool { return v <= resolvedCfg.WebUIReadTimeoutSec }, resolvedCfg.WebUIReadTimeoutSec*2,
+		func(v int) bool { return v < resolvedCfg.WebUIReadTimeoutSec*2 }, resolvedCfg.WebUIReadTimeoutSec*2,
 		"(to double the read timeout) to prevent aggressive keep-alive disconnects") {
 		shouldSaveConfig = true
 	}
@@ -12559,7 +12598,7 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LocalDoHIdleTimeoutSec)),
 		&resolvedCfg.LocalDoHIdleTimeoutSec, &rawCfg.LocalDoHIdleTimeoutSec,
-		func(v int) bool { return v <= resolvedCfg.LocalDoHReadTimeoutSec }, resolvedCfg.LocalDoHReadTimeoutSec*2,
+		func(v int) bool { return v < resolvedCfg.LocalDoHReadTimeoutSec*2 }, resolvedCfg.LocalDoHReadTimeoutSec*2,
 		"(to double the read timeout) to prevent premature keep-alive drops") {
 		shouldSaveConfig = true
 	}
@@ -13135,9 +13174,9 @@ func cleanLogFileName(log *slog.Logger, original, configKey, fallback string) (s
 		baseName = filepath.Base(filepath.Clean(fallback))
 	}
 
-	// Standard Windows reserved name check
-	upperBase := strings.ToUpper(strings.TrimRight(baseName, ". "))
-	if _, reserved := wincoe.ReservedFileNames[upperBase]; reserved {
+	// Standard Windows reserved name check (matches by device-name stem, so
+	// "CON.log"/"com1.txt" etc. are caught too — see wincoe.IsWindowsReservedFileName).
+	if wincoe.IsWindowsReservedFileName(baseName) {
 		log.Warn("Log filename is a reserved Windows device name; using fallback",
 			slog.String("config_key", configKey),
 			slog.String("reserved", baseName),
@@ -13186,11 +13225,9 @@ func cleanFileName(log *slog.Logger, original, configKey, fallback string) (stri
 	}
 
 	cleaned := filepath.Clean(original)
-	// Reject Windows reserved device names (CON, NUL, COM1, etc.).
-	// filepath.Base handles any directory prefix; TrimRight strips trailing
-	// dots and spaces that Windows itself strips before resolving the name.
-	baseName := strings.ToUpper(strings.TrimRight(filepath.Base(cleaned), ". "))
-	if _, reserved := wincoe.ReservedFileNames[baseName]; reserved {
+	// Reject Windows reserved device names (CON, NUL, COM1, etc.), including
+	// with a trailing extension like "con.log" — see wincoe.IsWindowsReservedFileName.
+	if wincoe.IsWindowsReservedFileName(cleaned) {
 		log.Warn("Config filename is a reserved Windows device name; using fallback",
 			slog.String("for_config_key", configKey),
 			slog.String("reserved_filename", cleaned),

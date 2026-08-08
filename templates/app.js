@@ -1104,7 +1104,14 @@
             for (let i = 0; i < text.length;) {
                 const codePoint = text.codePointAt(i);
                 const originalEnd = i + (codePoint > 0xFFFF ? 2 : 1);
-                const segment = text.slice(i, originalEnd).normalize('NFD').toLowerCase();
+                // Strip combining diacritical marks the same way normalizeStr()
+                // does, so this stays in sync with matchesFilterExpression()'s
+                // matching — otherwise a term spanning where an accented
+                // character used to be (e.g. "fe123" matching "café123") is
+                // found by the filter but silently fails to highlight here,
+                // since the leftover combining-mark character breaks the scan.
+                // const segment = text.slice(i, originalEnd).normalize('NFD').toLowerCase().replace(/[\u0300-\u036f]/g, '');//kept non-DRY like this by Claude
+                const segment = normalizeStr(text.slice(i, originalEnd));//DRY-ed by GPT-5.6 Luna
 
                 normalized += segment;
 
@@ -1955,6 +1962,12 @@
             stagedChanges[key] = parsedVal;
             row.querySelector('.display-value').innerText = displayVal;
             row.dataset.original = displayVal;
+            if (type === '[]string') {
+                // Keep the JSON-backed value in sync with what was just staged,
+                // so re-opening Edit on this row before Apply shows the staged
+                // list instead of silently reverting to the pristine server value.
+                row.dataset.listJson = JSON.stringify(parsedVal);
+            }
             row.classList.add('staged');
             row.classList.remove('being-edited'); 
             
@@ -2825,6 +2838,9 @@
                 const trueOriginal = row.dataset.trueOriginal;
                 row.querySelector('.display-value').innerText = trueOriginal;
                 row.dataset.original = trueOriginal;
+                if (row.dataset.type === '[]string') {
+                    row.dataset.listJson = row.dataset.trueListJson;
+                }
                 row.classList.remove('staged');
                 
                 applyConfigFilter();

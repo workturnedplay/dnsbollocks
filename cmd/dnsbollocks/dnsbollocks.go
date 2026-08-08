@@ -19,6 +19,7 @@ import "github.com/workturnedplay/dnsbollocks/internal/dnsbollocks"
 // // The Go linker can hit this perfectly every single time
 // Version is a global variable that can be overwritten at build time like this: go build -ldflags="-X 'dnsbollocks.Version=$(git describe --tags --always)'" -o dnsbollocks.exe
 // var Version = ""
+// ^ that used to works exactly like mentioned but now this 'var Version' var isn't kept here but in internal/dnsbollocks/platform_windows.go so look for it there and the relevant comment and -X to use there!
 
 func main() {
 	// // Push the linker-injected value into your root package variable
