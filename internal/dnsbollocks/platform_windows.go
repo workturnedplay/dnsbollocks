@@ -2844,10 +2844,14 @@ func peekBootstrapLogSettings(defaultDir, defaultFile string) (logDir, logFile s
 		return logDir, logFile
 	}
 	if val, ok := peek[getJSONTagByOffset(unsafe.Offsetof(Config{}.LogDir))].(string); ok {
-		logDir = val
+		if resolved, _, resolveErr := resolveTag(val); resolveErr == nil {
+			logDir = resolved
+		}
 	}
 	if val, ok := peek[getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile))].(string); ok && val != "" {
-		logFile = val
+		if resolved, _, resolveErr := resolveTag(val); resolveErr == nil {
+			logFile = resolved
+		}
 	}
 	return logDir, logFile
 }
@@ -8473,27 +8477,25 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 }
 
-// buildIsUnblockedPredicate returns a predicate reporting whether a given domain+qtype
-// currently has an ENABLED whitelist rule matching it exactly — i.e. whether it's
-// presently unblocked/paused rather than actively blocked. Shared by getRecentBlocksCopy
-// (rendering the /blocks page) and blocksHandler's "clear" action, so both agree on
-// exactly which rows show "Re-block (Pause)" versus "Unblock X" at any given moment.
+// buildIsUnblockedPredicate returns a predicate using the same whitelist
+// matching semantics as the DNS resolver, including wildcard matching and
+// the optional HTTPS→A fallback. Shared by getRecentBlocksCopy (rendering
+// the /blocks page) and blocksHandler's "clear" action so both agree with
+// actual DNS authorization.
 func (ui *AdminUI) buildIsUnblockedPredicate() func(domain, qtype string) bool {
-	snapshot := ui.ruleStore.Snapshot()
-
-	// Pre-build a hash set of active rules for O(1) lookups.
-	// Key format: "qtype:domain" to uniquely identify active rules without nested maps.
-	activeRules := make(map[string]bool)
-	for qtype, rules := range snapshot {
-		for _, rule := range rules {
-			if rule.Enabled {
-				activeRules[qtype+":"+rule.Pattern] = true
-			}
-		}
-	}
+	cfg := ui.getConfig()
 
 	return func(domain, qtype string) bool {
-		return activeRules[qtype+":"+domain]
+		if _, matched := ui.ruleStore.MatchForType(qtype, domain); matched {
+			return true
+		}
+
+		return cfg.AllowHTTPSIfAAllowed &&
+			qtype == "HTTPS" &&
+			func() bool {
+				_, matched := ui.ruleStore.MatchForType("A", domain)
+				return matched
+			}()
 	}
 }
 
@@ -11679,10 +11681,11 @@ func (w *rotatingLogWriter) reopenOriginal() {
 }
 
 type ConfigFieldView struct {
-	Key   string
-	Value string
-	Type  string
-	Desc  string
+	Key       string
+	Value     string
+	ValueJSON string
+	Type      string
+	Desc      string
 	//Options    string // Comma-separated list for dropdowns
 	IsPassword bool // Flag to trigger password masking and confirmation
 }
@@ -11710,6 +11713,7 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 
 		val := v.Field(i)
 		var strVal string
+		var valueJSON string
 		var typ string
 
 		kind := val.Kind()
@@ -11734,7 +11738,15 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 				for j := 0; j < val.Len(); j++ {
 					sl = append(sl, val.Index(j).String())
 				}
+
 				strVal = strings.Join(sl, ", ")
+
+				encoded, err := json.Marshal(sl)
+				if err != nil {
+					panic2(fmt.Sprintf("BUG: failed to JSON-encode config []string field %q: %v", tagKey, err))
+				}
+				valueJSON = string(encoded)
+
 				typ = "[]string"
 			} else {
 				// Log an explicit warning so you immediately catch un-renderable
@@ -11776,10 +11788,11 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 		}
 
 		fields = append(fields, ConfigFieldView{
-			Key:   tagKey,
-			Value: strVal,
-			Type:  typ,
-			Desc:  field.Tag.Get("desc"),
+			Key:       tagKey,
+			Value:     strVal,
+			ValueJSON: valueJSON,
+			Type:      typ,
+			Desc:      field.Tag.Get("desc"),
 			//Options: options,
 			IsPassword: isPwd,
 		})
@@ -13486,7 +13499,7 @@ func resolveTag(input string) (resolved string, isTag bool, err error) {
 				firstErr = fmt.Errorf("path separators not allowed in {file:...} — must be in same directory: %q", filename)
 				return match
 			}
-			if _, bad := wincoe.ReservedFileNames[filename]; bad {
+			if wincoe.IsWindowsReservedFileName(filename) {
 				firstErr = fmt.Errorf("reserved Windows filename original: %q, processed:%q", tagValue, filename)
 				return match
 			}
@@ -14626,7 +14639,18 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		return responseFailures
 	}
 
-	if flushErr := flushDirty(); flushErr != nil {
+	flushErr := flushDirty()
+
+	// The stores were already mutated in memory. Keep dependent caches
+	// consistent with that live state even if persistence to disk fails.
+	if len(touchedPatterns) > 0 && ui.OnInvalidatePatterns != nil {
+		ui.OnInvalidatePatterns(touchedPatterns)
+	}
+	if blacklistTouched && ui.OnInvalidateBlacklist != nil {
+		ui.OnInvalidateBlacklist()
+	}
+
+	if flushErr != nil {
 		writeJSON(http.StatusInternalServerError, applyTablesResponse{
 			OK:                false,
 			Applied:           appliedClientIDs,
@@ -14636,13 +14660,6 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 			Versions:          currentVersions(),
 		})
 		return
-	}
-
-	if len(touchedPatterns) > 0 && ui.OnInvalidatePatterns != nil {
-		ui.OnInvalidatePatterns(touchedPatterns)
-	}
-	if blacklistTouched && ui.OnInvalidateBlacklist != nil {
-		ui.OnInvalidateBlacklist()
 	}
 
 	if len(failures) > 0 {

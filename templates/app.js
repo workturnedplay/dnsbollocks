@@ -1080,52 +1080,122 @@
     }
     
     // --- Filter highlight helpers ---
-    // Operates directly on text nodes so it is safe even when sibling elements
-    // (like <br> or <small>) are present, and survives staged-value updates that
-    // change innerText without touching the DOM structure.
+    // Highlights matches using the same NFD/accent-insensitive normalization
+    // used by matchesFilterExpression(), while preserving the original text in
+    // the DOM. normalizedIndexMap maps every normalized UTF-16 code unit back
+    // to the original UTF-16 range it came from.
     function highlightTextNodes(element, terms) {
         if (!element) return;
-        
-        // Remove any existing highlights first so we start clean on every call.
+
+        // Remove existing highlights first so every invocation starts from the
+        // original text representation.
         element.querySelectorAll('mark.filter-highlight').forEach(mark => {
             mark.replaceWith(document.createTextNode(mark.textContent));
         });
-        element.normalize(); // merge adjacent text nodes created by the replacements
-        
-        if (terms.length === 0) return; // nothing to highlight — just clearing was the job
-        
-        const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        const regex = new RegExp('(' + escaped.join('|') + ')', 'gi');
-        
-        // Collect all text nodes under element up-front; modifying the DOM during
-        // the TreeWalker traversal can confuse some browsers.
+        element.normalize();
+
+        if (terms.length === 0) return;
+
+        const normalizedWithMap = (text) => {
+            let normalized = '';
+            const mapStart = [];
+            const mapEnd = [];
+
+            for (let i = 0; i < text.length;) {
+                const codePoint = text.codePointAt(i);
+                const originalEnd = i + (codePoint > 0xFFFF ? 2 : 1);
+                const segment = text.slice(i, originalEnd).normalize('NFD').toLowerCase();
+
+                normalized += segment;
+
+                for (let j = 0; j < segment.length; j++) {
+                    mapStart.push(i);
+                    mapEnd.push(originalEnd);
+                }
+
+                i = originalEnd;
+            }
+
+            return { normalized, mapStart, mapEnd };
+        };
+
+        const normalizedTerms = terms
+            .map(term => normalizeStr(term.toLowerCase()))
+            .filter(term => term.length > 0);
+
+        if (normalizedTerms.length === 0) return;
+
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
         const textNodes = [];
         let node;
-        while ((node = walker.nextNode()) !== null) textNodes.push(node);
-        
+
+        while ((node = walker.nextNode()) !== null) {
+            textNodes.push(node);
+        }
+
         textNodes.forEach(textNode => {
             const text = textNode.textContent;
-            regex.lastIndex = 0;
-            if (!regex.test(text)) { regex.lastIndex = 0; return; } // fast-path: no match
-            regex.lastIndex = 0;
-            
+            const { normalized, mapStart, mapEnd } = normalizedWithMap(text);
+
+            const matches = [];
+
+            for (const term of normalizedTerms) {
+                let searchFrom = 0;
+
+                while (searchFrom < normalized.length) {
+                    const index = normalized.indexOf(term, searchFrom);
+                    if (index === -1) break;
+
+                    const normalizedEnd = index + term.length;
+
+                    matches.push({
+                        start: mapStart[index],
+                        end: mapEnd[normalizedEnd - 1],
+                    });
+
+                    // Advance by at least one normalized code unit so an
+                    // overlapping occurrence cannot cause an infinite loop.
+                    searchFrom = index + Math.max(term.length, 1);
+                }
+            }
+
+            if (matches.length === 0) return;
+
+            // Merge overlapping/adjacent matches so multiple terms cannot
+            // produce nested <mark> elements or duplicate text.
+            matches.sort((a, b) => a.start - b.start || b.end - a.end);
+
+            const merged = [];
+            for (const match of matches) {
+                const last = merged[merged.length - 1];
+
+                if (!last || match.start > last.end) {
+                    merged.push({ ...match });
+                } else if (match.end > last.end) {
+                    last.end = match.end;
+                }
+            }
+
             const frag = document.createDocumentFragment();
             let lastIdx = 0;
-            let match;
-            while ((match = regex.exec(text)) !== null) {
-                if (match.index > lastIdx) {
-                    frag.appendChild(document.createTextNode(text.slice(lastIdx, match.index)));
+
+            for (const match of merged) {
+                if (match.start > lastIdx) {
+                    frag.appendChild(document.createTextNode(text.slice(lastIdx, match.start)));
                 }
+
                 const mark = document.createElement('mark');
                 mark.className = 'filter-highlight';
-                mark.textContent = match[1];
+                mark.textContent = text.slice(match.start, match.end);
                 frag.appendChild(mark);
-                lastIdx = regex.lastIndex;
+
+                lastIdx = match.end;
             }
+
             if (lastIdx < text.length) {
                 frag.appendChild(document.createTextNode(text.slice(lastIdx)));
             }
+
             textNode.parentNode.replaceChild(frag, textNode);
         });
     }
@@ -1731,15 +1801,31 @@
             container.appendChild(boolSelect);
             hint.innerText = "Boolean (true/false)";
         } else if (type === '[]string') {
-            // Swap to textarea and format the current comma-string into 2xnewlines for easier editing and visually delimit each logical line (needed due to wrapping)
+            // Swap to textarea...
             const listTA = document.createElement('textarea');
             listTA.className = 'config-input config-textarea';
             listTA.setAttribute('aria-label', key + ' value');
-            // .value assignment never interprets HTML — safe even if entries contain < > & etc.
-            listTA.value = currentDisplay.split(',').map(s => s.trim()).join('\n\n');
+
+            // Use the server-provided JSON representation rather than parsing
+            // the human-readable comma-separated display value. Commas are
+            // valid inside strings (e.g. URLs), so splitting currentDisplay
+            // would be lossy.
+            let listValue;
+            try {
+                listValue = JSON.parse(row.dataset.listJson || '[]');
+            } catch (err) {
+                console.error('BUG: invalid JSON representation for []string config field', key, err);
+                listValue = [];
+            }
+
+            if (!Array.isArray(listValue) || !listValue.every(v => typeof v === 'string')) {
+                console.error('BUG: server supplied a non-string-array value for []string config field', key);
+                listValue = [];
+            }
+
+            listTA.value = JSON.stringify(listValue, null, 2);
             container.appendChild(listTA);
-            // Updated, highly reassuring hint text
-            hint.innerText = "List (separate items with newlines or commas. Extra spaces, multiple commas, or empty lines are auto-cleaned.)";
+            hint.innerText = "JSON array of strings. This preserves commas, empty strings, and other characters inside list items.";
         } else if (type === 'int') {
             const numInput = document.createElement('input');
             numInput.type = 'number';
@@ -1808,15 +1894,38 @@
             let displayVal = rawVal;
             
             if (type === 'int') {
-                parsedVal = parseInt(rawVal, 10);
-                if (isNaN(parsedVal)) { alert('Value must be a valid integer.'); return; }
+                const integerText = rawVal.trim();
+
+                if (integerText === '') {
+                    alert('Value must be a valid integer.');
+                    return;
+                }
+
+                const numericValue = Number(integerText);
+
+                if (!Number.isInteger(numericValue)) {
+                    alert('Value must be a valid integer.');
+                    return;
+                }
+
+                parsedVal = numericValue;
                 displayVal = parsedVal.toString();
             } else if (type === 'bool') {
                 parsedVal = rawVal === 'true';
                 displayVal = parsedVal.toString();
             } else if (type === '[]string') {
-                // Split by newline OR comma to be flexible
-                parsedVal = rawVal.split(/[\n,]+/).map(s => s.trim()).filter(s => s !== '');
+                try {
+                    parsedVal = JSON.parse(rawVal);
+                } catch (err) {
+                    alert('Value must be a valid JSON array of strings.');
+                    return;
+                }
+
+                if (!Array.isArray(parsedVal) || !parsedVal.every(v => typeof v === 'string')) {
+                    alert('Value must be a JSON array of strings.');
+                    return;
+                }
+
                 displayVal = parsedVal.join(', ');
             }
             
@@ -1825,13 +1934,20 @@
             // showing "********" so it's clear to the user that the password is unchanged,
             // rather than showing a blank cell that looks like the password was cleared.
             // currentDisplay is "********" (set by getConfigFields) so we reuse it here.
-            if (isPwd && rawVal === '') {
-                displayVal = currentDisplay;
+            if (isPwd) { // && rawVal === '') {
+                if (rawVal === '') {
+                    displayVal = currentDisplay;
 
-                // If we already staged a new password, keep it instead of sending 
-                // an empty string which would tell the backend to use the original unedited hash.
-                if (stagedChanges[key] !== undefined) {
-                    parsedVal = stagedChanges[key];
+                    // If we already staged a new password, keep it instead of sending 
+                    // an empty string which would tell the backend to use the original unedited hash.
+                    if (stagedChanges[key] !== undefined) {
+                        parsedVal = stagedChanges[key];
+                    }
+                } else {
+                    // Never expose a newly staged password in the config table or in
+                    // data-original, which is also used as the filter/search value.
+                    // currentDisplay is the server-provided masked value ("********").
+                    displayVal = currentDisplay;
                 }
             }
             
