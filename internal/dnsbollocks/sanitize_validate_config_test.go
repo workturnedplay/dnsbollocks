@@ -422,19 +422,27 @@ func TestSanitizeAndValidateConfig_WebUIIdleTimeoutClampedToDoubleRead(t *testin
 		idleTimeout int
 		wantIdle    int
 	}{
-		// idle strictly less than read → clamped to 2×read
+		// idle below 2×read → clamped to 2×read.
 		{"idle=0 clamped to 2×read=30", 15, 0, 30},
-		{"idle=1 clamped (1 ≤ 15)", 15, 1, 30},
-		{"idle=14 clamped (14 ≤ 15)", 15, 14, 30},
-		// idle equal to read → also clamped (condition is ≤)
-		{"idle=read clamped (15 ≤ 15)", 15, 15, 30},
-		// idle strictly greater than read → unchanged
-		{"idle=16 valid (16 > 15)", 15, 16, 16},
+		{"idle=1 clamped", 15, 1, 30},
+		{"idle=14 clamped", 15, 14, 30},
+		{"idle=15 clamped", 15, 15, 30},
+		{"idle=16 clamped", 15, 16, 30},
+		{"idle=29 clamped", 15, 29, 30},
+
+		// Exact 2× boundary is valid and remains unchanged.
+		{"idle=30 valid at exactly 2×read", 15, 30, 30},
+
+		// Above 2×read is valid and remains unchanged.
+		{"idle=31 valid above 2×read", 15, 31, 31},
 		{"idle=60 valid", 15, 60, 60},
-		// different read timeout
+
+		// Different read timeout.
 		{"read=10 idle=5 clamped to 20", 10, 5, 20},
 		{"read=10 idle=10 clamped to 20", 10, 10, 20},
-		{"read=10 idle=11 valid", 10, 11, 11},
+		{"read=10 idle=19 clamped to 20", 10, 19, 20},
+		{"read=10 idle=20 valid at exactly 2×read", 10, 20, 20},
+		{"read=10 idle=21 valid", 10, 21, 21},
 	}
 
 	for _, tc := range cases {
@@ -467,13 +475,25 @@ func TestSanitizeAndValidateConfig_LocalDoHIdleTimeoutClampedToDoubleRead(t *tes
 		idleTimeout int
 		wantIdle    int
 	}{
+		// idle below 2×read → clamped to 2×read.
 		{"idle=0 clamped to 2×read=60", 30, 0, 60},
-		{"idle=29 clamped (29 ≤ 30)", 30, 29, 60},
-		{"idle=30 clamped (30 ≤ 30)", 30, 30, 60},
-		{"idle=31 valid (31 > 30)", 30, 31, 31},
+		{"idle=29 clamped", 30, 29, 60},
+		{"idle=30 clamped", 30, 30, 60},
+		{"idle=31 clamped", 30, 31, 60},
+		{"idle=59 clamped", 30, 59, 60},
+
+		// Exact 2× boundary is valid and remains unchanged.
+		{"idle=60 valid at exactly 2×read", 30, 60, 60},
+
+		// Above 2×read is valid and remains unchanged.
+		{"idle=61 valid above 2×read", 30, 61, 61},
+
+		// Different read timeout.
 		{"read=20 idle=10 clamped to 40", 20, 10, 40},
 		{"read=20 idle=20 clamped to 40", 20, 20, 40},
-		{"read=20 idle=21 valid", 20, 21, 21},
+		{"read=20 idle=39 clamped to 40", 20, 39, 40},
+		{"read=20 idle=40 valid at exactly 2×read", 20, 40, 40},
+		{"read=20 idle=41 valid", 20, 41, 41},
 	}
 
 	for _, tc := range cases {
