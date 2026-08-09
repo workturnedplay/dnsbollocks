@@ -1,5 +1,7 @@
 my todos:
 
+* apply Log Highlighting on Load in a way that's sync-ed with the filter! so if filter shows "Login" even tho I types "login" then the highlighter should highlight that "Login" ! currently it doesn't!
+
 * we should add a date/time in webui for entries that were changed/added and have the column of it sortable so this way we can sort by last modified for example.
 
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.

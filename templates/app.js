@@ -3245,5 +3245,22 @@
         setupTableSorting('hostsTable', 'hostsTable', applyHostsFilter);
         setupTableSorting('blacklistTable', 'blacklistTable', applyBlacklistFilter);
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
+
+        // --- Apply Log Highlighting on Load ---
+        const logsSearchInput = document.getElementById('logsSearchQuery');
+        const logOutputPre = document.querySelector('.log-output-pre');
+
+        if (logsSearchInput && logOutputPre) {
+            const query = logsSearchInput.value.trim();
+            
+            if (query) {
+                // Split the query into individual terms
+                const terms = query.split(/\s+/).filter(t => t.length > 0);
+                
+                if (terms.length > 0) {
+                    highlightTextNodes(logOutputPre, terms);
+                }
+            }
+        }
     }); // end of domcontentloaded
 })();
