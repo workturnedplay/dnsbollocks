@@ -74,9 +74,23 @@
     </div>
 </div>
 {{end}}
+{{define "alert-banner"}}
+{{if .ErrorMessage}}
+<div class="alert-error">
+    <strong>Error:</strong> {{.ErrorMessage}}
+    {{if .EnteredValue}}<small>Processed input value: <code>{{.EnteredValue}}</code></small>{{end}}
+</div>
+{{end}}
+{{if .SuccessMessage}}
+<div class="alert-success">
+    <strong>Success:</strong> {{.SuccessMessage}}
+</div>
+{{end}}
+{{end}}
 
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
+{{template "alert-banner" .}}
 <h2>Add New Rule</h2>
 <form id="addRuleForm" method="post" action="/rules">
     <label class="visually-hidden" for="addRuleType">DNS record type</label>
@@ -205,17 +219,7 @@
     <strong>Note:</strong> Only queries blocked by the whitelist rules are shown here. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
 </div>
 
-{{if .ErrorMessage}}
-<div class="alert-error">
-    <strong>Error:</strong> {{.ErrorMessage}}
-    <small>Processed input value: <code>{{.EnteredValue}}</code></small>
-</div>
-{{end}}
-{{if .SuccessMessage}}
-<div class="alert-success">
-    <strong>Success:</strong> {{.SuccessMessage}}
-</div>
-{{end}}
+{{template "alert-banner" .}}
 <div class="section-header-row">
     <h2 class="header-inline">Recent Blocks (Quick Unblock)</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
@@ -260,6 +264,7 @@
 <div class="info-banner">
     <strong>Note:</strong> A DNS query that matches a pattern/host from this list is resolved locally to the specified IP without needing to match the whitelist rules first.
 </div>
+{{template "alert-banner" .}}
 
 <h2>Add New Local Host</h2>
 <form id="addHostForm" method="post" action="/hosts">
@@ -389,6 +394,7 @@
 
 {{define "response-blacklist"}}
 <h2>Response Blacklist IPs</h2>
+{{template "alert-banner" .}}
 <p class="section-desc maxw-600">
     The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
 </p>

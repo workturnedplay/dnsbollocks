@@ -88,8 +88,8 @@ type Config struct {
 	ListenDNS               string   `json:"listen_dns"    desc:"IP:port for the plain DNS (UDP and TCP) listener. Must be an IP literal, never a hostname."`
 	ListenDoH               string   `json:"listen_doh"    desc:"IP:port for the local DNS-over-HTTPS (DoH) listener. Must be an IP literal. A TLS certificate is auto-generated for this IP."`
 	ListenUI                string   `json:"listen_ui"     desc:"IP:port for the web admin UI. Must be a specific interface IP literal (not the 0.0.0.0/:: wildcard, which would make the WebUI unreachable). TLS is auto-enabled for non-loopback addresses when webui_force_tls_on_non_localhost is true."`
-	TLSCertFile             string   `json:"tls_cert_file" desc:"Path to the TLS certificate file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
-	TLSKeyFile              string   `json:"tls_key_file"  desc:"Path to the TLS private key file (PEM format) used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
+	TLSCertFile             string   `json:"tls_cert_file" desc:"filename(no path!) of the TLS certificate file (PEM format), stored next to config.json, used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
+	TLSKeyFile              string   `json:"tls_key_file"  desc:"filename(no path!) of the TLS private key file (PEM format), stored next to config.json, used for local DoH and WebUI. Auto-generated as self-signed, if not on-disk."`
 	UpstreamURLs            []string `json:"upstream_urls" desc:"HTTPS URLs of upstream DoH resolvers (e.g. https://9.9.9.9/dns-query). Must use IP literals. Order determines failover priority. If you use the template '{builtin:clientexe}'(without the single quotes, doh) it will be replaced with the querying executable name (useful for NextDNS URLs)"`
 	UpstreamSNIHostnames    []string `json:"upstream_sni_hostnames" desc:"TLS SNI hostnames corresponding to each upstream_urls entry (e.g. dns.quad9.net). Falls back to the URL host if omitted or shorter than upstream_urls."`
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
@@ -121,9 +121,9 @@ type Config struct {
 	WebUIClientBurstQPS     int    `json:"webui_qps_burst_per_client" desc:"Maximum burst of WebUI HTTP requests allowed from a single client IP above webui_qps_rate_per_client."`
 	CacheMinTTL             uint32 `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. 0 means no minimum (upstream TTL is respected, which if 0 means don't cache)."`
 	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
-	WhitelistFile           string `json:"whitelist_file"       desc:"Path (relative to config.json) to the query-whitelist JSON file. Created automatically with an empty whitelist if absent."`
-	BlacklistFile           string `json:"blacklist_file"       desc:"Path (relative to config.json) to the response-IP blacklist JSON file. Created automatically with safe defaults if absent."`
-	HostsFile               string `json:"hosts_file"           desc:"Path (relative to config.json) to the local host-override JSON file. Resolved locally without needing to match the whitelist rules first."`
+	WhitelistFile           string `json:"whitelist_file"       desc:"filename(no path!) of the query-whitelist JSON file, stored next to config.json. Created automatically with an empty whitelist if absent."`
+	BlacklistFile           string `json:"blacklist_file"       desc:"filename(no path!) of the response-IP blacklist JSON file, stored next to config.json. Created automatically with safe defaults if absent."`
+	HostsFile               string `json:"hosts_file"           desc:"filename(no path!) of the local host-override JSON file, stored next to config.json. Resolved locally without needing to match the whitelist rules first."`
 	LogDir                  string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
 	LogQueriesFile          string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
 	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"filename(no path!) to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
@@ -2479,6 +2479,23 @@ func (ui *AdminUI) logPersistFailure(what string, err error) error {
 		slog.String("store", what),
 		wincoe.SafeErr(err))
 	return fmt.Errorf("failed to save %s to disk (your change was applied in memory but NOT persisted; it may be lost on restart): %w", what, err)
+}
+
+// redirectWithPersistFailure redirects to path with the given persistence
+// failure surfaced as an "error" query-string message, matching how
+// respondBlocksResult already signals a failed /blocks action to the no-JS
+// fallback page. Used by the single-item /rules, /hosts, and
+// /response-blacklist POST handlers when the in-memory mutation already
+// succeeded but writing it to disk failed: unlike an outright validation
+// failure (still handled via http.Error further up each handler), this
+// always redirects — never renders a bare error page — so the browser
+// reloads the page and reflects the mutation, which IS already live,
+// instead of leaving the operator looking at a stale pre-change view while
+// being told their change simply "failed". See logPersistFailure's doc
+// comment for why the message itself is careful to say "applied but not
+// persisted" rather than just "failed".
+func redirectWithPersistFailure(w http.ResponseWriter, r *http.Request, path string, err error) {
+	http.Redirect(w, r, path+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 }
 
 // getJSONTagByOffset finds a Config field by its memory offset and extracts its JSON key.
@@ -5899,7 +5916,7 @@ func (u *Upstream) logCertDetails() { //(ip, port, sni string) {
 	}
 	addr := net.JoinHostPort(u.URL.Hostname(), port)
 
-	dialer := &net.Dialer{Timeout: time.Duration(u.CertLogTimeoutSec) * time.Second}
+	dialer := &net.Dialer{Timeout: secondsToDuration(u.CertLogTimeoutSec)}
 	// XXX: We use InsecureSkipVerify: true ONLY for this probe so we can read the cert
 	// that was otherwise rejected.
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
@@ -6740,6 +6757,8 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		}
 		data := map[string]any{
 			"ResponseBlacklist": views,
+			"SuccessMessage":    r.URL.Query().Get("success"),
+			"ErrorMessage":      r.URL.Query().Get("error"),
 		}
 		ui.renderTemplate(w, r, "response-blacklist", data)
 		return
@@ -6765,7 +6784,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		}
 
 		if err := ui.OnSaveBlacklist(); err != nil {
-			http.Error(w, ui.logPersistFailure("response blacklist", err).Error(), http.StatusInternalServerError)
+			redirectWithPersistFailure(w, r, "/response-blacklist", ui.logPersistFailure("response blacklist", err))
 			return
 		}
 		http.Redirect(w, r, "/response-blacklist", http.StatusSeeOther)
@@ -8346,8 +8365,10 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data := map[string]any{
-			"DNSTypes": dnsTypes,
-			"Rules":    flatRules, // Passing the flattened slice now
+			"DNSTypes":       dnsTypes,
+			"Rules":          flatRules, // Passing the flattened slice now
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
 		}
 
 		ui.renderTemplate(w, r, "rules", data)
@@ -8380,7 +8401,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
-			http.Error(w, ui.logPersistFailure("whitelist", err).Error(), http.StatusInternalServerError)
+			redirectWithPersistFailure(w, r, "/rules", ui.logPersistFailure("whitelist", err))
 			return
 		}
 		http.Redirect(w, r, "/rules", http.StatusSeeOther)
@@ -8621,7 +8642,9 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			//"Page":  "hosts",
-			"Hosts": ui.hostStore.Snapshot(),
+			"Hosts":          ui.hostStore.Snapshot(),
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
 		}
 
 		ui.renderTemplate(w, r, "hosts", data)
@@ -8649,7 +8672,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := ui.OnSaveHosts(); err != nil {
-			http.Error(w, ui.logPersistFailure("local hosts", err).Error(), http.StatusInternalServerError)
+			redirectWithPersistFailure(w, r, "/hosts", ui.logPersistFailure("local hosts", err))
 			return
 		}
 		http.Redirect(w, r, "/hosts", http.StatusSeeOther)
@@ -8662,15 +8685,44 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 // renderTemplate is a DRY helper to execute templates safely into a buffer
 // before writing to the network, preventing "established connection aborted" errors
 // from being logged as template execution failures.
+// tableVersionToken returns the current combined optimistic-concurrency
+// version token for a rules/hosts/response-blacklist table: the in-memory
+// store's own mutation-generation counter (catches a race against a
+// concurrent WebUI mutation or Reload()) composed with the backing JSON
+// file's on-disk modification time (additionally catches the file being
+// changed by something OTHER than this process — a hand-edit or an
+// external tool — that the in-memory generation counter alone has no way to
+// see; mirrors the identical mtime-based approach configHandler already
+// uses for config.json's own optimistic-concurrency check).
+//
+// The returned string is opaque to every caller on both ends: app.js only
+// ever compares it for exact equality and never parses it, so this format
+// can change freely without touching app.js. path is the table's backing
+// file (cfg.WhitelistFile / cfg.HostsFile / cfg.BlacklistFile).
+func tableVersionToken(generation uint64, path string) string {
+	mtimeToken := "0"
+	if fi, err := os.Stat(path); err == nil {
+		mtimeToken = strconv.FormatInt(fi.ModTime().UnixNano(), 10)
+	}
+	// A stat failure for any reason (including "doesn't exist yet") falls
+	// back to "0", exactly like configHandler's identical config.json
+	// version check: there's no reliable mtime to compare against right
+	// now, and refusing every apply outright until a transient issue
+	// clears would be worse than occasionally missing a concurrent external
+	// edit in that narrow window.
+	return strconv.FormatUint(generation, 10) + ":" + mtimeToken
+}
+
 func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
 	log := ui.getLogger()
 	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
 	data["Path"] = r.URL.Path
 	data["Version"] = GetVersion() //cache-busting
 
-	data["RulesVersion"] = ui.ruleStore.Generation()
-	data["HostsVersion"] = ui.hostStore.Generation()
-	data["BlacklistVersion"] = ui.blacklist.Generation()
+	cfg := ui.getConfig()
+	data["RulesVersion"] = tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile)
+	data["HostsVersion"] = tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile)
+	data["BlacklistVersion"] = tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile)
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey{}).(string); ok {
@@ -8698,25 +8750,24 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	}
 }
 
-// buildIsUnblockedPredicate returns a predicate using the same whitelist
-// matching semantics as the DNS resolver, including wildcard matching and
-// the optional HTTPS→A fallback. Shared by getRecentBlocksCopy (rendering
-// the /blocks page) and blocksHandler's "clear" action so both agree with
-// actual DNS authorization.
+// buildIsUnblockedPredicate reports whether a specific (domain, qtype)
+// recent-block entry currently has its OWN enabled whitelist rule — i.e.
+// whether the operator specifically unblocked THIS entry, not merely
+// whether a query for it would resolve right now.
+//
+// This deliberately does NOT also treat an HTTPS entry as "unblocked"
+// merely because AllowHTTPSIfAAllowed lets an A rule for the same domain
+// authorize HTTPS queries too (see handleDNSQuery's identical fallback):
+// that fallback is a DNS-resolution-time convenience, not a statement that
+// an HTTPS rule exists to pause. Conflating the two made the /blocks page
+// show a stale HTTPS entry as "Re-block (Pause)" — implying there was an
+// active HTTPS rule to pause — when no such rule was ever created, so
+// clicking Re-block silently did nothing (SetEnabled found no HTTPS rule
+// to disable).
 func (ui *AdminUI) buildIsUnblockedPredicate() func(domain, qtype string) bool {
-	cfg := ui.getConfig()
-
 	return func(domain, qtype string) bool {
-		if _, matched := ui.ruleStore.MatchForType(qtype, domain); matched {
-			return true
-		}
-
-		return cfg.AllowHTTPSIfAAllowed &&
-			qtype == "HTTPS" &&
-			func() bool {
-				_, matched := ui.ruleStore.MatchForType("A", domain)
-				return matched
-			}()
+		_, matched := ui.ruleStore.MatchForType(qtype, domain)
+		return matched
 	}
 }
 
@@ -8887,6 +8938,14 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 					ui.OnInvalidatePattern(domainLowercased)
 				} else if found {
 					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", displayDomain, typ)
+				} else {
+					log.Warn("Quick re-block via WebUI: no matching rule exists to pause",
+						slog.String("domainLowercased", domainLowercased),
+						slog.String("displayDomain", displayDomain),
+						slog.String("DNSType", typ))
+					respondBlocksResult(log, w, r, false, http.StatusNotFound,
+						fmt.Sprintf("No active rule exists for %s (%s) to re-block/pause.", displayDomain, typ), raw)
+					return
 				}
 			case "unblock":
 				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true, log)
@@ -10827,9 +10886,9 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 			// Dial raw TCP to the chosen IP so we don't perform DNS resolution here.
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				d := &net.Dialer{
-					Timeout: time.Duration(cfg.UpstreamDialTimeoutSec) * time.Second,
+					Timeout: secondsToDuration(cfg.UpstreamDialTimeoutSec),
 					// Encourages OS-level keep-alives
-					KeepAlive: time.Duration(cfg.UpstreamTCPKeepAliveSec) * time.Second, //doneTODO: const or configurable?
+					KeepAlive: secondsToDuration(cfg.UpstreamTCPKeepAliveSec), //doneTODO: const or configurable?
 					// doneFIXME: does this mean it will never be seen as idle conn? thus cfg.UpstreamIdleConnTimeoutSec will not be enforced?  no
 					/*
 						1. Does KeepAlive prevent IdleConnTimeout from working?
@@ -10861,7 +10920,7 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 				return &rwTimeoutConn{
 					Conn:         conn,
 					readTimeout:  upstreamReadTimeout,
-					writeTimeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+					writeTimeout: secondsToDuration(cfg.UpstreamClientTimeoutSec),
 				}, nil
 			},
 			TLSClientConfig: &tls.Config{
@@ -10872,10 +10931,10 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 			// effect of rwTimeoutConn sharing one timeout for both read and write; now that the
 			// read side is intentionally generous (see computeUpstreamReadTimeoutDuration), this
 			// keeps handshake time bounded on its own instead of inheriting that laxity.
-			TLSHandshakeTimeout: time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+			TLSHandshakeTimeout: secondsToDuration(cfg.UpstreamClientTimeoutSec),
 			Proxy:               nil,  // avoid proxy interference
 			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
-			IdleConnTimeout:     time.Duration(cfg.UpstreamIdleConnTimeoutSec) * time.Second,
+			IdleConnTimeout:     secondsToDuration(cfg.UpstreamIdleConnTimeoutSec),
 			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
 			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
 		}
@@ -10884,9 +10943,9 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 		t2, err := http2.ConfigureTransports(t)
 		if err == nil {
 			// If the connection is idle (no reads) for 5 seconds, send an HTTP/2 PING.
-			t2.ReadIdleTimeout = time.Duration(cfg.UpstreamH2ReadIdleTimeoutSec) * time.Second //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
+			t2.ReadIdleTimeout = secondsToDuration(cfg.UpstreamH2ReadIdleTimeoutSec) //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
 			// If the upstream doesn't ACK the PING within 2 seconds, destroy the zombie connection.
-			t2.PingTimeout = time.Duration(cfg.UpstreamH2PingTimeoutSec) * time.Second //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps? Also how does this fare with the dialer's KeepAlive of 15 sec from above? do we need to change things or their timeout values to make these work well together?
+			t2.PingTimeout = secondsToDuration(cfg.UpstreamH2PingTimeoutSec) //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps? Also how does this fare with the dialer's KeepAlive of 15 sec from above? do we need to change things or their timeout values to make these work well together?
 		}
 
 		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t)
@@ -10897,15 +10956,15 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 		// Bundle everything this specific upstream needs to execute queries completely independently
 		newUpstreams = append(newUpstreams, Upstream{
 			Client: &http.Client{
-				Timeout:   time.Duration(cfg.UpstreamClientTimeoutSec) * time.Second,
+				Timeout:   secondsToDuration(cfg.UpstreamClientTimeoutSec),
 				Transport: t,
 			},
 			URL:                           u,
 			SNI:                           sniHost,
 			liveLogger:                    um.liveLogger,
 			Retries:                       cfg.UpstreamRetriesPerQuery,
-			RetryBackoffDuration:          time.Duration(cfg.UpstreamRetryBackoffMs /*clamped later on, at use-site*/) * time.Millisecond,
-			UpstreamClientTimeoutDuration: time.Duration(cfg.UpstreamClientTimeoutSec /*used as is, good or bad, tho clamped in loadMainConfig()*/) * time.Second,
+			RetryBackoffDuration:          millisToDuration(cfg.UpstreamRetryBackoffMs /*clamped later on, at use-site*/),
+			UpstreamClientTimeoutDuration: secondsToDuration(cfg.UpstreamClientTimeoutSec /*used as is, good or bad, tho clamped in loadMainConfig()*/),
 			BackgroundCtx:                 um.serverCtx,
 			CertLogTimeoutSec:             cfg.CertLogTimeoutSec,
 		})
@@ -10955,10 +11014,33 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 // this same wrapped Read(), so summing all three durations guarantees this raw deadline only
 // ever fires as a last-resort backstop — strictly after every h2-native mechanism has already
 // had its chance — rather than being the primary detector. A ceiling keeps that backstop
-// bounded even if an operator configures unusually large idle/ping values.
+// bounded even if an operator configures unusually large idle/ping values. The summation itself
+// is also overflow-safe against extreme hand-edited values (see the per-term clamp below).
 func computeUpstreamReadTimeoutDuration(cfg *Config) time.Duration {
-	sum := time.Duration(cfg.UpstreamIdleConnTimeoutSec+cfg.UpstreamH2ReadIdleTimeoutSec+cfg.UpstreamH2PingTimeoutSec) * time.Second
 	const absoluteCeiling = 10 * time.Minute
+
+	// Each term is clamped (in seconds, before any multiplication) to a
+	// bound far above absoluteCeiling but far below any risk of overflow
+	// once summed and multiplied by time.Second — see secondsToDuration's
+	// doc comment for the identical class of concern. Summing three values
+	// each capped at perTermCapSec can never come close to overflowing an
+	// int64 seconds count, and multiplying that safely-small sum by
+	// time.Second can never overflow time.Duration's own int64 nanosecond
+	// range either.
+	const perTermCapSec = int64(24 * time.Hour / time.Second) // 86400s
+
+	clampSec := func(v int) int64 {
+		if v <= 0 {
+			return 0
+		}
+		if int64(v) > perTermCapSec {
+			return perTermCapSec
+		}
+		return int64(v)
+	}
+
+	sumSec := clampSec(cfg.UpstreamIdleConnTimeoutSec) + clampSec(cfg.UpstreamH2ReadIdleTimeoutSec) + clampSec(cfg.UpstreamH2PingTimeoutSec)
+	sum := time.Duration(sumSec) * time.Second
 	if sum > absoluteCeiling {
 		return absoluteCeiling
 	}
@@ -12904,6 +12986,39 @@ func doubleWithoutOverflow(v int) int {
 	return v * 2
 }
 
+// secondsToDuration converts a configured count of seconds into a
+// time.Duration, saturating at time.Duration's own maximum representable
+// value instead of silently overflowing/wrapping when secs is large enough
+// that secs*time.Second would exceed the int64 nanosecond range — see
+// doubleWithoutOverflow's doc comment for the identical class of concern:
+// every one of these seconds-denominated fields is an operator-controlled
+// int with no enforced upper bound, reachable via a hand-edited
+// config.json even though the WebUI's own Number handling can't represent
+// such extreme values safely. A non-positive secs returns 0.
+func secondsToDuration(secs int) time.Duration {
+	if secs <= 0 {
+		return 0
+	}
+	const maxSafeSec = int64(math.MaxInt64) / int64(time.Second)
+	if int64(secs) > maxSafeSec {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// millisToDuration mirrors secondsToDuration for millisecond-denominated
+// config fields (e.g. UpstreamRetryBackoffMs).
+func millisToDuration(ms int) time.Duration {
+	if ms <= 0 {
+		return 0
+	}
+	const maxSafeMs = int64(math.MaxInt64) / int64(time.Millisecond)
+	if int64(ms) > maxSafeMs {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 // clampIntField is the shared implementation behind sanitizeAndValidateConfig's many
 // "clamp this int field to a safe value and flag the config for saving" blocks. invalid
 // reports whether the field's current value is out of bounds; when it is, both resolved
@@ -13539,9 +13654,12 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	rawCfg.UpstreamSNIs = make([]string, len(upstreamSNIs))
 	copy(rawCfg.UpstreamSNIs, upstreamSNIs)
 
-	// Create a specific closure for logs
-	checkAndCleanLog := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {
-		if cleaned, changed := cleanLogFileName(log, *resolvedTarget, configKey, fallback); changed {
+	// Every file this process itself creates/writes (log files, the
+	// whitelist/hosts/response-blacklist JSON files, and the TLS cert/key
+	// pair) must be a bare filename living directly next to config.json —
+	// see cleanBareFileName's doc comment for why.
+	checkAndCleanBareFilename := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {
+		if cleaned, changed := cleanBareFileName(log, *resolvedTarget, configKey, fallback); changed {
 			if *resolvedTarget != *rawTarget {
 				errStr := fmt.Sprintf("Won't overwrite template %q with cleaned value %q, you must do it manually then rerun.", *rawTarget, cleaned)
 				if isWebUI {
@@ -13556,50 +13674,30 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		}
 		return nil
 	}
-	if err := checkAndCleanLog(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultCfg.LogQueriesFile); err != nil {
+	if err := checkAndCleanBareFilename(&resolvedCfg.LogQueriesFile, &rawCfg.LogQueriesFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesFile)), defaultCfg.LogQueriesFile); err != nil {
 		return shouldSaveConfig, err
 	}
-	if err := checkAndCleanLog(&resolvedCfg.LogQueriesSimpleFile, &rawCfg.LogQueriesSimpleFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)), defaultCfg.LogQueriesSimpleFile); err != nil {
+	if err := checkAndCleanBareFilename(&resolvedCfg.LogQueriesSimpleFile, &rawCfg.LogQueriesSimpleFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogQueriesSimpleFile)), defaultCfg.LogQueriesSimpleFile); err != nil {
 		return shouldSaveConfig, err
 	}
-	if err := checkAndCleanLog(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultCfg.LogEverythingFile); err != nil {
-		return shouldSaveConfig, err
-	}
-
-	// Helper closure to apply the cleaning and track if a save is needed
-	checkAndClean := func(resolvedTarget, rawTarget *string, configKey, fallback string) error {
-		if cleaned, changed := cleanFileName(log, *resolvedTarget, configKey, fallback); changed {
-			if *resolvedTarget != *rawTarget {
-				errStr := fmt.Sprintf("Won't overwrite template %q with cleaned value %q, you must do it manually then rerun.", *rawTarget, cleaned)
-				if isWebUI {
-					return errors.New(errStr)
-				} else {
-					return errors.New("FATAL: " + errStr)
-				}
-			}
-			*resolvedTarget = cleaned
-			*rawTarget = cleaned
-			if !shouldSaveConfig {
-				shouldSaveConfig = true
-			}
-		}
-		return nil
-	}
-
-	if err := checkAndClean(&resolvedCfg.BlacklistFile, &rawCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultCfg.BlacklistFile); err != nil {
-		return shouldSaveConfig, err
-	}
-	if err := checkAndClean(&resolvedCfg.WhitelistFile, &rawCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultCfg.WhitelistFile); err != nil {
-		return shouldSaveConfig, err
-	}
-	if err := checkAndClean(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultCfg.HostsFile); err != nil {
+	if err := checkAndCleanBareFilename(&resolvedCfg.LogEverythingFile, &rawCfg.LogEverythingFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogEverythingFile)), defaultCfg.LogEverythingFile); err != nil {
 		return shouldSaveConfig, err
 	}
 
-	if err := checkAndClean(&resolvedCfg.TLSCertFile, &rawCfg.TLSCertFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)), defaultCfg.TLSCertFile); err != nil {
+	if err := checkAndCleanBareFilename(&resolvedCfg.BlacklistFile, &rawCfg.BlacklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)), defaultCfg.BlacklistFile); err != nil {
 		return shouldSaveConfig, err
 	}
-	if err := checkAndClean(&resolvedCfg.TLSKeyFile, &rawCfg.TLSKeyFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)), defaultCfg.TLSKeyFile); err != nil {
+	if err := checkAndCleanBareFilename(&resolvedCfg.WhitelistFile, &rawCfg.WhitelistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)), defaultCfg.WhitelistFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	if err := checkAndCleanBareFilename(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultCfg.HostsFile); err != nil {
+		return shouldSaveConfig, err
+	}
+
+	if err := checkAndCleanBareFilename(&resolvedCfg.TLSCertFile, &rawCfg.TLSCertFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)), defaultCfg.TLSCertFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	if err := checkAndCleanBareFilename(&resolvedCfg.TLSKeyFile, &rawCfg.TLSKeyFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSKeyFile)), defaultCfg.TLSKeyFile); err != nil {
 		return shouldSaveConfig, err
 	}
 
@@ -13654,7 +13752,17 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	return shouldSaveConfig, nil
 }
 
-func cleanLogFileName(log *slog.Logger, original, configKey, fallback string) (string, bool) {
+// cleanBareFileName ensures a config file-path field contains only a bare
+// filename with no directory component, rejecting Windows reserved device
+// names (CON, NUL, COM1, etc., including with a trailing extension like
+// "con.log" — see wincoe.IsWindowsReservedFileName). Every file dnsbollocks
+// itself creates or writes — the three log files, the whitelist/hosts/
+// response-blacklist JSON files, and the TLS cert/key pair — is restricted
+// to a bare filename living directly next to config.json, never a path with
+// directory components, so a hand-edited or WebUI-supplied value can never
+// point outside that directory (e.g. overwriting an unrelated file
+// elsewhere on disk if this process is ever run elevated).
+func cleanBareFileName(log *slog.Logger, original, configKey, fallback string) (string, bool) {
 	if fallback == "" {
 		msg := fmt.Sprintf("BUG: dev fail: passed empty filename to clean for config key %q and the fallback was also empty!", configKey)
 		log.Error(msg, slog.String("config_key", configKey))
@@ -13677,7 +13785,7 @@ func cleanLogFileName(log *slog.Logger, original, configKey, fallback string) (s
 	// Standard Windows reserved name check (matches by device-name stem, so
 	// "CON.log"/"com1.txt" etc. are caught too — see wincoe.IsWindowsReservedFileName).
 	if wincoe.IsWindowsReservedFileName(baseName) {
-		log.Warn("Log filename is a reserved Windows device name; using fallback",
+		log.Warn("Config filename is a reserved Windows device name; using fallback",
 			slog.String("config_key", configKey),
 			slog.String("reserved", baseName),
 			slog.String("fallback", fallback))
@@ -13685,61 +13793,11 @@ func cleanLogFileName(log *slog.Logger, original, configKey, fallback string) (s
 	}
 
 	if baseName != original {
-		log.Warn("Directory paths are not allowed in log file settings to prevent arbitrary file writes. Stripped path.",
+		log.Warn("Directory paths are not allowed in this file setting to prevent arbitrary file writes outside the config directory. Stripped path.",
 			slog.String("config_key", configKey),
 			slog.String("original", original),
 			slog.String("forced_to", baseName))
 		return baseName, true
-	}
-
-	return original, false
-}
-
-// cleanFileName returns the cleaned filename and a boolean indicating if the original was modified.
-// //extracted this method to be a free function so the standalone logic can use it independently
-func cleanFileName(log *slog.Logger, original, configKey, fallback string) (string, bool) {
-	if fallback == "" {
-		msg := fmt.Sprintf("BUG: dev fail: passed empty filename to clean for config key %q and the fallback was also empty!", configKey)
-		log.Error(msg, slog.String("config_key", configKey))
-		panic(msg)
-	}
-	if original == "" {
-		log.Warn("Bad filename in config, used fallback",
-			slog.String("for_config_key", configKey),
-			slog.String("bad_filename", original),
-			slog.String("fallback_filename", fallback))
-
-		// Defensively clean the fallback too, in case a future call site ever
-		// passes one that isn't already in canonical form. There's no reason
-		// to treat that as a fatal bug — filepath.Clean is cheap and
-		// idempotent, so just use its result directly rather than crashing
-		// the whole server over a cosmetic difference in a fallback string.
-		cleaned := filepath.Clean(fallback) //FIXME: not a fan of having to call Clean twice(here and below); for DRY purposes.
-		if cleaned != fallback {
-			log.Debug("Fallback filename itself needed cleaning",
-				slog.String("config_key", configKey),
-				slog.String("fallback_before", fallback),
-				slog.String("fallback_after", cleaned))
-		}
-		return cleaned, true
-	}
-
-	cleaned := filepath.Clean(original)
-	// Reject Windows reserved device names (CON, NUL, COM1, etc.), including
-	// with a trailing extension like "con.log" — see wincoe.IsWindowsReservedFileName.
-	if wincoe.IsWindowsReservedFileName(cleaned) {
-		log.Warn("Config filename is a reserved Windows device name; using fallback",
-			slog.String("for_config_key", configKey),
-			slog.String("reserved_filename", cleaned),
-			slog.String("fallback_filename", fallback))
-		return filepath.Clean(fallback), true
-	}
-	if cleaned != original {
-		log.Debug("Cleaned filename from config file",
-			slog.String("config_key", configKey),
-			slog.String("filename_before", original),
-			slog.String("filename_after", cleaned))
-		return cleaned, true
 	}
 
 	return original, false
@@ -15060,49 +15118,51 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	ui.tableMutationMu.Lock()
 	defer ui.tableMutationMu.Unlock()
 
-	parseVersion := func(name, raw string) (uint64, error) {
+	// Reused below both for the version checks and for currentVersions();
+	// stable for the whole handler since it runs entirely under
+	// tableMutationMu, which also serializes against Reload() ever swapping
+	// in a Config with different file paths mid-request.
+	cfg := ui.getConfig()
+
+	requireVersion := func(name, raw string) (string, error) {
 		if raw == "" {
-			return 0, fmt.Errorf("missing %s version", name)
+			return "", fmt.Errorf("missing %s version", name)
 		}
-		v, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid %s version %q: %w", name, raw, err)
-		}
-		return v, nil
+		return raw, nil
 	}
 
 	if touchesRules {
-		v, err := parseVersion("rules", request.Versions.Rules)
+		v, err := requireVersion("rules", request.Versions.Rules)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if current := ui.ruleStore.Generation(); v != current {
-			http.Error(w, "rules changed since this page was loaded; reload before applying", http.StatusConflict)
+		if current := tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile); v != current {
+			http.Error(w, "rules changed (in memory or on disk) since this page was loaded; reload before applying", http.StatusConflict)
 			return
 		}
 	}
 
 	if touchesHosts {
-		v, err := parseVersion("hosts", request.Versions.Hosts)
+		v, err := requireVersion("hosts", request.Versions.Hosts)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if current := ui.hostStore.Generation(); v != current {
-			http.Error(w, "hosts changed since this page was loaded; reload before applying", http.StatusConflict)
+		if current := tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile); v != current {
+			http.Error(w, "hosts changed (in memory or on disk) since this page was loaded; reload before applying", http.StatusConflict)
 			return
 		}
 	}
 
 	if touchesBlacklist {
-		v, err := parseVersion("blacklist", request.Versions.Blacklist)
+		v, err := requireVersion("blacklist", request.Versions.Blacklist)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if current := ui.blacklist.Generation(); v != current {
-			http.Error(w, "response blacklist changed since this page was loaded; reload before applying", http.StatusConflict)
+		if current := tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile); v != current {
+			http.Error(w, "response blacklist changed (in memory or on disk) since this page was loaded; reload before applying", http.StatusConflict)
 			return
 		}
 	}
@@ -15233,9 +15293,9 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	// still-valid staged changes it never got to apply.
 	currentVersions := func() applyTablesResponseVersions {
 		return applyTablesResponseVersions{
-			Rules:     strconv.FormatUint(ui.ruleStore.Generation(), 10),
-			Hosts:     strconv.FormatUint(ui.hostStore.Generation(), 10),
-			Blacklist: strconv.FormatUint(ui.blacklist.Generation(), 10),
+			Rules:     tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile),
+			Hosts:     tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile),
+			Blacklist: tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile),
 		}
 	}
 
@@ -16189,11 +16249,9 @@ type batchFailureResponse struct {
 }
 
 // applyTablesResponseVersions mirrors tableVersions on the client: the
-// post-mutation generation numbers for each store, encoded as decimal
-// strings for symmetry with how the client already represents them
-// (data-*-version attributes are always strings) and with the request's own
-// tableVersions struct (also string fields) — no numeric/string coercion
-// needed on either side of the round trip.
+// post-mutation optimistic-concurrency version token for each store (see
+// tableVersionToken), which the client treats as an entirely opaque string
+// — no numeric/string coercion needed on either side of the round trip.
 type applyTablesResponseVersions struct {
 	Rules     string `json:"rules"`
 	Hosts     string `json:"hosts"`

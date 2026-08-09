@@ -1,5 +1,7 @@
 my todos:
 
+* we should add a date/time in webui for entries that were changed/added and have the column of it sortable so this way we can sort by last modified for example.
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -101,4 +103,6 @@ done:
   donenow_but_it_halfassed_it: 24,14,4,5,18, 16,17,23,31
   at_currently: done
   )
+
+//* when I unblock some.host.com A dns type from /blocks in webui, it shows some.host.com HTTPS also as "Re-block (Pause)" as if it was manually unblocked! this is not good! it should only show those which I manually unblocked, even though the HTTPS will be allowed as well because of the config settings allowing HTTPS if A is allowed!
 
