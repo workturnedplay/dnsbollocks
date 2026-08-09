@@ -1337,6 +1337,14 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.ruleId || "", row.dataset.ruleType || "", row.dataset.rulePattern || ""].join(" "),
+            // Added highlighting for Type (0), ID (1), and Pattern (2) columns
+            highlightTerms: (row, terms) => {
+                if (row.cells.length > 2) {
+                    highlightTextNodes(row.cells[0], terms);
+                    highlightTextNodes(row.cells[1], terms);
+                    highlightTextNodes(row.cells[2], terms);
+                }
+            }
         });
     }
     
@@ -1349,6 +1357,13 @@
             editRowClasses: ['edit-host-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.hostPattern || "", row.dataset.hostIps || ""].join(" "),
+            // Added highlighting for Pattern (0) and IPs (1) columns
+            highlightTerms: (row, terms) => {
+                if (row.cells.length > 1) {
+                    highlightTextNodes(row.cells[0], terms);
+                    highlightTextNodes(row.cells[1], terms);
+                }
+            }
         });
     }
     
@@ -1361,6 +1376,12 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => row.dataset.cidr || "",
+            // Added highlighting for CIDR (0) column
+            highlightTerms: (row, terms) => {
+                if (row.cells.length > 0) {
+                    highlightTextNodes(row.cells[0], terms);
+                }
+            }
         });
     }
     
