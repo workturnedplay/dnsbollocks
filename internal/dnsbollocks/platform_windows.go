@@ -269,6 +269,19 @@ type Server struct {
 
 	autoRestart atomic.Bool // Flag to indicate an automatic restart is requested
 
+	// tableMutationMu serializes every mutation (add/edit/delete, single-item
+	// or batched via /apply-tables) of the whitelist/hosts/response-blacklist
+	// tables against both each other AND against Reload()'s config-swap +
+	// dependent-store reload. The latter is essential, not optional: Reload()
+	// holds this exact mutex from right before it swaps in a new live Config
+	// (which can change WhitelistFile/HostsFile/BlacklistFile) through the
+	// end of loadDependentStores() reloading those files from their
+	// (possibly just-changed) paths. Without that, a WebUI table-mutation
+	// handler racing that exact window could read the just-swapped new file
+	// path while its own in-memory store still reflects data loaded from the
+	// OLD path, and overwrite the new path's on-disk content with stale
+	// data — silently destroying whatever the new file legitimately
+	// contained. See loadDependentStores's and Reload's own doc comments.
 	tableMutationMu sync.Mutex
 }
 
@@ -329,6 +342,8 @@ type AdminUI struct {
 	OnShutdown func(exitCode int)
 	//getExpectedHost func() string // used by hostValidation
 
+	// tableMutationMu is a pointer to the owning Server's tableMutationMu —
+	// see that field's doc comment for the invariant this protects.
 	tableMutationMu *sync.Mutex
 }
 
@@ -791,9 +806,10 @@ type BlacklistFileFormat struct {
 }
 
 // Call once during startup (inside loadConfig or after it)
+// loadResponseBlacklist loads response_blacklist.json into the in-memory
+// BlacklistStore. Callers must hold s.tableMutationMu for the duration of
+// this call — see loadDependentStores's doc comment for why.
 func (s *Server) loadResponseBlacklist() error {
-	s.tableMutationMu.Lock()
-	defer s.tableMutationMu.Unlock()
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -977,10 +993,10 @@ func detectDuplicateJSONObjectKeysAtTopLevelOnly(data []byte) (duplicates []stri
 	return duplicates, nil
 }
 
+// loadLocalHosts loads hosts2ip.json into the in-memory HostStore. Callers
+// must hold s.tableMutationMu for the duration of this call — see
+// loadDependentStores's doc comment for why.
 func (s *Server) loadLocalHosts() error {
-	s.tableMutationMu.Lock()
-	defer s.tableMutationMu.Unlock()
-
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -1273,11 +1289,10 @@ func (s *Server) saveQueryWhitelist() error {
 	return nil
 }
 
-// Loads whitelist rules from dedicated file
+// Loads whitelist rules from dedicated file. Callers must hold
+// s.tableMutationMu for the duration of this call — see
+// loadDependentStores's doc comment for why.
 func (s *Server) loadQueryWhitelist() error {
-	s.tableMutationMu.Lock()
-	defer s.tableMutationMu.Unlock()
-
 	cfg := s.getConfig()
 	log := s.getLogger()
 
@@ -2512,13 +2527,24 @@ func (s *Server) runReloadHooks() {
 	}
 }
 
-// Reload via Ctrl+R aka reloadFn
-func (s *Server) Reload() {
+// errReloadAlreadyInProgress is returned by Server.Reload when a concurrent
+// reload is already running; the newly requested reload is skipped entirely
+// rather than queued. Callers (e.g. the WebUI's Apply path) must not treat
+// this as success, since none of the pending changes were applied by this call.
+var errReloadAlreadyInProgress = errors.New("reload already in progress")
+
+// Reload via Ctrl+R aka reloadFn. Returns a non-nil error if the reload was
+// skipped or aborted (a concurrent reload was already running, or the new
+// config.json failed to load/validate), so callers — notably the WebUI's
+// [Apply & Reload] button via OnApplyConfig — can distinguish that from an
+// actual successful reload instead of always reporting success. Every
+// failure path here is already logged internally before returning.
+func (s *Server) Reload() error {
 	log := s.getLogger()
 
 	if !s.reloadInProgress.CompareAndSwap(false, true) {
 		log.Warn("Reload already in progress")
-		return
+		return errReloadAlreadyInProgress
 	} else {
 		defer s.reloadInProgress.Store(false)
 	}
@@ -2554,9 +2580,23 @@ func (s *Server) Reload() {
 		// continuing on a dependent-store load failure would risk running with
 		// mismatched config/whitelist/blacklist/hosts state.)
 		log.Error("Config reload failed, aborting reload, fix it and try again after.", wincoe.SafeErr(err))
-		return
+		return fmt.Errorf("config reload aborted (config.json failed to load/validate): %w", err)
 	}
 	log.Debug("main config reloaded", slog.String("filename", configFileName))
+
+	// Hold tableMutationMu from here through the end of this reload so a
+	// concurrent WebUI table-mutation handler (rulesHandler, hostsHandler,
+	// responseBlacklistHandler, applyTablesHandler — every one of which
+	// holds this exact same mutex for its entire mutate+persist duration)
+	// can never observe the config swap below mid-flight. See
+	// loadDependentStores's doc comment for the full race this closes.
+	// This does mean a table-mutation handler can occasionally have to wait
+	// out an entire reload (including listener rebinds) before proceeding;
+	// that's an acceptable, bounded cost (Reload is rare, and any fatal
+	// exit reached while this lock is held is itself already bounded by
+	// server_graceful_shutdown_sec) for closing a real data-loss race.
+	s.tableMutationMu.Lock()
+	defer s.tableMutationMu.Unlock()
 
 	// Apply the new config atomically
 	s.applyConfig(*resolvedCfg, *rawCfg)
@@ -2611,7 +2651,7 @@ func (s *Server) Reload() {
 			if wincoe.HasConsole() {
 				log.Warn(configKeyNameForHideConsole + " toggled to true; but this setting only has effect after restart, auto-restarting now...")
 				s.issueAutoRestart()
-				return // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
+				return nil // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
 			} else {
 				log.Debug(configKeyNameForHideConsole + " toggled to true; but already not having a console(due to a prev. setting or built this way), so nothing to do.")
 			}
@@ -2621,7 +2661,7 @@ func (s *Server) Reload() {
 			} else {
 				log.Warn(fmt.Sprintf("The '%s' setting was toggled to false. Note: showing a hidden console again requires a full process restart to take effect, auto-restarting now...", configKeyNameForHideConsole))
 				s.issueAutoRestart()
-				return // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
+				return nil // Abort the rest of the reload (cache swap, listener rebinds, etc.) since we are replacing the process entirely
 			}
 		}
 	}
@@ -2693,6 +2733,7 @@ func (s *Server) Reload() {
 	s.runReloadHooks()
 
 	log.Info("Config reload complete. Listeners, cache, and connection limits rebound as needed.")
+	return nil
 }
 
 func (s *Server) Run(sigChan chan os.Signal) error {
@@ -2758,9 +2799,16 @@ func (s *Server) Run(sigChan chan os.Signal) error {
 	s.swapDNSCache(cfg.CacheJanitorIntervalMinutes, cfg.CacheMaxEntries)
 	log.Debug("Cache initialized")
 
-	// Load dependent data stores NOW, using the correct full logger
-	if err := s.loadDependentStores(); err != nil {
-		s.logFatal("Dependent stores load failed:", err)
+	// Load dependent data stores NOW, using the correct full logger. Hold
+	// tableMutationMu for the duration, matching Reload()'s identical
+	// requirement — see loadDependentStores's doc comment for why, even
+	// though nothing can race this specific call this early in startup
+	// (the WebUI listener isn't accepting connections yet).
+	s.tableMutationMu.Lock()
+	loadErr := s.loadDependentStores()
+	s.tableMutationMu.Unlock()
+	if loadErr != nil {
+		s.logFatal("Dependent stores load failed:", loadErr)
 		panic2("BUG: unreachable")
 	}
 
@@ -3597,6 +3645,18 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 
 // loadDependentStores loads the secondary JSON files (whitelist, blacklist, hosts).
 // It assumes the main Config is already safely loaded and applied.
+//
+// Callers MUST hold s.tableMutationMu for the entire duration of this call
+// (Reload() and Run() both do). This is what makes applyConfig()'s
+// config-swap (which can change WhitelistFile/HostsFile/BlacklistFile)
+// atomic, as a unit, with respect to any WebUI table-mutation handler
+// (rulesHandler, hostsHandler, responseBlacklistHandler, applyTablesHandler)
+// that reads the live config's file-path fields while persisting its own
+// in-memory mutations — without this, a table-mutation handler racing a
+// Reload that also changes a dependent-file path could overwrite the
+// newly-selected file's on-disk content with data that was actually loaded
+// from the OLD path, silently destroying whatever the new file legitimately
+// contained.
 func (s *Server) loadDependentStores() error {
 	log := s.getLogger()
 	cfg := s.getConfig()
@@ -9125,7 +9185,7 @@ func UnstickStdinRead(logger *slog.Logger) {
 	}
 }
 
-func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
+func (s *Server) watchKeys(reloadFn func() error, exitFn func(code int)) {
 	fd := int(os.Stdin.Fd())
 
 	oldState, err := term.MakeRaw(fd)
@@ -9192,7 +9252,9 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 			//_ = term.Restore(fd, oldState)
 			// NO restore needed here because we want to stay in Raw mode
 			// to catch the next keypress after the reload.
-			reloadFn()
+			if reloadErr := reloadFn(); reloadErr != nil {
+				log2.Warn("Ctrl+R reload did not apply", wincoe.SafeErr(reloadErr))
+			}
 		}
 
 		// Ctrl+C (0x03) or else can't break the program except with Ctrl+Break !
@@ -9219,7 +9281,9 @@ func (s *Server) watchKeys(reloadFn func(), exitFn func(code int)) {
 				fmt.Print("\n")
 				log2.Info("Alt+R detected → reloading config")
 				//_ = term.Restore(fd, oldState)
-				reloadFn()
+				if reloadErr := reloadFn(); reloadErr != nil {
+					log2.Warn("Alt+R reload did not apply", wincoe.SafeErr(reloadErr))
+				}
 			case 'v', 'V':
 				fmt.Print("\n")
 				log2.Info("Alt+V detected → dumping", slog.String("version", GetVersion()))
@@ -10177,7 +10241,19 @@ func (um *UpstreamManager) updateInnerState() error {
 	// are normally already correct, and this just redundantly recomputes the
 	// identical result. This call stays in place regardless, as defense-in-depth:
 	// see parseAndValidateUpstreams's doc comment for why.
-	liveCfg := um.getConfig()
+	// Snapshot the whole (Resolved, Raw) pair via a SINGLE atomic Load so the
+	// Raw pointer published below is guaranteed to come from the exact same
+	// generation as the Resolved config newCfg is cloned from. Two
+	// independent Load() calls (one here, one just before the final Store()
+	// below) could otherwise observe two different generations if a
+	// concurrent Server.applyConfig() call landed in between them,
+	// publishing a mismatched (stale Resolved paired with fresh Raw, or vice
+	// versa) pair.
+	both := um.getLiveConfigs()
+	liveCfg := both.Resolved
+	if liveCfg == nil {
+		panic2("BUG: UpstreamManager.liveConfigs.Resolved not initialized before use")
+	}
 	newCfg := liveCfg.Clone()
 
 	parsedURLs, ips, snis, err := parseAndValidateUpstreams(newCfg.UpstreamURLs, newCfg.UpstreamSNIHostnames)
@@ -10199,7 +10275,7 @@ func (um *UpstreamManager) updateInnerState() error {
 	//FIXME: maybe don't set it here, but fail if it's not the same! since at load time this should've been properly filled already!
 	um.liveConfigs.Store(&LiveConfigs{
 		Resolved: &newCfg,
-		Raw:      um.getLiveConfigs().Raw,
+		Raw:      both.Raw,
 	})
 	return nil
 }
@@ -11318,7 +11394,9 @@ func (s *Server) initAdminUI() {
 			//if err:=s.saveConfig() can't do this because it's not assigned yet, the s.Reload() below will "assign" it.
 			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
 		}
-		s.Reload()
+		if err := s.Reload(); err != nil {
+			return fmt.Errorf("config was saved to disk but the reload did not apply it (fix any reported error and try Apply again, or wait for the in-progress reload to finish): %w", err)
+		}
 		return nil
 	}
 	//Pass the server's shutdown method directly
@@ -12235,7 +12313,15 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				log = ui.getLogger() // <--- FIX: Refresh the logger pointer after the reload finishes!
 				if err7 != nil {
 					log.Error("Failed to apply config (that is: save&reload)", wincoe.SafeErr(err7))
-					http.Error(w, "Failed to save/reload config: "+err7.Error(), http.StatusInternalServerError)
+					status := http.StatusInternalServerError
+					if errors.Is(err7, errReloadAlreadyInProgress) {
+						// The config WAS saved to disk successfully; a concurrent
+						// reload (e.g. Ctrl+R, or a second WebUI Apply) just happened
+						// to already be running and this one was skipped rather than
+						// queued. 409 signals "retry shortly" rather than "broken".
+						status = http.StatusConflict
+					}
+					http.Error(w, "Failed to save/reload config: "+err7.Error(), status)
 					return
 				}
 			}
