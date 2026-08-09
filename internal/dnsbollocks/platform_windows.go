@@ -294,6 +294,15 @@ type AdminUI struct {
 	liveConfigs *atomic.Pointer[LiveConfigs]
 	liveLogger  *atomic.Pointer[slog.Logger]
 
+	// logMgr, if non-nil, is used by the /logs* handlers to read back which
+	// on-disk log paths the currently active logger was actually opened
+	// against (see LoggerManager.ActiveLogPaths and activeLogFilePath),
+	// rather than trusting the live Config's paths — the two can diverge
+	// after a Reload() whose logging reconfiguration failed partway through.
+	// nil is tolerated (falls back to the live Config) for callers/tests
+	// that construct AdminUI without a full Runtime.
+	logMgr *LoggerManager
+
 	ruleStore    *RuleStore
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
@@ -2606,6 +2615,13 @@ func (s *Server) Reload() error {
 	if err := s.rt.LogMgr.ApplyConfig(resolvedCfg); err != nil {
 		log.Error("Failed to apply logging config during reload; logging may be stale", wincoe.SafeErr(err))
 		// The core config is already live; log the error but do not abort the reload.
+		// The logger itself keeps writing to whichever paths its last
+		// successful ApplyConfig call opened — LogMgr.ActiveLogPaths still
+		// reports those — and AdminUI's /logs* handlers read that instead of
+		// the live Config, so the WebUI log viewer keeps showing the real,
+		// actively-written log (with a warning banner) rather than silently
+		// looking empty at the new, never-opened path. See
+		// AdminUI.activeLogFilePath's doc comment.
 	}
 	log = s.getLogger() // Grab the newly initialized logger
 
@@ -4013,6 +4029,54 @@ func matchPattern(pattern, name string) bool {
 	return prevRow[numChars]
 }
 
+// certKeyPairValid reports whether the on-disk private key at keyFile is
+// currently a usable match for cert: the key file must exist and parse as an
+// RSA private key (matching the PKCS1 encoding generateCert always writes),
+// its public component must match cert's own public key, and cert's validity
+// window (NotBefore/NotAfter) must currently cover time.Now(). This exists
+// because generateCertIfNeeded's SAN-coverage check alone cannot detect a
+// deleted/mismatched key.pem or an expired cert.pem — both leave the SAN
+// check happily passing right up until the later tls.LoadX509KeyPair call
+// fails fatally, or (for expiry) until a TLS client rejects the handshake.
+// On failure, reason is a short, human-readable explanation suitable for a
+// Warn log line explaining why regeneration is about to happen.
+func certKeyPairValid(cert *x509.Certificate, keyFile string) (ok bool, reason string) {
+	if cert == nil {
+		return false, "nil certificate"
+	}
+
+	now := time.Now()
+	if now.Before(cert.NotBefore) {
+		return false, fmt.Sprintf("certificate is not yet valid (NotBefore=%s)", cert.NotBefore)
+	}
+	if now.After(cert.NotAfter) {
+		return false, fmt.Sprintf("certificate has expired (NotAfter=%s)", cert.NotAfter)
+	}
+
+	keyBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		return false, fmt.Sprintf("private key file unreadable: %v", err)
+	}
+	keyBlock, _ := pem.Decode(keyBytes)
+	if keyBlock == nil {
+		return false, "private key file has an empty or invalid PEM block"
+	}
+	privKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return false, fmt.Sprintf("private key failed to parse as PKCS1 RSA: %v", err)
+	}
+
+	certPub, ok2 := cert.PublicKey.(*rsa.PublicKey)
+	if !ok2 {
+		return false, fmt.Sprintf("certificate's public key is not RSA (got %T)", cert.PublicKey)
+	}
+	if certPub.N.Cmp(privKey.N) != 0 || certPub.E != privKey.E {
+		return false, "private key does not match the certificate's public key"
+	}
+
+	return true, ""
+}
+
 // generate a cert that's valid for both local DoH listener and for webUI
 func (s *Server) generateCertIfNeeded() {
 	log := s.getLogger()
@@ -4102,6 +4166,25 @@ func (s *Server) generateCertIfNeeded() {
 						log.Warn("Cert identity mismatch", slog.String("want", h), slog.Any("haveIPs", cert.IPAddresses), slog.Any("haveDNSNames", cert.DNSNames))
 						needsRegen = true
 						break
+					}
+				}
+
+				// SAN coverage alone doesn't guarantee this cert/key pair is
+				// actually usable: the private key file could be missing,
+				// unparseable, or simply not match this certificate (e.g. an
+				// operator swapped in an unrelated key.pem), or the
+				// certificate's own validity window might no longer cover
+				// "now" (expired, or not-yet-valid due to a clock/backup
+				// restore issue). None of that is visible from the SAN check
+				// above, so verify it explicitly before deciding to skip
+				// regeneration — see certKeyPairValid's doc comment.
+				if !needsRegen {
+					if ok, reason := certKeyPairValid(cert, keyFile); !ok {
+						log.Warn("Existing cert/key pair is not currently usable; regenerating",
+							slog.String("reason", reason),
+							slog.String("cert_file", certFile),
+							slog.String("key_file", keyFile))
+						needsRegen = true
 					}
 				}
 			}
@@ -8862,7 +8945,102 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 } // end blocksHandler
 
-func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageName, title, filePath, filter string) {
+// logKind identifies which of the three on-disk log files (see
+// Config.LogEverythingFile, Config.LogQueriesFile, Config.LogQueriesSimpleFile)
+// a /logs* handler wants, so activeLogFilePath and logPathMismatchNotice can
+// share one implementation across all three call sites instead of
+// duplicating the same three-way switch in each handler.
+type logKind int
+
+const (
+	logKindEverything logKind = iota
+	logKindQueries
+	logKindQueriesSimple
+)
+
+// configuredLogFilename returns the bare (no directory) filename Config
+// currently specifies for kind.
+func configuredLogFilename(cfg *Config, kind logKind) string {
+	switch kind {
+	case logKindEverything:
+		return cfg.LogEverythingFile
+	case logKindQueries:
+		return cfg.LogQueriesFile
+	case logKindQueriesSimple:
+		return cfg.LogQueriesSimpleFile
+	default:
+		panic2(fmt.Sprintf("BUG: configuredLogFilename: unhandled logKind %d", kind))
+		panic(nil)
+	}
+}
+
+// activeLogFilename extracts the filename for kind out of the four values
+// returned by LoggerManager.ActiveLogPaths.
+func activeLogFilename(kind logKind, everythingFile, queriesFile, queriesSimpleFile string) string {
+	switch kind {
+	case logKindEverything:
+		return everythingFile
+	case logKindQueries:
+		return queriesFile
+	case logKindQueriesSimple:
+		return queriesSimpleFile
+	default:
+		panic2(fmt.Sprintf("BUG: activeLogFilename: unhandled logKind %d", kind))
+		panic(nil)
+	}
+}
+
+// activeLogFilePath returns the on-disk path the CURRENTLY ACTIVE logger is
+// writing to for the given log kind. It prefers LoggerManager's own record of
+// what it actually opened (see LoggerManager.ActiveLogPaths) over the live
+// Config's own paths, since the two can diverge after a Reload() whose
+// LogMgr.ApplyConfig() call failed partway through: the live Config is
+// already swapped to the NEW, possibly-unusable paths at that point (see
+// Server.Reload's doc comment), while the logger itself keeps writing to the
+// OLD paths that LoggerManager recorded. Falls back to resolving straight
+// from the live Config if ui.logMgr is nil (tests constructing AdminUI
+// without a full Runtime) or hasn't recorded any active paths yet
+// (defensive; should never happen in production once logging has been
+// initialized at least once, which OldMain guarantees before AdminUI is
+// ever reachable).
+func (ui *AdminUI) activeLogFilePath(kind logKind) string {
+	cfg := ui.getConfig()
+	fallback := resolveLogFilePath(cfg.LogDir, configuredLogFilename(cfg, kind))
+
+	dir, everythingFile, queriesFile, queriesSimpleFile := ui.logMgr.ActiveLogPaths()
+	filename := activeLogFilename(kind, everythingFile, queriesFile, queriesSimpleFile)
+	if filename == "" {
+		// Config-derived filenames are never empty once sanitizeAndValidateConfig
+		// has run (cleanLogFileName always falls back to a non-empty default), so
+		// an empty filename here unambiguously means ActiveLogPaths has nothing
+		// recorded yet, not a legitimately-empty configured value.
+		return fallback
+	}
+	return resolveLogFilePath(dir, filename)
+}
+
+// logPathMismatchNotice returns a human-readable notice (ending in a blank
+// line, ready to prepend directly to log page content) if the live Config's
+// currently-configured path for kind no longer matches activePath — the path
+// activeLogFilePath resolved as what the logger is actually writing to.
+// Returns "" when they match (the overwhelmingly common case), so callers
+// can prepend the result unconditionally without an extra branch.
+func (ui *AdminUI) logPathMismatchNotice(kind logKind, activePath string) string {
+	cfg := ui.getConfig()
+	configuredPath := resolveLogFilePath(cfg.LogDir, configuredLogFilename(cfg, kind))
+
+	if normalizeConfigFilePathForComparison(configuredPath) == normalizeConfigFilePathForComparison(activePath) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"WARNING: the configured log path is %q, but a previous configuration reload failed to switch "+
+			"logging over to it, so the server is still actively writing to %q (shown below). "+
+			"Check the system log for the reload failure, fix it, then reload again.\n\n",
+		configuredPath, activePath,
+	)
+}
+
+func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageName, title, filePath, filter, notice string) {
 	cfg := ui.getConfig()
 	log := ui.getLogger()
 	if pageName == "" {
@@ -8875,7 +9053,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageNam
 		ui.renderTemplate(w, r, pageName, map[string]any{
 			//"Page": "logs",
 			//"Path":  r.URL.Path,
-			"Title": title, "Filter": filter, "Content": "No log entries found.",
+			"Title": title, "Filter": filter, "Content": notice + "No log entries found.",
 		})
 		return
 	} else {
@@ -8993,7 +9171,7 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageNam
 	renderData := map[string]any{
 		"Title":   title,
 		"Filter":  filter,
-		"Content": content,
+		"Content": notice + content,
 	}
 
 	ui.renderTemplate(w, r, pageName, renderData)
@@ -9009,15 +9187,14 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := ui.getConfig()
-
 	filter := r.URL.Query().Get("q")
 	//no:// If they used the old 'domain' param, support it as a fallback
 	// if filter == "" {
 	//     filter = r.URL.Query().Get("domain")
 	// }
 
-	ui.renderLogPage(w, r, "logs_queries", "Query Logs", resolveLogFilePath(cfg.LogDir, cfg.LogQueriesFile), filter)
+	activePath := ui.activeLogFilePath(logKindQueries)
+	ui.renderLogPage(w, r, "logs_queries", "Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueries, activePath))
 }
 
 // logsQueriesSimpleHandler serves the plain-text, single-line-per-query
@@ -9033,9 +9210,9 @@ func (ui *AdminUI) logsQueriesSimpleHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", resolveLogFilePath(cfg.LogDir, cfg.LogQueriesSimpleFile), filter)
+	activePath := ui.activeLogFilePath(logKindQueriesSimple)
+	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueriesSimple, activePath))
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -9048,9 +9225,9 @@ func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := ui.getConfig()
 	filter := r.URL.Query().Get("q")
-	ui.renderLogPage(w, r, "logs", "System & Error Logs", resolveLogFilePath(cfg.LogDir, cfg.LogEverythingFile), filter)
+	activePath := ui.activeLogFilePath(logKindEverything)
+	ui.renderLogPage(w, r, "logs", "System & Error Logs", activePath, filter, ui.logPathMismatchNotice(logKindEverything, activePath))
 }
 
 func (s *Server) shutdown(exitCode int) {
@@ -10045,6 +10222,7 @@ func NewAdminUI(
 	// liveRawConfig *atomic.Pointer[Config],
 	liveConfigs *atomic.Pointer[LiveConfigs],
 	liveLogger *atomic.Pointer[slog.Logger],
+	logMgr *LoggerManager,
 	rs *RuleStore,
 	hs *HostStore,
 	bl *BlacklistStore,
@@ -10058,6 +10236,7 @@ func NewAdminUI(
 	return &AdminUI{
 		liveConfigs:       liveConfigs,
 		liveLogger:        liveLogger,
+		logMgr:            logMgr,
 		ruleStore:         rs,
 		hostStore:         hs,
 		blacklist:         bl,
@@ -11368,6 +11547,7 @@ func (s *Server) initAdminUI() {
 		&s.liveConfigs,
 		//&s.liveRawConfig,
 		s.rt.LogMgr.Ptr(),
+		s.rt.LogMgr,
 		s.ruleStore,
 		s.hostStore,
 		s.blacklist,
@@ -14330,6 +14510,29 @@ type LoggerManager struct {
 	// deliberately NOT a slog handler — just a raw io.Writer — so its format
 	// stays a simple, single-line-per-query string rather than JSON.
 	simpleQueriesWriter atomic.Pointer[AsyncLogWriter]
+
+	// activePaths records the on-disk log directory/filenames that the
+	// CURRENTLY ACTIVE logger (lm.ptr) is actually writing to, as of the
+	// last SUCCESSFUL ApplyConfig call. This can diverge from the live
+	// Config's own LogDir/LogEverythingFile/LogQueriesFile/
+	// LogQueriesSimpleFile fields when a Reload()'s ApplyConfig call fails
+	// partway through (e.g. the new log directory is inaccessible): the live
+	// Config is already swapped to the NEW, possibly-unusable paths at that
+	// point (see Server.Reload), while the logger itself keeps writing to
+	// the OLD paths recorded here until a later ApplyConfig call succeeds.
+	// AdminUI's /logs* handlers read this (via ActiveLogPaths) instead of
+	// the live Config so the log viewer always shows where the logger is
+	// ACTUALLY writing, not merely where the config says it should be.
+	activePaths atomic.Pointer[activeLogPaths]
+}
+
+// activeLogPaths is the immutable snapshot stored in LoggerManager.activePaths.
+// See that field's doc comment.
+type activeLogPaths struct {
+	dir               string
+	everythingFile    string
+	queriesFile       string
+	queriesSimpleFile string
 }
 
 // NewLoggerManager creates a manager seeded with the given bootstrap logger.
@@ -14359,6 +14562,25 @@ func (lm *LoggerManager) Ptr() *atomic.Pointer[slog.Logger] {
 // the latest writer after a config reload.
 func (lm *LoggerManager) SimpleQueriesWriterPtr() *atomic.Pointer[AsyncLogWriter] {
 	return &lm.simpleQueriesWriter
+}
+
+// ActiveLogPaths returns the log directory and the three log filenames the
+// currently active logger was actually opened with — i.e. the state
+// recorded by the most recent SUCCESSFUL ApplyConfig call. All four return
+// values are "" if ApplyConfig has never succeeded yet, which should not
+// happen once startup has completed (OldMain aborts the process if the very
+// first ApplyConfig call fails). Safe to call on a nil *LoggerManager
+// (returns all-empty), so callers that may hold an unwired LoggerManager
+// (e.g. tests constructing AdminUI directly) don't need their own nil check.
+func (lm *LoggerManager) ActiveLogPaths() (dir, everythingFile, queriesFile, queriesSimpleFile string) {
+	if lm == nil {
+		return "", "", "", ""
+	}
+	p := lm.activePaths.Load()
+	if p == nil {
+		return "", "", "", ""
+	}
+	return p.dir, p.everythingFile, p.queriesFile, p.queriesSimpleFile
 }
 
 // set atomically swaps the logger without touching file handles.
@@ -14558,6 +14780,20 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		// The new logger is already stored by Reinit; use it for the warning.
 		improvedLogger.Warn("error closing old log files during logger reinit", wincoe.SafeErr(reinitErr))
 	}
+
+	// Record exactly which on-disk paths this now-active logger was opened
+	// against. Reaching this point means every openLog() call above already
+	// succeeded, so this is the single point where "the config we just
+	// applied" and "what the logger is now actually writing to" are
+	// guaranteed to agree — see activePaths's doc comment for why that
+	// guarantee matters (AdminUI's /logs* handlers rely on it after a LATER
+	// Reload() whose ApplyConfig call fails before ever reaching here).
+	lm.activePaths.Store(&activeLogPaths{
+		dir:               cfg.LogDir,
+		everythingFile:    cfg.LogEverythingFile,
+		queriesFile:       cfg.LogQueriesFile,
+		queriesSimpleFile: cfg.LogQueriesSimpleFile,
+	})
 
 	improvedLogger.Info("Logging (re)initialized",
 		slog.String("full_log", cfg.LogEverythingFile),

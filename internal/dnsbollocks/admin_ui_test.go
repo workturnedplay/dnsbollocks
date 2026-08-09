@@ -61,7 +61,8 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	})
 
 	var tableMutationMu sync.Mutex
-	ui := NewAdminUI(&liveConfigs, &liveLogger, rs, hs, bl, &tableMutationMu, lt, rb, stats, tpls)
+	logMgr := NewLoggerManager(logger)
+	ui := NewAdminUI(&liveConfigs, &liveLogger, logMgr, rs, hs, bl, &tableMutationMu, lt, rb, stats, tpls)
 	rec := httptest.NewRecorder()
 
 	return ui, rec
