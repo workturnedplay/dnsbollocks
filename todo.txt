@@ -1,24 +1,5 @@
 my todos:
 
-//* see how to fix 7. in this https://claude.ai/chat/ca9439de-86ed-411e-8d28-13418fd0ebed  it's the "binding the WebUI to 0.0.0.0" case with "hostValidationMiddleware/originValidationMiddleware". Yeah let's "reject 0.0.0.0 and :: rather than weaken Host validation." as per https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a7777f9-dc6c-83eb-a696-66e25aeeffa2
-
-//* fix things in v0.43.0 that GPT-5.6 Luna found: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a777048-d6b8-83eb-9e20-7ccc759207f8
-  (todo: 
-   done(by claude): 1,2,3,4,5,6,7,8,9,10,12
-   notdone(by claude): 11
-  )
-
-* fix things that GPT-5.4 Thinking Mini (High Thinking Level) found(in 1 prompt, fixed in another 1 prompt; on free tier!) in v0.40.0: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a747896-9034-83eb-90c5-21afdd169692?tab=chats
-  (dontdo: 36,34,30,27,26,22,20
-  todo: 6,
-  laterdo: 
-  done: 2,8,7,12,11,10,1,3,21,37,35,33,25,28,29,32,24,23,13,19,16,14,15,17,5,4,18, 9,31,
-  halfdone: 6 (not done newBoundProcForTesting), 
-  it_halfassed_it: 23,31("filtered-out"),16,17("Also make the overlap endpoint return JSON errors consistently:"),5("Update batch frontend handling"),18,
-  donenow_but_it_halfassed_it: 24,14,4,5,18, 16,17,23,31
-  at_currently: done
-  )
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -101,4 +82,23 @@ done:
 //* list the current process's PID in the /stats webUI page.
 
 //* maybe move the Shutdown button from /stats into something else, like /control (a new thing) ?
+
+//* see how to fix 7. in this https://claude.ai/chat/ca9439de-86ed-411e-8d28-13418fd0ebed  it's the "binding the WebUI to 0.0.0.0" case with "hostValidationMiddleware/originValidationMiddleware". Yeah let's "reject 0.0.0.0 and :: rather than weaken Host validation." as per https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a7777f9-dc6c-83eb-a696-66e25aeeffa2
+
+//* fix things in v0.43.0 that GPT-5.6 Luna found: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a777048-d6b8-83eb-9e20-7ccc759207f8
+  (todo: 
+   done(by claude): 1,2,3,4,5,6,7,8,9,10,12
+   notdone(by claude): 11
+  )
+
+//* fix things that GPT-5.4 Thinking Mini (High Thinking Level) found(in 1 prompt, fixed in another 1 prompt; on free tier!) in v0.40.0: https://chatgpt.com/g/g-p-69ef97a8577081919d895e95cb68f22d-dnsbollocks/c/6a747896-9034-83eb-90c5-21afdd169692?tab=chats
+  (dontdo: 36,34,30,27,26,22,20
+  todo: 6,
+  laterdo: 
+  done: 2,8,7,12,11,10,1,3,21,37,35,33,25,28,29,32,24,23,13,19,16,14,15,17,5,4,18, 9,31,
+  halfdone: 6 (not done newBoundProcForTesting), 
+  it_halfassed_it: 23,31("filtered-out"),16,17("Also make the overlap endpoint return JSON errors consistently:"),5("Update batch frontend handling"),18,
+  donenow_but_it_halfassed_it: 24,14,4,5,18, 16,17,23,31
+  at_currently: done
+  )
 
