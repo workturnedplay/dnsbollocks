@@ -1080,10 +1080,11 @@
     }
     
     // --- Filter highlight helpers ---
-    // Highlights matches using the same NFD/accent-insensitive normalization
-    // used by matchesFilterExpression(), while preserving the original text in
-    // the DOM. normalizedIndexMap maps every normalized UTF-16 code unit back
-    // to the original UTF-16 range it came from.
+    // Highlights matches using the same case-insensitive, NFD/accent-insensitive
+    // normalization used by matchesFilterExpression(), while preserving the
+    // original text (and its original casing) in the DOM. normalizedIndexMap
+    // maps every normalized UTF-16 code unit back to the original UTF-16 range
+    // it came from.
     function highlightTextNodes(element, terms) {
         if (!element) return;
 
@@ -1104,14 +1105,17 @@
             for (let i = 0; i < text.length;) {
                 const codePoint = text.codePointAt(i);
                 const originalEnd = i + (codePoint > 0xFFFF ? 2 : 1);
-                // Strip combining diacritical marks the same way normalizeStr()
-                // does, so this stays in sync with matchesFilterExpression()'s
-                // matching — otherwise a term spanning where an accented
-                // character used to be (e.g. "fe123" matching "café123") is
-                // found by the filter but silently fails to highlight here,
-                // since the leftover combining-mark character breaks the scan.
-                // const segment = text.slice(i, originalEnd).normalize('NFD').toLowerCase().replace(/[\u0300-\u036f]/g, '');//kept non-DRY like this by Claude
-                const segment = normalizeStr(text.slice(i, originalEnd));//DRY-ed by GPT-5.6 Luna
+                // Strip combining diacritical marks AND lowercase, the same
+                // way normalizeStr()+toLowerCase() do for filter terms below,
+                // so this stays in sync with matchesFilterExpression()'s
+                // matching and with the case-insensitive substring match the
+                // Go backend uses for /logs* pages (renderLogPage's
+                // strings.Contains(strings.ToLower(line), searchLower)) —
+                // otherwise a term spanning where an accented character used
+                // to be (e.g. "fe123" matching "café123"), or one that only
+                // differs in case (e.g. "login" matching "Login"), is found
+                // by the filter but silently fails to highlight here.
+                const segment = normalizeStr(text.slice(i, originalEnd).toLowerCase());
 
                 normalized += segment;
 
@@ -3247,19 +3251,20 @@
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
 
         // --- Apply Log Highlighting on Load ---
+        // Highlight the filter as a SINGLE term (not split on whitespace),
+        // mirroring renderLogPage's exact substring match in Go
+        // (strings.Contains(strings.ToLower(line), searchLower) in
+        // platform_windows.go) rather than the table pages' word/AND/OR/NOT
+        // filter language. highlightTextNodes() now matches case-insensitively
+        // (see its own doc comment), so a filter typed as "login" correctly
+        // highlights "Login" in the displayed log text too.
         const logsSearchInput = document.getElementById('logsSearchQuery');
         const logOutputPre = document.querySelector('.log-output-pre');
 
         if (logsSearchInput && logOutputPre) {
             const query = logsSearchInput.value.trim();
-            
             if (query) {
-                // Split the query into individual terms
-                const terms = query.split(/\s+/).filter(t => t.length > 0);
-                
-                if (terms.length > 0) {
-                    highlightTextNodes(logOutputPre, terms);
-                }
+                highlightTextNodes(logOutputPre, [query]);
             }
         }
     }); // end of domcontentloaded
