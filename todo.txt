@@ -1,5 +1,10 @@
 my todos:
 
+* add a query blocklist(which only blocks!) that takes precedence over the whitelist and local host overrides. It should have two layers:
+  1. a user-specified read-only external hosts-file source, intended to allow large existing hosts files (e.g. StevenBlack Hosts) to be used directly without conversion; it must accept normal hosts-file syntax only (`<IPv4|IPv6> <host> [<alias> ...]`, with `#` starting a comment through end-of-line), treat the IP address as irrelevant because every listed hostname is blocked, and warn on non-standard mapping IPs (e.g. anything other than 0.0.0.0/::) rather than using them as DNS answers; also warn on badly formatted lines eg. 'host host' or 'justhost' instead of the correct '<iphere> host'.
+  2. a dnsbollocks-owned mutable override file (JSON is fine, preferably reusing the existing rule/staging infrastructure), which can add dnsbollocks-specific block patterns and can also add explicit exceptions for hosts/patterns blocked by the read-only external source.
+  The effective query-blocklist result should be determined before whitelist/local-host processing: a local block rule always blocks, and a match from the read-only external hosts file blocks unless an explicit local exception overrides that external-source block. An exception must only override the external query-blocklist layer; it must not implicitly bypass the normal whitelist/default-blocking policy. The external hosts file must never be modified by dnsbollocks, so it can be replaced/upgraded independently without stale additions/deletions from dnsbollocks carrying over. The WebUI should expose the mutable blocklist/exception rules for editing and provide visibility into the external source, but must treat the external hosts file as read-only. The external hosts source should support exact hostnames only; dnsbollocks-specific patterns belong exclusively in the mutable override file.
+
 * we should add a date/time in webui for entries that were changed/added and have the column of it sortable so this way we can sort by last modified for example.
 
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
