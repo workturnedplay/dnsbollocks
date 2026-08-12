@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"math/big"
 	"net"
@@ -11711,6 +11712,43 @@ func (s *Server) rebindDNSListener(params dnsListenerParams) {
 	}
 }
 
+// liveLoggerWriter bridges the traditional log.Logger API used by
+// http.Server.ErrorLog to the application's hot-swappable slog logger.
+//
+// The writer resolves the logger on every Write rather than capturing one at
+// HTTP-server construction time. This is important because LoggerManager
+// replaces the logger and closes the old log writers during config reload.
+type liveLoggerWriter struct {
+	liveLogger *atomic.Pointer[slog.Logger]
+}
+
+func (w *liveLoggerWriter) Write(p []byte) (int, error) {
+	if w == nil || w.liveLogger == nil {
+		return 0, errors.New("liveLoggerWriter: logger is not initialized")
+	}
+
+	logger := w.liveLogger.Load()
+	if logger == nil {
+		return 0, errors.New("liveLoggerWriter: active logger is nil")
+	}
+
+	message := strings.TrimRight(string(p), "\r\n")
+	if message == "" {
+		return len(p), nil
+	}
+
+	logger.Error(message) //you choose the severity for all records emitted through that legacy log.Logger adapter.
+	return len(p), nil
+}
+
+func newLiveLoggerErrorLog(liveLogger *atomic.Pointer[slog.Logger]) *stdlog.Logger {
+	if liveLogger == nil {
+		panic2("BUG: newLiveLoggerErrorLog called with nil live logger pointer")
+	}
+
+	return stdlog.New(&liveLoggerWriter{liveLogger: liveLogger}, "", 0)
+}
+
 // non-blocking!
 func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListenerInstance, error) {
 	log := s.getLogger()
@@ -11738,7 +11776,8 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	//doneFIXME: XXX: in the future(so now lol) if i ever do reload config.json These structs bake the values in upon initialization. A hot-reload of s.liveConfig will not magically update the HTTP server's timeouts or the active TLS certificates. To actually apply changes to these specific parameters, you would need to tear down the listener and start a new one (a true server restart). ok, we're already doing the relisten, but make sure we do it even when only these cfg values change! or do it unconditionally!
 
 	srv := &http.Server{
-		Handler: mux,
+		Handler:  mux,
+		ErrorLog: newLiveLoggerErrorLog(s.rt.LogMgr.Ptr()), // tell it to use our logger for things like "2026/08/12 13:41:41 http: TLS handshake error from 127.0.0.1:53871: remote error: tls: bad certificate"
 		// ReadHeaderTimeout: 3 * time.Second,                                     // Specifically kills slowloris
 		// ReadTimeout:       time.Duration(params.ReadTimeoutSec) * time.Second,  // Workaround for CPU/timer bug
 		// WriteTimeout:      time.Duration(params.WriteTimeoutSec) * time.Second, // Optional, for responses
@@ -11972,7 +12011,8 @@ func (s *Server) startWebUIListenerInstance(params uiListenerParams) (*uiListene
 	// if the user passes ":0" for a dynamically allocated port.
 	boundAddr := baseListener.Addr().String() //doneTODO: save this and use it for hostValidation middleware
 	srv := &http.Server{
-		Handler: s.adminUI.SetupRoutes(boundAddr, params.UseTLS),
+		Handler:  s.adminUI.SetupRoutes(boundAddr, params.UseTLS),
+		ErrorLog: newLiveLoggerErrorLog(s.rt.LogMgr.Ptr()),
 		//doneTODO: make this configurable?
 		// ReadHeaderTimeout: 5 * time.Second,
 		// ReadTimeout:       15 * time.Second,

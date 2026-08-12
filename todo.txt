@@ -119,3 +119,5 @@ done:
 
 //* we should add a date/time in webui for entries that were changed/added and have the column of it sortable so this way we can sort by last modified for example.
 
+//* what causes this: "2026/08/12 13:41:41 http: TLS handshake error from 127.0.0.1:53871: remote error: tls: bad certificate" which is when i set portmaster to point its dns to "doh://127.2.3.4?verify=127.2.3.4"(dns over https) instead of "dns://127.2.3.4"(udp 53), so clearly portmaster expects valid cert but mine is self-signed and that's why this happens, but why does it show up like this and where in my code?! ok so this then: `go/src/net/http/server.go:1985:                 c.server.logf("http: TLS handshake error from %s: %v", c.rwc.RemoteAddr(), reason)`  that's in the Go source code itself!
+
