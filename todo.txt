@@ -1,5 +1,7 @@
 my todos:
 
+* in webui /response-blacklist and /hosts should have an Enabled toggle just like /rules has, which means on file too! The idea is, to disable a line temporarily without having to copy paste it out then put it back later on, like in the case of /hosts if I want to make online-check.safing.io not point to 0.65.67.75 temporarily which would cause portmaster (since it's pointing to only my program as the upstream dns) to think it's offline and cause it to block all traffic until it can resolve that first.
+
 * shall we add modifiedAt(Last Modified) column for config.json too? just like all 3 others have (hosts,rules,blacklisted IPs), it would make things more crowded in the webUI, unless we also add ability to change column sizes via mouse (and double click on the right side of the column meaning auto-size it to fit longest text of any row or similar meaning; this column sizing feature would be ideal to have regardless; also ability to drag-move columns around would be nice too, even though this means lots of code which refers to the index of columns needs to be rewritted to target some kind of id of it instead. So that's like 3 features here requiring some careful consideration.
 
 * add a query blocklist(which only blocks!) that takes precedence over the whitelist and local host overrides(and their pages should state this, also their json descriptions too; tho i'm kinda wondering if maybe i should allow hosts to take precedence over everything(or maybe this should be a bool in config.json ? ideally)). It should have two layers:
