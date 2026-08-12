@@ -285,10 +285,12 @@ func TestDefaultConfig_AllJSONFieldsHaveExplicitDefaults(t *testing.T) { //XXX: 
 		struct{}{}
 	*/
 	intentionalZeroDefaults := map[string]struct{}{
-		"AllowRunAsAdmin":   {},
-		"HideConsole":       {},
-		"WebUIPasswordHash": {},
-		"LogDir":            {},
+		"AllowRunAsAdmin":                  {},
+		"HideConsole":                      {},
+		"WebUIPasswordHash":                {},
+		"LogDir":                           {},
+		"QueryBlocklistExternalHostsFile":  {},
+		"LocalHostsOverrideQueryBlocklist": {},
 	}
 
 	cfg := defaultConfig()

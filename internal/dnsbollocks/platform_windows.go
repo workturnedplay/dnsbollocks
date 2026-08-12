@@ -96,6 +96,8 @@ type Config struct {
 	UpstreamSelectionMode   string   `json:"upstream_selection_mode"    desc:"Strategy for querying upstreams: 'failover' (sticky, auto-heals), 'fastest' (race all, first valid wins), 'strict' (all must agree or query is dropped)."`
 	UpstreamRetriesPerQuery int      `json:"upstream_retries_per_query" desc:"Additional retry attempts after the first try fails (0 = no retries; total tries = 1 + this value)."`
 	BlockMode               string   `json:"block_mode"  desc:"Action for blocked queries: 'nxdomain' (return NXDOMAIN), 'ip_block' (return block_ip/block_ipv6 addresses), 'drop' (for DoH clients it actually replies with 503 Service Unavailable, otherwise it will just cause long waits/timeouts for clients by not replying anything, TODO: maybe remove this drop mode)."`
+	//WhitelistMode           bool     `json:"whitelist_mode" desc:"If true (default), the default policy is deny-all-except-whitelisted: a query is only allowed if it matches an enabled whitelist rule (or a local host override). If false, the default policy is allow-all-except-blocklisted: whitelist rules are ignored for the allow/deny decision and every query is allowed by default. In BOTH modes the query blocklist (query_blocklist_file / query_blocklist_external_hosts_file), and the response IP blacklist for the actual returned IPs, are always checked first and always take priority over this policy."`
+	WhitelistMode bool `json:"whitelist_mode" desc:"If true (default), the default policy is deny-all-except-whitelisted: a query is only allowed if it matches an enabled whitelist rule (or a local host override). If false, the default policy is allow-all-except-blocklisted: whitelist rules play no role in the allow/deny decision and every query is allowed by default. In BOTH modes the query blocklist (query_blocklist_file / query_blocklist_external_hosts_file) is always checked first and always takes priority over this policy, and the response-IP blacklist is always applied to the actual returned IPs regardless of mode."`
 	//cantFIXME: probably can't but "block_mode" from above is hardcoded in the desc of the below two: // cantFIXME: Go struct tags must be string literals.
 	BlockIP   string `json:"block_ip"    desc:"IPv4 address returned for blocked A queries when block_mode is 'ip_block' (typically 0.0.0.0)."`
 	BlockIPv6 string `json:"block_ipv6"  desc:"IPv6 address returned for blocked AAAA queries when block_mode is 'ip_block' (typically ::)."`
@@ -112,31 +114,34 @@ type Config struct {
 	UpstreamIPs        []string   `json:"-"` // Added: Keeps triplets grouped together
 	UpstreamSNIs       []string   `json:"-"` // Added: Keeps triplets grouped together
 
-	GlobalRateQPS           int    `json:"qps_rate_globally"    desc:"Maximum DNS queries per second across all clients combined (token-bucket sustained rate)."`
-	GlobalBurstQPS          int    `json:"qps_burst_globally"   desc:"Maximum burst of DNS queries allowed globally above the sustained qps_rate_globally limit."`
-	ClientRateQPS           int    `json:"qps_rate_per_client"  desc:"Maximum DNS queries per second allowed from a single client IP."`
-	ClientBurstQPS          int    `json:"qps_burst_per_client" desc:"Maximum burst of DNS queries allowed from a single client IP above qps_rate_per_client."`
-	WebUIRateQPS            int    `json:"webui_qps_rate_globally"    desc:"Maximum WebUI HTTP requests per second across all clients combined (token-bucket sustained rate). Independent of qps_rate_globally, which only governs DNS query traffic."`
-	WebUIBurstQPS           int    `json:"webui_qps_burst_globally"   desc:"Maximum burst of WebUI HTTP requests allowed globally above the sustained webui_qps_rate_globally limit."`
-	WebUIClientRateQPS      int    `json:"webui_qps_rate_per_client"  desc:"Maximum WebUI HTTP requests per second allowed from a single client IP."`
-	WebUIClientBurstQPS     int    `json:"webui_qps_burst_per_client" desc:"Maximum burst of WebUI HTTP requests allowed from a single client IP above webui_qps_rate_per_client."`
-	CacheMinTTL             uint32 `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. 0 means no minimum (upstream TTL is respected, which if 0 means don't cache)."`
-	CacheMaxEntries         int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
-	WhitelistFile           string `json:"whitelist_file"       desc:"filename(no path!) of the query-whitelist JSON file, stored next to config.json. Created automatically with an empty whitelist if absent."`
-	BlacklistFile           string `json:"blacklist_file"       desc:"filename(no path!) of the response-IP blacklist JSON file, stored next to config.json. Created automatically with safe defaults if absent."`
-	HostsFile               string `json:"hosts_file"           desc:"filename(no path!) of the local host-override JSON file, stored next to config.json. Resolved locally without needing to match the whitelist rules first."`
-	LogDir                  string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
-	LogQueriesFile          string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
-	LogQueriesSimpleFile    string `json:"log_queries_simple" desc:"filename(no path!) to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
-	LogEverythingFile       string `json:"log_file"    desc:"filename(no path!) to the full system log file (JSON lines, all levels including debug). Created automatically."`
-	ConsoleLogLevel         string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
-	LogMaxSizeMB            int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
-	AllowRunAsAdmin         bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
-	HideConsole             bool   `json:"hide_console" desc:"If true, detaches from the console window entirely at startup (equivalent in effect to a -H=windowsgui build)(for max.effect run it from a .lnk not from a .bat unless you append an & in the .bat): no console window is shown and no console I/O is possible for the remainder of this run. Interactive features (initial password-setup prompt, Ctrl+R/Ctrl+X/Ctrl+C/Alt+V keyboard shortcuts) become unavailable once detached, so webui_password_hash must already be set beforehand (e.g. run --hash-password once with this off first). Use the WebUI instead: Apply & Reload replaces Ctrl+R, and the Shutdown button on the Stats page replaces Ctrl+X. Logging continues to the configured log files unaffected. Re-checked only at startup, never on reload; toggling this requires a full process restart to take effect."`
-	BlockAAAAasEmptyNoError bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
-	AllowHTTPSIfAAllowed    bool   `json:"allow_https_if_a_allowed"  desc:"If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule."`
-	RemoveHTTPSIPHints      bool   `json:"remove_https_ip_hints"     desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
-	UseEDEInBlockedReply    bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
+	GlobalRateQPS                    int    `json:"qps_rate_globally"    desc:"Maximum DNS queries per second across all clients combined (token-bucket sustained rate)."`
+	GlobalBurstQPS                   int    `json:"qps_burst_globally"   desc:"Maximum burst of DNS queries allowed globally above the sustained qps_rate_globally limit."`
+	ClientRateQPS                    int    `json:"qps_rate_per_client"  desc:"Maximum DNS queries per second allowed from a single client IP."`
+	ClientBurstQPS                   int    `json:"qps_burst_per_client" desc:"Maximum burst of DNS queries allowed from a single client IP above qps_rate_per_client."`
+	WebUIRateQPS                     int    `json:"webui_qps_rate_globally"    desc:"Maximum WebUI HTTP requests per second across all clients combined (token-bucket sustained rate). Independent of qps_rate_globally, which only governs DNS query traffic."`
+	WebUIBurstQPS                    int    `json:"webui_qps_burst_globally"   desc:"Maximum burst of WebUI HTTP requests allowed globally above the sustained webui_qps_rate_globally limit."`
+	WebUIClientRateQPS               int    `json:"webui_qps_rate_per_client"  desc:"Maximum WebUI HTTP requests per second allowed from a single client IP."`
+	WebUIClientBurstQPS              int    `json:"webui_qps_burst_per_client" desc:"Maximum burst of WebUI HTTP requests allowed from a single client IP above webui_qps_rate_per_client."`
+	CacheMinTTL                      uint32 `json:"cache_min_ttl"        desc:"Minimum TTL (seconds) for any cached DNS response, overriding lower upstream TTLs. 0 means no minimum (upstream TTL is respected, which if 0 means don't cache)."`
+	CacheMaxEntries                  int    `json:"cache_max_entries"    desc:"Maximum DNS cache entries. New entries are silently dropped when the limit is reached until expired entries are evicted."`
+	WhitelistFile                    string `json:"whitelist_file"       desc:"filename(no path!) of the query-whitelist JSON file, stored next to config.json. Created automatically with an empty whitelist if absent. Only consulted when whitelist_mode is true; the query blocklist is always checked first and always takes priority over these rules."`
+	BlacklistFile                    string `json:"blacklist_file"       desc:"filename(no path!) of the response-IP blacklist JSON file, stored next to config.json. Created automatically with safe defaults if absent."`
+	HostsFile                        string `json:"hosts_file"           desc:"filename(no path!) of the local host-override JSON file, stored next to config.json. Resolved locally without needing to match the whitelist rules first. The query blocklist is checked before this and takes priority over it, unless local_hosts_override_query_blocklist is true."`
+	QueryBlocklistFile               string `json:"query_blocklist_file" desc:"filename(no path!) of the dnsbollocks-owned, mutable query-blocklist override JSON file, stored next to config.json. Holds 'block' patterns (always block a query outright, regardless of whitelist_mode or any whitelist rule) and 'except' patterns (cancel a block coming ONLY from query_blocklist_external_hosts_file — never from a 'block' pattern here, and never bypassing the normal whitelist/default policy on their own). Always checked first, before whitelist rules and local host overrides (see local_hosts_override_query_blocklist). Created automatically with an empty ruleset if absent."`
+	QueryBlocklistExternalHostsFile  string `json:"query_blocklist_external_hosts_file" desc:"optional path to a read-only, standard hosts-file (e.g. StevenBlack Hosts) used as an additional query-blocklist source; unlike other file settings this is NOT restricted to a bare filename (it can be absolute, or relative to the working directory) since dnsbollocks never writes to it. Syntax per line: '<IPv4|IPv6> <host> [<alias> ...]'; '#' starts a comment through end-of-line, even mid-line. The mapped IP is always ignored (every listed hostname is blocked outright, never used as a DNS answer); a non-0.0.0.0/:: mapping IP is logged as a warning. Matches exact hostnames only (no wildcards) — put dnsbollocks-specific wildcard patterns in query_blocklist_file instead. Empty (default) disables this layer entirely. A local 'except' pattern in query_blocklist_file can cancel a block coming from this file, but never bypasses whitelist_mode/whitelist rules on its own."`
+	LocalHostsOverrideQueryBlocklist bool   `json:"local_hosts_override_query_blocklist" desc:"If false (default), the query blocklist (query_blocklist_file / query_blocklist_external_hosts_file) is checked before local host overrides (hosts_file), so a blocklisted domain stays blocked even if it also has a local host override. If true, a matching local host override is resolved directly and the query blocklist is skipped entirely for that query."`
+	LogDir                           string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
+	LogQueriesFile                   string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
+	LogQueriesSimpleFile             string `json:"log_queries_simple" desc:"filename(no path!) to a simple, plain-text (non-JSON) per-query log file: one line per query formatted as 'timestamp type domain action ips-list'. Created automatically. Complements log_queries for fast human scanning; cross-reference the identical timestamp in log_queries for exe/protocol/rule-id/timing details."`
+	LogEverythingFile                string `json:"log_file"    desc:"filename(no path!) to the full system log file (JSON lines, all levels including debug). Created automatically."`
+	ConsoleLogLevel                  string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
+	LogMaxSizeMB                     int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
+	AllowRunAsAdmin                  bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
+	HideConsole                      bool   `json:"hide_console" desc:"If true, detaches from the console window entirely at startup (equivalent in effect to a -H=windowsgui build)(for max.effect run it from a .lnk not from a .bat unless you append an & in the .bat): no console window is shown and no console I/O is possible for the remainder of this run. Interactive features (initial password-setup prompt, Ctrl+R/Ctrl+X/Ctrl+C/Alt+V keyboard shortcuts) become unavailable once detached, so webui_password_hash must already be set beforehand (e.g. run --hash-password once with this off first). Use the WebUI instead: Apply & Reload replaces Ctrl+R, and the Shutdown button on the Stats page replaces Ctrl+X. Logging continues to the configured log files unaffected. Re-checked only at startup, never on reload; toggling this requires a full process restart to take effect."`
+	BlockAAAAasEmptyNoError          bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
+	AllowHTTPSIfAAllowed             bool   `json:"allow_https_if_a_allowed"  desc:"If true, an HTTPS-type DNS query is automatically allowed whenever an A-type whitelist rule permits the same domain, without needing a separate HTTPS rule."`
+	RemoveHTTPSIPHints               bool   `json:"remove_https_ip_hints"     desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
+	UseEDEInBlockedReply             bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
 
 	WebUIPasswordHash           string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
 	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 4, max is 31). Higher values are slower but more resistant to brute-force."`
@@ -221,6 +226,16 @@ type Server struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
+
+	// queryBlocklistStore holds the mutable "block"/"except" override rules
+	// for the query-blocklist feature (see query_blocklist.go); reuses
+	// *RuleStore verbatim, with "block"/"except" used as the map key in
+	// place of a DNS record type.
+	queryBlocklistStore *RuleStore
+	// externalBlocklist holds the current snapshot of the read-only external
+	// hosts-file source (see loadExternalQueryBlocklist / ExternalHostsBlocklistSource).
+	// A never-loaded (zero-value) pointer is treated identically to "not configured".
+	externalBlocklist atomic.Pointer[ExternalHostsBlocklistSource]
 
 	// forwardInFlightMu/forwardInFlight coalesce concurrent identical
 	// upstream forwards (same domain+qtype cache key) into a single request,
@@ -308,8 +323,19 @@ type AdminUI struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	loginTracker *LoginTracker
-	recentBlocks *RecentBlocksTracker
-	stats        *expvar.Int
+
+	// queryBlocklistStore/externalBlocklist mirror the identically-named
+	// Server fields (see query_blocklist.go) — set directly by initAdminUI
+	// after construction, exactly like ui.rateLimiter below, rather than
+	// added to NewAdminUI's parameter list, so existing test call sites that
+	// construct AdminUI directly don't need updating. Both are nil-safe: a
+	// nil queryBlocklistStore or externalBlocklist means "feature not wired
+	// up in this environment" and the /query-blocklist POST handler reports
+	// 503 rather than panicking.
+	queryBlocklistStore *RuleStore
+	externalBlocklist   *atomic.Pointer[ExternalHostsBlocklistSource]
+	recentBlocks        *RecentBlocksTracker
+	stats               *expvar.Int
 
 	// rateLimiter enforces a global + per-client-IP cap on WebUI HTTP request
 	// volume, independent of loginTracker (only throttles failed logins) and
@@ -343,6 +369,7 @@ type AdminUI struct {
 	OnSaveWhitelist       func() error
 	OnSaveBlacklist       func() error
 	OnSaveHosts           func() error
+	OnSaveQueryBlocklist  func() error
 	OnInvalidatePattern   func(pattern string)
 	OnInvalidatePatterns  func(patterns map[string]struct{})
 	OnInvalidateBlacklist func()
@@ -417,12 +444,13 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 		panic2("BUG: NewServer called with nil Runtime")
 	}
 	s := &Server{
-		rt:              rt,
-		ruleStore:       newRuleStore(),
-		hostStore:       newHostStore(),
-		blacklist:       newBlacklistStore(),
-		recentBlocks:    newRecentBlocksTracker(),
-		forwardInFlight: make(map[string]*forwardInFlightEntry),
+		rt:                  rt,
+		ruleStore:           newRuleStore(),
+		hostStore:           newHostStore(),
+		blacklist:           newBlacklistStore(),
+		queryBlocklistStore: newRuleStore(),
+		recentBlocks:        newRecentBlocksTracker(),
+		forwardInFlight:     make(map[string]*forwardInFlightEntry),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
 		stats:   expvar.NewInt("blocks"),
@@ -1430,70 +1458,81 @@ func defaultResponseBlacklist() []string {
 	}
 }
 
-func (s *Server) saveQueryWhitelist() error {
-	cfg := s.getConfig()
+// saveRuleStoreFile marshals store's current snapshot and writes it to
+// fileName. humanName is used only for log/error messages (e.g. "whitelist",
+// "query blocklist") so the same implementation can serve every RuleStore-
+// backed on-disk file this project has (currently the whitelist and the
+// mutable query-blocklist override — see query_blocklist.go).
+func (s *Server) saveRuleStoreFile(store *RuleStore, fileName, humanName string) error {
 	log := s.getLogger()
 
-	var data []byte
-	var err error
-
 	// 1. Snapshot the data quickly under RLock to prevent blocking DNS queries during slow I/O
-	data, err = json.MarshalIndent(s.ruleStore.Snapshot(), "", "  ")
+	data, err := json.MarshalIndent(store.Snapshot(), "", "  ")
 	if err != nil {
-		return fmt.Errorf("whitelist marshal failed: %w", err)
+		return fmt.Errorf("%s marshal failed: %w", humanName, err)
 	}
 
 	// 2. Serialize the disk write so concurrent WebUI saves don't corrupt the file
-	whitelistFileName := cfg.WhitelistFile
-	if whitelistFileName == "" {
-		panic2("BUG: bad coding: dev. didn't set the default whitelist filename!")
+	if fileName == "" {
+		panic2(fmt.Sprintf("BUG: bad coding: dev. didn't set the default %s filename!", humanName))
 	}
-	if err := s.rt.FileWriter.SafeWriteFile(whitelistFileName, data, 0600); err != nil {
-		return fmt.Errorf("cannot save/write whitelist file %q: %w", whitelistFileName, err)
+	if err := s.rt.FileWriter.SafeWriteFile(fileName, data, 0600); err != nil {
+		return fmt.Errorf("cannot save/write %s file %q: %w", humanName, fileName, err)
 	}
-	log.Info("Saved whitelist file", slog.String("filename", whitelistFileName))
+	log.Info("Saved "+humanName+" file", slog.String("filename", fileName))
 	return nil
 }
 
-// Loads whitelist rules from dedicated file. Callers must hold
-// s.tableMutationMu for the duration of this call — see
+func (s *Server) saveQueryWhitelist() error {
+	return s.saveRuleStoreFile(s.ruleStore, s.getConfig().WhitelistFile, "whitelist")
+}
+
+// loadRuleStoreFile loads a RuleStore-backed on-disk JSON file (see
+// saveRuleStoreFile's doc comment) into store, normalizing/validating every
+// entry exactly the way loadQueryWhitelist always has: assigning missing
+// IDs and ModifiedAt timestamps, normalizing and IDN-encoding patterns,
+// purging invalid/duplicate/oversized patterns, and re-saving the file if
+// anything was migrated or purged. cfg.ExtraSafety still governs whether a
+// purge is refused outright (shutting down rather than silently dropping
+// possibly-typo'd entries) exactly as for the whitelist.
+//
+// Callers must hold s.tableMutationMu for the duration of this call — see
 // loadDependentStores's doc comment for why.
-func (s *Server) loadQueryWhitelist() error {
+func (s *Server) loadRuleStoreFile(store *RuleStore, fileName, humanName string) error {
 	cfg := s.getConfig()
 	log := s.getLogger()
 
-	whitelistFileName := cfg.WhitelistFile
-	if whitelistFileName == "" {
-		panic2("BUG: dev. didn't set the default whitelist filename!")
+	if fileName == "" {
+		panic2(fmt.Sprintf("BUG: dev. didn't set the default %s filename!", humanName))
 	}
-	whitelistFileName = filepath.Clean(cfg.WhitelistFile)
-	s.rt.FileWriter.CheckPowerLossFile(whitelistFileName)
-	data, err := os.ReadFile(whitelistFileName)
+	fileName = filepath.Clean(fileName)
+	s.rt.FileWriter.CheckPowerLossFile(fileName)
+	data, err := os.ReadFile(fileName)
 	if os.IsNotExist(err) {
-		log.Warn("Whitelist file not found, starting with empty whitelist", slog.String("path", whitelistFileName))
+		log.Warn(humanName+" file not found, starting empty", slog.String("path", fileName))
 		// Atomically set the internal map to an empty one
-		s.ruleStore.ReplaceAll(make(map[string][]RuleEntry))
+		store.ReplaceAll(make(map[string][]RuleEntry))
 		s.flushDNSCache()
-		return s.saveQueryWhitelist() // create "empty" file; uses lock
+		return s.saveRuleStoreFile(store, fileName, humanName) // create "empty" file; uses lock
 	}
 	if err != nil {
-		return fmt.Errorf("cannot read whitelist file %q: %w", whitelistFileName, err)
+		return fmt.Errorf("cannot read %s file %q: %w", humanName, fileName, err)
 	}
 	if dups, dupErr := detectDuplicateJSONObjectKeysAtTopLevelOnly(data); dupErr != nil {
-		return fmt.Errorf("failed to scan whitelist file %q for duplicate keys: %w", whitelistFileName, dupErr)
+		return fmt.Errorf("failed to scan %s file %q for duplicate keys: %w", humanName, fileName, dupErr)
 	} else if len(dups) > 0 {
 		for _, dup := range dups {
-			log.Error("Duplicate key found in whitelist file (JSON silently kept only the last value; fix the file manually)",
+			log.Error("Duplicate key found in "+humanName+" file (JSON silently kept only the last value; fix the file manually)",
 				slog.String("duplicate_key", dup),
-				slog.String("path", whitelistFileName))
+				slog.String("path", fileName))
 		}
 		if cfg.ExtraSafety {
-			log.Error("ExtraSafety: refusing to continue with duplicate whitelist keys",
+			log.Error("ExtraSafety: refusing to continue with duplicate "+humanName+" keys",
 				slog.Int("duplicate_count", len(dups)))
 			s.shutdown(5)
 			panic2("BUG: unreachable")
 		}
-		log.Warn("Continuing despite duplicate whitelist keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
+		log.Warn("Continuing despite duplicate "+humanName+" keys — the JSON decoder kept an arbitrary value for each duplicate; consider fixing the file",
 			slog.Int("duplicate_count", len(dups)))
 	}
 
@@ -1501,7 +1540,7 @@ func (s *Server) loadQueryWhitelist() error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err = dec.Decode(&rulesByType); err != nil {
-		return fmt.Errorf("failed to parse whitelist file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", whitelistFileName, err)
+		return fmt.Errorf("failed to parse %s file '%q' (maybe it contains unsupported or typo-ed fields?), err: %w", humanName, fileName, err)
 	}
 
 	// ── Normalization (no lock needed; working on local variables) ──
@@ -1510,14 +1549,14 @@ func (s *Server) loadQueryWhitelist() error {
 	for _, rules := range rulesByType {
 		totalRules += len(rules)
 	}
-	seenIDs := make(map[string]struct{}, totalRules) // global across all types
+	seenIDs := make(map[string]struct{}, totalRules) // global across all categories/types
 	newRules := make(map[string][]RuleEntry, len(rulesByType))
 
-	var changed uint64 = 0
-	var removed uint64 = 0
+	var changed uint64
+	var removed uint64
 
 	for typ, rules := range rulesByType {
-		seenPatterns := make(map[string]struct{}, len(rules)) // only per DNS type ie. A, AAAA, HTTPS
+		seenPatterns := make(map[string]struct{}, len(rules)) // per category/type only ie. per DNS type ie. A, AAAA, HTTPS
 		var cleaned []RuleEntry
 		for i := range rules {
 			r := &rules[i]
@@ -1542,7 +1581,7 @@ func (s *Server) loadQueryWhitelist() error {
 				r.ModifiedAt = time.Now()
 				changed++
 			}
-			//checks against all DNS types not just in 'typ'
+			//checks against all categories/types not just in 'typ'
 			if _, duplicate := seenIDs[r.ID]; duplicate {
 				log.Warn("Duplicate rule ID found, skipping/purging it", slog.String("id", r.ID))
 				removed++
@@ -1564,7 +1603,7 @@ func (s *Server) loadQueryWhitelist() error {
 			// "illegal characters".
 			idnEncoded, wasIDN, idnErr := punycodeEncodePattern(r.Pattern)
 			if idnErr != nil {
-				log.Error("Purging/deleting whitelist rule pattern with invalid unicode",
+				log.Error("Purging/deleting "+humanName+" rule pattern with invalid unicode",
 					slog.String("id", r.ID),
 					slog.String("invalid_pattern", r.Pattern),
 					wincoe.SafeErr(idnErr),
@@ -1598,7 +1637,7 @@ func (s *Server) loadQueryWhitelist() error {
 					displayPat, _ := punycodeDecodePatternForDisplay(r.Pattern)
 					attrs = append(attrs, slog.String("pattern_idn", displayPat))
 				}
-				log.Error("Purging/deleting invalid whitelist rule pattern containing illegal characters", attrs...)
+				log.Error("Purging/deleting invalid "+humanName+" rule pattern containing illegal characters", attrs...)
 				removed++
 				continue // Purges/omits it from being appended to cleaned slice
 			}
@@ -1613,7 +1652,7 @@ func (s *Server) loadQueryWhitelist() error {
 					displayPat, _ := punycodeDecodePatternForDisplay(r.Pattern)
 					attrs = append(attrs, slog.String("pattern_idn", displayPat))
 				}
-				log.Error("Purging/deleting whitelist rule pattern exceeding maximum length", attrs...)
+				log.Error("Purging/deleting "+humanName+" rule pattern exceeding maximum length", attrs...)
 				removed++
 				continue
 			}
@@ -1636,35 +1675,39 @@ func (s *Server) loadQueryWhitelist() error {
 		newRules[typ] = cleaned
 	} //for
 
-	if cfg.ExtraSafety {
-		if removed > 0 {
-			log.Error("ExtraSafety: Refusing to remove rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
-			s.shutdown(5) //noFIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
-			panic2("BUG: unreachable")
-		}
-	}
+	if cfg.ExtraSafety && removed > 0 {
+		log.Error("ExtraSafety: Refusing to remove "+humanName+" rules due to potential typos(fix them manually or set extra_safety to false)", slog.Uint64("removed_count", removed))
 
+		s.shutdown(5) //noFIXME: find a better way to "quit" than exit program here, but still preserve the exitcode=5 ?!
+		panic2("BUG: unreachable")
+	}
 	// ── Atomic swap ──
-	s.ruleStore.ReplaceAll(newRules)
+	store.ReplaceAll(newRules)
 	s.flushDNSCache()
 
-	hmn := s.ruleStore.CountAll()
-	log.Info("Loaded whitelist and normalized(aka changed) or removed(if dup IDs) rules",
+	hmn := store.CountAll()
+	log.Info("Loaded "+humanName+" and normalized(aka changed) or removed(if dup IDs) rules",
 		slog.Int("types", len(newRules)),
 		slog.Uint64("rules", hmn),
 		slog.Uint64("changed_count", changed),
 		slog.Uint64("removed_count", removed),
-		slog.String("path", whitelistFileName),
+		slog.String("path", fileName),
 	)
 	if countRules(rulesByType)-removed != hmn {
 		panic2("BUG: bad coding: lost some rules, shouldn't happen!")
 	}
 
 	if changed > 0 || removed > 0 {
-		return s.saveQueryWhitelist() //uses lock!
-	} else {
-		return nil // no error
+		return s.saveRuleStoreFile(store, fileName, humanName)
 	}
+	return nil
+}
+
+// Loads whitelist rules from dedicated file. Callers must hold
+// s.tableMutationMu for the duration of this call — see
+// loadDependentStores's doc comment for why.
+func (s *Server) loadQueryWhitelist() error {
+	return s.loadRuleStoreFile(s.ruleStore, s.getConfig().WhitelistFile, "whitelist")
 }
 
 const defaultCacheMinTTL = 300
@@ -1683,6 +1726,7 @@ func defaultConfig() Config {
 		UpstreamSelectionMode:   upstreamSelectionModeFailover,
 		UpstreamRetriesPerQuery: 1, // 1 initial try(not counted) + 1 retry(counted here)
 		BlockMode:               blockModeNXDOMAIN,
+		WhitelistMode:           true,
 		BlockIP:                 "0.0.0.0",
 		BlockIPv6:               "::", // Default unspecified IPv6
 
@@ -1703,25 +1747,28 @@ func defaultConfig() Config {
 		CacheMinTTL:     defaultCacheMinTTL, //300 sec
 		CacheMaxEntries: 10000,
 
-		WhitelistFile: "query_whitelist.json",
-		BlacklistFile: "response_blacklist.json",
-		HostsFile:     "hosts2ip.json",
+		WhitelistFile:                   "query_whitelist.json",
+		BlacklistFile:                   "response_blacklist.json",
+		HostsFile:                       "hosts2ip.json",
+		QueryBlocklistFile:              "query_blocklist.json",
+		QueryBlocklistExternalHostsFile: "", // disabled by default
 
-		LogDir:                      "", //in config dir
-		LogQueriesFile:              "queries.log",
-		LogQueriesSimpleFile:        "queries_simple.log",
-		LogEverythingFile:           "dnsbollocks.log",
-		ConsoleLogLevel:             consoleLogLevelInfo,
-		LogMaxSizeMB:                4095, // Rotation threshold
-		AllowRunAsAdmin:             false,
-		HideConsole:                 false,
-		BlockAAAAasEmptyNoError:     true,
-		AllowHTTPSIfAAllowed:        true,
-		RemoveHTTPSIPHints:          true,
-		WebUIUseTLS:                 true,
-		WebUIForceTLSOnNonLocalhost: true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
-		WebUIMaxLoginFailures:       5,
-		WebUILoginLockoutSec:        5 * 60, // 5 minutes, in seconds
+		LogDir:                           "", //in config dir
+		LogQueriesFile:                   "queries.log",
+		LogQueriesSimpleFile:             "queries_simple.log",
+		LogEverythingFile:                "dnsbollocks.log",
+		ConsoleLogLevel:                  consoleLogLevelInfo,
+		LogMaxSizeMB:                     4095, // Rotation threshold
+		AllowRunAsAdmin:                  false,
+		HideConsole:                      false,
+		BlockAAAAasEmptyNoError:          true,
+		AllowHTTPSIfAAllowed:             true,
+		LocalHostsOverrideQueryBlocklist: false,
+		RemoveHTTPSIPHints:               true,
+		WebUIUseTLS:                      true,
+		WebUIForceTLSOnNonLocalhost:      true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
+		WebUIMaxLoginFailures:            5,
+		WebUILoginLockoutSec:             5 * 60, // 5 minutes, in seconds
 
 		WebUIReadHeaderTimeoutSec: 5,
 		WebUIReadTimeoutSec:       15,
@@ -3882,6 +3929,13 @@ func (s *Server) loadDependentStores() error {
 	} else {
 		log.Debug("Local hosts reloaded", slog.String("filename", cfg.HostsFile))
 	}
+	if err := s.loadQueryBlocklist(); err != nil {
+		return err
+	} else {
+		log.Debug("Query blocklist reloaded", slog.String("filename", cfg.QueryBlocklistFile))
+	}
+	// Never fatal — see loadExternalQueryBlocklist's doc comment.
+	s.loadExternalQueryBlocklist()
 
 	return nil
 }
@@ -5233,13 +5287,43 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	// entry. So check it first, unconditionally.
 	hostIPs, hostMatched := s.hostStore.Match(baseDomainForHostMatch)
 
+	// Query blocklist (see query_blocklist.go) is evaluated before whitelist
+	// rules and — unless local_hosts_override_query_blocklist is true —
+	// before local host overrides too, since it's meant to be a hard
+	// override of last resort ("block no matter what else says otherwise").
+	// See Server.checkQueryBlocklist's doc comment for the two-layer
+	// precedence rules within this feature itself.
+	if !(cfg.LocalHostsOverrideQueryBlocklist && hostMatched) {
+		if blockReason, blockMatchedID, qblocked := s.checkQueryBlocklist(baseDomainForHostMatch); qblocked {
+			if entry, ok := cachee.Get(key); ok {
+				return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, blockMatchedID)
+			}
+			return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockReason, blockMatchedID, "queryBlocklist")
+		}
+	}
+
 	var matchedID string
-	allowed := hostMatched
-	if !allowed {
-		//normal check against the whitelist(aka the /rules page in webUI):
-		matchedID, allowed = s.ruleStore.MatchForType(qtype, domain)
-		if !allowed && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
-			matchedID, allowed = s.ruleStore.MatchForType("A", domain)
+	var allowed bool
+	if cfg.WhitelistMode {
+		allowed = hostMatched
+		if !allowed {
+			//normal check against the whitelist(aka the /rules page in webUI):
+			matchedID, allowed = s.ruleStore.MatchForType(qtype, domain)
+			if !allowed && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+				matchedID, allowed = s.ruleStore.MatchForType("A", domain)
+			}
+		}
+	} else {
+		// Blacklist mode ("allow all except query-blocklisted, or
+		// response-blacklisted once the actual upstream answer is known"):
+		// the query blocklist above is the only thing that can block a
+		// query before it's forwarded; whitelist rules play no role in the
+		// allow/deny decision here. A rule match, if any, is still recorded
+		// purely for logging/rule-ID attribution.
+		allowed = true
+		matchedID, _ = s.ruleStore.MatchForType(qtype, domain)
+		if matchedID == "" && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
+			matchedID, _ = s.ruleStore.MatchForType("A", domain)
 		}
 	}
 
@@ -5255,26 +5339,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// invalidateCacheForPattern/invalidateCacheForPatterns, which evicts
 		// exactly this kind of now-stale "blocked" entry.
 		if entry, ok := cachee.Get(key); ok {
-			resp := entry.Msg.Copy()
-			resp.Id = reqMsg.Id
-			adjustResponseCaseToQuery(resp, reqMsg)
-			ips := extractIPs(resp)
-			s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, "", ips, resp, entry.State)
-			return resp
+			return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, "")
 		}
-
-		s.stats.Add(1)
-		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
-		blocked := s.blockResponse(reqMsg)
-		blockedState := UpstreamState{Strategy: "blockedByLackOfRuleAllowingIt"}
-		s.logQuery(ctx, clientAddr, domain, qtype, blockedSTR, "", nil, blocked, blockedState)
-		if cfg.BlockedResponseTTLSec > 0 {
-			cachee.Set(key, CacheEntry{
-				Msg:   blocked.Copy(),
-				State: blockedState,
-			}, time.Duration(cfg.BlockedResponseTTLSec)*time.Second)
-		}
-		return blocked
+		return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockedSTR, "", "blockedByLackOfRuleAllowingIt")
 	}
 
 	// Cache (edge: Negative responses cached short)
@@ -5289,27 +5356,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	//fmt.Printf("checking '%s' key in cache\n", key)
 	if entry, ok := cachee.Get(key); ok {
-		//entry := cachedIf.(CacheEntry)
-		cached := entry.Msg
-
-		// Return a copy of cached response with the current query ID to avoid
-		// clients rejecting replies because of mismatched transaction IDs.
-		resp := cached.Copy()
-		resp.Id = reqMsg.Id
-		// Echo the current query's casing onto the Question section and any Answer/Ns
-		// owner names that directly answer it, since a cache entry may have been
-		// populated by a differently-cased query for the same name.
-		adjustResponseCaseToQuery(resp, reqMsg)
-
-		//fmt.Printf("found '%s' key in cache as: '%s' aka %+v aka %#v\n", key, resp.String(), resp, resp)
-		ips := extractIPs(resp)
-
-		// Use the stored upstreamState4, but update the strategy to indicate it was loaded from cache
-		upstreamState4 := entry.State
-		//state.Strategy = "cached (was: " + state.Strategy + ")"
-
-		s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, upstreamState4)
-		return resp
+		return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, matchedID)
 	}
 
 	// --- START Local Hosts Override ---
@@ -5412,12 +5459,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		s.forwardInFlightMu.Unlock()
 		<-entry.done
 		if cached, ok := cachee.Get(key); ok {
-			resp := cached.Msg.Copy()
-			resp.Id = reqMsg.Id
-			adjustResponseCaseToQuery(resp, reqMsg)
-			ips := extractIPs(resp)
-			s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, cached.State)
-			return resp
+			return s.respondFromCache(ctx, cached, reqMsg, clientAddr, domain, qtype, matchedID)
 		}
 		// The leader's result wasn't cached (e.g. a blocked/filtered response
 		// — see filterResponse's nil-case handling further below, which is
@@ -6621,6 +6663,8 @@ var QueryActionANSI = map[string]string{
 	forwardedButFailedSoSERVFAIL:               "\x1b[91m", // Bright Red
 	forwardedGotNegativeResponse:               "\x1b[91m", // Bright Red
 	localHostOverride:                          "\x1b[96m", // Bright Cyan
+	queryBlockedLocalSTR:                       "\x1b[81m", // Bright Red
+	queryBlockedExternalSTR:                    "\x1b[81m", // Bright Red
 }
 
 var colorTagsRegex = regexp.MustCompile(`<(/?)(green|red|yellow|cyan|gray|white|magenta)>`)
@@ -7099,6 +7143,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
 	innerMux.HandleFunc("/response-blacklist", ui.responseBlacklistHandler)
 	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
+	innerMux.HandleFunc("/query-blocklist", ui.queryBlocklistHandler)
 	innerMux.HandleFunc("/apply-tables", ui.applyTablesHandler)
 	innerMux.HandleFunc("/logs", ui.logsHandler)
 	innerMux.HandleFunc("/logs_queries", ui.logsQueriesHandler)
@@ -8842,9 +8887,10 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 		// 1 & 2. Get the thread-safe snapshot and build the template data
 		data := map[string]any{
 			//"Page":  "hosts",
-			"Hosts":          ui.hostStore.Snapshot(),
-			"SuccessMessage": r.URL.Query().Get("success"),
-			"ErrorMessage":   r.URL.Query().Get("error"),
+			"Hosts":                            ui.hostStore.Snapshot(),
+			"LocalHostsOverrideQueryBlocklist": ui.getConfig().LocalHostsOverrideQueryBlocklist,
+			"SuccessMessage":                   r.URL.Query().Get("success"),
+			"ErrorMessage":                     r.URL.Query().Get("error"),
 		}
 
 		ui.renderTemplate(w, r, "hosts", data)
@@ -11880,10 +11926,17 @@ func (s *Server) initAdminUI() {
 	// (s.rateLimiter) and of loginTracker (which only throttles failed logins).
 	ui.rateLimiter = newClientRateLimiter( /*s.ctx, */ webUIRateLimitConfigFrom(*s.getConfig()), s.getLogger())
 
+	// Query-blocklist WebUI wiring: reuses the shared *RuleStore machinery
+	// (see query_blocklist.go) and the same externalBlocklist snapshot the
+	// DNS hot path reads via s.checkQueryBlocklist.
+	ui.queryBlocklistStore = s.queryBlocklistStore
+	ui.externalBlocklist = &s.externalBlocklist
+
 	// Wire up the side-effects
 	ui.OnSaveWhitelist = s.saveQueryWhitelist
 	ui.OnSaveBlacklist = s.saveResponseBlacklist
 	ui.OnSaveHosts = s.saveLocalHosts
+	ui.OnSaveQueryBlocklist = s.saveQueryBlocklist
 	ui.OnInvalidatePattern = s.invalidateCacheForPattern
 	ui.OnInvalidatePatterns = s.invalidateCacheForPatterns
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
@@ -13931,6 +13984,10 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if err := checkAndCleanBareFilename(&resolvedCfg.HostsFile, &rawCfg.HostsFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)), defaultCfg.HostsFile); err != nil {
 		return shouldSaveConfig, err
 	}
+	if err := checkAndCleanBareFilename(&resolvedCfg.QueryBlocklistFile, &rawCfg.QueryBlocklistFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.QueryBlocklistFile)), defaultCfg.QueryBlocklistFile); err != nil {
+		return shouldSaveConfig, err
+	}
+	//Note: QueryBlocklistExternalHostsFile is deliberately not run through checkAndCleanBareFilename — its desc tag explicitly documents that it may contain a directory component, since dnsbollocks only ever reads it (never SafeWriteFiles to it), so the "prevent arbitrary file overwrite when elevated" threat model doesn't apply.
 
 	if err := checkAndCleanBareFilename(&resolvedCfg.TLSCertFile, &rawCfg.TLSCertFile, getJSONTagByOffset(unsafe.Offsetof(Config{}.TLSCertFile)), defaultCfg.TLSCertFile); err != nil {
 		return shouldSaveConfig, err
@@ -13958,10 +14015,11 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	// their sidecar paths before the single distinctness check below, so a
 	// collision against a derived path is caught exactly like any other.
 	safeWriterProtectedPrimaries := map[string]string{
-		"(fixed) main config file":                                  configFileName,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)): resolvedCfg.WhitelistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)): resolvedCfg.BlacklistFile,
-		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):     resolvedCfg.HostsFile,
+		"(fixed) main config file":                                       configFileName,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistFile)):      resolvedCfg.WhitelistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.BlacklistFile)):      resolvedCfg.BlacklistFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.HostsFile)):          resolvedCfg.HostsFile,
+		getJSONTagByOffset(unsafe.Offsetof(Config{}.QueryBlocklistFile)): resolvedCfg.QueryBlocklistFile,
 	}
 
 	distinctPaths := map[string]string{
@@ -13975,6 +14033,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		distinctPaths[key] = primary
 		distinctPaths["(derived backup of) "+key] = primary + wincoe.BackupFileExtension
 		distinctPaths["(derived staging of) "+key] = primary + wincoe.PowerlossFileExtension
+	}
+
+	// The external hosts-file source is never written by dnsbollocks (see its
+	// desc tag), so it needs no derived .bak/.powergotlost entries of its own —
+	// but it must still not silently collide with a file dnsbollocks DOES
+	// write, which would otherwise let this supposedly "read-only" source get
+	// clobbered by an unrelated save.
+	if extPath := strings.TrimSpace(resolvedCfg.QueryBlocklistExternalHostsFile); extPath != "" {
+		distinctPaths[getJSONTagByOffset(unsafe.Offsetof(Config{}.QueryBlocklistExternalHostsFile))] = extPath
 	}
 
 	if err := validateDistinctConfigFilePaths(distinctPaths); err != nil {
@@ -16503,4 +16570,525 @@ type applyTablesResponse struct {
 	Versions          applyTablesResponseVersions `json:"versions"`
 	PersistenceFailed bool                        `json:"persistence_failed,omitempty"`
 	Error             string                      `json:"error,omitempty"`
+}
+
+// queryBlockCategoryBlock/queryBlockCategoryExcept are used as the map keys
+// in Server.queryBlocklistStore (a *RuleStore reused verbatim; see that
+// field's doc comment) in place of DNS record types, since query-blocklist
+// patterns apply regardless of query type.
+const (
+	queryBlockCategoryBlock  = "block"
+	queryBlockCategoryExcept = "except"
+)
+
+// queryBlockCategories lists the two valid categories in a stable, UI-friendly order.
+var queryBlockCategories = []string{queryBlockCategoryBlock, queryBlockCategoryExcept}
+
+func validQueryBlockCategory(c string) bool {
+	return c == queryBlockCategoryBlock || c == queryBlockCategoryExcept
+}
+
+// Action strings used for logQuery/UpstreamState.Strategy when a query is
+// blocked by this feature; see QueryActionANSI in platform_windows.go for
+// their console colors.
+const (
+	queryBlockedLocalSTR    = "blocked_query_blocklist_local"
+	queryBlockedExternalSTR = "blocked_query_blocklist_external"
+)
+
+// ExternalHostsBlocklistSource is the read-only, exact-hostname block-set
+// loaded from Config.QueryBlocklistExternalHostsFile (see
+// Server.loadExternalQueryBlocklist). dnsbollocks never writes to the
+// underlying file; this struct is an immutable snapshot swapped wholesale
+// via Server.externalBlocklist on every (re)load, so the file itself can be
+// replaced/upgraded independently (e.g. a newer StevenBlack Hosts release)
+// without any dnsbollocks-side migration or stale-entry carryover.
+//
+// A nil *ExternalHostsBlocklistSource (the zero atomic.Pointer default,
+// before the very first load) is treated identically to "not configured":
+// Contains is safe to call on it and always returns false.
+type ExternalHostsBlocklistSource struct {
+	hosts map[string]struct{}
+
+	// Path is the cleaned path this source was loaded from ("" if
+	// query_blocklist_external_hosts_file is unset/disabled).
+	Path string
+	// LoadedAt is when this snapshot was successfully built. Zero if the
+	// load failed (see LoadError) or nothing is configured.
+	LoadedAt time.Time
+	// HostCount is len(hosts), exposed for the WebUI without leaking the map itself.
+	HostCount int
+	// MalformedLines counts lines skipped for not matching the expected
+	// "<ip> <host> [alias...]" hosts-file syntax.
+	MalformedLines int
+	// NonStandardIPWarnings counts lines whose mapping IP was neither
+	// 0.0.0.0 nor :: (still processed — the IP is always ignored, every
+	// listed hostname is blocked regardless — but flagged since it's
+	// unusual for a blocklist-style hosts file and may indicate the file
+	// isn't what the operator thinks it is).
+	NonStandardIPWarnings int
+	// LoadError is the last load attempt's error, if any. Non-empty means
+	// this layer is effectively disabled (hosts is empty or stale from a
+	// previous successful load) until the underlying issue is fixed and the
+	// config is reloaded.
+	LoadError string
+}
+
+// Contains reports whether domain (already normalized: lowercased, no
+// trailing dot, punycode-encoded — exactly what checkQueryBlocklist's caller
+// already has) is present in the external blocklist source.
+func (src *ExternalHostsBlocklistSource) Contains(domain string) bool {
+	if src == nil || len(src.hosts) == 0 {
+		return false
+	}
+	_, ok := src.hosts[domain]
+	return ok
+}
+
+// loadExternalQueryBlocklist (re)loads the read-only external hosts-file
+// configured via Config.QueryBlocklistExternalHostsFile into
+// s.externalBlocklist, replacing any previously loaded snapshot wholesale.
+//
+// This never fails fatally: an unreadable, missing, or malformed file logs
+// clearly (at Error/Warn level, and via the stored LoadError, surfaced on
+// the /query-blocklist WebUI page) and simply leaves this layer disabled
+// (Contains always returns false) rather than taking down DNS resolution
+// entirely over an external file dnsbollocks doesn't own — mirrors the
+// "graceful degradation over a hard fatal exit" reasoning AdminUI.
+// logPersistFailure documents elsewhere in this codebase. Individual
+// malformed lines are skipped with a warning rather than aborting the whole
+// file, since a single bad line in a large community-maintained blocklist
+// (StevenBlack Hosts etc.) is common and should never make the rest of a
+// multi-hundred-thousand-line file useless.
+//
+// Callers must hold s.tableMutationMu for the duration of this call, purely
+// for consistency with the other loadDependentStores members — this
+// particular source is never mutated by any WebUI handler, so there's no
+// actual write-race to close here, but keeping every dependent-store load
+// under the same lock avoids having to reason about a partial exception.
+func (s *Server) loadExternalQueryBlocklist() {
+	cfg := s.getConfig()
+	log := s.getLogger()
+	defer s.flushDNSCache() // see invalidateCacheForBlacklistedIPs's doc comment for why a full flush is simplest/safest here
+
+	rawPath := strings.TrimSpace(cfg.QueryBlocklistExternalHostsFile)
+	if rawPath == "" {
+		s.externalBlocklist.Store(&ExternalHostsBlocklistSource{})
+		return
+	}
+	path := filepath.Clean(rawPath)
+
+	f, err := os.Open(path)
+	if err != nil {
+		log.Error("Failed to open external query-blocklist hosts file; this block-source layer is disabled until fixed",
+			slog.String("path", path), wincoe.SafeErr(err))
+		s.externalBlocklist.Store(&ExternalHostsBlocklistSource{Path: path, LoadError: err.Error()})
+		return
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			log.Debug("failed to close external query-blocklist hosts file", wincoe.SafeErr(closeErr))
+		}
+	}()
+
+	hosts := make(map[string]struct{})
+	var malformed, nonStandardIP int
+	scanner := bufio.NewScanner(f)
+	const maxCapacity = 1024 * 1024 // 1MB; generous for even very long hosts-file lines.
+	lineBuf := make([]byte, 4*1024)
+	scanner.Buffer(lineBuf, maxCapacity)
+
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx] // '#' starts a comment through end-of-line, even mid-line.
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			malformed++
+			log.Warn("Malformed line in external query-blocklist hosts file; expected '<ip> <host> [alias...]', skipping",
+				slog.String("path", path), slog.Int("line", lineNum), slog.String("content", line))
+			continue
+		}
+
+		ip := net.ParseIP(fields[0])
+		if ip == nil {
+			malformed++
+			log.Warn("Malformed line in external query-blocklist hosts file (first field is not a valid IP address), skipping",
+				slog.String("path", path), slog.Int("line", lineNum), slog.String("content", line))
+			continue
+		}
+		if !ip.IsUnspecified() {
+			nonStandardIP++
+			log.Warn("Non-standard mapping IP in external query-blocklist hosts file (expected 0.0.0.0 or ::); "+
+				"the mapping IP is always ignored — every listed hostname is blocked outright regardless of it",
+				slog.String("path", path), slog.Int("line", lineNum), slog.String("ip", fields[0]))
+		}
+
+		for _, host := range fields[1:] {
+			normalized := NormalizeDomain(host)
+			if normalized == "" {
+				continue
+			}
+			encoded, _, encErr := punycodeEncodePattern(normalized)
+			if encErr != nil {
+				malformed++
+				log.Warn("Skipping unencodable hostname in external query-blocklist hosts file",
+					slog.String("path", path), slog.Int("line", lineNum), slog.String("host", normalized), wincoe.SafeErr(encErr))
+				continue
+			}
+			hosts[encoded] = struct{}{}
+		}
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		log.Error("Error while scanning external query-blocklist hosts file; results are incomplete/stale until the next successful reload",
+			slog.String("path", path), wincoe.SafeErr(scanErr))
+		s.externalBlocklist.Store(&ExternalHostsBlocklistSource{Path: path, LoadError: scanErr.Error()})
+		return
+	}
+
+	s.externalBlocklist.Store(&ExternalHostsBlocklistSource{
+		hosts:                 hosts,
+		Path:                  path,
+		LoadedAt:              time.Now(),
+		HostCount:             len(hosts),
+		MalformedLines:        malformed,
+		NonStandardIPWarnings: nonStandardIP,
+	})
+
+	log.Info("Loaded external query-blocklist hosts file",
+		slog.String("path", path), slog.Int("host_count", len(hosts)),
+		slog.Int("malformed_lines", malformed), slog.Int("non_standard_ip_lines", nonStandardIP))
+}
+
+// checkQueryBlocklist evaluates the two-layer query blocklist (see
+// Config.QueryBlocklistFile and Config.QueryBlocklistExternalHostsFile) for
+// domain (already normalized: lowercased, no trailing dot, punycode-encoded
+// — exactly what handleDNSQuery already has at its call site) and reports
+// whether it is blocked.
+//
+// Layer precedence:
+//  1. A local "block" pattern in the mutable override file always blocks,
+//     regardless of the external source or the "except" rules below.
+//  2. Otherwise, an exact-hostname match in the read-only external hosts
+//     file blocks UNLESS a local "except" pattern also matches domain, in
+//     which case the external-source block is cancelled.
+//
+// An "except" match ONLY cancels an external-source block; it has no effect
+// on a local "block" match (layer 1), and — critically — it never makes the
+// query "allowed" on its own: the ordinary whitelist/default-policy
+// decision made afterward in handleDNSQuery still applies in full.
+//
+// Safe to call with a nil s.queryBlocklistStore and/or a never-loaded
+// s.externalBlocklist (both simply behave as "nothing configured, never
+// blocks"), so test-constructed *Server values that bypass NewServer don't
+// need to wire these up.
+func (s *Server) checkQueryBlocklist(domain string) (reason, matchedID string, blocked bool) {
+	if s.queryBlocklistStore != nil {
+		if id, ok := s.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domain); ok {
+			return queryBlockedLocalSTR, id, true
+		}
+	}
+	if s.externalBlocklist.Load().Contains(domain) {
+		if s.queryBlocklistStore != nil {
+			if _, ok := s.queryBlocklistStore.MatchForType(queryBlockCategoryExcept, domain); ok {
+				return "", "", false
+			}
+		}
+		return queryBlockedExternalSTR, "", true
+	}
+	return "", "", false
+}
+
+// loadQueryBlocklist loads the dnsbollocks-owned, mutable query-blocklist
+// override file (see Config.QueryBlocklistFile) into s.queryBlocklistStore.
+// Shares its on-disk shape, normalization, and validation rules with the
+// whitelist (see loadRuleStoreFile's doc comment in platform_windows.go);
+// "block"/"except" are used as the map keys here instead of DNS record types.
+//
+// Callers must hold s.tableMutationMu for the duration of this call — see
+// loadDependentStores's doc comment for why.
+func (s *Server) loadQueryBlocklist() error {
+	return s.loadRuleStoreFile(s.queryBlocklistStore, s.getConfig().QueryBlocklistFile, "query blocklist")
+}
+
+func (s *Server) saveQueryBlocklist() error {
+	return s.saveRuleStoreFile(s.queryBlocklistStore, s.getConfig().QueryBlocklistFile, "query blocklist")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// WebUI
+// ═══════════════════════════════════════════════════════════════════════
+
+// QueryBlockRuleView is the /query-blocklist page's per-row template view.
+type QueryBlockRuleView struct {
+	Category          string
+	ID                string
+	Pattern           string
+	Enabled           bool
+	ModifiedAtDisplay string
+}
+
+// ExternalBlocklistView is the /query-blocklist page's read-only summary of
+// the external hosts-file source (see ExternalHostsBlocklistSource).
+type ExternalBlocklistView struct {
+	Configured            bool
+	Path                  string
+	LoadedAt              string
+	HostCount             int
+	MalformedLines        int
+	NonStandardIPWarnings int
+	LoadError             string
+}
+
+func (ui *AdminUI) getExternalBlocklistView() ExternalBlocklistView {
+	if ui.externalBlocklist == nil {
+		return ExternalBlocklistView{}
+	}
+	src := ui.externalBlocklist.Load()
+	if src == nil || src.Path == "" {
+		return ExternalBlocklistView{}
+	}
+	loadedAt := ""
+	if !src.LoadedAt.IsZero() {
+		loadedAt = formatModifiedAt(src.LoadedAt)
+	}
+	return ExternalBlocklistView{
+		Configured:            true,
+		Path:                  src.Path,
+		LoadedAt:              loadedAt,
+		HostCount:             src.HostCount,
+		MalformedLines:        src.MalformedLines,
+		NonStandardIPWarnings: src.NonStandardIPWarnings,
+		LoadError:             src.LoadError,
+	}
+}
+
+func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		var snapshot map[string][]RuleEntry
+		if ui.queryBlocklistStore != nil {
+			snapshot = ui.queryBlocklistStore.Snapshot()
+		}
+		views := make([]QueryBlockRuleView, 0, len(snapshot[queryBlockCategoryBlock])+len(snapshot[queryBlockCategoryExcept]))
+		for _, category := range queryBlockCategories {
+			for _, rule := range snapshot[category] {
+				displayPattern, _ := punycodeDecodePatternForDisplay(rule.Pattern)
+				views = append(views, QueryBlockRuleView{
+					Category:          category,
+					ID:                rule.ID,
+					Pattern:           displayPattern,
+					Enabled:           rule.Enabled,
+					ModifiedAtDisplay: formatModifiedAt(rule.ModifiedAt),
+				})
+			}
+		}
+
+		data := map[string]any{
+			"QueryBlockRules": views,
+			"External":        ui.getExternalBlocklistView(),
+			"SuccessMessage":  r.URL.Query().Get("success"),
+			"ErrorMessage":    r.URL.Query().Get("error"),
+		}
+		ui.renderTemplate(w, r, "query-blocklist", data)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
+			log := ui.getLogger()
+			log.Error("BUG: query-blocklist WebUI POST reached without queryBlocklistStore/OnSaveQueryBlocklist wired")
+			http.Error(w, "query blocklist is not available in this environment", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Serialize against a concurrent config Reload's loadQueryBlocklist()
+		// (or a concurrent WebUI mutation), exactly like rulesHandler.
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
+
+		fields := map[string]string{
+			"delete":   r.FormValue("delete"),
+			"toggle":   r.FormValue("toggle"),
+			"id":       r.FormValue("id"),
+			"category": r.FormValue("category"),
+			"pattern":  r.FormValue("pattern"),
+			"enabled":  r.FormValue("enabled"),
+		}
+
+		status, err := ui.processQueryBlockChange(fields)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+
+		if err := ui.OnSaveQueryBlocklist(); err != nil {
+			redirectWithPersistFailure(w, r, "/query-blocklist", ui.logPersistFailure("query blocklist", err))
+			return
+		}
+		http.Redirect(w, r, "/query-blocklist", http.StatusSeeOther)
+		return
+	}
+
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
+}
+
+func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error) {
+	log := ui.getLogger()
+	invalidate := ui.OnInvalidatePattern
+	if invalidate == nil {
+		invalidate = func(string) {}
+	}
+
+	category := fields["category"]
+
+	if fields["delete"] == "1" {
+		id := fields["id"]
+		if id == "" || category == "" {
+			log.Warn("Failed to delete query-blocklist rule: id and category required", slog.String("id", id), slog.String("category", category))
+			return http.StatusBadRequest, errors.New("id and category required for delete")
+		}
+		if !validQueryBlockCategory(category) {
+			log.Warn("Failed to delete query-blocklist rule: unknown category", slog.String("category", category))
+			return http.StatusBadRequest, fmt.Errorf("unknown category %q", category)
+		}
+		if _, modified := sanitizeDomainInput(id); modified {
+			log.Warn("Failed to delete query-blocklist rule: id contains illegal characters", slog.String("id", id))
+			return http.StatusBadRequest, errors.New("id contains illegal characters")
+		}
+		pattern, err := ui.queryBlocklistStore.DeleteRule(category, id, log)
+		if err != nil {
+			log.Warn("Failed to delete query-blocklist rule: not found", slog.String("id", id), slog.String("category", category))
+			return http.StatusNotFound, err
+		}
+		invalidate(pattern)
+		log.Info("Deleted query-blocklist rule via WebUI",
+			slog.String("id", id), slog.String("category", category), slog.String("pattern", pattern))
+		return http.StatusOK, nil
+	}
+
+	if fields["toggle"] == "1" {
+		id := fields["id"]
+		if id == "" || category == "" {
+			log.Warn("Failed to toggle query-blocklist rule: id and category required", slog.String("id", id), slog.String("category", category))
+			return http.StatusBadRequest, errors.New("id and category required for toggle")
+		}
+		if !validQueryBlockCategory(category) {
+			log.Warn("Failed to toggle query-blocklist rule: unknown category", slog.String("category", category))
+			return http.StatusBadRequest, fmt.Errorf("unknown category %q", category)
+		}
+		snapshot := ui.queryBlocklistStore.Snapshot()
+		var pattern string
+		var curEnabled bool
+		found := false
+		for _, rule := range snapshot[category] {
+			if rule.ID == id {
+				pattern, curEnabled, found = rule.Pattern, rule.Enabled, true
+				break
+			}
+		}
+		if !found {
+			log.Warn("Failed to toggle query-blocklist rule: not found", slog.String("id", id), slog.String("category", category))
+			return http.StatusNotFound, errors.New("query-blocklist rule not found")
+		}
+		if _, changed := ui.queryBlocklistStore.SetEnabled(category, pattern, !curEnabled, log); changed {
+			invalidate(pattern)
+			log.Info("Toggled query-blocklist rule via WebUI",
+				slog.String("id", id), slog.String("category", category), slog.Bool("enabled", !curEnabled))
+		}
+		return http.StatusOK, nil
+	}
+
+	// --- ADD ---
+	patternNormalized := NormalizeDomain(fields["pattern"])
+	enabledStr := fields["enabled"]
+	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
+
+	if !validQueryBlockCategory(category) {
+		log.Warn("Failed to add query-blocklist rule: unknown category", slog.String("category", category))
+		return http.StatusBadRequest, fmt.Errorf("unknown category %q", category)
+	}
+	if patternNormalized == "" {
+		log.Warn("Failed to add query-blocklist rule: pattern required")
+		return http.StatusBadRequest, errors.New("pattern required")
+	}
+
+	displayPattern := patternNormalized
+	encodedPattern, encErr := encodePatternOrErr(patternNormalized)
+	if encErr != nil {
+		log.Warn("Failed to add query-blocklist rule: invalid unicode pattern", slog.String("pattern", displayPattern), wincoe.SafeErr(encErr))
+		return http.StatusBadRequest, encErr
+	}
+	patternNormalized = encodedPattern
+
+	if err := validateRulePattern(patternNormalized); err != nil {
+		log.Warn("Failed to add query-blocklist rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern), wincoe.SafeErr(err))
+		return http.StatusBadRequest, fmt.Errorf("invalid pattern: %w", err)
+	}
+
+	newID, err := ui.queryBlocklistStore.AddRule(category, patternNormalized, enabledBool, log)
+	if err != nil {
+		log.Warn("Failed to add query-blocklist rule", wincoe.SafeErr(err),
+			slog.String("category", category), slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern))
+		if displayPattern != patternNormalized {
+			return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
+		}
+		return http.StatusConflict, err
+	}
+	invalidate(patternNormalized)
+	log.Info("Added query-blocklist rule via WebUI",
+		slog.String("category", category), slog.String("pattern", patternNormalized),
+		slog.String("pattern_idn", displayPattern), slog.String("id", newID), slog.Bool("enabled", enabledBool))
+	return http.StatusOK, nil
+}
+
+// respondFromCache serves a cached DNS response for an identical prior
+// query, restoring the current query's ID and echoing its exact casing
+// (see adjustResponseCaseToQuery's doc comment), and logs a cache-hit.
+// Shared by every "serve this from the DNS cache" path in handleDNSQuery.
+func (s *Server) respondFromCache(ctx context.Context, entry CacheEntry, reqMsg *dns.Msg, clientAddr, domain, qtype, matchedID string) *dns.Msg {
+	resp := entry.Msg.Copy()
+	resp.Id = reqMsg.Id
+	// Echo the current query's casing onto the Question section and any Answer/Ns
+	// owner names that directly answer it, since a cache entry may have been
+	// populated by a differently-cased query for the same name.
+	adjustResponseCaseToQuery(resp, reqMsg)
+	ips := extractIPs(resp)
+	s.logQuery(ctx, clientAddr, domain, qtype, cacheHit, matchedID, ips, resp, entry.State)
+	return resp
+}
+
+// blockAndCacheQuery records stats, generates a block response for reqMsg,
+// logs it under the given action/matchedID/strategy, and — if
+// cfg.BlockedResponseTTLSec > 0 — caches it under key so a repeat of the
+// identical query is served from cache rather than regenerated. Shared by
+// every "this query is blocked before ever reaching the upstream" path in
+// handleDNSQuery (query blocklist, lack of an enabled whitelist rule) so
+// they stay in sync.
+func (s *Server) blockAndCacheQuery(ctx context.Context, cfg *Config, cachee DNSCache, reqMsg *dns.Msg, clientAddr, domain, qtype, key, action, matchedID, strategy string) *dns.Msg {
+	s.stats.Add(1)
+	s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
+	blocked := s.blockResponse(reqMsg)
+	blockedState := UpstreamState{Strategy: strategy}
+	s.logQuery(ctx, clientAddr, domain, qtype, action, matchedID, nil, blocked, blockedState)
+	if cfg.BlockedResponseTTLSec > 0 {
+		cachee.Set(key, CacheEntry{
+			Msg:   blocked.Copy(),
+			State: blockedState,
+		}, time.Duration(cfg.BlockedResponseTTLSec)*time.Second)
+	}
+	return blocked
 }

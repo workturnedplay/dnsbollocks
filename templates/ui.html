@@ -27,6 +27,7 @@
             data-blacklist-version="{{.BlacklistVersion}}"
         ></div>
         <nav>
+            <a href="/query-blocklist" {{if eq .Page "query-blocklist" }} class="active" {{end}}>Query Blocklist</a>
             <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
             <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Local Hosts</a>
             <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Blacklisted IPs(in responses)</a>
@@ -42,7 +43,9 @@
         <hr>
         
         {{/* This acts as a router inside the template */}}
-        {{if eq .Page "rules"}}
+        {{if eq .Page "query-blocklist"}}
+        {{template "query-blocklist" .}}
+        {{else if eq .Page "rules"}}
         {{template "rules" .}}
         {{else if eq .Page "hosts"}}
         {{template "hosts" .}}
@@ -90,6 +93,9 @@
 
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
+<div class="info-banner">
+    <strong>Note:</strong> The <a href="/query-blocklist">Query Blocklist</a> is always checked first and takes priority over these rules — a domain blocked there stays blocked even if it matches a rule below.
+</div>
 {{template "alert-banner" .}}
 <h2>Add New Rule</h2>
 <form id="addRuleForm" method="post" action="/rules">
@@ -271,6 +277,11 @@
 {{define "hosts"}}
 <div class="info-banner">
     <strong>Note:</strong> A DNS query that matches a pattern/host from this list is resolved locally to the specified IP without needing to match the whitelist rules first.
+    {{if .LocalHostsOverrideQueryBlocklist}}
+    This currently OVERRIDES the <a href="/query-blocklist">Query Blocklist</a> (local_hosts_override_query_blocklist is enabled): a host override always wins even for an otherwise-blocklisted domain.
+    {{else}}
+    The <a href="/query-blocklist">Query Blocklist</a> is still checked first and takes priority over local host overrides (set local_hosts_override_query_blocklist to change this).
+    {{end}}
 </div>
 {{template "alert-banner" .}}
 
@@ -517,6 +528,101 @@
     </tr>
 </template>
 
+{{end}}
+
+{{define "query-blocklist"}}
+<h2>Query Blocklist</h2>
+{{template "alert-banner" .}}
+<p class="section-desc maxw-600">
+    This blocklist is checked <strong>before</strong> the whitelist Rules and Local Hosts pages, and always takes priority over them (see whitelist_mode in config.json too). "Block" patterns block a query outright. "Except" patterns only cancel a block coming from the read-only external hosts file below — they never bypass the normal whitelist/default policy on their own.
+</p>
+
+<h2>Add New Query-Blocklist Rule</h2>
+<form method="post" action="/query-blocklist">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label class="visually-hidden" for="addQBCategory">Category</label>
+    <select id="addQBCategory" name="category">
+        <option value="block">Block</option>
+        <option value="except">Except (cancels an external-source block)</option>
+    </select>
+    <label class="visually-hidden" for="addQBPattern">Pattern</label>
+    <input
+        id="addQBPattern"
+        type="text"
+        name="pattern"
+        placeholder="pattern (e.g. ads.example.com or *.tracker.example)"
+        required
+    >
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
+    <button type="submit" class="btn-add">Add</button>
+</form>
+
+<h2>Local Query-Blocklist Rules</h2>
+<table id="queryBlocklistTable">
+    <colgroup>
+        <col class="col-14">
+        <col class="col-14">
+        <col class="col-35">
+        <col class="col-12">
+        <col class="col-15">
+        <col class="col-10">
+    </colgroup>
+    <thead>
+        <tr>
+            <th scope="col">Category</th>
+            <th scope="col">ID</th>
+            <th scope="col">Pattern</th>
+            <th scope="col">Enabled</th>
+            <th scope="col">Last Modified</th>
+            <th scope="col">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .QueryBlockRules}}
+        <tr>
+            <td>{{.Category}}</td>
+            <td title="{{.ID}}">{{.ID}}</td>
+            <td title="{{.Pattern}}">{{.Pattern}}</td>
+            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+            <td>{{.ModifiedAtDisplay}}</td>
+            <td class="actions">
+                <form method="post" action="/query-blocklist" class="form-inline-action">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="toggle" value="1">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <input type="hidden" name="category" value="{{.Category}}">
+                    <button type="submit" class="btn-edit">{{if .Enabled}}Pause{{else}}Enable{{end}}</button>
+                </form>
+                <form method="post" action="/query-blocklist" class="form-inline-action">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="delete" value="1">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <input type="hidden" name="category" value="{{.Category}}">
+                    <button type="submit" class="btn-del">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6">No local query-blocklist rules defined.</td></tr>
+        {{end}}
+    </tbody>
+</table>
+
+<h2>External Hosts-File Source (read-only)</h2>
+{{if .External.Configured}}
+<p class="section-desc maxw-600">
+    Path: <code>{{.External.Path}}</code><br>
+    {{if .External.LoadError}}
+    <strong class="tag-disabled">Load error:</strong> {{.External.LoadError}}
+    {{else}}
+    Loaded: {{.External.LoadedAt}} &middot; {{.External.HostCount}} host(s) blocked
+    {{if .External.MalformedLines}} &middot; {{.External.MalformedLines}} malformed line(s) skipped (see system log){{end}}
+    {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s) (see system log){{end}}
+    {{end}}
+</p>
+{{else}}
+<p class="section-desc maxw-600">Not configured (query_blocklist_external_hosts_file is empty). This is a read-only source; dnsbollocks never modifies it — set it in <a href="/config">config.json</a> to enable.</p>
+{{end}}
 {{end}}
 
 {{define "stats"}}
