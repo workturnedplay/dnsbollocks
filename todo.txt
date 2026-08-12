@@ -1,5 +1,7 @@
 my todos:
 
+* shall we add modifiedAt column for config.json too? just like all 3 others have (hosts,rules,blacklisted IPs), it would make things more crowded in the webUI, unless we also add ability to change column sizes via mouse (and double click on the right side of the column meaning auto-size it to fit longest text of any row or similar meaning.
+
 * add a query blocklist(which only blocks!) that takes precedence over the whitelist and local host overrides(and their pages should state this, also their json descriptions too). It should have two layers:
   1. a user-specified read-only external hosts-file source, intended to allow large existing hosts files (e.g. StevenBlack Hosts) to be used directly without conversion; it must accept normal hosts-file syntax only (`<IPv4|IPv6> <host> [<alias> ...]`, with `#` starting a comment through end-of-line), treat the IP address as irrelevant because every listed hostname is blocked, and warn on non-standard mapping IPs (e.g. anything other than 0.0.0.0/::) rather than using them as DNS answers; also warn on badly formatted lines eg. 'host host' or 'justhost' instead of the correct '<iphere> host'.
   2. a dnsbollocks-owned mutable override file (JSON is fine, preferably reusing the existing rule/staging infrastructure), which can add dnsbollocks-specific block patterns and can also add explicit exceptions for hosts/patterns blocked by the read-only external source.
