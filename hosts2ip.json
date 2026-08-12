@@ -1,5 +1,8 @@
 {
-  "online-check.safing.io": [
-    "0.65.67.75"
-  ]
+  "online-check.safing.io": {
+    "ips": [
+      "0.65.67.75"
+    ],
+    "modified_at": "2026-08-12T08:41:49.1867664+02:00"
+  }
 }

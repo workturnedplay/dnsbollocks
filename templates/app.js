@@ -557,6 +557,12 @@
         enabledTd.appendChild(span);
         row.appendChild(enabledTd);
 
+        const modifiedTd = document.createElement('td');
+        modifiedTd.className = 'text-muted';
+        modifiedTd.textContent = '(pending)';
+        modifiedTd.title = '(pending \u2014 set on Apply)';
+        row.appendChild(modifiedTd);
+
         const actionsTd = document.createElement('td');
         actionsTd.className = 'actions';
         const editBtn = document.createElement('button');
@@ -615,6 +621,12 @@
         ipsTd.textContent = ipsDisplay;
         ipsTd.title = ipsDisplay;
         row.appendChild(ipsTd);
+
+        const modifiedTd = document.createElement('td');
+        modifiedTd.className = 'text-muted';
+        modifiedTd.textContent = '(pending)';
+        modifiedTd.title = '(pending \u2014 set on Apply)';
+        row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
         actionsTd.className = 'actions';
@@ -677,6 +689,12 @@
         cidrTd.textContent = cidr;
         cidrTd.title = cidr;
         row.appendChild(cidrTd);
+
+        const modifiedTd = document.createElement('td');
+        modifiedTd.className = 'text-muted';
+        modifiedTd.textContent = '(pending)';
+        modifiedTd.title = '(pending \u2014 set on Apply)';
+        row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
         actionsTd.className = 'actions text-center';

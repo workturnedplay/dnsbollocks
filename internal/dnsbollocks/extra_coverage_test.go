@@ -327,12 +327,15 @@ func TestHostStore_ToRawMap(t *testing.T) {
 	if len(raw) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(raw))
 	}
-	ips, ok := raw["router.local"]
-	if !ok || len(ips) != 2 {
-		t.Fatalf("expected 2 IPs for router.local, got %v", ips)
+	entry, ok := raw["router.local"]
+	if !ok || len(entry.IPs) != 2 {
+		t.Fatalf("expected 2 IPs for router.local, got %v", entry.IPs)
 	}
-	if ips[0] != "192.168.1.1" || ips[1] != "192.168.1.2" {
-		t.Errorf("unexpected IP order/content: %v", ips)
+	if entry.IPs[0] != "192.168.1.1" || entry.IPs[1] != "192.168.1.2" {
+		t.Errorf("unexpected IP order/content: %v", entry.IPs)
+	}
+	if entry.ModifiedAt.IsZero() {
+		t.Error("expected ModifiedAt to be stamped by AddHost, got zero value")
 	}
 }
 
