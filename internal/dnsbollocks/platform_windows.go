@@ -5050,7 +5050,7 @@ func (s *Server) dohHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/dns-message")
 	w.Header().Set("Content-Length", fmt.Sprint(len(pack)))
 	w.WriteHeader(http.StatusOK)
-	wroteN, err := w.Write(pack)
+	wroteN, err := w.Write(pack) //nolint:gosec // G705: this writes a DNS wire-format response (application/dns-message), not HTML
 	if err != nil {
 		log.Warn("failed to write the DoH reply to client (the DNS packet response body)", wincoe.SafeErr(err), slog.Int("wrote_bytes", wroteN), slog.Int("shoulda_written", len(pack)))
 		return
@@ -5293,7 +5293,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	// override of last resort ("block no matter what else says otherwise").
 	// See Server.checkQueryBlocklist's doc comment for the two-layer
 	// precedence rules within this feature itself.
-	if !(cfg.LocalHostsOverrideQueryBlocklist && hostMatched) {
+	if !cfg.LocalHostsOverrideQueryBlocklist || !hostMatched {
 		if blockReason, blockMatchedID, qblocked := s.checkQueryBlocklist(baseDomainForHostMatch); qblocked {
 			if entry, ok := cachee.Get(key); ok {
 				return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, blockMatchedID)
