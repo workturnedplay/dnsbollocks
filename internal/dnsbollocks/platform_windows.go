@@ -9005,6 +9005,19 @@ func tableVersionToken(generation uint64, path string) string {
 	return strconv.FormatUint(generation, 10) + ":" + mtimeToken
 }
 
+// queryBlocklistVersionToken returns the current optimistic-concurrency
+// version token for the query-blocklist table (see tableVersionToken),
+// mirroring RulesVersion/HostsVersion/BlacklistVersion for the whitelist,
+// hosts, and response-blacklist tables. Returns "0" if the query-blocklist
+// feature isn't wired up in this environment (nil ui.queryBlocklistStore —
+// see that field's doc comment on AdminUI).
+func (ui *AdminUI) queryBlocklistVersionToken() string {
+	if ui.queryBlocklistStore == nil {
+		return "0"
+	}
+	return tableVersionToken(ui.queryBlocklistStore.Generation(), ui.getConfig().QueryBlocklistFile)
+}
+
 func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
 	log := ui.getLogger()
 	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
@@ -9015,6 +9028,7 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	data["RulesVersion"] = tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile)
 	data["HostsVersion"] = tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile)
 	data["BlacklistVersion"] = tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile)
+	data["QueryBlocklistVersion"] = ui.queryBlocklistVersionToken()
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey{}).(string); ok {
@@ -15429,9 +15443,10 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type tableVersions struct {
-		Rules     string `json:"rules"`
-		Hosts     string `json:"hosts"`
-		Blacklist string `json:"blacklist"`
+		Rules          string `json:"rules"`
+		Hosts          string `json:"hosts"`
+		Blacklist      string `json:"blacklist"`
+		QueryBlocklist string `json:"query_blocklist"`
 	}
 
 	type applyTablesRequest struct {
@@ -15518,6 +15533,7 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	touchesRules := false
 	touchesHosts := false
 	touchesBlacklist := false
+	touchesQueryBlocklist := false
 
 	for _, change := range changes {
 		switch change.URL {
@@ -15527,6 +15543,8 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 			touchesHosts = true
 		case "/response-blacklist":
 			touchesBlacklist = true
+		case "/query-blocklist":
+			touchesQueryBlocklist = true
 		default:
 			http.Error(w, "unknown target URL in batch", http.StatusBadRequest)
 			return
@@ -15588,10 +15606,28 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if touchesQueryBlocklist {
+		if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
+			log.Error("BUG: query-blocklist batch-apply reached without queryBlocklistStore/OnSaveQueryBlocklist wired")
+			http.Error(w, "query blocklist is not available in this environment", http.StatusServiceUnavailable)
+			return
+		}
+		v, err := requireVersion("query_blocklist", request.Versions.QueryBlocklist)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if current := ui.queryBlocklistVersionToken(); v != current {
+			http.Error(w, "query blocklist changed (in memory or on disk) since this page was loaded; reload before applying", http.StatusConflict)
+			return
+		}
+	}
+
 	// Track which files got dirtied so we only incur disk I/O once per file
 	saveRules := false
 	saveHosts := false
 	saveBlacklist := false
+	saveQueryBlocklist := false
 
 	// flushDirty persists every store that was actually mutated so far,
 	// attempting ALL of them independently rather than stopping at the first
@@ -15617,6 +15653,11 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 		if saveBlacklist {
 			if err := ui.OnSaveBlacklist(); err != nil {
 				errs = append(errs, ui.logPersistFailure("response blacklist", err))
+			}
+		}
+		if saveQueryBlocklist {
+			if err := ui.OnSaveQueryBlocklist(); err != nil {
+				errs = append(errs, ui.logPersistFailure("query blocklist", err))
 			}
 		}
 		return joinErrorsWithPrefix("batch apply: one or more staged-table stores failed to persist to disk", errs)
@@ -15677,6 +15718,11 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				saveBlacklist = true
 			}
+		case "/query-blocklist":
+			status, err = ui.processQueryBlockChange(change.Fields, collectPattern)
+			if err == nil {
+				saveQueryBlocklist = true
+			}
 		default:
 			status, err = http.StatusBadRequest, errors.New("unknown target URL in batch")
 		}
@@ -15714,9 +15760,10 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 	// still-valid staged changes it never got to apply.
 	currentVersions := func() applyTablesResponseVersions {
 		return applyTablesResponseVersions{
-			Rules:     tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile),
-			Hosts:     tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile),
-			Blacklist: tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile),
+			Rules:          tableVersionToken(ui.ruleStore.Generation(), cfg.WhitelistFile),
+			Hosts:          tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile),
+			Blacklist:      tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile),
+			QueryBlocklist: ui.queryBlocklistVersionToken(),
 		}
 	}
 
@@ -16674,9 +16721,10 @@ type batchFailureResponse struct {
 // tableVersionToken), which the client treats as an entirely opaque string
 // — no numeric/string coercion needed on either side of the round trip.
 type applyTablesResponseVersions struct {
-	Rules     string `json:"rules"`
-	Hosts     string `json:"hosts"`
-	Blacklist string `json:"blacklist"`
+	Rules          string `json:"rules"`
+	Hosts          string `json:"hosts"`
+	Blacklist      string `json:"blacklist"`
+	QueryBlocklist string `json:"query_blocklist"`
 }
 
 type applyTablesResponse struct {
@@ -17039,13 +17087,14 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 		fields := map[string]string{
 			"delete":   r.FormValue("delete"),
 			"toggle":   r.FormValue("toggle"),
+			"edit":     r.FormValue("edit"),
 			"id":       r.FormValue("id"),
 			"category": r.FormValue("category"),
 			"pattern":  r.FormValue("pattern"),
 			"enabled":  r.FormValue("enabled"),
 		}
 
-		status, err := ui.processQueryBlockChange(fields)
+		status, err := ui.processQueryBlockChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			http.Error(w, err.Error(), status)
 			return
@@ -17062,12 +17111,8 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
-func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error) {
+func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate func(pattern string)) (int, error) {
 	log := ui.getLogger()
-	invalidate := ui.OnInvalidatePattern
-	if invalidate == nil {
-		invalidate = func(string) {}
-	}
 
 	category := fields["category"]
 
@@ -17091,7 +17136,7 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error
 			return http.StatusNotFound, err
 		}
 		invalidate(pattern)
-		log.Info("Deleted query-blocklist rule via WebUI",
+		log.Info("Deleted query-blocklist rule via WebUI/Batch",
 			slog.String("id", id), slog.String("category", category), slog.String("pattern", pattern))
 		return http.StatusOK, nil
 	}
@@ -17133,33 +17178,79 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error
 		return http.StatusOK, nil
 	}
 
-	// --- ADD ---
+	// --- ADD / EDIT ---
+	// isEdit is explicit (mirrors processRuleChange/processHostChange's edit
+	// flag), rather than being inferred from whether "id" happens to be
+	// non-empty, so a client bug that omits the edit flag can't silently
+	// fall through to the wrong branch.
+	isEdit := fields["edit"] == "1"
 	patternNormalized := NormalizeDomain(fields["pattern"])
+	id := fields["id"]
 	enabledStr := fields["enabled"]
 	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 	if !validQueryBlockCategory(category) {
-		log.Warn("Failed to add query-blocklist rule: unknown category", slog.String("category", category))
+		log.Warn("Failed to add/edit query-blocklist rule: unknown category", slog.String("category", category))
 		return http.StatusBadRequest, fmt.Errorf("unknown category %q", category)
 	}
 	if patternNormalized == "" {
-		log.Warn("Failed to add query-blocklist rule: pattern required")
+		log.Warn("Failed to add/edit query-blocklist rule: pattern required")
 		return http.StatusBadRequest, errors.New("pattern required")
 	}
 
+	// Convert any Unicode (IDN) pattern (e.g. "café.com") into punycode/ASCII
+	// before validation and storage; real DNS queries always arrive already
+	// punycode-encoded, so patterns must be stored the same way to ever
+	// match. displayPattern is kept only for a more readable conflict/error
+	// message further below.
 	displayPattern := patternNormalized
 	encodedPattern, encErr := encodePatternOrErr(patternNormalized)
 	if encErr != nil {
-		log.Warn("Failed to add query-blocklist rule: invalid unicode pattern", slog.String("pattern", displayPattern), wincoe.SafeErr(encErr))
+		log.Warn("Failed to add/edit query-blocklist rule: invalid unicode pattern", slog.String("pattern", displayPattern), wincoe.SafeErr(encErr))
 		return http.StatusBadRequest, encErr
 	}
 	patternNormalized = encodedPattern
 
 	if err := validateRulePattern(patternNormalized); err != nil {
-		log.Warn("Failed to add query-blocklist rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern), wincoe.SafeErr(err))
+		log.Warn("Failed to add/edit query-blocklist rule: invalid pattern", slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern), wincoe.SafeErr(err))
 		return http.StatusBadRequest, fmt.Errorf("invalid pattern: %w", err)
 	}
 
+	if isEdit {
+		if id == "" {
+			log.Warn("Failed to edit query-blocklist rule: edit flag set but id is empty")
+			return http.StatusBadRequest, errors.New("id required for edit")
+		}
+		if _, modified := sanitizeDomainInput(id); modified {
+			log.Warn("Failed to edit query-blocklist rule: id contains illegal characters", slog.String("id", id))
+			return http.StatusBadRequest, errors.New("id contains illegal characters")
+		}
+		_, oldPattern, err := ui.queryBlocklistStore.UpdateRule(id, category, patternNormalized, enabledBool, log)
+		if err != nil {
+			log.Warn("Failed to edit query-blocklist rule", wincoe.SafeErr(err),
+				slog.String("id", id), slog.String("category", category),
+				slog.String("old_pattern", oldPattern), slog.String("new_pattern", patternNormalized))
+			if displayPattern != patternNormalized {
+				return http.StatusConflict, fmt.Errorf("%w (as entered: %q)", err, displayPattern)
+			}
+			return http.StatusConflict, err
+		}
+		invalidate(oldPattern)
+		if oldPattern != patternNormalized {
+			invalidate(patternNormalized)
+		}
+		log.Info("Edited query-blocklist rule via WebUI/Batch",
+			slog.String("id", id), slog.String("category", category),
+			slog.String("new_pattern", patternNormalized), slog.String("new_pattern_idn", displayPattern),
+			slog.String("old_pattern", oldPattern), slog.Bool("enabled", enabledBool))
+		return http.StatusOK, nil
+	}
+
+	// --- ADD ---
+	if id != "" {
+		log.Warn("Failed to add query-blocklist rule: id was unexpectedly present without the edit flag", slog.String("id", id))
+		return http.StatusBadRequest, errors.New("id must not be set when adding a new rule")
+	}
 	newID, err := ui.queryBlocklistStore.AddRule(category, patternNormalized, enabledBool, log)
 	if err != nil {
 		log.Warn("Failed to add query-blocklist rule", wincoe.SafeErr(err),
@@ -17170,7 +17261,7 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error
 		return http.StatusConflict, err
 	}
 	invalidate(patternNormalized)
-	log.Info("Added query-blocklist rule via WebUI",
+	log.Info("Added query-blocklist rule via WebUI/Batch",
 		slog.String("category", category), slog.String("pattern", patternNormalized),
 		slog.String("pattern_idn", displayPattern), slog.String("id", newID), slog.Bool("enabled", enabledBool))
 	return http.StatusOK, nil

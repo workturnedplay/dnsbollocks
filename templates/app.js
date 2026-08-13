@@ -118,6 +118,7 @@
         rules: tableVersionElement?.dataset.rulesVersion || '0',
         hosts: tableVersionElement?.dataset.hostsVersion || '0',
         blacklist: tableVersionElement?.dataset.blacklistVersion || '0',
+        query_blocklist: tableVersionElement?.dataset.queryBlocklistVersion || '0',
     };
 
     const tablePageKey = location.pathname;
@@ -140,7 +141,8 @@
         if (
             change.url !== '/rules' &&
             change.url !== '/hosts' &&
-            change.url !== '/response-blacklist'
+            change.url !== '/response-blacklist' &&
+            change.url !== '/query-blocklist'
         ) {
             return false;
         }
@@ -264,6 +266,7 @@
             '/rules': 'rules',
             '/hosts': 'hosts',
             '/response-blacklist': 'blacklist',
+            '/query-blocklist': 'query_blocklist',
         };
         const touchedVersionKeys = new Set(
             record.changes.map(change => versionKeyForUrl[change.url])
@@ -600,6 +603,224 @@
         enabledCell.appendChild(enabledSpan);
     }
 
+    // buildQueryBlockRowElement creates a <tr> for a staged (not yet applied) new
+    // query-blocklist rule. Its Edit/Delete controls are wired directly here
+    // (not via Rules' document-level delegation), since these rows share the
+    // .btn-edit/.btn-del classes with Rules' delegated handler and direct
+    // binding avoids the two handlers fighting over the same click — mirrors
+    // buildHostRowElement's identical approach below.
+    function buildQueryBlockRowElement(clientId, category, pattern, enabled) {
+        const row = document.createElement('tr');
+        row.id = 'qbRow_' + clientId;
+        row.dataset.qbId = clientId;
+        row.dataset.qbCategory = category;
+        row.dataset.qbPattern = pattern;
+        row.dataset.qbEnabled = enabled ? 'true' : 'false';
+        row.dataset.stagedClientId = clientId;
+        row.classList.add('staged-add', 'staged');
+
+        const categoryTd = document.createElement('td');
+        categoryTd.textContent = category;
+        row.appendChild(categoryTd);
+
+        const idTd = document.createElement('td');
+        idTd.textContent = '(pending)';
+        idTd.title = '(pending \u2014 assigned on Apply)';
+        row.appendChild(idTd);
+
+        const patternTd = document.createElement('td');
+        patternTd.textContent = pattern;
+        patternTd.title = pattern;
+        row.appendChild(patternTd);
+
+        const enabledTd = document.createElement('td');
+        const span = document.createElement('span');
+        span.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        span.textContent = enabled ? 'Active' : 'Paused';
+        enabledTd.appendChild(span);
+        row.appendChild(enabledTd);
+
+        const modifiedTd = document.createElement('td');
+        modifiedTd.className = 'text-muted';
+        modifiedTd.textContent = '(pending)';
+        modifiedTd.title = '(pending \u2014 set on Apply)';
+        row.appendChild(modifiedTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn-edit js-qb-edit';
+        editBtn.textContent = 'Edit';
+        editBtn.dataset.id = clientId;
+        editBtn.dataset.category = category;
+        editBtn.dataset.pattern = pattern;
+        editBtn.dataset.enabled = enabled ? 'true' : 'false';
+        editBtn.addEventListener('click', () => editQueryBlock(editBtn));
+        actionsTd.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-del';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+            if (!confirm('Remove this not-yet-applied query-blocklist rule: ' + pattern + '?')) return;
+            removeStagedAddRow(clientId, row);
+            applyQueryBlocklistFilter();
+            updateTableBanner();
+        });
+        actionsTd.appendChild(delBtn);
+
+        row.appendChild(actionsTd);
+        return row;
+    } // end of buildQueryBlockRowElement
+
+    // applyQueryBlockRowDisplay updates a query-blocklist-table row's dataset,
+    // visible cells, and its Edit button's dataset to reflect the given
+    // {category, pattern, enabled} values. Shared by the optimistic post-Stage
+    // update and by baseline-restore (no-op stage / Discard).
+    function applyQueryBlockRowDisplay(row, category, pattern, enabled) {
+        row.dataset.qbCategory = category;
+        row.dataset.qbPattern = pattern;
+        row.dataset.qbEnabled = enabled ? 'true' : 'false';
+        row.cells[0].textContent = category;
+        // cells[1] = ID, unchanged
+        row.cells[2].textContent = pattern;
+        row.cells[2].title = pattern;
+        const enabledCell = row.cells[3];
+        enabledCell.textContent = '';
+        const enabledSpan = document.createElement('span');
+        enabledSpan.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        enabledSpan.textContent = enabled ? 'Active' : 'Paused';
+        enabledCell.appendChild(enabledSpan);
+
+        const editBtnEl = row.querySelector('.js-qb-edit');
+        if (editBtnEl) {
+            editBtnEl.dataset.category = category;
+            editBtnEl.dataset.pattern = pattern;
+            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
+        }
+    }
+
+    // discardQueryBlockEdits drops any queued staged Edit for a persisted
+    // (non-add) query-blocklist rule (matched by its stable id) and restores
+    // its displayed category/pattern/enabled state to the original baseline.
+    // Shared by the inline per-row Discard button and the Discard button
+    // inside the Edit form.
+    function discardQueryBlockEdits(row, id, origCategory, origPattern, origEnabled) {
+        const existingIdx = findStagedEntryIndex('/query-blocklist', f => f.edit === '1' && f.id === id);
+        discardStagedEdit(existingIdx, row, () => applyQueryBlockRowDisplay(row, origCategory, origPattern, origEnabled));
+    }
+
+    // editQueryBlock opens the inline edit row for a query-blocklist rule.
+    function editQueryBlock(btn) {
+        const id = btn.dataset.id;
+        const category = btn.dataset.category;
+        const pattern = btn.dataset.pattern;
+        const enabled = btn.dataset.enabled === 'true';
+
+        const row = document.getElementById('qbRow_' + id);
+        if (!row) return;
+        const isStagedAdd = row.classList.contains('staged-add');
+        const clientId = row.dataset.stagedClientId;
+        const origCategory = row.dataset.origCategory;
+        const origPattern = row.dataset.origPattern;
+        const origEnabled = row.dataset.origEnabled === 'true';
+
+        row.hidden = true;
+        row.classList.add('being-edited');
+
+        const tmpl = document.getElementById('editQueryBlockTemplate');
+        const clone = tmpl.content.cloneNode(true);
+
+        const editRow = clone.querySelector('tr');
+        editRow.id = 'editQBRow_' + id;
+
+        const form = clone.querySelector('.edit-qb-form');
+        const formId = 'editQBForm_' + id;
+        form.id = formId;
+
+        const categorySelect = clone.querySelector('.edit-qb-category');
+        categorySelect.setAttribute('form', formId);
+        categorySelect.setAttribute('aria-label', 'Query-blocklist category');
+        categorySelect.value = category;
+
+        const idDisplay = clone.querySelector('.edit-id-display');
+        idDisplay.textContent = isStagedAdd ? '(pending)' : id;
+        idDisplay.title = isStagedAdd ? '(pending \u2014 assigned on Apply)' : id;
+
+        const patternInput = clone.querySelector('.edit-qb-pattern');
+        patternInput.setAttribute('form', formId);
+        patternInput.setAttribute('aria-label', 'Query-blocklist pattern');
+        patternInput.value = pattern;
+
+        const enabledCheck = clone.querySelector('.edit-qb-enabled');
+        enabledCheck.setAttribute('form', formId);
+        enabledCheck.setAttribute('aria-label', 'Enabled');
+        enabledCheck.checked = enabled;
+
+        const idInput = clone.querySelector('.edit-qb-id-input');
+        idInput.value = id;
+        idInput.setAttribute('form', formId);
+
+        clone.querySelector('.btn-cancel').addEventListener('click', () => cancelQueryBlockEdit(id), { once: true });
+
+        form.addEventListener('submit', async function(eSubmit) {
+            eSubmit.preventDefault();
+
+            const newPattern = patternInput.value.trim();
+            const enabledChecked = enabledCheck.checked;
+            const newCategory = categorySelect.value;
+
+            if (newPattern === '') { alert('pattern cannot be empty'); return; }
+
+            if (isStagedAdd) {
+                mergeStagedAddFields(clientId, { pattern: newPattern, category: newCategory, enabled: enabledChecked ? 'true' : 'false' });
+                applyQueryBlockRowDisplay(row, newCategory, newPattern, enabledChecked);
+                row.classList.add('staged');
+            } else {
+                const existingIdx = findStagedEntryIndex('/query-blocklist', f => f.edit === '1' && f.id === id);
+                const isNoOp = newCategory === origCategory && newPattern === origPattern &&
+                    (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
+                const fields = { edit: '1', id: id, category: newCategory, pattern: newPattern, enabled: enabledChecked ? 'true' : 'false' };
+                const displayCategory = isNoOp ? origCategory : newCategory;
+                const displayPattern = isNoOp ? origPattern : newPattern;
+                const displayEnabled = isNoOp ? origEnabled : enabledChecked;
+                reconcileStagedEdit(existingIdx, isNoOp, '/query-blocklist', fields, row, () => applyQueryBlockRowDisplay(row, displayCategory, displayPattern, displayEnabled));
+            }
+
+            row.classList.remove('being-edited');
+            row.hidden = false;
+
+            editRow.remove();
+            applyQueryBlocklistFilter();
+            updateTableBanner();
+        });
+
+        clone.querySelector('.btn-discard-row').addEventListener('click', () => {
+            if (isStagedAdd) {
+                if (!confirm('Discard this not-yet-applied query-blocklist rule entirely?')) return;
+                removeStagedAddRow(clientId, row);
+                editRow.remove();
+            } else {
+                if (!confirm('Discard all staged changes for this query-blocklist rule and revert it to its original state?')) return;
+                discardQueryBlockEdits(row, id, origCategory, origPattern, origEnabled);
+                row.classList.remove('being-edited');
+                row.hidden = false;
+                editRow.remove();
+            }
+            applyQueryBlocklistFilter();
+            updateTableBanner();
+        }, { once: true });
+
+        row.after(clone);
+    }
+
+    function cancelQueryBlockEdit(id) {
+        cancelInlineRowEdit('editQBRow_' + id, 'qbRow_' + id, false, applyQueryBlocklistFilter);
+    }
+
     // buildHostRowElement creates a <tr> for a staged (not yet applied) new local
     // host override. Its Edit/Delete controls are wired directly here since,
     // unlike the rules table, hosts Edit/Delete are bound per-element rather than
@@ -929,6 +1150,7 @@
         if (typeof serverVersions.rules === 'string') tableVersions.rules = serverVersions.rules;
         if (typeof serverVersions.hosts === 'string') tableVersions.hosts = serverVersions.hosts;
         if (typeof serverVersions.blacklist === 'string') tableVersions.blacklist = serverVersions.blacklist;
+        if (typeof serverVersions.query_blocklist === 'string') tableVersions.query_blocklist = serverVersions.query_blocklist;
     }
 
     async function applyStagedTableChanges() {
@@ -1402,6 +1624,26 @@
             highlightTerms: (row, terms) => {
                 if (row.cells.length > 0) {
                     highlightTextNodes(row.cells[0], terms);
+                }
+            }
+        });
+    }
+    
+    // --- Client-side ordered-substring filter, mirrors /rules' filter ---
+    function applyQueryBlocklistFilter() {
+        applyTableFilter({
+            filterInputId: 'queryBlocklistFilter',
+            storageKey: 'queryBlocklistTable_filter',
+            tbodySelector: '#queryBlocklistTable tbody',
+            editRowClasses: ['edit-row'],
+            alwaysShowStaged: true,
+            getSearchText: row => [row.dataset.qbId || "", row.dataset.qbCategory || "", row.dataset.qbPattern || ""].join(" "),
+            // Added highlighting for Category (0), ID (1), and Pattern (2) columns
+            highlightTerms: (row, terms) => {
+                if (row.cells.length > 2) {
+                    highlightTextNodes(row.cells[0], terms);
+                    highlightTextNodes(row.cells[1], terms);
+                    highlightTextNodes(row.cells[2], terms);
                 }
             }
         });
@@ -2486,6 +2728,121 @@
             });
         }
         
+        // ── Query Blocklist page ────
+        document.querySelectorAll('.js-qb-edit').forEach(btn => {
+            btn.addEventListener('click', () => editQueryBlock(btn));
+        });
+
+        document.querySelectorAll('.js-qb-delete-form').forEach(form => {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                const idInput = form.querySelector('[name="id"]');
+                const categoryInput = form.querySelector('[name="category"]');
+                if (!idInput || !categoryInput) {
+                    console.error('js-qb-delete-form: missing [name="id"] or [name="category"] input');
+                    return;
+                }
+                const id = idInput.value;
+                const origCategory = categoryInput.value;
+
+                const row = form.closest('tr');
+                const pattern = row ? row.dataset.origPattern : '';
+
+                if (!confirm('Delete query-blocklist rule: ' + (pattern || id) + '?')) {
+                    return;
+                }
+
+                // A pending Delete supersedes any queued Edit for the same rule;
+                // drop it so we don't try to apply a stale edit right before deleting.
+                const staleEditIdx = findStagedEntryIndex('/query-blocklist', f => f.edit === '1' && f.id === id);
+
+                // Restore the row's displayed values (any staged edit was just
+                // discarded above) and keep it visible — struck through via CSS —
+                // instead of hiding it, so it can still be found via the filter
+                // and Undeleted.
+                stageRowDeletion('/query-blocklist', staleEditIdx, { delete: '1', id: id, category: origCategory }, row,
+                    () => applyQueryBlockRowDisplay(row, row.dataset.origCategory, row.dataset.origPattern, row.dataset.origEnabled === 'true'));
+
+                applyQueryBlocklistFilter();
+                updateTableBanner();
+            });
+        });
+
+        document.querySelectorAll('.js-qb-undelete').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.id;
+                const row = document.getElementById('qbRow_' + id);
+                if (!row) return;
+                const origCategory = row.dataset.origCategory;
+                undoStagedDeletion(row, c => c.url === '/query-blocklist' && c.fields.delete === '1' && c.fields.id === id && c.fields.category === origCategory);
+                applyQueryBlocklistFilter();
+                updateTableBanner();
+            });
+        });
+
+        // Inline Discard: revert a staged plain-edit row to its original
+        // category/pattern/enabled directly, without first opening the Edit form.
+        document.querySelectorAll('.js-qb-discard').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.id;
+                const row = document.getElementById('qbRow_' + id);
+                if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
+                if (!confirm('Discard all staged changes for this query-blocklist rule and revert it to its original state?')) return;
+                discardQueryBlockEdits(row, id, row.dataset.origCategory, row.dataset.origPattern, row.dataset.origEnabled === 'true');
+                applyQueryBlocklistFilter();
+                updateTableBanner();
+            });
+        });
+
+        // --- ADD QUERY-BLOCKLIST RULE: stage instead of posting immediately ---
+        const addQueryBlockForm = document.getElementById('addQueryBlockForm');
+        if (addQueryBlockForm) {
+            addQueryBlockForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                const patternInput = addQueryBlockForm.querySelector('[name="pattern"]');
+                const categorySelect = addQueryBlockForm.querySelector('[name="category"]');
+                const enabledCheckbox = addQueryBlockForm.querySelector('[name="enabled"]');
+                if (!patternInput || !categorySelect) return;
+
+                const pattern = patternInput.value.trim().toLowerCase();
+                const category = categorySelect.value;
+                if (pattern === '') return;
+                const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
+
+                const alreadyStaged = findStagedEntryIndex('/query-blocklist', f => !f.id && !f.delete && f.category === category && f.pattern === pattern) !== -1;
+                if (alreadyStaged) {
+                    alert('A staged (not yet applied) query-blocklist rule with this category and pattern already exists.');
+                    return;
+                }
+
+                const clientId = stageNewEntry('/query-blocklist', { pattern: pattern, category: category, enabled: enabled ? 'true' : 'false' });
+
+                const tbody = document.querySelector('#queryBlocklistTable tbody');
+                if (tbody) {
+                    removePlaceholderRow(tbody);
+                    tbody.insertBefore(buildQueryBlockRowElement(clientId, category, pattern, enabled), tbody.firstChild);
+                }
+
+                patternInput.value = '';
+                if (enabledCheckbox) enabledCheckbox.checked = true;
+
+                applyQueryBlocklistFilter();
+                updateTableBanner();
+            });
+        }
+
+        // Load filter value from persistent uiStorage on page load
+        const queryBlocklistFilterInput = document.getElementById('queryBlocklistFilter');
+        if (queryBlocklistFilterInput) {
+            queryBlocklistFilterInput.value = uiStorage.getItem('queryBlocklistTable_filter') || '';
+            queryBlocklistFilterInput.addEventListener('input', debounce(() => {
+                applyQueryBlocklistFilter();
+            }, 120));
+            applyQueryBlocklistFilter();
+        }
+        
         // ── Blocks page ─────────────
         // Refresh button navigates to /blocks via GET, bypassing any cached POST state.
         const blocksRefreshBtn = document.querySelector('.js-blocks-refresh-btn');
@@ -3018,6 +3375,10 @@
             );
         }
 
+        function findQueryBlockRowById(id) {
+            return document.getElementById('qbRow_' + id);
+        }
+
         function renderStagedRuleChange(change) {
             const fields = change?.fields || {};
             const tbody = document.querySelector('#rulesTable tbody');
@@ -3137,6 +3498,51 @@
 
             console.warn('renderStagedBlacklistChange: unrecognized restored change', change);
         }
+
+        function renderStagedQueryBlockChange(change) {
+            const fields = change?.fields || {};
+            const tbody = document.querySelector('#queryBlocklistTable tbody');
+            if (!tbody) return;
+
+            // Staged add: no server-side ID yet, so recreate the row from scratch.
+            if (!fields.id && !fields.delete && !fields.edit) {
+                const category = fields.category || 'block';
+                const pattern = fields.pattern || '';
+                const enabled = fields.enabled !== 'false';
+                tbody.insertBefore(
+                    buildQueryBlockRowElement(change.clientId, category, pattern, enabled),
+                    tbody.firstChild
+                );
+                return;
+            }
+
+            const row = findQueryBlockRowById(fields.id || '');
+            if (!row) {
+                console.warn('renderStagedQueryBlockChange: could not find row for restored change', change);
+                return;
+            }
+
+            if (fields.delete === '1') {
+                // Staged delete: restore the original visible values, then strike through.
+                applyQueryBlockRowDisplay(
+                    row,
+                    row.dataset.origCategory,
+                    row.dataset.origPattern,
+                    row.dataset.origEnabled === 'true'
+                );
+                row.classList.remove('staged-add');
+                row.classList.add('staged-delete', 'staged');
+                return;
+            }
+
+            // Staged edit: apply the staged values directly to the existing row.
+            const category = fields.category || row.dataset.origCategory;
+            const pattern = fields.pattern || row.dataset.origPattern;
+            const enabled = fields.enabled === 'true';
+
+            applyQueryBlockRowDisplay(row, category, pattern, enabled);
+            row.classList.add('staged');
+        }
         
         function renderStoredStagedChange(change) {
             switch (change.url) {
@@ -3148,6 +3554,9 @@
                     break;
                 case '/response-blacklist':
                     renderStagedBlacklistChange(change);
+                    break;
+                case '/query-blocklist':
+                    renderStagedQueryBlockChange(change);
                     break;
                 default:
                     throw new Error(`Unsupported staged-change URL: ${change.url}`);
@@ -3172,6 +3581,7 @@
                 applyRulesFilter();
                 applyHostsFilter();
                 applyBlacklistFilter();
+                applyQueryBlocklistFilter();
                 updateTableBanner();
             } else {
                 stagedStorage.removeItem(stagedStorageKey);
@@ -3279,6 +3689,7 @@
         setupTableSorting('rulesTable', 'rulesTable', applyRulesFilter);
         setupTableSorting('hostsTable', 'hostsTable', applyHostsFilter);
         setupTableSorting('blacklistTable', 'blacklistTable', applyBlacklistFilter);
+        setupTableSorting('queryBlocklistTable', 'queryBlocklistTable', applyQueryBlocklistFilter);
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
 
         // --- Apply Log Highlighting on Load ---

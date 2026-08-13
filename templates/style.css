@@ -407,6 +407,7 @@ tr.staged-delete .btn-undelete { display: inline-block; }
 #rulesTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
 #hostsTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
 #blacklistTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
+#queryBlocklistTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
 #configTable tr.staged .inline-discard-btn {
     display: inline-block;
 }

@@ -4,8 +4,13 @@
 package dnsbollocks
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -724,7 +729,7 @@ func TestProcessQueryBlockChange_ToggleDisablesByID(t *testing.T) {
 		"toggle":   "1",
 		"id":       id,
 		"category": queryBlockCategoryBlock,
-	})
+	}, func(string) {})
 	if err2 != nil {
 		t.Fatalf("processQueryBlockChange failed: %v", err2)
 	}
@@ -745,7 +750,7 @@ func TestProcessQueryBlockChange_ToggleNotFound(t *testing.T) {
 		"toggle":   "1",
 		"id":       "nonexistent-id",
 		"category": queryBlockCategoryBlock,
-	})
+	}, func(string) {})
 	if err == nil {
 		t.Fatal("expected error for nonexistent id")
 	}
@@ -761,7 +766,7 @@ func TestProcessQueryBlockChange_AddAndDelete(t *testing.T) {
 		"category": queryBlockCategoryBlock,
 		"pattern":  "new-ads.example.com",
 		"enabled":  "true",
-	})
+	}, func(string) {})
 	if err != nil {
 		t.Fatalf("add failed: %v", err)
 	}
@@ -779,7 +784,7 @@ func TestProcessQueryBlockChange_AddAndDelete(t *testing.T) {
 		"delete":   "1",
 		"id":       id,
 		"category": queryBlockCategoryBlock,
-	})
+	}, func(string) {})
 	if err2 != nil {
 		t.Fatalf("delete failed: %v", err2)
 	}
@@ -797,8 +802,214 @@ func TestProcessQueryBlockChange_InvalidCategoryRejected(t *testing.T) {
 	_, err := ui.processQueryBlockChange(map[string]string{
 		"category": "not-a-real-category",
 		"pattern":  "example.com",
-	})
+	}, func(string) {})
 	if err == nil {
 		t.Fatal("expected error for invalid category")
+	}
+}
+
+func TestQueryBlocklistVersionToken_NilStoreReturnsZero(t *testing.T) {
+	ui := &AdminUI{}
+	if got := ui.queryBlocklistVersionToken(); got != "0" {
+		t.Errorf("expected \"0\" for nil queryBlocklistStore, got %q", got)
+	}
+}
+
+func TestProcessQueryBlockChange_EditUpdatesPatternAndEnabled(t *testing.T) {
+	ui, _ := setupTestAdminUI(t)
+	log := discardLogger()
+
+	id, err := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, "old.example.com", true, log)
+	if err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	status, err2 := ui.processQueryBlockChange(map[string]string{
+		"edit":     "1",
+		"id":       id,
+		"category": queryBlockCategoryBlock,
+		"pattern":  "new.example.com",
+		"enabled":  "false",
+	}, func(string) {})
+	if err2 != nil {
+		t.Fatalf("edit failed: %v", err2)
+	}
+	if status != 200 {
+		t.Errorf("status = %d, want 200", status)
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	if len(snap[queryBlockCategoryBlock]) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(snap[queryBlockCategoryBlock]))
+	}
+	rule := snap[queryBlockCategoryBlock][0]
+	if rule.Pattern != "new.example.com" {
+		t.Errorf("pattern = %q, want %q", rule.Pattern, "new.example.com")
+	}
+	if rule.Enabled {
+		t.Error("expected rule to be disabled after edit")
+	}
+	if rule.ID != id {
+		t.Errorf("expected ID to be preserved (%q), got %q", id, rule.ID)
+	}
+}
+
+func TestProcessQueryBlockChange_EditMissingIDRejected(t *testing.T) {
+	ui, _ := setupTestAdminUI(t)
+
+	_, err := ui.processQueryBlockChange(map[string]string{
+		"edit":     "1",
+		"category": queryBlockCategoryBlock,
+		"pattern":  "example.com",
+		"enabled":  "true",
+	}, func(string) {})
+	if err == nil {
+		t.Fatal("expected error when editing without an id")
+	}
+}
+
+func TestProcessQueryBlockChange_EditCrossCategoryMove(t *testing.T) {
+	ui, _ := setupTestAdminUI(t)
+	log := discardLogger()
+
+	id, err := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, "move-me.example.com", true, log)
+	if err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	status, err2 := ui.processQueryBlockChange(map[string]string{
+		"edit":     "1",
+		"id":       id,
+		"category": queryBlockCategoryExcept,
+		"pattern":  "move-me.example.com",
+		"enabled":  "true",
+	}, func(string) {})
+	if err2 != nil {
+		t.Fatalf("edit failed: %v", err2)
+	}
+	if status != 200 {
+		t.Errorf("status = %d, want 200", status)
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	if len(snap[queryBlockCategoryBlock]) != 0 {
+		t.Errorf("expected block category to be empty after move, got %d entries", len(snap[queryBlockCategoryBlock]))
+	}
+	if len(snap[queryBlockCategoryExcept]) != 1 || snap[queryBlockCategoryExcept][0].ID != id {
+		t.Errorf("expected moved rule to be present in except category, got %+v", snap[queryBlockCategoryExcept])
+	}
+}
+
+func TestApplyTablesHandler_QueryBlocklistBatchAppliesChangesAndVersion(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+
+	type batchChange struct {
+		URL      string            `json:"url"`
+		Fields   map[string]string `json:"fields"`
+		ClientID string            `json:"client_id"`
+	}
+	type batchVersions struct {
+		QueryBlocklist string `json:"query_blocklist"`
+	}
+	type batchRequest struct {
+		Versions batchVersions `json:"versions"`
+		Changes  []batchChange `json:"changes"`
+	}
+
+	reqBody := batchRequest{
+		Versions: batchVersions{QueryBlocklist: ui.queryBlocklistVersionToken()},
+		Changes: []batchChange{
+			{
+				URL:      "/query-blocklist",
+				ClientID: "c1",
+				Fields: map[string]string{
+					"category": queryBlockCategoryBlock,
+					"pattern":  "batch-added.example.com",
+					"enabled":  "true",
+				},
+			},
+		},
+	}
+	payloadBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("payload", string(payloadBytes))
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/apply-tables", strings.NewReader(form.Encode()))
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.applyTablesHandler(rec, httpReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	found := false
+	for _, r := range snap[queryBlockCategoryBlock] {
+		if r.Pattern == "batch-added.example.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected batch-added.example.com to be present in query blocklist after batch apply")
+	}
+}
+
+func TestApplyTablesHandler_QueryBlocklistBatchStaleVersionRejected(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+
+	type batchChange struct {
+		URL      string            `json:"url"`
+		Fields   map[string]string `json:"fields"`
+		ClientID string            `json:"client_id"`
+	}
+	type batchVersions struct {
+		QueryBlocklist string `json:"query_blocklist"`
+	}
+	type batchRequest struct {
+		Versions batchVersions `json:"versions"`
+		Changes  []batchChange `json:"changes"`
+	}
+
+	reqBody := batchRequest{
+		Versions: batchVersions{QueryBlocklist: "stale-version-token"},
+		Changes: []batchChange{
+			{
+				URL:      "/query-blocklist",
+				ClientID: "c1",
+				Fields: map[string]string{
+					"category": queryBlockCategoryBlock,
+					"pattern":  "should-not-apply.example.com",
+					"enabled":  "true",
+				},
+			},
+		},
+	}
+	payloadBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("payload", string(payloadBytes))
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/apply-tables", strings.NewReader(form.Encode()))
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.applyTablesHandler(rec, httpReq)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	for _, r := range snap[queryBlockCategoryBlock] {
+		if r.Pattern == "should-not-apply.example.com" {
+			t.Error("expected stale-version batch to be rejected, but change was applied")
+		}
 	}
 }

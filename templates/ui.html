@@ -25,6 +25,7 @@
             data-rules-version="{{.RulesVersion}}"
             data-hosts-version="{{.HostsVersion}}"
             data-blacklist-version="{{.BlacklistVersion}}"
+            data-query-blocklist-version="{{.QueryBlocklistVersion}}"
         ></div>
         <nav>
             <a href="/query-blocklist" {{if eq .Page "query-blocklist" }} class="active" {{end}}>Query Blocklist</a>
@@ -570,7 +571,7 @@
 </p>
 
 <h2>Add New Query-Blocklist Rule</h2>
-<form method="post" action="/query-blocklist">
+<form id="addQueryBlockForm" method="post" action="/query-blocklist">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <label class="visually-hidden" for="addQBCategory">Category</label>
     <select id="addQBCategory" name="category">
@@ -589,49 +590,88 @@
     <button type="submit" class="btn-add">Add</button>
 </form>
 
+<div class="filter-spacer">
+    <label class="visually-hidden" for="queryBlocklistFilter">Filter query-blocklist rules</label>
+    <input
+    type="text"
+    id="queryBlocklistFilter"
+    class="table-filter-input w-100"
+    placeholder="Filter rules... '/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'ads | tracker !safe')"
+    >
+</div>
+
 <h2>Local Query-Blocklist Rules</h2>
+{{template "staged-table-banner" .}}
 <table id="queryBlocklistTable">
     <colgroup>
-        <col class="col-14">
-        <col class="col-14">
-        <col class="col-35">
         <col class="col-12">
-        <col class="col-15">
-        <col class="col-10">
+        <col class="col-14">
+        <col class="col-30">
+        <col class="col-12">
+        <col class="col-14">
+        <col class="col-18">
     </colgroup>
     <thead>
         <tr>
-            <th scope="col">Category</th>
-            <th scope="col">ID</th>
-            <th scope="col">Pattern</th>
-            <th scope="col">Enabled</th>
-            <th scope="col">Last Modified</th>
+            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Category</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>ID</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Pattern</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Enabled</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="4" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Last Modified</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
             <th scope="col">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .QueryBlockRules}}
-        <tr>
+        <tr id="qbRow_{{.ID}}" data-qb-id="{{.ID}}" data-qb-category="{{.Category}}" data-qb-pattern="{{.Pattern}}" data-qb-enabled="{{.Enabled}}"
+            data-orig-category="{{.Category}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}">
             <td>{{.Category}}</td>
             <td title="{{.ID}}">{{.ID}}</td>
             <td title="{{.Pattern}}">{{.Pattern}}</td>
             <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
             <td>{{.ModifiedAtDisplay}}</td>
             <td class="actions">
-                <form method="post" action="/query-blocklist" class="form-inline-action">
-                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                    <input type="hidden" name="toggle" value="1">
-                    <input type="hidden" name="id" value="{{.ID}}">
-                    <input type="hidden" name="category" value="{{.Category}}">
-                    <button type="submit" class="btn-edit">{{if .Enabled}}Pause{{else}}Enable{{end}}</button>
-                </form>
-                <form method="post" action="/query-blocklist" class="form-inline-action">
+                <button type="button" class="btn-edit js-qb-edit"
+                    data-id="{{.ID}}"
+                    data-category="{{.Category}}"
+                    data-pattern="{{.Pattern}}"
+                    data-enabled="{{.Enabled}}">
+                Edit
+                </button>
+                <form method="post" action="/query-blocklist" class="js-qb-delete-form form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <input type="hidden" name="delete" value="1">
                     <input type="hidden" name="id" value="{{.ID}}">
                     <input type="hidden" name="category" value="{{.Category}}">
                     <button type="submit" class="btn-del">Delete</button>
                 </form>
+                <button type="button" class="btn-undelete js-qb-undelete" data-id="{{.ID}}">Undelete</button>
+                <button type="button" class="btn-discard-row inline-discard-btn js-qb-discard" data-id="{{.ID}}">Discard</button>
             </td>
         </tr>
         {{else}}
@@ -639,6 +679,31 @@
         {{end}}
     </tbody>
 </table>
+
+<template id="editQueryBlockTemplate">
+    <tr class="edit-row">
+        <td>
+            <select name="category" class="edit-qb-category w-100">
+                <option value="block">Block</option>
+                <option value="except">Except</option>
+            </select>
+        </td>
+        <td class="edit-id-display"></td>
+        <td><input type="text" class="edit-qb-pattern w-100"></td>
+        <td><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label></td>
+        <td class="text-muted">(updates on Apply)</td>
+        <td class="actions">
+            <form method="post" action="/query-blocklist" class="edit-qb-form form-inline-action2">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="edit" value="1">
+                <input type="hidden" name="id" class="edit-qb-id-input">
+                <button type="submit" class="btn-save">Stage</button>
+                <button type="button" class="btn-cancel">Cancel</button>
+                <button type="button" class="btn-discard-row">Discard</button>
+            </form>
+        </td>
+    </tr>
+</template>
 
 <h2>External Hosts-File Source (read-only)</h2>
 {{if .External.Configured}}
