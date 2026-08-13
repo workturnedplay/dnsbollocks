@@ -2560,12 +2560,25 @@
                     // page reload would have shown.
                     if (action === 'unblock') {
                         actionInput.value = 'reblock';
-                        btn.textContent = 'Re-block (Pause)';
+                        btn.textContent = 'Re-block (Pause) [Whitelist]';
                         btn.className = 'btn-cancel';
-                    } else {
+                    } else if (action === 'reblock') {
                         actionInput.value = 'unblock';
-                        btn.textContent = 'Unblock ' + type;
+                        btn.textContent = 'Unblock ' + type + ' [Whitelist]';
                         btn.className = 'btn-edit';
+                    } else if (action === 'unblock_qb') {
+                        actionInput.value = 'reblock_qb';
+                        btn.textContent = 'Re-block (Pause) [Query Blocklist, External]';
+                        btn.className = 'btn-cancel';
+                    } else if (action === 'reblock_qb') {
+                        actionInput.value = 'unblock_qb';
+                        btn.textContent = 'Unblock [Query Blocklist, External]';
+                        btn.className = 'btn-edit';
+                    } else if (action === 'disable_qb_local_rule') {
+                        // One-directional from /blocks: re-enabling happens on
+                        // /query-blocklist, so there's no "undo" toggle here —
+                        // just remove the control once it's done its job.
+                        form.remove();
                     }
                     btn.disabled = false;
                     if (feedback) {

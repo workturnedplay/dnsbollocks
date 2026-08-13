@@ -228,9 +228,10 @@ type Server struct {
 	recentBlocks *RecentBlocksTracker
 
 	// queryBlocklistStore holds the mutable "block"/"except" override rules
-	// for the query-blocklist feature (see query_blocklist.go); reuses
-	// *RuleStore verbatim, with "block"/"except" used as the map key in
-	// place of a DNS record type.
+	// for the query-blocklist feature (implemented in this same file — see
+	// checkQueryBlocklist, loadQueryBlocklist/saveQueryBlocklist, and
+	// queryBlocklistHandler); reuses *RuleStore verbatim, with "block"/"except"
+	// used as the map key in place of a DNS record type.
 	queryBlocklistStore *RuleStore
 	// externalBlocklist holds the current snapshot of the read-only external
 	// hosts-file source (see loadExternalQueryBlocklist / ExternalHostsBlocklistSource).
@@ -325,8 +326,9 @@ type AdminUI struct {
 	loginTracker *LoginTracker
 
 	// queryBlocklistStore/externalBlocklist mirror the identically-named
-	// Server fields (see query_blocklist.go) — set directly by initAdminUI
-	// after construction, exactly like ui.rateLimiter below, rather than
+	// Server fields (implemented in this same file — see checkQueryBlocklist
+	// and related functions) — set directly by initAdminUI after
+	// construction, exactly like ui.rateLimiter below, rather than
 	// added to NewAdminUI's parameter list, so existing test call sites that
 	// construct AdminUI directly don't need updating. Both are nil-safe: a
 	// nil queryBlocklistStore or externalBlocklist means "feature not wired
@@ -2425,7 +2427,23 @@ type BlockedQuery struct {
 	DomainDisplay string    `json:"-"` // Unicode display form for the WebUI; computed on read, same as Domain when not an IDN
 	Type          string    `json:"type"`
 	Time          time.Time `json:"time"`
-	IsUnblocked   bool      `json:"-"` // dynamically set for the UI
+	IsUnblocked   bool      `json:"-"` // dynamically set for the UI: whether the whitelist layer currently allows this exact domain+type (see buildIsUnblockedPredicate)
+
+	// The following are also dynamically computed for the UI (see
+	// AdminUI.populateQueryBlocklistRowState, called from getRecentBlocksCopy)
+	// and reflect the query blocklist layer's CURRENT, independently
+	// re-evaluated state for this domain, which may differ from (and can
+	// combine with) the whitelist layer's state above. A local "block" match
+	// always wins and can never be cancelled by an "except" pattern (see
+	// checkQueryBlocklist's doc comment), so the local and external
+	// sub-layers are reported independently here rather than collapsed into
+	// one flag, letting the /blocks page show a distinct, honest control for
+	// whichever sub-layer(s) actually apply instead of a button that might
+	// silently do nothing.
+	QueryBlocklistLocalBlocked     bool   `json:"-"` // an enabled local "block" pattern currently matches this domain
+	QueryBlocklistLocalRuleID      string `json:"-"` // ID of that matching rule (set only if QueryBlocklistLocalBlocked)
+	QueryBlocklistExternalListed   bool   `json:"-"` // this domain is present in the read-only external hosts-file source
+	QueryBlocklistExternalExcepted bool   `json:"-"` // an enabled local "except" rule currently cancels the external-source block (only meaningful if QueryBlocklistExternalListed)
 }
 
 // loginRecord tracks failed WebUI login attempts for a single client IP.
@@ -7967,21 +7985,24 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	return oldType, oldPattern, nil
 }
 
-// SetEnabled enables or disables the first rule matching domain+type.
-// Returns (found, changed): changed=false when already in the desired state.
-func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.Logger) (found, changed bool) {
+// setEnabledWhere is the shared implementation behind SetEnabled (matches by
+// exact pattern) and SetEnabledByID (matches by ID): it finds the first rule
+// in typ satisfying match, and enables/disables it if not already in that
+// state. Returns the matched rule's pattern (empty if not found) alongside
+// (found, changed).
+func (rs *RuleStore) setEnabledWhere(typ string, match func(RuleEntry) bool, enabled bool, logger *slog.Logger) (pattern string, found, changed bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
 	current := *rs.rules.Load()
 
 	for i, rule := range current[typ] {
-		if rule.Pattern != domain {
+		if !match(rule) {
 			continue
 		}
 
 		if rule.Enabled == enabled {
-			return true, false
+			return rule.Pattern, true, false
 		}
 
 		// We can no longer mutate the rule in-place because readers
@@ -7994,9 +8015,30 @@ func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.L
 		rs.rules.Store(&next)
 		rs.generation.Add(1)
 
-		return true, true
+		return rule.Pattern, true, true
 	}
-	return false, false
+	return "", false, false
+}
+
+// SetEnabled enables or disables the first rule whose pattern exactly equals
+// domain, within typ. Returns (found, changed): changed=false when already
+// in the desired state.
+func (rs *RuleStore) SetEnabled(typ, domain string, enabled bool, logger *slog.Logger) (found, changed bool) {
+	_, found, changed = rs.setEnabledWhere(typ, func(r RuleEntry) bool { return r.Pattern == domain }, enabled, logger)
+	return found, changed
+}
+
+// SetEnabledByID enables or disables the rule with the given ID within typ,
+// regardless of its pattern (exact or wildcard). Unlike SetEnabled (matching
+// by exact pattern text — the convention the whitelist/except quick unblock
+// flows use, see quickToggleExactRule), this looks the rule up directly by
+// its stable ID, letting a caller that already resolved the ID via
+// MatchForType (a wildcard-aware match) toggle precisely the rule that
+// actually matched, no matter its pattern shape. Returns the matched rule's
+// pattern (empty if not found), which callers commonly need afterward for
+// cache invalidation.
+func (rs *RuleStore) SetEnabledByID(typ, id string, enabled bool, logger *slog.Logger) (pattern string, found, changed bool) {
+	return rs.setEnabledWhere(typ, func(r RuleEntry) bool { return r.ID == id }, enabled, logger)
 }
 
 // HostStore manages local hostname overrides.
@@ -8360,7 +8402,11 @@ func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 	}
 }
 
-// Snapshot returns a copy of recent blocks, with IsUnblocked populated via the provided checker.
+// Snapshot returns a copy of recent blocks, with IsUnblocked (the whitelist
+// layer's state) populated via the provided checker. The query-blocklist
+// layer's fields (QueryBlocklistLocalBlocked etc.) are NOT populated here —
+// see AdminUI.populateQueryBlocklistRowState / getRecentBlocksCopy, which
+// fills those in as a separate pass after calling this.
 func (t *RecentBlocksTracker) Snapshot(isUnblocked func(domain, qtype string) bool) []BlockedQuery {
 	var result []BlockedQuery
 
@@ -9021,8 +9067,33 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	blocks := ui.recentBlocks.Snapshot(ui.buildIsUnblockedPredicate())
 	for i := range blocks {
 		blocks[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(blocks[i].Domain)
+		ui.populateQueryBlocklistRowState(&blocks[i])
 	}
 	return blocks
+}
+
+// populateQueryBlocklistRowState fills bq's four QueryBlocklist* fields by
+// re-evaluating the query-blocklist layer live against bq.Domain — never
+// from any cached/stored state — mirroring exactly how buildIsUnblockedPredicate
+// re-evaluates the whitelist layer live for the same row. Safe to call with a
+// nil ui.queryBlocklistStore/externalBlocklist (both simply leave every field
+// at its zero value, i.e. "this layer isn't blocking/configured"), matching
+// checkQueryBlocklist's own nil-safety.
+func (ui *AdminUI) populateQueryBlocklistRowState(bq *BlockedQuery) {
+	if ui.queryBlocklistStore != nil {
+		if id, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, bq.Domain); ok {
+			bq.QueryBlocklistLocalBlocked = true
+			bq.QueryBlocklistLocalRuleID = id
+		}
+	}
+	if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(bq.Domain) {
+		bq.QueryBlocklistExternalListed = true
+		if ui.queryBlocklistStore != nil {
+			if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryExcept, bq.Domain); ok {
+				bq.QueryBlocklistExternalExcepted = true
+			}
+		}
+	}
 }
 
 // blocksAjaxHeader is the custom header the /blocks page's JS sets on its
@@ -9104,6 +9175,16 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost { //"POST" {
 		action := r.FormValue("action")
+
+		switch action {
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
+				log.Error("BUG: query-blocklist /blocks POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
+				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
+				return
+			}
+		}
+
 		// --- NEW: Handle the Clear Action ---
 		if action == "clear" {
 			cutoffStr := r.FormValue("cutoff")
@@ -9173,63 +9254,98 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		var successMessage string // Hold our feedback text
 		if domainLowercased != "" && typ != "" {
 			switch action {
-			case "reblock":
-				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, false, log)
-				if found && changed {
-					successMessage = fmt.Sprintf("Successfully re-blocked: paused rule for %s (%s).", displayDomain, typ)
-					log.Info("Quick re-block via WebUI: paused existing rule",
-						slog.String("domainLowercased", domainLowercased),
-						slog.String("displayDomain", displayDomain),
-						slog.String("DNSType", typ))
-					ui.OnInvalidatePattern(domainLowercased)
-				} else if found {
-					successMessage = fmt.Sprintf("Rule for %s (%s) is already paused.", displayDomain, typ)
-				} else {
-					log.Warn("Quick re-block via WebUI: no matching rule exists to pause",
-						slog.String("domainLowercased", domainLowercased),
-						slog.String("displayDomain", displayDomain),
-						slog.String("DNSType", typ))
-					respondBlocksResult(log, w, r, false, http.StatusNotFound,
-						fmt.Sprintf("No active rule exists for %s (%s) to re-block/pause.", displayDomain, typ), raw)
+			case "reblock", "unblock":
+				msg, toggleErr := quickToggleExactRule(ui.ruleStore, typ, domainLowercased, displayDomain, action == "unblock", log, "whitelist")
+				if toggleErr != nil {
+					log.Warn("Failed quick unblock/reblock via WebUI (whitelist)",
+						slog.String("action", action), wincoe.SafeErr(toggleErr),
+						slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+					respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
 					return
 				}
-			case "unblock":
-				found, changed := ui.ruleStore.SetEnabled(typ, domainLowercased, true, log)
-				if found && changed {
-					successMessage = fmt.Sprintf("Successfully unblocked: activated existing paused rule for %s (%s).", displayDomain, typ)
-					log.Info("Quick unblock via WebUI: enabled existing paused rule",
-						slog.String("domainLowercased", domainLowercased),
-						slog.String("displayDomain", displayDomain),
-						slog.String("DNSType", typ))
-					ui.OnInvalidatePattern(domainLowercased)
-				} else if found {
-					successMessage = fmt.Sprintf("Rule for %s (%s) is already active.", displayDomain, typ)
-					log.Info("Quick unblock via WebUI: ignored, rule is already active",
-						slog.String("domainLowercased", domainLowercased),
-						slog.String("displayDomain", displayDomain),
-						slog.String("DNSType", typ))
-				} else {
-					newID, addErr := ui.ruleStore.AddRule(typ, domainLowercased, true, log)
-					if addErr == nil {
-						_ = newID
-						successMessage = fmt.Sprintf("Successfully unblocked: added new active rule for %s (%s).", displayDomain, typ)
-						log.Info("Quick unblock via WebUI: added new rule(ie. didn't already exist)",
-							slog.String("domainLowercased", domainLowercased),
-							slog.String("displayDomain", displayDomain),
-							slog.String("DNSType", typ))
-						ui.OnInvalidatePattern(domainLowercased)
-					} else {
-						panic2(fmt.Sprintf("BUG: couldn't AddRule because already exists which means logic is broken as it shouldn't exist here, or some other error happened in AddRule, typ %s domainLowercased %s, displayDomain %s", typ, domainLowercased, displayDomain))
-					}
+				successMessage = msg
+				log.Info("Quick "+action+" via WebUI (whitelist)",
+					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+				ui.OnInvalidatePattern(domainLowercased)
+
+			case "reblock_qb", "unblock_qb":
+				// Query-blocklist "except" layer: managed exactly like the
+				// whitelist above, but under queryBlockCategoryExcept in
+				// queryBlocklistStore instead. An "except" rule only ever
+				// cancels an EXTERNAL-source block (see checkQueryBlocklist's
+				// doc comment); it never overrides a local "block" pattern,
+				// which is why this is a separate control from the local-rule
+				// toggle below rather than reusing the same action names.
+				msg, toggleErr := quickToggleExactRule(ui.queryBlocklistStore, queryBlockCategoryExcept, domainLowercased, displayDomain, action == "unblock_qb", log, "query blocklist: external-source except")
+				if toggleErr != nil {
+					log.Warn("Failed quick unblock/reblock via WebUI (query-blocklist except)",
+						slog.String("action", action), wincoe.SafeErr(toggleErr),
+						slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+					respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
+					return
 				}
+				successMessage = msg
+				log.Info("Quick "+action+" via WebUI (query-blocklist except)",
+					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+				ui.OnInvalidatePattern(domainLowercased)
+
+			case "disable_qb_local_rule":
+				// Disables the specific local "block" rule (matched earlier,
+				// by ID — see the "id" form field) that is currently blocking
+				// this domain outright. One-directional: re-enabling it is
+				// done from the /query-blocklist page itself, mirroring how a
+				// local whitelist rule disabled here can only be re-enabled
+				// via /rules, not re-toggled from /blocks a second time.
+				id := r.FormValue("id")
+				if id == "" {
+					log.Warn("Failed to disable query-blocklist local rule: missing id", slog.String("domainLowercased", domainLowercased))
+					respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Missing rule id.", raw)
+					return
+				}
+				pattern, found, changed := ui.queryBlocklistStore.SetEnabledByID(queryBlockCategoryBlock, id, false, log)
+				if !found {
+					log.Warn("Failed to disable query-blocklist local rule: not found",
+						slog.String("id", id), slog.String("domainLowercased", domainLowercased))
+					respondBlocksResult(log, w, r, false, http.StatusNotFound, "That query-blocklist rule no longer exists.", raw)
+					return
+				}
+				if changed {
+					successMessage = fmt.Sprintf("Disabled the local query-blocklist rule blocking %s.", displayDomain)
+					log.Info("Quick-disabled query-blocklist local block rule via WebUI",
+						slog.String("id", id), slog.String("pattern", pattern), slog.String("domainLowercased", domainLowercased))
+					ui.OnInvalidatePattern(pattern)
+				} else {
+					successMessage = fmt.Sprintf("Local query-blocklist rule for %s is already disabled.", displayDomain)
+				}
+
 			default:
 				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
 				return
 			} //switch
 
-			if err := /*uses lock*/ ui.OnSaveWhitelist(); err != nil {
-				respondBlocksResult(log, w, r, false, http.StatusInternalServerError, ui.logPersistFailure("whitelist", err).Error(), "")
+			// Both the whitelist rule store and the query-blocklist rule store
+			// may have just been mutated above (never both in the same
+			// request, since action selects exactly one branch), so persist
+			// whichever one actually changed. OnSaveQueryBlocklist is nil-safe
+			// here only in the sense that this branch is unreachable unless
+			// ui.queryBlocklistStore/OnSaveQueryBlocklist were wired by
+			// initAdminUI, exactly like queryBlocklistHandler already assumes.
+			var saveErr error
+			switch action {
+			case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+				saveErr = ui.OnSaveQueryBlocklist()
+				if saveErr != nil {
+					saveErr = ui.logPersistFailure("query blocklist", saveErr)
+				}
+			default:
+				saveErr = /*uses lock*/ ui.OnSaveWhitelist()
+				if saveErr != nil {
+					saveErr = ui.logPersistFailure("whitelist", saveErr)
+				}
+			}
+			if saveErr != nil {
+				respondBlocksResult(log, w, r, false, http.StatusInternalServerError, saveErr.Error(), "")
 				return
 			}
 			respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
@@ -11927,8 +12043,8 @@ func (s *Server) initAdminUI() {
 	ui.rateLimiter = newClientRateLimiter( /*s.ctx, */ webUIRateLimitConfigFrom(*s.getConfig()), s.getLogger())
 
 	// Query-blocklist WebUI wiring: reuses the shared *RuleStore machinery
-	// (see query_blocklist.go) and the same externalBlocklist snapshot the
-	// DNS hot path reads via s.checkQueryBlocklist.
+	// (implemented in this same file) and the same externalBlocklist
+	// snapshot the DNS hot path reads via s.checkQueryBlocklist.
 	ui.queryBlocklistStore = s.queryBlocklistStore
 	ui.externalBlocklist = &s.externalBlocklist
 
@@ -16990,13 +17106,12 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error
 			log.Warn("Failed to toggle query-blocklist rule: unknown category", slog.String("category", category))
 			return http.StatusBadRequest, fmt.Errorf("unknown category %q", category)
 		}
-		snapshot := ui.queryBlocklistStore.Snapshot()
-		var pattern string
+
 		var curEnabled bool
 		found := false
-		for _, rule := range snapshot[category] {
+		for _, rule := range ui.queryBlocklistStore.Snapshot()[category] {
 			if rule.ID == id {
-				pattern, curEnabled, found = rule.Pattern, rule.Enabled, true
+				curEnabled, found = rule.Enabled, true
 				break
 			}
 		}
@@ -17004,7 +17119,13 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string) (int, error
 			log.Warn("Failed to toggle query-blocklist rule: not found", slog.String("id", id), slog.String("category", category))
 			return http.StatusNotFound, errors.New("query-blocklist rule not found")
 		}
-		if _, changed := ui.queryBlocklistStore.SetEnabled(category, pattern, !curEnabled, log); changed {
+		pattern, stillFound, changed := ui.queryBlocklistStore.SetEnabledByID(category, id, !curEnabled, log)
+		if !stillFound {
+			// Rare TOCTOU: deleted between the Snapshot() lookup above and here.
+			log.Warn("Failed to toggle query-blocklist rule: disappeared mid-request", slog.String("id", id), slog.String("category", category))
+			return http.StatusNotFound, errors.New("query-blocklist rule not found")
+		}
+		if changed {
 			invalidate(pattern)
 			log.Info("Toggled query-blocklist rule via WebUI",
 				slog.String("id", id), slog.String("category", category), slog.Bool("enabled", !curEnabled))
@@ -17091,4 +17212,51 @@ func (s *Server) blockAndCacheQuery(ctx context.Context, cfg *Config, cachee DNS
 		}, time.Duration(cfg.BlockedResponseTTLSec)*time.Second)
 	}
 	return blocked
+}
+
+// quickToggleExactRule implements the shared "find-or-create an exact-pattern
+// rule and flip it to the desired enabled state" logic used by the /blocks
+// page's quick unblock/reblock controls — both for the whitelist layer
+// (store=ui.ruleStore, typ=DNS record type) and for the query-blocklist
+// "except" layer (store=ui.queryBlocklistStore, typ=queryBlockCategoryExcept).
+// Both layers use the exact same convention: quick-unblock either flips an
+// existing disabled rule back on, or creates a brand-new enabled rule if none
+// existed yet; quick-reblock only ever disables an existing rule (never
+// creates one, since "no rule" already means "not excepted/not whitelisted").
+//
+// wantEnabled=true is "unblock" (may create); wantEnabled=false is "reblock"
+// (never creates — findOnlyOnReblock below governs that).
+//
+// Returns a human-readable outcome message and an error only for a genuine
+// AddRule failure (which, given the enabled-lookup happened just before, and
+// this all runs under tableMutationMu, should never actually happen — see the
+// call site's existing panic2 for the identical invariant on the whitelist
+// path already in place before this helper existed).
+func quickToggleExactRule(store *RuleStore, typ, pattern, displayPattern string, wantEnabled bool, log *slog.Logger, thingLabel string) (message string, err error) {
+	if wantEnabled {
+		found, changed := store.SetEnabled(typ, pattern, true, log)
+		switch {
+		case found && changed:
+			return fmt.Sprintf("Successfully unblocked (%s): activated existing paused rule for %s (%s).", thingLabel, displayPattern, typ), nil
+		case found:
+			return fmt.Sprintf("Rule for %s (%s) is already active (%s).", displayPattern, typ, thingLabel), nil
+		}
+		newID, addErr := store.AddRule(typ, pattern, true, log)
+		if addErr != nil {
+			return "", fmt.Errorf("quickToggleExactRule: AddRule unexpectedly failed for a pattern just confirmed absent (type=%q pattern=%q thing=%q): %w", typ, pattern, thingLabel, addErr)
+		}
+		_ = newID
+		return fmt.Sprintf("Successfully unblocked (%s): added new active rule for %s (%s).", thingLabel, displayPattern, typ), nil
+	}
+
+	// reblock: never creates.
+	found, changed := store.SetEnabled(typ, pattern, false, log)
+	switch {
+	case found && changed:
+		return fmt.Sprintf("Successfully re-blocked (%s): paused rule for %s (%s).", thingLabel, displayPattern, typ), nil
+	case found:
+		return fmt.Sprintf("Rule for %s (%s) is already paused (%s).", displayPattern, typ, thingLabel), nil
+	default:
+		return "", fmt.Errorf("no active rule exists for %s (%s, %s) to re-block/pause", displayPattern, typ, thingLabel)
+	}
 }

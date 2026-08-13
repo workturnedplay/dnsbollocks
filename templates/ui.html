@@ -250,14 +250,14 @@
     {{range .Blocks}}
     <li>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
-        
+
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="reblock">
-            <button type="submit" class="btn-cancel">Re-block (Pause)</button>
+            <button type="submit" class="btn-cancel">Re-block (Pause) [Whitelist]</button>
         </form>
         {{else}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -265,9 +265,41 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock">
-            <button type="submit" class="btn-edit">Unblock {{.Type}}</button>
+            <button type="submit" class="btn-edit">Unblock {{.Type}} [Whitelist]</button>
         </form>
         {{end}}
+
+        {{if .QueryBlocklistLocalBlocked}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="{{.QueryBlocklistLocalRuleID}}">
+            <input type="hidden" name="action" value="disable_qb_local_rule">
+            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright, regardless of the whitelist above.">Disable Blocking Rule [Query&nbsp;Blocklist]</button>
+        </form>
+        {{end}}
+
+        {{if .QueryBlocklistExternalListed}}
+        {{if .QueryBlocklistExternalExcepted}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="reblock_qb">
+            <button type="submit" class="btn-cancel" title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+        </form>
+        {{else}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="unblock_qb">
+            <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+        </form>
+        {{end}}
+        {{end}}
+
         <span class="block-action-feedback" aria-live="polite" aria-atomic="true"></span>
     </li>
     {{end}}

@@ -35,6 +35,7 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	rs := newRuleStore()
 	hs := newHostStore()
 	bl := newBlacklistStore()
+	qbs := newRuleStore() // for query-blocklist tests (see query_blocklist_test.go)
 	lt := newLoginTracker()
 	rb := newRecentBlocksTracker()
 	stats := new(expvar.Int)
@@ -63,6 +64,14 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	var tableMutationMu sync.Mutex
 	logMgr := NewLoggerManager(logger)
 	ui := NewAdminUI(&liveConfigs, &liveLogger, logMgr, rs, hs, bl, &tableMutationMu, lt, rb, stats, tpls)
+	// Mirrors initAdminUI's post-construction wiring for the query-blocklist
+	// feature (queryBlocklistStore/externalBlocklist/OnSaveQueryBlocklist
+	// aren't part of NewAdminUI's parameter list — see their field doc
+	// comments in platform_windows.go), so tests exercising /blocks or
+	// /query-blocklist handlers don't nil-panic.
+	ui.queryBlocklistStore = qbs
+	ui.externalBlocklist = &atomic.Pointer[ExternalHostsBlocklistSource]{}
+	ui.OnSaveQueryBlocklist = func() error { return nil }
 	rec := httptest.NewRecorder()
 
 	return ui, rec
