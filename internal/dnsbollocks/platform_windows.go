@@ -820,6 +820,11 @@ func (c Config) Clone() Config {
 type LocalHostRule struct {
 	Pattern string
 	IPs     []net.IP
+	// Enabled mirrors RuleEntry.Enabled: a disabled host override is kept on
+	// disk and shown in the WebUI, but never matched by HostStore.Match, so
+	// an operator can temporarily suspend an override (e.g. to let a domain
+	// resolve normally again) without deleting and later re-typing it.
+	Enabled bool
 	// ModifiedAt is the timestamp of this host override's most recent
 	// add/edit, populating the WebUI's sortable "Last Modified" column. See
 	// HostFileEntry for its on-disk (hosts2ip.json) counterpart.
@@ -827,44 +832,62 @@ type LocalHostRule struct {
 }
 
 // HostFileEntry is the on-disk representation of a single local host-override
-// rule in hosts2ip.json: the target IP(s) plus the timestamp of the most
-// recent add/edit (see LocalHostRule.ModifiedAt), used to populate the WebUI's
+// rule in hosts2ip.json: the target IP(s), whether the override is currently
+// active (see LocalHostRule.Enabled), plus the timestamp of the most recent
+// add/edit (see LocalHostRule.ModifiedAt), used to populate the WebUI's
 // sortable "Last Modified" column.
 type HostFileEntry struct {
 	IPs        []string  `json:"ips"`
+	Enabled    bool      `json:"enabled"`
 	ModifiedAt time.Time `json:"modified_at"`
 }
 
 // parseHostFileEntry decodes a single hosts2ip.json value in either the
-// current format (a HostFileEntry object with "ips" and "modified_at") or
-// the legacy format (a bare JSON array of IP strings, used by every
-// dnsbollocks release before the "Last Modified" WebUI column was added). A
-// legacy entry's ModifiedAt is left at the zero value; the caller
+// current format (a HostFileEntry object with "ips", "enabled", and
+// "modified_at") or the legacy format (a bare JSON array of IP strings, used
+// by every dnsbollocks release before the "Last Modified" WebUI column was
+// added). A legacy entry's ModifiedAt is left at the zero value; the caller
 // (loadLocalHosts) fills in time.Now() so the on-disk file migrates to the
 // current format on the next save — mirroring how loadQueryWhitelist
 // migrates a rule with a missing/empty ID.
-func parseHostFileEntry(raw json.RawMessage) (HostFileEntry, error) {
+//
+// migrated reports whether the "enabled" field was absent from the input:
+// both legacy bare-array entries and current-format objects written before
+// the "Enabled" WebUI toggle existed lack it. In either case Enabled
+// defaults to true (every entry was implicitly always active before this
+// feature existed), and the caller should flag the file for a rewrite so the
+// now-explicit value gets persisted.
+func parseHostFileEntry(raw json.RawMessage) (entry HostFileEntry, migrated bool, err error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return HostFileEntry{}, errors.New("empty value")
+		return HostFileEntry{}, false, errors.New("empty value")
 	}
 	switch trimmed[0] {
 	case '[':
 		var ips []string
 		if err := json.Unmarshal(raw, &ips); err != nil {
-			return HostFileEntry{}, fmt.Errorf("failed to parse legacy (bare IP array) host entry: %w", err)
+			return HostFileEntry{}, false, fmt.Errorf("failed to parse legacy (bare IP array) host entry: %w", err)
 		}
-		return HostFileEntry{IPs: ips}, nil
+		return HostFileEntry{IPs: ips, Enabled: true}, true, nil
 	case '{':
-		var entry HostFileEntry
+		var decoded struct {
+			IPs        []string  `json:"ips"`
+			Enabled    *bool     `json:"enabled"`
+			ModifiedAt time.Time `json:"modified_at"`
+		}
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
-		if decErr := d.Decode(&entry); decErr != nil {
-			return HostFileEntry{}, fmt.Errorf("failed to parse host entry: %w", decErr)
+		if decErr := d.Decode(&decoded); decErr != nil {
+			return HostFileEntry{}, false, fmt.Errorf("failed to parse host entry: %w", decErr)
 		}
-		return entry, nil
+		enabledWasMissing := decoded.Enabled == nil
+		enabled := true
+		if !enabledWasMissing {
+			enabled = *decoded.Enabled
+		}
+		return HostFileEntry{IPs: decoded.IPs, Enabled: enabled, ModifiedAt: decoded.ModifiedAt}, enabledWasMissing, nil
 	default:
-		return HostFileEntry{}, fmt.Errorf("unrecognized JSON value shape (expected array or object), starts with %q", trimmed[0])
+		return HostFileEntry{}, false, fmt.Errorf("unrecognized JSON value shape (expected array or object), starts with %q", trimmed[0])
 	}
 }
 
@@ -891,12 +914,15 @@ func (r RuleEntry) LogValue() slog.Value {
 	)
 }
 
-// BlacklistRecord pairs a parsed CIDR/IP network with the timestamp of its
-// most recent add/edit, so the WebUI can display and sort by "Last Modified"
-// the same way Rules and Local Hosts do. This is BlacklistStore's internal
-// in-memory representation; BlacklistFileEntry is its on-disk counterpart.
+// BlacklistRecord pairs a parsed CIDR/IP network with whether it is
+// currently active and the timestamp of its most recent add/edit, so the
+// WebUI can display and sort by "Last Modified" the same way Rules and
+// Local Hosts do, and can temporarily suspend an entry without deleting it.
+// This is BlacklistStore's internal in-memory representation;
+// BlacklistFileEntry is its on-disk counterpart.
 type BlacklistRecord struct {
 	Net        *net.IPNet
+	Enabled    bool
 	ModifiedAt time.Time
 }
 
@@ -904,6 +930,7 @@ type BlacklistRecord struct {
 // blacklist entry in response_blacklist.json.
 type BlacklistFileEntry struct {
 	CIDR       string    `json:"cidr"`
+	Enabled    bool      `json:"enabled"`
 	ModifiedAt time.Time `json:"modified_at"`
 }
 
@@ -914,34 +941,47 @@ type BlacklistFileFormat struct {
 
 // parseBlacklistFileEntry decodes a single response_blacklist.json array
 // element in either the current format (a BlacklistFileEntry object with
-// "cidr" and "modified_at") or the legacy format (a bare CIDR/IP string,
-// used by every dnsbollocks release before the "Last Modified" WebUI column
-// was added). A legacy entry's ModifiedAt is left at the zero value; the
-// caller (loadResponseBlacklist) fills in time.Now() so the on-disk file
-// migrates to the current format on the next save — mirroring
-// parseHostFileEntry's identical migration for hosts2ip.json.
-func parseBlacklistFileEntry(raw json.RawMessage) (BlacklistFileEntry, error) {
+// "cidr", "enabled", and "modified_at") or the legacy format (a bare
+// CIDR/IP string, used by every dnsbollocks release before the "Last
+// Modified" WebUI column was added). A legacy entry's ModifiedAt is left at
+// the zero value; the caller (loadResponseBlacklist) fills in time.Now() so
+// the on-disk file migrates to the current format on the next save —
+// mirroring parseHostFileEntry's identical migration for hosts2ip.json.
+//
+// migrated reports whether the "enabled" field was absent from the input
+// (see parseHostFileEntry's identical migrated return for the full
+// rationale); Enabled defaults to true in that case.
+func parseBlacklistFileEntry(raw json.RawMessage) (entry BlacklistFileEntry, migrated bool, err error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return BlacklistFileEntry{}, errors.New("empty value")
+		return BlacklistFileEntry{}, false, errors.New("empty value")
 	}
 	switch trimmed[0] {
 	case '"':
 		var cidr string
 		if err := json.Unmarshal(raw, &cidr); err != nil {
-			return BlacklistFileEntry{}, fmt.Errorf("failed to parse legacy (bare string) blacklist entry: %w", err)
+			return BlacklistFileEntry{}, false, fmt.Errorf("failed to parse legacy (bare string) blacklist entry: %w", err)
 		}
-		return BlacklistFileEntry{CIDR: cidr}, nil
+		return BlacklistFileEntry{CIDR: cidr, Enabled: true}, true, nil
 	case '{':
-		var entry BlacklistFileEntry
+		var decoded struct {
+			CIDR       string    `json:"cidr"`
+			Enabled    *bool     `json:"enabled"`
+			ModifiedAt time.Time `json:"modified_at"`
+		}
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
-		if decErr := d.Decode(&entry); decErr != nil {
-			return BlacklistFileEntry{}, fmt.Errorf("failed to parse blacklist entry: %w", decErr)
+		if decErr := d.Decode(&decoded); decErr != nil {
+			return BlacklistFileEntry{}, false, fmt.Errorf("failed to parse blacklist entry: %w", decErr)
 		}
-		return entry, nil
+		enabledWasMissing := decoded.Enabled == nil
+		enabled := true
+		if !enabledWasMissing {
+			enabled = *decoded.Enabled
+		}
+		return BlacklistFileEntry{CIDR: decoded.CIDR, Enabled: enabled, ModifiedAt: decoded.ModifiedAt}, enabledWasMissing, nil
 	default:
-		return BlacklistFileEntry{}, fmt.Errorf("unrecognized JSON value shape (expected string or object), starts with %q", trimmed[0])
+		return BlacklistFileEntry{}, false, fmt.Errorf("unrecognized JSON value shape (expected string or object), starts with %q", trimmed[0])
 	}
 }
 
@@ -969,7 +1009,7 @@ func (s *Server) loadResponseBlacklist() error {
 			log.Warn("Blacklist file not found → using built-in defaults", slog.String("file", blacklistFileName))
 			now := time.Now()
 			for _, cidr := range defaultResponseBlacklist() {
-				rawEntries = append(rawEntries, BlacklistFileEntry{CIDR: cidr, ModifiedAt: now})
+				rawEntries = append(rawEntries, BlacklistFileEntry{CIDR: cidr, Enabled: true, ModifiedAt: now})
 			}
 			shouldSave = true
 		}
@@ -1012,7 +1052,7 @@ func (s *Server) loadResponseBlacklist() error {
 
 		rawEntries = make([]BlacklistFileEntry, 0, len(file.ResponseBlacklist))
 		for i, rawEntry := range file.ResponseBlacklist {
-			entry, parseErr := parseBlacklistFileEntry(rawEntry)
+			entry, migrated, parseErr := parseBlacklistFileEntry(rawEntry)
 			if parseErr != nil {
 				return fmt.Errorf(
 					"failed to parse blacklist entry %d in %q: %w",
@@ -1020,6 +1060,9 @@ func (s *Server) loadResponseBlacklist() error {
 					blacklistFileName,
 					parseErr,
 				)
+			}
+			if migrated {
+				shouldSave = true
 			}
 			rawEntries = append(rawEntries, entry)
 		}
@@ -1042,7 +1085,7 @@ func (s *Server) loadResponseBlacklist() error {
 			modifiedAt = time.Now()
 			shouldSave = true
 		}
-		parsed = append(parsed, BlacklistRecord{Net: n, ModifiedAt: modifiedAt})
+		parsed = append(parsed, BlacklistRecord{Net: n, Enabled: entry.Enabled, ModifiedAt: modifiedAt})
 	}
 
 	// Optional: after parsing, clean up duplicates (just in case)
@@ -1100,7 +1143,7 @@ func (s *Server) saveResponseBlacklist() error {
 	records := s.blacklist.Snapshot()
 	entries := make([]BlacklistFileEntry, len(records))
 	for i, rec := range records {
-		entries[i] = BlacklistFileEntry{CIDR: rec.Net.String(), ModifiedAt: rec.ModifiedAt}
+		entries[i] = BlacklistFileEntry{CIDR: rec.Net.String(), Enabled: rec.Enabled, ModifiedAt: rec.ModifiedAt}
 	}
 	jsonFileContents := BlacklistFileFormat{
 		ResponseBlacklist: entries,
@@ -1234,7 +1277,7 @@ func (s *Server) loadLocalHosts() error {
 	seenPatterns := make(map[string]struct{}, len(rawEntries))
 
 	for pat, rawEntry := range rawEntries {
-		hostEntry, parseErr := parseHostFileEntry(rawEntry)
+		hostEntry, enabledMigrated, parseErr := parseHostFileEntry(rawEntry)
 		if parseErr != nil {
 			log.Error("Purging host entry with unparseable value",
 				slog.String("pattern", pat),
@@ -1249,6 +1292,13 @@ func (s *Server) loadLocalHosts() error {
 			// hand-edited file) — migrate it to a real timestamp so it sorts
 			// sensibly and the file gets rewritten in the current format.
 			modifiedAt = time.Now()
+			changed++
+		}
+		if enabledMigrated {
+			// Entry predates the "Enabled" WebUI toggle (or is a legacy
+			// bare-IP-array entry) — it was implicitly always active, so
+			// Enabled already defaults to true; just flag the file for a
+			// rewrite so the now-explicit value gets persisted.
 			changed++
 		}
 
@@ -1350,7 +1400,7 @@ func (s *Server) loadLocalHosts() error {
 			continue
 		}
 
-		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs, ModifiedAt: modifiedAt})
+		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs, Enabled: hostEntry.Enabled, ModifiedAt: modifiedAt})
 	}
 
 	if cfg.ExtraSafety && removed > 0 {
@@ -6981,7 +7031,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		records := ui.blacklist.Snapshot()
 		views := make([]BlacklistView, len(records))
 		for i, rec := range records {
-			views[i] = BlacklistView{Index: i, CIDR: rec.Net.String(), ModifiedAtDisplay: formatModifiedAt(rec.ModifiedAt)}
+			views[i] = BlacklistView{Index: i, CIDR: rec.Net.String(), Enabled: rec.Enabled, ModifiedAtDisplay: formatModifiedAt(rec.ModifiedAt)}
 		}
 		data := map[string]any{
 			"ResponseBlacklist": views,
@@ -7002,6 +7052,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			"action":   r.FormValue("action"),
 			"cidr":     r.FormValue("cidr"),
 			"old_cidr": r.FormValue("old_cidr"),
+			"enabled":  r.FormValue("enabled"),
 		}
 
 		status, err := ui.processBlacklistChange(fields, ui.OnInvalidateBlacklist)
@@ -8061,12 +8112,15 @@ func (hs *HostStore) ReplaceAll(hosts []LocalHostRule) {
 	hs.generation.Add(1)
 }
 
-// Match returns the IPs for the first rule whose pattern matches domain, or nil.
+// Match returns the IPs for the first ENABLED rule whose pattern matches
+// domain, or nil. A disabled override (see LocalHostRule.Enabled) is
+// skipped entirely, so the query falls through to the whitelist/upstream
+// path exactly as if the override didn't exist.
 func (hs *HostStore) Match(domain string) ([]net.IP, bool) {
 	hs.mu.RLock()
 	defer hs.mu.RUnlock()
 	for _, rule := range hs.hosts {
-		if matchPattern(rule.Pattern, domain) {
+		if rule.Enabled && matchPattern(rule.Pattern, domain) {
 			return rule.IPs, true
 		}
 	}
@@ -8089,6 +8143,7 @@ func (hs *HostStore) Snapshot() []HostView {
 			Pattern:           h.Pattern,
 			PatternDisplay:    displayPattern,
 			IPsDisplay:        strings.Join(ips, ", "),
+			Enabled:           h.Enabled,
 			ModifiedAtDisplay: formatModifiedAt(h.ModifiedAt),
 			// ModifiedAtSort:    modifiedAtSortValue(h.ModifiedAt),
 		}
@@ -8110,13 +8165,21 @@ func (hs *HostStore) ToRawMap() map[string]HostFileEntry {
 		for _, ip := range rule.IPs {
 			ips = append(ips, ip.String())
 		}
-		raw[rule.Pattern] = HostFileEntry{IPs: ips, ModifiedAt: rule.ModifiedAt}
+		raw[rule.Pattern] = HostFileEntry{IPs: ips, Enabled: rule.Enabled, ModifiedAt: rule.ModifiedAt}
 	}
 	return raw
 }
 
-// AddHost appends a new rule. Returns an error if the pattern already exists.
+// AddHost appends a new, enabled rule. Returns an error if the pattern already exists.
 func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
+	return hs.AddHostWithEnabled(pattern, ips, true)
+}
+
+// AddHostWithEnabled mirrors AddHost but lets the caller specify the
+// enabled state explicitly (used by the WebUI's Add form, which lets the
+// operator add a host override already paused via the "Enabled" checkbox).
+// Returns an error if the pattern already exists.
+func (hs *HostStore) AddHostWithEnabled(pattern string, ips []net.IP, enabled bool) error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 	for _, rule := range hs.hosts {
@@ -8124,14 +8187,21 @@ func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
 			return fmt.Errorf("local host with pattern %q already exists", pattern)
 		}
 	}
-	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips, ModifiedAt: time.Now()})
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips, Enabled: enabled, ModifiedAt: time.Now()})
 	hs.generation.Add(1)
 	return nil
 }
 
-// EditHost replaces (old→new). Returns an error if the new pattern already
-// exists and is different from the old pattern.
+// EditHost replaces (old→new) with Enabled=true. Returns an error if the new
+// pattern already exists and is different from the old pattern.
 func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error {
+	return hs.EditHostWithEnabled(oldPattern, newPattern, ips, true)
+}
+
+// EditHostWithEnabled mirrors EditHost but lets the caller specify the
+// enabled state explicitly (used by the WebUI's Edit form, which preserves
+// or toggles the row's "Enabled" checkbox).
+func (hs *HostStore) EditHostWithEnabled(oldPattern, newPattern string, ips []net.IP, enabled bool) error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -8146,7 +8216,7 @@ func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error
 
 	hs.hosts = deleteHostEntry(hs.hosts, oldPattern)
 	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // safe eviction
-	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips, ModifiedAt: time.Now()})
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips, Enabled: enabled, ModifiedAt: time.Now()})
 	hs.generation.Add(1)
 	return nil
 }
@@ -8206,7 +8276,7 @@ func (bs *BlacklistStore) Contains(ip net.IP) bool {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
 	for _, rec := range bs.records {
-		if rec.Net.Contains(ip) {
+		if rec.Enabled && rec.Net.Contains(ip) {
 			return true
 		}
 	}
@@ -8233,8 +8303,14 @@ func (bs *BlacklistStore) List() []string {
 	return out
 }
 
-// TryAdd adds the CIDR if not already present. Returns true if added.
+// TryAdd adds the CIDR (enabled) if not already present. Returns true if added.
 func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
+	return bs.TryAddWithEnabled(n, true)
+}
+
+// TryAddWithEnabled mirrors TryAdd but lets the caller specify the enabled
+// state explicitly (used by the WebUI's Add form).
+func (bs *BlacklistStore) TryAddWithEnabled(n *net.IPNet, enabled bool) bool {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	for _, existing := range bs.records {
@@ -8243,16 +8319,22 @@ func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
 		}
 	}
 	// Prepend so newly added entries show up first, mirroring RuleStore.AddRule's behavior.
-	bs.records = append([]BlacklistRecord{{Net: n, ModifiedAt: time.Now()}}, bs.records...)
+	bs.records = append([]BlacklistRecord{{Net: n, Enabled: enabled, ModifiedAt: time.Now()}}, bs.records...)
 	bs.generation.Add(1)
 	return true // Added successfully
 }
 
-// TryEdit replaces an existing CIDR entry (matched by its exact string form) with a new one,
-// moving the edited entry to the front of the list and refreshing its ModifiedAt timestamp.
-// Returns an error if oldCIDR isn't found, or if newNet's string form collides with a
-// different existing entry.
+// TryEdit replaces an existing CIDR entry (matched by its exact string form) with a new,
+// enabled one, moving the edited entry to the front of the list and refreshing its
+// ModifiedAt timestamp. Returns an error if oldCIDR isn't found, or if newNet's string
+// form collides with a different existing entry.
 func (bs *BlacklistStore) TryEdit(oldCIDR string, newNet *net.IPNet) error {
+	return bs.TryEditWithEnabled(oldCIDR, newNet, true)
+}
+
+// TryEditWithEnabled mirrors TryEdit but lets the caller specify the enabled
+// state explicitly (used by the WebUI's Edit form).
+func (bs *BlacklistStore) TryEditWithEnabled(oldCIDR string, newNet *net.IPNet, enabled bool) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -8277,7 +8359,7 @@ func (bs *BlacklistStore) TryEdit(oldCIDR string, newNet *net.IPNet) error {
 	}
 
 	bs.records = append(bs.records[:idx:idx], bs.records[idx+1:]...)
-	bs.records = append([]BlacklistRecord{{Net: newNet, ModifiedAt: time.Now()}}, bs.records...)
+	bs.records = append([]BlacklistRecord{{Net: newNet, Enabled: enabled, ModifiedAt: time.Now()}}, bs.records...)
 	bs.generation.Add(1)
 	return nil
 }
@@ -8808,6 +8890,7 @@ func withRuleUpdatedAtIndex(entries []RuleEntry, index int, updatedRule RuleEntr
 type BlacklistView struct {
 	Index             int
 	CIDR              string
+	Enabled           bool
 	ModifiedAtDisplay string
 }
 
@@ -8816,6 +8899,7 @@ type HostView struct {
 	Pattern           string // ASCII/punycode identity — used for delete and old_pattern forms
 	PatternDisplay    string // Unicode form for display/editing (same as Pattern when not an IDN)
 	IPsDisplay        string // Pre-joined "1.1.1.1, 2.2.2.2"
+	Enabled           bool   // whether this override is currently active (see LocalHostRule.Enabled)
 	ModifiedAtDisplay string // Human-readable last-modified timestamp (see formatModifiedAt)
 	// ModifiedAtSort    string // Unix-nanoseconds sort key for the "Last Modified" column (see modifiedAtSortValue)
 }
@@ -8955,6 +9039,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			"old_pattern": r.FormValue("old_pattern"),
 			"edit":        r.FormValue("edit"),
 			"ips":         r.FormValue("ips"),
+			"enabled":     r.FormValue("enabled"),
 		}
 
 		status, err := ui.processHostChange(fields, ui.OnInvalidatePattern)
@@ -16025,6 +16110,8 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 	patternLowercased := strings.ToLower(strings.TrimSpace(fields["pattern"]))
 	oldPatternLowercased := strings.ToLower(strings.TrimSpace(fields["old_pattern"]))
 	isEdit := fields["edit"] == "1"
+	enabledStr := fields["enabled"]
+	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 	if patternLowercased == "" {
 		log.Warn("Failed to add/edit local host: hostname required")
@@ -16107,10 +16194,10 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 	var err error
 	if isEdit {
 		// NOW CATCHING THE ERROR:
-		err = ui.hostStore.EditHost(oldPatternLowercased, patternLowercased, netIPs)
+		err = ui.hostStore.EditHostWithEnabled(oldPatternLowercased, patternLowercased, netIPs, enabledBool)
 	} else {
 		//it's Add (Delete was handled above)
-		err = ui.hostStore.AddHost(patternLowercased, netIPs)
+		err = ui.hostStore.AddHostWithEnabled(patternLowercased, netIPs, enabledBool)
 	}
 
 	if err != nil {
@@ -16136,13 +16223,16 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 	log.Info("Successfully added/edited local host override via WebUI/Batch",
 		slog.String("pattern", patternLowercased),
 		slog.String("pattern_idn", displayPattern),
-		slog.Int("ip_count", len(netIPs)))
+		slog.Int("ip_count", len(netIPs)),
+		slog.Bool("enabled", enabledBool))
 	return http.StatusOK, nil
 }
 
 func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBlacklist func()) (int, error) {
 	log := ui.getLogger()
 	action := fields["action"]
+	enabledStr := fields["enabled"]
+	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
 	switch action { //doneFIXME: could use tagged switch on action QF1003 default
 	case "delete":
@@ -16175,10 +16265,10 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 			}
 			if n != nil {
 				// Using the clean add helper method with natural defer unlock
-				if ui.blacklist.TryAdd(n) {
+				if ui.blacklist.TryAddWithEnabled(n, enabledBool) {
 					// Instantly evict cached entries that contain the newly blacklisted IP
 					invalidateBlacklist()
-					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()))
+					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()), slog.Bool("enabled", enabledBool))
 					return http.StatusOK, nil
 				}
 				log.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
@@ -16218,14 +16308,14 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 		}
 		// 1. Attempt to update the rule list (Source of Truth) first
 
-		if err := ui.blacklist.TryEdit(oldCIDR, n); err != nil {
+		if err := ui.blacklist.TryEditWithEnabled(oldCIDR, n, enabledBool); err != nil {
 			log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(err),
 				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 
 			return http.StatusConflict, err
 		}
 		invalidateBlacklist()
-		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
+		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()), slog.Bool("enabled", enabledBool))
 		return http.StatusOK, nil
 	default:
 		log.Warn("Response blacklist handler received unknown action", slog.String("action", action))

@@ -341,6 +341,7 @@
         required
     >
 
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
     <button type="submit">Add Host</button>
 </form>
 
@@ -358,10 +359,11 @@
 {{template "staged-table-banner" .}}
 <table id="hostsTable">
     <colgroup>
+        <col class="col-26">
         <col class="col-30">
-        <col class="col-35">
-        <col class="col-15">
-        <col class="col-20">
+        <col class="col-12">
+        <col class="col-14">
+        <col class="col-18">
     </colgroup>
     <thead>
         <tr>
@@ -379,6 +381,12 @@
             </th>
             <th class="sortable" data-col="2" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
+                    <span>Enabled</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
@@ -388,16 +396,18 @@
     </thead>
     <tbody>
         {{range .Hosts}}
-        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}"
-            data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}">
+        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}" data-host-enabled="{{.Enabled}}"
+            data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}" data-orig-enabled="{{.Enabled}}">
             <td title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
             <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
+            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
             <td>{{.ModifiedAtDisplay}}</td>
             <td class="actions">
                 <button class="btn-edit js-host-edit" 
                 data-index="{{.Index}}" 
                 data-pattern="{{.PatternDisplay}}" 
-                data-ips="{{.IPsDisplay}}">
+                data-ips="{{.IPsDisplay}}"
+                data-enabled="{{.Enabled}}">
                 Edit
             </button>
             <form method="post" action="/hosts" class="js-host-delete-form form-inline-action">
@@ -411,7 +421,7 @@
         </td>
     </tr>
     {{else}}
-    <tr><td colspan="4">No local hosts defined.</td></tr>
+    <tr><td colspan="5">No local hosts defined.</td></tr>
     {{end}}
 </tbody>
 </table>
@@ -423,6 +433,7 @@
             <input type="text" name="pattern" class="edit-host-pattern w-100" form="" required>
         </td>
         <td><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
+        <td><label><input type="checkbox" name="enabled" class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
         <td class="text-muted">(updates on Apply)</td>
         <td class="actions">
             <form method="post" action="/hosts" class="edit-host-form form-inline-action2">
@@ -474,6 +485,7 @@
             class="flex-1 w-300"
             required
         >
+        <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
         <button type="submit">Add IP / CIDR</button>
     </form>
 </div>
@@ -492,9 +504,10 @@
 {{template "staged-table-banner" .}}
 <table id="blacklistTable">
     <colgroup>
-        <col class="col-50">
+        <col class="col-45">
+        <col class="col-15">
         <col class="col-20">
-        <col class="col-30">
+        <col class="col-20">
     </colgroup>
     <thead>
         <tr>
@@ -506,6 +519,12 @@
             </th>
             <th class="sortable" data-col="1" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
+                    <span>Enabled</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
+            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
@@ -515,13 +534,15 @@
     </thead>
     <tbody>
         {{range .ResponseBlacklist}}
-        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-orig-cidr="{{.CIDR}}">
+        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-enabled="{{.Enabled}}" data-orig-cidr="{{.CIDR}}" data-orig-enabled="{{.Enabled}}">
             <td title="{{.CIDR}}">{{.CIDR}}</td>
+            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
             <td>{{.ModifiedAtDisplay}}</td>
             <td class="actions text-center">
                 <button type="button" class="btn-edit js-blacklist-edit"
                 data-index="{{.Index}}"
-                data-cidr="{{.CIDR}}">
+                data-cidr="{{.CIDR}}"
+                data-enabled="{{.Enabled}}">
                 Edit
             </button>
             <form method="post" action="/response-blacklist" class="js-blacklist-delete-form form-inline-action">
@@ -536,7 +557,7 @@
     </tr>
     {{else}}
     <tr>
-        <td colspan="3" class="text-center text-muted">No blacklisted response IPs configured.</td>
+        <td colspan="4" class="text-center text-muted">No blacklisted response IPs configured.</td>
     </tr>
     {{end}}
 </tbody>
@@ -548,6 +569,7 @@
             <input type="hidden" name="old_cidr" class="edit-blacklist-old-cidr" form="">
             <input type="text" name="cidr" class="edit-blacklist-cidr w-100" form="" required>
         </td>
+        <td><label><input type="checkbox" name="enabled" class="edit-blacklist-enabled rule-enabled-checkbox" form=""></label></td>
         <td class="text-muted">(updates on Apply)</td>
         <td class="actions text-center">
             <form method="POST" action="/response-blacklist" class="edit-blacklist-form form-inline-action2">

@@ -43,6 +43,7 @@ func TestFWNeededHandleUDP_TruncationAndEDNS0(t *testing.T) {
 		{
 			Pattern: "large-response.example.com",
 			IPs:     largeIPList,
+			Enabled: true,
 		},
 	})
 

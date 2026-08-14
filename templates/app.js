@@ -825,11 +825,12 @@
     // host override. Its Edit/Delete controls are wired directly here since,
     // unlike the rules table, hosts Edit/Delete are bound per-element rather than
     // via document-level delegation.
-    function buildHostRowElement(clientId, pattern, ipsDisplay) {
+    function buildHostRowElement(clientId, pattern, ipsDisplay, enabled) {
         const row = document.createElement('tr');
         row.id = 'hostRow_' + clientId;
         row.dataset.hostPattern = pattern;
         row.dataset.hostIps = ipsDisplay;
+        row.dataset.hostEnabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
 
@@ -842,6 +843,13 @@
         ipsTd.textContent = ipsDisplay;
         ipsTd.title = ipsDisplay;
         row.appendChild(ipsTd);
+
+        const enabledTd = document.createElement('td');
+        const enabledSpanEl = document.createElement('span');
+        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+        enabledTd.appendChild(enabledSpanEl);
+        row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
         modifiedTd.className = 'text-muted';
@@ -859,6 +867,7 @@
         editBtn.dataset.index = clientId;
         editBtn.dataset.pattern = pattern;
         editBtn.dataset.ips = ipsDisplay;
+        editBtn.dataset.enabled = enabled ? 'true' : 'false';
         editBtn.addEventListener('click', () => editHost(editBtn));
         actionsTd.appendChild(editBtn);
 
@@ -883,26 +892,35 @@
     // applyHostRowDisplay updates a hosts-table row's dataset, visible cells, and
     // its Edit button's dataset to reflect the given pattern/ips. Shared by the
     // optimistic post-Stage update and by baseline-restore (no-op stage / Discard).
-    function applyHostRowDisplay(row, pattern, ips) {
+    function applyHostRowDisplay(row, pattern, ips, enabled) {
         row.dataset.hostPattern = pattern;
         row.dataset.hostIps = ips;
+        row.dataset.hostEnabled = enabled ? 'true' : 'false';
         row.cells[0].textContent = pattern;
         row.cells[0].title = pattern;
         row.cells[1].textContent = ips;
         row.cells[1].title = ips;
+        const enabledCell = row.cells[2];
+        enabledCell.textContent = '';
+        const enabledSpanEl = document.createElement('span');
+        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+        enabledCell.appendChild(enabledSpanEl);
 
         const editBtnEl = row.querySelector('.js-host-edit');
         if (editBtnEl) {
             editBtnEl.dataset.pattern = pattern;
             editBtnEl.dataset.ips = ips;
+            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
         }
     }
 
     // buildBlacklistRowElement mirrors buildHostRowElement for the response-blacklist page.
-    function buildBlacklistRowElement(clientId, cidr) {
+    function buildBlacklistRowElement(clientId, cidr, enabled) {
         const row = document.createElement('tr');
         row.id = 'blacklistRow_' + clientId;
         row.dataset.cidr = cidr;
+        row.dataset.enabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
 
@@ -910,6 +928,13 @@
         cidrTd.textContent = cidr;
         cidrTd.title = cidr;
         row.appendChild(cidrTd);
+
+        const enabledTd = document.createElement('td');
+        const enabledSpanEl = document.createElement('span');
+        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+        enabledTd.appendChild(enabledSpanEl);
+        row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
         modifiedTd.className = 'text-muted';
@@ -926,6 +951,7 @@
         editBtn.textContent = 'Edit';
         editBtn.dataset.index = clientId;
         editBtn.dataset.cidr = cidr;
+        editBtn.dataset.enabled = enabled ? 'true' : 'false';
         editBtn.addEventListener('click', () => editBlacklist(editBtn));
         actionsTd.appendChild(editBtn);
 
@@ -951,14 +977,22 @@
     // cell, and its Edit button's dataset to reflect the given CIDR. Shared by
     // the optimistic post-Stage update and by baseline-restore (no-op stage /
     // Discard).
-    function applyBlacklistRowDisplay(row, cidrVal) {
+    function applyBlacklistRowDisplay(row, cidrVal, enabled) {
         row.dataset.cidr = cidrVal;
+        row.dataset.enabled = enabled ? 'true' : 'false';
         row.cells[0].textContent = cidrVal;
         row.cells[0].title = cidrVal;
+        const enabledCell = row.cells[1];
+        enabledCell.textContent = '';
+        const enabledSpanEl = document.createElement('span');
+        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+        enabledCell.appendChild(enabledSpanEl);
 
         const editBtnEl = row.querySelector('.js-blacklist-edit');
         if (editBtnEl) {
             editBtnEl.dataset.cidr = cidrVal;
+            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
         }
     }
 
@@ -1703,9 +1737,9 @@
     // local host row and restores its displayed pattern/IPs to the original
     // baseline. Shared by the inline per-row Discard button and the Discard
     // button inside the Edit form.
-    function discardHostEdits(row, origPattern, origIps) {
+    function discardHostEdits(row, origPattern, origIps, origEnabled) {
         const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-        discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps));
+        discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps, origEnabled));
     }
     
     function editHost(btn) {
@@ -1713,12 +1747,14 @@
         const index = btn.dataset.index;
         const pat = btn.dataset.pattern;
         const ips = btn.dataset.ips;
+        const enabled = btn.dataset.enabled === 'true';
         
         const row = document.getElementById('hostRow_' + index);
         const isStagedAdd = row.classList.contains('staged-add');
         const clientId = row.dataset.stagedClientId;
         const origPattern = row.dataset.origPattern;
         const origIps = row.dataset.origIps;
+        const origEnabled = row.dataset.origEnabled === 'true';
         // row.style.display = 'none';
         row.hidden = true;
         row.classList.add('being-edited');
@@ -1753,6 +1789,11 @@
         ipsInput.value = ips;
         ipsInput.setAttribute('form', formId);
         ipsInput.setAttribute('aria-label', 'Host IP addresses');
+
+        const enabledCheck = clone.querySelector('.edit-host-enabled');
+        enabledCheck.setAttribute('form', formId);
+        enabledCheck.setAttribute('aria-label', 'Enabled');
+        enabledCheck.checked = enabled;
         
         // 4. Save the new pattern and submit via AJAX
         form.addEventListener('submit', async function(eSubmit) {
@@ -1760,13 +1801,14 @@
             
             const newPattern = patternInput.value.trim().toLowerCase();
             const newIPs = ipsInput.value.trim();
+            const enabledChecked = enabledCheck.checked;
             
             if (isStagedAdd) {
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a pattern the server doesn't know about yet.
-                mergeStagedAddFields(clientId, { pattern: newPattern, ips: newIPs });
-                applyHostRowDisplay(row, newPattern, newIPs);
+                mergeStagedAddFields(clientId, { pattern: newPattern, ips: newIPs, enabled: enabledChecked ? 'true' : 'false' });
+                applyHostRowDisplay(row, newPattern, newIPs, enabledChecked);
                 row.classList.add('staged');
             } else {
                 // Same persisted host may be edited multiple times before Apply;
@@ -1778,12 +1820,14 @@
                 //const isNoOp = newPattern === origPattern && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
                 
                 // FIX: Compare newPattern against the Unicode display pattern (`pat`), not the Punycode `origPattern`.
-                const isNoOp = newPattern === pat.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
+                const isNoOp = newPattern === pat.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps) &&
+                    (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
 
-                const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, edit: '1' };
+                const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, enabled: enabledChecked ? 'true' : 'false', edit: '1' };
                 const displayPattern = isNoOp ? origPattern : newPattern;
                 const displayIPs = isNoOp ? origIps : newIPs;
-                reconcileStagedEdit(existingIdx, isNoOp, '/hosts', fields, row, () => applyHostRowDisplay(row, displayPattern, displayIPs));
+                const displayEnabled = isNoOp ? origEnabled : enabledChecked;
+                reconcileStagedEdit(existingIdx, isNoOp, '/hosts', fields, row, () => applyHostRowDisplay(row, displayPattern, displayIPs, displayEnabled));
             }
 
             row.classList.remove('being-edited');
@@ -1807,7 +1851,7 @@
                 editRow.remove();
             } else {
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
-                discardHostEdits(row, origPattern, origIps);
+                discardHostEdits(row, origPattern, origIps, origEnabled);
                 row.classList.remove('being-edited');
                 // row.style.display = '';
                 row.hidden = false;
@@ -1829,21 +1873,23 @@
     // (non-add) blacklist row and restores its displayed CIDR to the
     // original baseline. Shared by the inline per-row Discard button and the
     // Discard button inside the Edit form.
-    function discardBlacklistEdits(row, origCidr) {
+    function discardBlacklistEdits(row, origCidr, origEnabled) {
         const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-        discardStagedEdit(existingIdx, row, () => applyBlacklistRowDisplay(row, origCidr));
+        discardStagedEdit(existingIdx, row, () => applyBlacklistRowDisplay(row, origCidr, origEnabled));
     }
     
     // --- Edit / Cancel for inline row editing ---
     function editBlacklist(btn) {
         const index = btn.dataset.index;
         const cidr = btn.dataset.cidr;
+        const enabled = btn.dataset.enabled === 'true';
         
         const row = document.getElementById('blacklistRow_' + index);
         if (!row) return;
         const isStagedAdd = row.classList.contains('staged-add');
         const clientId = row.dataset.stagedClientId;
         const origCidr = row.dataset.origCidr;
+        const origEnabled = row.dataset.origEnabled === 'true';
         // row.style.display = 'none';
         row.hidden = true;
         row.classList.add('being-edited');
@@ -1869,19 +1915,25 @@
         cidrInput.value = cidr;
         cidrInput.setAttribute('form', formId);
         cidrInput.setAttribute('aria-label', 'Blacklisted IP or CIDR');
+
+        const enabledCheck = clone.querySelector('.edit-blacklist-enabled');
+        enabledCheck.setAttribute('form', formId);
+        enabledCheck.setAttribute('aria-label', 'Enabled');
+        enabledCheck.checked = enabled;
         
         // Save target CIDR signature and submit via AJAX
         form.addEventListener('submit', async function(eSubmit) {
             eSubmit.preventDefault();
             
             const newCidr = cidrInput.value.trim().toLowerCase();
+            const enabledChecked = enabledCheck.checked;
             
             if (isStagedAdd) {
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a CIDR the server doesn't know about yet.
-                mergeStagedAddFields(clientId, { cidr: newCidr });
-                applyBlacklistRowDisplay(row, newCidr);
+                mergeStagedAddFields(clientId, { cidr: newCidr, enabled: enabledChecked ? 'true' : 'false' });
+                applyBlacklistRowDisplay(row, newCidr, enabledChecked);
                 row.classList.add('staged');
             } else {
                 // Same persisted entry may be edited multiple times before Apply;
@@ -1889,10 +1941,11 @@
                 // staged entry per Edit+Stage cycle, and detect a full round-trip
                 // back to the original value so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-                const isNoOp = newCidr === origCidr;
-                const fields = { old_cidr: origCidr, cidr: newCidr, action: 'edit' };
+                const isNoOp = newCidr === origCidr && (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
+                const fields = { old_cidr: origCidr, cidr: newCidr, enabled: enabledChecked ? 'true' : 'false', action: 'edit' };
                 const displayCidr = isNoOp ? origCidr : newCidr;
-                reconcileStagedEdit(existingIdx, isNoOp, '/response-blacklist', fields, row, () => applyBlacklistRowDisplay(row, displayCidr));
+                const displayEnabled = isNoOp ? origEnabled : enabledChecked;
+                reconcileStagedEdit(existingIdx, isNoOp, '/response-blacklist', fields, row, () => applyBlacklistRowDisplay(row, displayCidr, displayEnabled));
             }
 
             row.classList.remove('being-edited');
@@ -1915,7 +1968,7 @@
                 editRow.remove();
             } else {
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
-                discardBlacklistEdits(row, origCidr);
+                discardBlacklistEdits(row, origCidr, origEnabled);
                 row.classList.remove('being-edited');
                 // row.style.display = '';
                 row.hidden = false;
@@ -2995,7 +3048,7 @@
                 // instead of hiding it, so it can still be found via the filter
                 // and Undeleted.
                 stageRowDeletion('/hosts', staleEditIdx, { delete: '1', pattern: origPattern }, row,
-                    () => applyHostRowDisplay(row, origPattern, row.dataset.origIps));
+                    () => applyHostRowDisplay(row, origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true'));
 
                 applyHostsFilter();
                 updateTableBanner();
@@ -3022,7 +3075,7 @@
                 const row = document.getElementById('hostRow_' + index);
                 if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
-                discardHostEdits(row, row.dataset.origPattern, row.dataset.origIps);
+                discardHostEdits(row, row.dataset.origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true');
                 applyHostsFilter();
                 updateTableBanner();
             });
@@ -3034,11 +3087,13 @@
 
             const patternInput = this.querySelector('[name="pattern"]');
             const ipsInput = this.querySelector('[name="ips"]');
+            const enabledCheckbox = this.querySelector('[name="enabled"]');
             if (!patternInput || !ipsInput) return;
 
             const pattern = patternInput.value.trim().toLowerCase();
             const ips = ipsInput.value.trim();
             if (pattern === '' || ips === '') return;
+            const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
 
             const alreadyStaged = findStagedEntryIndex('/hosts', f => !f.edit && !f.delete && f.pattern === pattern) !== -1;
             if (alreadyStaged) {
@@ -3046,16 +3101,17 @@
                 return;
             }
 
-            const clientId = stageNewEntry('/hosts', { pattern: pattern, ips: ips });
+            const clientId = stageNewEntry('/hosts', { pattern: pattern, ips: ips, enabled: enabled ? 'true' : 'false' });
 
             const tbody = document.querySelector('#hostsTable tbody');
             if (tbody) {
                 removePlaceholderRow(tbody);
-                tbody.appendChild(buildHostRowElement(clientId, pattern, ips));
+                tbody.appendChild(buildHostRowElement(clientId, pattern, ips, enabled));
             }
 
             patternInput.value = '';
             ipsInput.value = '';
+            if (enabledCheckbox) enabledCheckbox.checked = true;
 
             applyHostsFilter();
             updateTableBanner();
@@ -3103,7 +3159,7 @@
                 // instead of hiding it, so it can still be found via the filter
                 // and Undeleted.
                 stageRowDeletion('/response-blacklist', staleEditIdx, { action: 'delete', cidr: origCidr }, row,
-                    () => applyBlacklistRowDisplay(row, origCidr));
+                    () => applyBlacklistRowDisplay(row, origCidr, row.dataset.origEnabled === 'true'));
 
                 applyBlacklistFilter();
                 updateTableBanner();
@@ -3130,7 +3186,7 @@
                 const row = document.getElementById('blacklistRow_' + index);
                 if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
-                discardBlacklistEdits(row, row.dataset.origCidr);
+                discardBlacklistEdits(row, row.dataset.origCidr, row.dataset.origEnabled === 'true');
                 applyBlacklistFilter();
                 updateTableBanner();
             });
@@ -3151,7 +3207,9 @@
             e.preventDefault(); // Stop form from auto-posting immediately
             const form = this;
             const cidrInput = form.querySelector('input[name="cidr"]');
+            const enabledCheckbox = form.querySelector('input[name="enabled"]');
             const cidrValue = cidrInput.value.trim().toLowerCase();
+            const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
             
             if (!cidrValue) return;
 
@@ -3210,15 +3268,16 @@
                 return;
             }
             
-            const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue });
+            const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue, enabled: enabled ? 'true' : 'false' });
 
             const tbody = document.querySelector('#blacklistTable tbody');
             if (tbody) {
                 removePlaceholderRow(tbody);
-                tbody.insertBefore(buildBlacklistRowElement(clientId, cidrValue), tbody.firstChild);
+                tbody.insertBefore(buildBlacklistRowElement(clientId, cidrValue, enabled), tbody.firstChild);
             }
 
             cidrInput.value = '';
+            if (enabledCheckbox) enabledCheckbox.checked = true;
 
             applyBlacklistFilter();
             updateTableBanner();
@@ -3433,7 +3492,8 @@
             if (!fields.old_pattern && !fields.edit && !fields.delete) {
                 const pattern = fields.pattern || '';
                 const ips = fields.ips || '';
-                tbody.appendChild(buildHostRowElement(change.clientId, pattern, ips));
+                const enabled = fields.enabled !== 'false';
+                tbody.appendChild(buildHostRowElement(change.clientId, pattern, ips, enabled));
                 return;
             }
 
@@ -3445,7 +3505,7 @@
             }
 
             if (fields.delete === '1') {
-                applyHostRowDisplay(row, row.dataset.origPattern, row.dataset.origIps);
+                applyHostRowDisplay(row, row.dataset.origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true');
                 row.classList.remove('staged-add');
                 row.classList.add('staged-delete', 'staged');
                 return;
@@ -3454,8 +3514,9 @@
             // Staged edit of an existing row.
             const pattern = fields.pattern || row.dataset.origPattern;
             const ips = fields.ips || row.dataset.origIps;
+            const enabled = fields.enabled === 'true';
 
-            applyHostRowDisplay(row, pattern, ips);
+            applyHostRowDisplay(row, pattern, ips, enabled);
             row.classList.add('staged');
         }
 
@@ -3467,8 +3528,9 @@
             // Staged add.
             if (fields.action === 'add') {
                 const cidr = fields.cidr || '';
+                const enabled = fields.enabled !== 'false';
                 tbody.insertBefore(
-                    buildBlacklistRowElement(change.clientId, cidr),
+                    buildBlacklistRowElement(change.clientId, cidr, enabled),
                     tbody.firstChild
                 );
                 return;
@@ -3482,7 +3544,7 @@
             }
 
             if (fields.action === 'delete') {
-                applyBlacklistRowDisplay(row, row.dataset.origCidr);
+                applyBlacklistRowDisplay(row, row.dataset.origCidr, row.dataset.origEnabled === 'true');
                 row.classList.remove('staged-add');
                 row.classList.add('staged-delete', 'staged');
                 return;
@@ -3491,7 +3553,8 @@
             // Staged edit.
             if (fields.action === 'edit') {
                 const cidr = fields.cidr || row.dataset.origCidr;
-                applyBlacklistRowDisplay(row, cidr);
+                const enabled = fields.enabled === 'true';
+                applyBlacklistRowDisplay(row, cidr, enabled);
                 row.classList.add('staged');
                 return;
             }
