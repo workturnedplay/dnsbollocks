@@ -533,6 +533,33 @@ tr.edit-row td.edit-id-display {
     display: none !important;
 }
 
+/* Column resize handles (Rules/Hosts/Blacklist/QueryBlocklist/Config tables) */
+th.resizable-col {
+    position: relative;
+}
+.col-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    user-select: none;
+    touch-action: none;
+    z-index: 5;
+}
+.col-resize-handle:hover,
+body.col-resizing .col-resize-handle {
+    background: var(--accent);
+    opacity: 0.6;
+}
+body.col-resizing {
+    cursor: col-resize;
+}
+body.col-resizing * {
+    user-select: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,

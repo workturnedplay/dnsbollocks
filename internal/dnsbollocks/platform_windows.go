@@ -114,6 +114,28 @@ type Config struct {
 	UpstreamIPs        []string   `json:"-"` // Added: Keeps triplets grouped together
 	UpstreamSNIs       []string   `json:"-"` // Added: Keeps triplets grouped together
 
+	// FieldModifiedAt records, for each JSON config key that has ever been
+	// changed via the WebUI's /config Apply action, the timestamp of that
+	// most recent change — powering the "Last Modified" column on the
+	// WebUI config page, mirroring the identical column already present for
+	// Rules/Local Hosts/Response Blacklist (see RuleEntry.ModifiedAt,
+	// LocalHostRule.ModifiedAt, BlacklistRecord.ModifiedAt).
+	//
+	// Persisted on disk as "_modified_at_<key>" top-level JSON entries
+	// (mirroring the existing "_description_<key>" convention written by
+	// marshalConfigWithDescriptions and stripped the same way on load — see
+	// extractFieldModifiedAtTimestamps/stripConfigDescriptionKeys), NOT as a
+	// literal Config field — hence json:"-" here. A field with no recorded
+	// entry (never edited via the WebUI, e.g. still at its on-disk/default
+	// value, or a fresh install) simply has no map entry and displays "—"
+	// (see formatModifiedAt). A field last changed via direct hand-editing
+	// of config.json (bypassing the WebUI) keeps whatever timestamp was
+	// last recorded by the WebUI, if any — an accepted limitation, the same
+	// class of best-effort metadata already tolerated for the
+	// legacy-migration timestamps in loadLocalHosts/loadResponseBlacklist/
+	// loadRuleStoreFile.
+	FieldModifiedAt map[string]time.Time `json:"-"`
+
 	GlobalRateQPS                    int    `json:"qps_rate_globally"    desc:"Maximum DNS queries per second across all clients combined (token-bucket sustained rate)."`
 	GlobalBurstQPS                   int    `json:"qps_burst_globally"   desc:"Maximum burst of DNS queries allowed globally above the sustained qps_rate_globally limit."`
 	ClientRateQPS                    int    `json:"qps_rate_per_client"  desc:"Maximum DNS queries per second allowed from a single client IP."`
@@ -802,6 +824,13 @@ func (c Config) Clone() Config {
 	if c.UpstreamSNIs != nil {
 		dst.UpstreamSNIs = make([]string, len(c.UpstreamSNIs))
 		copy(dst.UpstreamSNIs, c.UpstreamSNIs)
+	}
+
+	if c.FieldModifiedAt != nil {
+		dst.FieldModifiedAt = make(map[string]time.Time, len(c.FieldModifiedAt))
+		for k, v := range c.FieldModifiedAt {
+			dst.FieldModifiedAt[k] = v
+		}
 	}
 
 	// Deep-copy net.IP byte slices
@@ -3780,6 +3809,12 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 		//rawCfg = &rawTempCfg
 		shouldSaveConfig = true
 	} else {
+		// Preserve the original, unstripped bytes so field-level "last
+		// modified" timestamps (see Config.FieldModifiedAt's doc comment)
+		// can be recovered below — stripConfigDescriptionKeys removes every
+		// underscore-prefixed top-level key, including these.
+		originalData := data
+
 		// Strip "_description_*" keys written by marshalConfigWithDescriptions so that
 		// DisallowUnknownFields does not reject them and the duplicate-key scanner
 		// does not flag them as anomalies.
@@ -3819,6 +3854,16 @@ func LoadAndValidateConfig(log *slog.Logger, cfgFname string, fw wincoe.FileWrit
 			log.Error("Config file has typos or unknown fields", slog.String("file", cfgFname), wincoe.SafeErr(err))
 			return nil, nil, false, fmt.Errorf("Config has typos or unknown fields: %w", err)
 		}
+
+		// Recover each field's last-WebUI-modification timestamp (see
+		// Config.FieldModifiedAt's doc comment) from the original,
+		// unstripped bytes. Must happen before resolveConfigTags below so
+		// resolvedCfg inherits a deep copy of it via Config.Clone().
+		modifiedAtMap, modAtErr := extractFieldModifiedAtTimestamps(log, originalData)
+		if modAtErr != nil {
+			return nil, nil, false, fmt.Errorf("failed to extract field-modified-at timestamps from config file %q: %w", cfgFname, modAtErr)
+		}
+		rawCfg.FieldModifiedAt = modifiedAtMap
 
 		// rawCfg is the on-disk representation; never clamp/mutate for runtime convenience here.
 		//rawCfg = &tempCfg //doneTODO: this assignment and the one in the above 'if' branch, this being the 'else' can be DRY-ed into one assignment before the 'if'
@@ -12648,7 +12693,8 @@ type ConfigFieldView struct {
 	Type      string
 	Desc      string
 	//Options    string // Comma-separated list for dropdowns
-	IsPassword bool // Flag to trigger password masking and confirmation
+	IsPassword        bool   // Flag to trigger password masking and confirmation
+	ModifiedAtDisplay string // Human-readable last-WebUI-modification timestamp (see Config.FieldModifiedAt)
 }
 
 func (ui *AdminUI) getConfigFields() []ConfigFieldView {
@@ -12755,7 +12801,8 @@ func (ui *AdminUI) getConfigFields() []ConfigFieldView {
 			Type:      typ,
 			Desc:      field.Tag.Get("desc"),
 			//Options: options,
-			IsPassword: isPwd,
+			IsPassword:        isPwd,
+			ModifiedAtDisplay: formatModifiedAt(cfg.FieldModifiedAt[tagKey]),
 		})
 	}
 
@@ -13037,6 +13084,22 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				log.Warn("Failed to apply config changes", wincoe.SafeErr(err))
 				http.Error(w, "invalid field value: "+err.Error(), http.StatusBadRequest)
 				return
+			}
+
+			// Record the exact instant each user-submitted field was applied,
+			// for the WebUI's "Last Modified" config column (see
+			// Config.FieldModifiedAt's doc comment). Only fields actually
+			// present in this request's staged `changes` are touched — not
+			// every key in `raw` (which also carries every OTHER field's
+			// already-on-disk value, re-applied verbatim by
+			// applyConfigChangesToStruct just above, and must not have its
+			// timestamp bumped merely for being re-saved unchanged).
+			if rawCfg.FieldModifiedAt == nil {
+				rawCfg.FieldModifiedAt = make(map[string]time.Time, len(changes))
+			}
+			fieldModifiedNow := time.Now()
+			for changedKey := range changes {
+				rawCfg.FieldModifiedAt[changedKey] = fieldModifiedNow
 			}
 
 			// Marshal the struct — field order follows Config declaration, not A-Z.
@@ -14720,6 +14783,26 @@ func marshalConfigWithDescriptions(cfg *Config) ([]byte, error) {
 			buf.WriteString(",\n")
 		}
 
+		// Write the _modified_at_ entry if this field has a recorded
+		// last-WebUI-modification timestamp (see Config.FieldModifiedAt's
+		// doc comment and extractFieldModifiedAtTimestamps, which reads
+		// this same entry back on the next load).
+		if modAt, ok := cfg.FieldModifiedAt[jsonKey]; ok && !modAt.IsZero() {
+			modKeyBytes, err := json.Marshal(fieldModifiedAtKeyPrefix + jsonKey)
+			if err != nil {
+				return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal modified-at key for %q: %w", jsonKey, err)
+			}
+			modValBytes, err := json.Marshal(modAt.Format(time.RFC3339Nano))
+			if err != nil {
+				return nil, fmt.Errorf("marshalConfigWithDescriptions: marshal modified-at value for %q: %w", jsonKey, err)
+			}
+			buf.WriteString("  ")
+			buf.Write(modKeyBytes)
+			buf.WriteString(": ")
+			buf.Write(modValBytes)
+			buf.WriteString(",\n")
+		}
+
 		// Write the real field.
 		keyBytes, err := json.Marshal(jsonKey)
 		if err != nil {
@@ -14764,6 +14847,53 @@ func stripConfigDescriptionKeys(data []byte) ([]byte, error) {
 	out, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("stripConfigDescriptionKeys: re-marshal: %w", err)
+	}
+	return out, nil
+}
+
+// fieldModifiedAtKeyPrefix is prepended to a Config JSON key to form the
+// on-disk top-level key that stores that field's last-WebUI-modification
+// timestamp (see Config.FieldModifiedAt's doc comment), mirroring the
+// existing "_description_<key>" convention marshalConfigWithDescriptions/
+// stripConfigDescriptionKeys already use for embedded field descriptions.
+const fieldModifiedAtKeyPrefix = "_modified_at_"
+
+// extractFieldModifiedAtTimestamps scans the top-level keys of raw config
+// JSON bytes (BEFORE stripConfigDescriptionKeys removes underscore-prefixed
+// keys — callers must pass the original, unstripped bytes) for
+// "_modified_at_<key>" entries and returns a map from the underlying
+// Config JSON key to its recorded timestamp.
+//
+// A malformed individual entry (not a JSON string, or not a valid
+// RFC3339Nano timestamp) is logged and simply omitted from the result
+// rather than aborting the whole config load — mirroring how a single
+// malformed whitelist/hosts/blacklist entry is skipped rather than failing
+// the entire file elsewhere in this codebase.
+func extractFieldModifiedAtTimestamps(log *slog.Logger, data []byte) (map[string]time.Time, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("extractFieldModifiedAtTimestamps: unmarshal: %w", err)
+	}
+
+	out := make(map[string]time.Time, len(raw))
+	for k, v := range raw {
+		key, isModAtKey := strings.CutPrefix(k, fieldModifiedAtKeyPrefix)
+		if !isModAtKey || key == "" {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			log.Warn("Ignoring malformed field-modified-at entry in config file (value is not a JSON string)",
+				slog.String("key", k), wincoe.SafeErr(err))
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			log.Warn("Ignoring malformed field-modified-at entry in config file (not a valid RFC3339 timestamp)",
+				slog.String("key", k), slog.String("value", s), wincoe.SafeErr(err))
+			continue
+		}
+		out[key] = parsed
 	}
 	return out, nil
 }

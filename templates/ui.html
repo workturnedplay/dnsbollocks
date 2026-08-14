@@ -815,8 +815,9 @@
 </div>
 <table id="configTable">
     <colgroup>
-        <col class="col-35">
-        <col class="col-50">
+        <col class="col-30">
+        <col class="col-40">
+        <col class="col-15">
         <col class="col-15">
     </colgroup>
     <thead>
@@ -833,6 +834,12 @@
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
+            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+                <button type="button" class="sort-button">
+                    <span>Last Modified</span>
+                    <span class="sort-icon" aria-hidden="true"></span>
+                </button>
+            </th>
             <th class="text-center" scope="col">Actions</th>
         </tr>
     </thead>
@@ -844,6 +851,7 @@
                 {{if .Desc}}<br><small class="config-field-desc">{{.Desc}}</small>{{end}}
             </td>
             <td class="display-value" title="{{.Value}}">{{.Value}}</td>
+            <td>{{.ModifiedAtDisplay}}</td>
             <td class="actions text-center">
                 <button class="btn-edit js-config-edit">Edit</button>
                 <button type="button" class="btn-discard-row inline-discard-btn js-config-discard">Discard</button>
@@ -860,6 +868,7 @@
             <div class="edit-input-container w-100"></div>
             <small class="edit-type-hint config-type-hint"></small>
         </td>
+        <td class="text-muted">(updates on Apply)</td>
         <td class="actions text-center">
             <button type="button" class="btn-save config-stage-btn">Stage</button>
             <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>

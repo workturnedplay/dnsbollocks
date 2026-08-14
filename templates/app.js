@@ -2438,6 +2438,206 @@
         }
     }
     
+    // --- Column resize (drag) + double-click auto-fit, applied generically to
+    // every sortable data table (Rules/Hosts/Blacklist/Query-Blocklist/Config).
+    // Adjacent-column percentage resizing keeps every row summing to 100% width
+    // (matching the existing `table-layout: fixed` + percentage <col> approach),
+    // so resizing never requires horizontal scrolling or changes to the overall
+    // table width. Preferences persist per table via uiStorage (localStorage).
+
+    const COL_RESIZE_MIN_PCT = 4;
+
+    function getColWidthPct(col) {
+        const match = /^([\d.]+)%$/.exec(col.style.width || '');
+        return match ? parseFloat(match[1]) : 0;
+    }
+
+    function colWidthsStorageKey(storageKeyPrefix) {
+        return 'colwidths_' + storageKeyPrefix;
+    }
+
+    function persistColumnWidths(storageKeyPrefix, cols) {
+        const widths = cols.map(getColWidthPct);
+        uiStorage.setItem(colWidthsStorageKey(storageKeyPrefix), JSON.stringify(widths));
+    }
+
+    function loadColumnWidths(storageKeyPrefix, expectedCount) {
+        const raw = uiStorage.getItem(colWidthsStorageKey(storageKeyPrefix));
+        if (!raw) return null;
+        let widths;
+        try {
+            widths = JSON.parse(raw);
+        } catch {
+            return null;
+        }
+        if (!Array.isArray(widths) || widths.length !== expectedCount) return null;
+        if (!widths.every(w => typeof w === 'number' && Number.isFinite(w) && w > 0)) return null;
+        return widths;
+    }
+
+    // initializeColumnWidths bakes each column's effective width into an
+    // explicit inline percentage on its <col> element: either a previously
+    // saved user preference, or (on first run) the width the browser is
+    // already rendering via the CSS .col-NN classes — so subsequent resize
+    // math always has a concrete, consistent starting point without
+    // changing how the table looks by default.
+    function initializeColumnWidths(table, cols, ths, storageKeyPrefix) {
+        const saved = loadColumnWidths(storageKeyPrefix, cols.length);
+        if (saved) {
+            cols.forEach((col, i) => { col.style.width = saved[i] + '%'; });
+            return;
+        }
+        const tableWidthPx = table.getBoundingClientRect().width;
+        if (tableWidthPx <= 0) return;
+        ths.forEach((th, i) => {
+            const pct = (th.getBoundingClientRect().width / tableWidthPx) * 100;
+            cols[i].style.width = pct.toFixed(3) + '%';
+        });
+    }
+
+    let colResizeMeasureCtx = null;
+
+    // measureTextWidthPx returns the pixel width `text` would render at,
+    // using the font of a real cell from `table` so the measurement matches
+    // on-screen rendering as closely as practical, without touching layout.
+    function measureTextWidthPx(table, text) {
+        if (!colResizeMeasureCtx) {
+            colResizeMeasureCtx = document.createElement('canvas').getContext('2d');
+        }
+        const sample = table.querySelector('tbody td') || table.querySelector('thead th');
+        if (sample) {
+            const style = window.getComputedStyle(sample);
+            colResizeMeasureCtx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        }
+        return colResizeMeasureCtx.measureText(text || '').width;
+    }
+
+    // autoFitColumn sets column `index`'s width to fit the widest content
+    // currently displayed in it (header text plus every body row), taking
+    // the difference from its immediate right-hand neighbor so the row
+    // continues to sum to 100%.
+    function autoFitColumn(table, cols, ths, index, storageKeyPrefix) {
+        let maxWidthPx = measureTextWidthPx(table, ths[index].textContent);
+        const tbody = table.querySelector('tbody');
+        if (tbody) {
+            for (const row of tbody.rows) {
+                if (row.cells.length <= index) continue;
+                const w = measureTextWidthPx(table, row.cells[index].textContent);
+                if (w > maxWidthPx) maxWidthPx = w;
+            }
+        }
+
+        const tableWidthPx = table.getBoundingClientRect().width;
+        if (tableWidthPx <= 0) return;
+
+        const CELL_PADDING_PX = 34; // approximate cell left+right padding plus breathing room
+        const desiredPct = ((maxWidthPx + CELL_PADDING_PX) / tableWidthPx) * 100;
+
+        const currentLeft = getColWidthPct(cols[index]);
+        const currentRight = getColWidthPct(cols[index + 1]);
+        const total = currentLeft + currentRight;
+
+        const newLeft = Math.max(COL_RESIZE_MIN_PCT, Math.min(desiredPct, total - COL_RESIZE_MIN_PCT));
+        const newRight = total - newLeft;
+
+        cols[index].style.width = newLeft.toFixed(3) + '%';
+        cols[index + 1].style.width = newRight.toFixed(3) + '%';
+        persistColumnWidths(storageKeyPrefix, cols);
+    }
+
+    function startColumnResize(e, handle, table, cols, index, storageKeyPrefix) {
+        if (typeof e.button === 'number' && e.button !== 0) return; // primary button/touch only
+        e.preventDefault();
+
+        const tableWidthPx = table.getBoundingClientRect().width;
+        if (tableWidthPx <= 0) return;
+
+        try {
+            handle.setPointerCapture(e.pointerId);
+        } catch (err) {
+            console.warn('Column resize: setPointerCapture failed, drag may not track outside the handle:', err);
+        }
+
+        const startX = e.clientX;
+        const startLeftPct = getColWidthPct(cols[index]);
+        const startRightPct = getColWidthPct(cols[index + 1]);
+
+        function onPointerMove(moveEvent) {
+            const deltaPct = ((moveEvent.clientX - startX) / tableWidthPx) * 100;
+
+            let newLeft = startLeftPct + deltaPct;
+            let newRight = startRightPct - deltaPct;
+
+            if (newLeft < COL_RESIZE_MIN_PCT) {
+                newRight -= (COL_RESIZE_MIN_PCT - newLeft);
+                newLeft = COL_RESIZE_MIN_PCT;
+            }
+            if (newRight < COL_RESIZE_MIN_PCT) {
+                newLeft -= (COL_RESIZE_MIN_PCT - newRight);
+                newRight = COL_RESIZE_MIN_PCT;
+            }
+            if (newLeft < COL_RESIZE_MIN_PCT || newRight < COL_RESIZE_MIN_PCT) return;
+
+            cols[index].style.width = newLeft.toFixed(3) + '%';
+            cols[index + 1].style.width = newRight.toFixed(3) + '%';
+        }
+
+        function finish() {
+            handle.removeEventListener('pointermove', onPointerMove);
+            handle.removeEventListener('pointerup', finish);
+            handle.removeEventListener('pointercancel', finish);
+            document.body.classList.remove('col-resizing');
+            try {
+                handle.releasePointerCapture(e.pointerId);
+            } catch {
+                // Already released (e.g. pointercancel) — nothing to do.
+            }
+            persistColumnWidths(storageKeyPrefix, cols);
+        }
+
+        handle.addEventListener('pointermove', onPointerMove);
+        handle.addEventListener('pointerup', finish, { once: true });
+        handle.addEventListener('pointercancel', finish, { once: true });
+        document.body.classList.add('col-resizing');
+    }
+
+    // setupColumnResizing wires drag-to-resize (adjacent-column, percentage
+    // based) and double-click-to-auto-fit onto every column border of
+    // `tableId` except the very last (there is nothing to its right to
+    // trade width with). storageKeyPrefix scopes the persisted widths to
+    // this specific table, mirroring setupTableSorting's identical pattern.
+    function setupColumnResizing(tableId, storageKeyPrefix) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const colgroup = table.querySelector('colgroup');
+        const headerRow = table.querySelector('thead tr');
+        if (!colgroup || !headerRow) return;
+
+        const cols = Array.from(colgroup.children);
+        const ths = Array.from(headerRow.children);
+        if (cols.length !== ths.length || cols.length < 2) return;
+
+        initializeColumnWidths(table, cols, ths, storageKeyPrefix);
+
+        for (let i = 0; i < ths.length - 1; i++) {
+            const th = ths[i];
+            th.classList.add('resizable-col');
+
+            const handle = document.createElement('span');
+            handle.className = 'col-resize-handle';
+            handle.setAttribute('aria-hidden', 'true');
+            handle.title = 'Drag to resize \u2014 double-click to fit content';
+            th.appendChild(handle);
+
+            handle.addEventListener('pointerdown', (e) => startColumnResize(e, handle, table, cols, i, storageKeyPrefix));
+            handle.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                autoFitColumn(table, cols, ths, i, storageKeyPrefix);
+            });
+        }
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function() {
         
@@ -3754,6 +3954,15 @@
         setupTableSorting('blacklistTable', 'blacklistTable', applyBlacklistFilter);
         setupTableSorting('queryBlocklistTable', 'queryBlocklistTable', applyQueryBlocklistFilter);
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
+
+        // Initialize column resizing (drag + double-click auto-fit) across the
+        // same set of tables. Run after sorting/filtering setup so any
+        // filter-driven layout has already settled before we measure widths.
+        setupColumnResizing('rulesTable', 'rulesTable');
+        setupColumnResizing('hostsTable', 'hostsTable');
+        setupColumnResizing('blacklistTable', 'blacklistTable');
+        setupColumnResizing('queryBlocklistTable', 'queryBlocklistTable');
+        setupColumnResizing('configTable', 'configTable');
 
         // --- Apply Log Highlighting on Load ---
         // Highlight the filter as a SINGLE term (not split on whitespace),

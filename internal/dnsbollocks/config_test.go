@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- Config Clone Tests ---
@@ -23,6 +24,7 @@ func TestConfigClone(t *testing.T) {
 	original := defaultConfig()
 	original.UpstreamURLs = []string{"https://1.1.1.1/dns-query"}
 	original.UpstreamSNIHostnames = []string{"cloudflare-dns.com"}
+	original.FieldModifiedAt = map[string]time.Time{"listen_dns": time.Now()}
 
 	clone := original.Clone()
 
@@ -31,15 +33,19 @@ func TestConfigClone(t *testing.T) {
 		t.Fatalf("Clone did not match original.\nOriginal: %+v\nClone: %+v", original, clone)
 	}
 
-	// 2. Modify the clone's slices to ensure they are decoupled from the original
+	// 2. Modify the clone's slices/maps to ensure they are decoupled from the original
 	clone.UpstreamURLs[0] = "https://8.8.8.8/dns-query"
 	clone.UpstreamSNIHostnames[0] = "dns.google"
+	clone.FieldModifiedAt["listen_dns"] = time.Now().Add(time.Hour)
 
 	if original.UpstreamURLs[0] == clone.UpstreamURLs[0] {
 		t.Errorf("Config.Clone() did not deep copy UpstreamURLs! Both share: %s", original.UpstreamURLs[0])
 	}
 	if original.UpstreamSNIHostnames[0] == clone.UpstreamSNIHostnames[0] {
 		t.Errorf("Config.Clone() did not deep copy SNIHostnames! Both share: %s", original.UpstreamSNIHostnames[0])
+	}
+	if original.FieldModifiedAt["listen_dns"].Equal(clone.FieldModifiedAt["listen_dns"]) {
+		t.Errorf("Config.Clone() did not deep copy FieldModifiedAt! Both share the same map/value")
 	}
 }
 
@@ -570,6 +576,7 @@ var cloneReferenceFields = map[string]struct{}{
 	"UpstreamURLsParsed":   {},
 	"UpstreamIPs":          {},
 	"UpstreamSNIs":         {},
+	"FieldModifiedAt":      {},
 }
 
 func TestConfigCloneReferenceFieldCoverage(t *testing.T) {
@@ -988,5 +995,105 @@ func TestSanitizeAndValidateConfig_WebUIIdleTimeoutClampedWhenReadTimeoutChanges
 	}
 	if !modified {
 		t.Error("expected modified=true because idle timeout was clamped")
+	}
+}
+
+func TestExtractFieldModifiedAtTimestamps(t *testing.T) {
+	log := discardLogger()
+
+	t.Run("valid entries are extracted", func(t *testing.T) {
+		ts1 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		ts2 := time.Date(2026, 6, 7, 8, 9, 10, 0, time.UTC)
+		data := []byte(`{
+			"listen_dns": "127.0.0.1:53",
+			"_modified_at_listen_dns": "` + ts1.Format(time.RFC3339Nano) + `",
+			"_modified_at_listen_doh": "` + ts2.Format(time.RFC3339Nano) + `"
+		}`)
+
+		got, err := extractFieldModifiedAtTimestamps(log, data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries, got %d: %+v", len(got), got)
+		}
+		if !got["listen_dns"].Equal(ts1) {
+			t.Errorf("listen_dns: got %v, want %v", got["listen_dns"], ts1)
+		}
+		if !got["listen_doh"].Equal(ts2) {
+			t.Errorf("listen_doh: got %v, want %v", got["listen_doh"], ts2)
+		}
+	})
+
+	t.Run("malformed entries are skipped, not fatal", func(t *testing.T) {
+		data := []byte(`{
+			"_modified_at_listen_dns": 12345,
+			"_modified_at_listen_doh": "not-a-timestamp",
+			"_modified_at_listen_ui": "` + time.Now().Format(time.RFC3339Nano) + `"
+		}`)
+
+		got, err := extractFieldModifiedAtTimestamps(log, data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected only the 1 valid entry to survive, got %d: %+v", len(got), got)
+		}
+		if _, ok := got["listen_ui"]; !ok {
+			t.Errorf("expected listen_ui to be present, got %+v", got)
+		}
+	})
+
+	t.Run("no modified-at keys present", func(t *testing.T) {
+		data := []byte(`{"listen_dns": "127.0.0.1:53"}`)
+		got, err := extractFieldModifiedAtTimestamps(log, data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected no entries, got %+v", got)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		_, err := extractFieldModifiedAtTimestamps(log, []byte(`{not valid json`))
+		if err == nil {
+			t.Fatal("expected an error for invalid JSON, got nil")
+		}
+	})
+}
+
+func TestMarshalConfigWithDescriptions_ModifiedAtRoundTrip(t *testing.T) {
+	cfg := defaultConfig()
+	ts := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	cfg.FieldModifiedAt = map[string]time.Time{
+		"listen_dns": ts,
+	}
+
+	data, err := marshalConfigWithDescriptions(&cfg)
+	if err != nil {
+		t.Fatalf("marshalConfigWithDescriptions failed: %v", err)
+	}
+
+	stripped, err := stripConfigDescriptionKeys(data)
+	if err != nil {
+		t.Fatalf("stripConfigDescriptionKeys failed: %v", err)
+	}
+
+	// The stripped bytes (as used for the actual Config decode) must not
+	// contain the modified-at bookkeeping key at all.
+	if strings.Contains(string(stripped), "_modified_at_") {
+		t.Error("expected stripConfigDescriptionKeys to remove _modified_at_ keys")
+	}
+
+	got, err := extractFieldModifiedAtTimestamps(discardLogger(), data)
+	if err != nil {
+		t.Fatalf("extractFieldModifiedAtTimestamps failed: %v", err)
+	}
+	if !got["listen_dns"].Equal(ts) {
+		t.Errorf("round-tripped listen_dns modified-at = %v, want %v", got["listen_dns"], ts)
+	}
+	if _, ok := got["listen_doh"]; ok {
+		t.Error("expected only listen_dns to have a recorded modified-at entry")
 	}
 }
