@@ -66,8 +66,8 @@ func newQueryTestServer(t *testing.T, cfg Config, fwd DoHForwarder) *Server {
 		blacklist:    newBlacklistStore(),
 		recentBlocks: newRecentBlocksTracker(),
 		//dnsCache:     newGoCacheStore(5 * time.Minute),
-		stats:        new(expvar.Int), // unregistered; avoids expvar duplicate-key panic
-		dohForwarder: fwd,
+		blockedQueries: new(expvar.Int), // unregistered; avoids expvar duplicate-key panic
+		dohForwarder:   fwd,
 	}
 	s.liveConfigs.Store(&LiveConfigs{
 		Resolved: &cfg,
@@ -327,7 +327,7 @@ func TestHandleDNSQuery_RateLimit_PerClient(t *testing.T) {
 func TestHandleDNSQuery_Blocked_NoMatchingRule(t *testing.T) {
 	s := newQueryTestServer(t, defaultConfig(), nilFwd())
 	// No rules added; every query should be blocked.
-	initialStats := s.stats.Value()
+	initialStats := s.blockedQueries.Value()
 
 	resp := s.handleDNSQuery(context.Background(), aQuery("blocked.com"), testClient)
 
@@ -340,8 +340,8 @@ func TestHandleDNSQuery_Blocked_NoMatchingRule(t *testing.T) {
 	}
 
 	// Stats counter must increment on every block.
-	if s.stats.Value() != initialStats+1 {
-		t.Errorf("stats: want %d, got %d", initialStats+1, s.stats.Value())
+	if s.blockedQueries.Value() != initialStats+1 {
+		t.Errorf("blockedQueries: want %d, got %d", initialStats+1, s.blockedQueries.Value())
 	}
 
 	// Domain must appear in the recent-blocks tracker.
@@ -974,8 +974,8 @@ func TestHandleDNSQuery_StatCounterIncrementsOnEveryBlock(t *testing.T) {
 	for i := range 3 {
 		domain := "blocked.com"
 		s.handleDNSQuery(context.Background(), aQuery(domain), testClient)
-		if s.stats.Value() != int64(1) { //blocked once because the other 2 are cached and not counted
-			t.Errorf("after %d blocks: stats want %d, got %d", i+1, 1, s.stats.Value())
+		if s.blockedQueries.Value() != int64(1) { //blocked once because the other 2 are cached and not counted
+			t.Errorf("after %d blocks: blockedQueries want %d, got %d", i+1, 1, s.blockedQueries.Value())
 		}
 	}
 }

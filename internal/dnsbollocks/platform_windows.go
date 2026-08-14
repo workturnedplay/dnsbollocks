@@ -289,8 +289,13 @@ type Server struct {
 	dohCertMu      sync.RWMutex
 	certGeneration atomic.Uint64
 
-	// Simple stats counter (expvar-based); TODO: extend with richer metrics if/when needed. FIXME: so this counts the number of unique blocks then rename it properly! also TODO: add number of non-unique blocks too!
-	stats *expvar.Int
+	// blockedQueries is an expvar counter of policy-block responses that were
+	// synthesised by blockAndCacheQuery (query-blocklist hit, or lack of an
+	// enabled whitelist rule in whitelist_mode). Cache hits of a previously
+	// synthesised blocked entry do not re-increment; upstream-response-filtered
+	// blocks (response-IP blacklist / zero-IP) are counted separately only in
+	// the query log, not here. Exposed via expvar as "blocked_queries".
+	blockedQueries *expvar.Int
 
 	// Lifecycle & Concurrency
 	ctx          context.Context //the old backgroundCtx
@@ -359,7 +364,7 @@ type AdminUI struct {
 	queryBlocklistStore *RuleStore
 	externalBlocklist   *atomic.Pointer[ExternalHostsBlocklistSource]
 	recentBlocks        *RecentBlocksTracker
-	stats               *expvar.Int
+	blockedQueries      *expvar.Int
 
 	// rateLimiter enforces a global + per-client-IP cap on WebUI HTTP request
 	// volume, independent of loginTracker (only throttles failed logins) and
@@ -476,9 +481,9 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 		recentBlocks:        newRecentBlocksTracker(),
 		forwardInFlight:     make(map[string]*forwardInFlightEntry),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
-		errChan: make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
-		stats:   expvar.NewInt("blocks"),
-		exitFn:  os.Exit,
+		errChan:        make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
+		blockedQueries: expvar.NewInt("blocked_queries"),
+		exitFn:         os.Exit,
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
@@ -2953,8 +2958,7 @@ func (s *Server) Reload() error {
 	log = s.getLogger() // Grab the newly initialized logger
 
 	// Update the fileWriter with the newly loaded safety parameters instantly
-	s.rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety) //TODO: make these 2 lines into a helper function in FileWriter or Runtime and call that here and in the other place!
-	s.rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+	s.rt.ApplyFileWriterParams(resolvedCfg)
 
 	if needsSave {
 		if err := s.saveConfig(); err != nil {
@@ -3670,8 +3674,7 @@ func OldMain() {
 
 	// ── 4. Apply the validated config to the Runtime infrastructure ──
 	// Update FileWriter safety settings now that we have the real config values.
-	rt.FileWriter.SetExtraSafety(resolvedCfg.ExtraSafety)
-	rt.FileWriter.SetRetryParams(resolvedCfg.FileWriterMaxRetries, resolvedCfg.FileWriterRetryBackoffMs)
+	rt.ApplyFileWriterParams(resolvedCfg)
 
 	// Close the temporary bootstrap log file handle so the real LoggerManager can own it cleanly
 	if bootLogFile != nil {
@@ -5434,6 +5437,9 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		// allow/deny decision here. A rule match, if any, is still recorded
 		// purely for logging/rule-ID attribution.
 		allowed = true
+		// MatchForType's ok is intentionally discarded: in blacklist mode a
+		// match is recorded only for logging/rule-ID attribution, never for
+		// the allow/deny decision (allowed stays true either way).
 		matchedID, _ = s.ruleStore.MatchForType(qtype, domain)
 		if matchedID == "" && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 			matchedID, _ = s.ruleStore.MatchForType("A", domain)
@@ -7858,11 +7864,11 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := ui.getConfig()
 	data := map[string]any{
-		"PID":          os.Getpid(),
-		"Blocks":       ui.stats.String(),
-		"UpstreamURLs": cfg.UpstreamURLsParsed,
-		"UpstreamSNIs": cfg.UpstreamSNIHostnames,
-		"UpstreamIPs":  cfg.UpstreamIPs,
+		"PID":            os.Getpid(),
+		"BlockedQueries": ui.blockedQueries.String(),
+		"UpstreamURLs":   cfg.UpstreamURLsParsed,
+		"UpstreamSNIs":   cfg.UpstreamSNIHostnames,
+		"UpstreamIPs":    cfg.UpstreamIPs,
 	}
 	ui.renderTemplate(w, r, "stats", data)
 }
@@ -10795,7 +10801,7 @@ func NewAdminUI(
 	tableMutationMu *sync.Mutex,
 	lt *LoginTracker,
 	rb *RecentBlocksTracker,
-	stats *expvar.Int,
+	blockedQueries *expvar.Int,
 	//upstreamIPs []string,
 	tpls *template.Template,
 ) *AdminUI {
@@ -10809,7 +10815,7 @@ func NewAdminUI(
 		tableMutationMu:   tableMutationMu,
 		loginTracker:      lt,
 		recentBlocks:      rb,
-		stats:             stats,
+		blockedQueries:    blockedQueries,
 		verifiedAuthCache: newVerifiedAuthCache(),
 		csrfSecret:        newCSRFSecret(),
 		uiTemplates:       tpls,
@@ -12180,7 +12186,7 @@ func (s *Server) initAdminUI() {
 		&s.tableMutationMu,
 		newLoginTracker(),
 		s.recentBlocks,
-		s.stats,
+		s.blockedQueries,
 		uiTemplates0,
 	)
 	// WebUI-request rate limiting, independent of the DNS-query rate limiter
@@ -12202,7 +12208,12 @@ func (s *Server) initAdminUI() {
 	ui.OnInvalidatePatterns = s.invalidateCacheForPatterns
 	ui.OnInvalidateBlacklist = s.invalidateCacheForBlacklistedIPs
 	ui.OnApplyConfig = func(cfg *Config) error {
-		//FIXME: is this taking an old FileWriter (potentially, if the impl. changes let's say and FileWriter is a new instance on each Reload rather than get itself updated with new values for retries and backoff_ms) ? the logger is current tho, since function!
+		// Runtime.FileWriter is process-lifetime: Reload() never replaces the
+		// instance, it only mutates ExtraSafety/retry params in place via
+		// ApplyFileWriterParams. saveConfig therefore always sees the live
+		// FileWriter (with whatever params were last applied). If a future
+		// change ever constructs a new FileWriter on Reload, this closure and
+		// every other s.rt.FileWriter use site must be re-audited together.
 		if err := saveConfig(s.rt.FileWriter, s.getLogger(), cfg); err != nil {
 			//if err:=s.saveConfig() can't do this because it's not assigned yet, the s.Reload() below will "assign" it.
 			return fmt.Errorf("config write due to [Apply] button, failed: %w", err)
@@ -12554,8 +12565,12 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 
 	if w.file == nil {
 		// rotateIfNeededYouHoldLock's rotation attempt (and its reopenOriginal
-		// fallback) both failed catastrophically; there is nothing left to write to.
-		return 0, errors.New("rotatingLogWriter, log file is not open after failed rotation") //TODO: this is kinda huge, do we even log this on console with Error or Warn at least?!
+		// fallback) both failed catastrophically; there is nothing left to write
+		// to. Continuing without logs is worse than aborting: operators would
+		// silently lose the audit trail. panic2 logs via GetBugLogger (and
+		// stderr via the surrounding recover paths) before terminating.
+		panic2(fmt.Sprintf("rotatingLogWriter: log file %q is not open after failed rotation — refusing to continue without logging", w.path))
+		panic(nil)
 	}
 
 	start = time.Now()
@@ -15522,6 +15537,17 @@ type Runtime struct {
 	FileWriter wincoe.FileWriter
 }
 
+// ApplyFileWriterParams pushes ExtraSafety and retry settings from cfg onto
+// the process-lifetime FileWriter. Call after every successful config load
+// (initial boot and Reload) so writes always use the live values.
+func (r *Runtime) ApplyFileWriterParams(cfg *Config) {
+	if r == nil || r.FileWriter == nil || cfg == nil {
+		panic2("BUG: ApplyFileWriterParams called with nil Runtime, FileWriter, or Config")
+	}
+	r.FileWriter.SetExtraSafety(cfg.ExtraSafety)
+	r.FileWriter.SetRetryParams(cfg.FileWriterMaxRetries, cfg.FileWriterRetryBackoffMs)
+}
+
 // Logger is same as rt.LogMgr.Get()
 func (r *Runtime) Logger() *slog.Logger {
 	if r.LogMgr == nil {
@@ -17551,7 +17577,7 @@ func (s *Server) shouldSkipAAAARecentBlockEntry(cfg *Config, qtype, domain strin
 // there as actionable noise — see shouldSkipAAAARecentBlockEntry's doc
 // comment for the motivating case.
 func (s *Server) blockAndCacheQuery(ctx context.Context, cfg *Config, cachee DNSCache, reqMsg *dns.Msg, clientAddr, domain, qtype, key, action, matchedID, strategy string, recordRecentBlock bool) *dns.Msg {
-	s.stats.Add(1)
+	s.blockedQueries.Add(1)
 	if recordRecentBlock {
 		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
 	}
