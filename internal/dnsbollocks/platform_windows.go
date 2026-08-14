@@ -5411,7 +5411,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 			if entry, ok := cachee.Get(key); ok {
 				return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, blockMatchedID)
 			}
-			return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockReason, blockMatchedID, "queryBlocklist")
+			return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockReason, blockMatchedID, "queryBlocklist", true)
 		}
 	}
 
@@ -5454,7 +5454,8 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		if entry, ok := cachee.Get(key); ok {
 			return s.respondFromCache(ctx, entry, reqMsg, clientAddr, domain, qtype, "")
 		}
-		return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockedSTR, "", "blockedByLackOfRuleAllowingIt")
+		recordRecentBlock := !s.shouldSkipAAAARecentBlockEntry(cfg, qtype, domain)
+		return s.blockAndCacheQuery(ctx, cfg, cachee, reqMsg, clientAddr, domain, qtype, key, blockedSTR, "", "blockedByLackOfRuleAllowingIt", recordRecentBlock)
 	}
 
 	// Cache (edge: Negative responses cached short)
@@ -17514,6 +17515,28 @@ func (s *Server) respondFromCache(ctx context.Context, entry CacheEntry, reqMsg 
 	return resp
 }
 
+// shouldSkipAAAARecentBlockEntry reports whether a blocked AAAA query for
+// domain is expected, harmless noise that shouldn't clutter the WebUI's
+// /blocks page: specifically, when cfg.AllowHTTPSIfAAllowed is enabled and an
+// enabled A-type whitelist rule already allows the same domain. This mirrors
+// the exact same "A rule implies allowed" convenience handleDNSQuery already
+// applies to HTTPS queries (see Config.AllowHTTPSIfAAllowed's desc tag),
+// extended here purely for display purposes: browsers/OS resolvers routinely
+// query AAAA right alongside A, and once the A half of that pair is
+// whitelisted, the AAAA half being blocked (because whitelist_mode still
+// requires its own explicit AAAA rule, or the domain genuinely has no IPv6
+// records) is not actionable information for the operator. This does NOT
+// change actual DNS resolution/blocking behavior at all — the AAAA query is
+// still blocked exactly as before — it only controls whether this specific
+// block gets recorded in recentBlocks.
+func (s *Server) shouldSkipAAAARecentBlockEntry(cfg *Config, qtype, domain string) bool {
+	if qtype != "AAAA" || !cfg.AllowHTTPSIfAAllowed {
+		return false
+	}
+	_, allowed := s.ruleStore.MatchForType("A", domain)
+	return allowed
+}
+
 // blockAndCacheQuery records stats, generates a block response for reqMsg,
 // logs it under the given action/matchedID/strategy, and — if
 // cfg.BlockedResponseTTLSec > 0 — caches it under key so a repeat of the
@@ -17521,9 +17544,17 @@ func (s *Server) respondFromCache(ctx context.Context, entry CacheEntry, reqMsg 
 // every "this query is blocked before ever reaching the upstream" path in
 // handleDNSQuery (query blocklist, lack of an enabled whitelist rule) so
 // they stay in sync.
-func (s *Server) blockAndCacheQuery(ctx context.Context, cfg *Config, cachee DNSCache, reqMsg *dns.Msg, clientAddr, domain, qtype, key, action, matchedID, strategy string) *dns.Msg {
+//
+// recordRecentBlock controls whether this block is also added to
+// s.recentBlocks (surfaced on the WebUI's /blocks page); callers pass false
+// for cases that should still count in stats/logs but shouldn't show up
+// there as actionable noise — see shouldSkipAAAARecentBlockEntry's doc
+// comment for the motivating case.
+func (s *Server) blockAndCacheQuery(ctx context.Context, cfg *Config, cachee DNSCache, reqMsg *dns.Msg, clientAddr, domain, qtype, key, action, matchedID, strategy string, recordRecentBlock bool) *dns.Msg {
 	s.stats.Add(1)
-	s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
+	if recordRecentBlock {
+		s.recentBlocks.Record(domain, qtype, cfg.MaxRecentBlocks)
+	}
 	blocked := s.blockResponse(reqMsg)
 	blockedState := UpstreamState{Strategy: strategy}
 	s.logQuery(ctx, clientAddr, domain, qtype, action, matchedID, nil, blocked, blockedState)
