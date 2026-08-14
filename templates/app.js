@@ -526,10 +526,123 @@
         row.classList.remove('staged-delete', 'staged');
     }
 
+    // --- Column identity, order, and DOM reconciliation ---
+    // Every data table uses stable semantic column ids (data-col-id) on
+    // <col>, <th>, and <td> elements. Visual order is independent of those
+    // ids: drag-reorder mutates DOM order of colgroup/thead/tbody cells,
+    // while sort / filter / row display / resize all resolve cells by id.
+    // The Actions column is always pinned last and is never draggable.
+
+    const TABLE_DEFAULT_COL_ORDER = Object.freeze({
+        rulesTable: Object.freeze(['type', 'id', 'pattern', 'enabled', 'modified', 'actions']),
+        hostsTable: Object.freeze(['pattern', 'ips', 'enabled', 'modified', 'actions']),
+        blacklistTable: Object.freeze(['cidr', 'enabled', 'modified', 'actions']),
+        queryBlocklistTable: Object.freeze(['category', 'id', 'pattern', 'enabled', 'modified', 'actions']),
+        configTable: Object.freeze(['key', 'value', 'modified', 'actions']),
+    });
+
+    function cellByColId(row, colId) {
+        if (!row || !colId) return null;
+        return row.querySelector(':scope > td[data-col-id="' + colId + '"]');
+    }
+
+    function getColumnOrderFromDOM(table) {
+        const headerRow = table && table.querySelector('thead tr');
+        if (!headerRow) return [];
+        return Array.from(headerRow.children)
+            .map(th => th.dataset.colId)
+            .filter(Boolean);
+    }
+
+    function colOrderStorageKey(storageKeyPrefix) {
+        return 'colorder_' + storageKeyPrefix;
+    }
+
+    function loadColumnOrder(storageKeyPrefix, defaultOrder) {
+        const raw = uiStorage.getItem(colOrderStorageKey(storageKeyPrefix));
+        if (!raw) return null;
+        let order;
+        try {
+            order = JSON.parse(raw);
+        } catch {
+            return null;
+        }
+        if (!Array.isArray(order) || order.length === 0) return null;
+        if (!order.every(id => typeof id === 'string' && id.length > 0)) return null;
+        // Validate: same multiset as default (no unknown / missing ids).
+        if (order.length !== defaultOrder.length) return null;
+        const expected = new Set(defaultOrder);
+        if (!order.every(id => expected.has(id))) return null;
+        if (new Set(order).size !== order.length) return null;
+        // Actions is always forced last regardless of what was stored.
+        const withoutActions = order.filter(id => id !== 'actions');
+        if (expected.has('actions')) withoutActions.push('actions');
+        return withoutActions;
+    }
+
+    function persistColumnOrder(storageKeyPrefix, order) {
+        uiStorage.setItem(colOrderStorageKey(storageKeyPrefix), JSON.stringify(order));
+    }
+
+    // alignRowCellsToOrder reorders a single <tr>'s <td> children to match
+    // the given col-id sequence. Cells without data-col-id (e.g. colspan
+    // placeholders) are left at the end untouched. Missing ids are skipped.
+    function alignRowCellsToOrder(row, order) {
+        if (!row || !order || order.length === 0) return;
+        if (row.querySelector('td[colspan]')) return;
+        const byId = new Map();
+        Array.from(row.children).forEach(td => {
+            if (td.dataset && td.dataset.colId) byId.set(td.dataset.colId, td);
+        });
+        order.forEach(id => {
+            const cell = byId.get(id);
+            if (cell) row.appendChild(cell);
+        });
+    }
+
+    // applyColumnOrderToTable reorders <col>, <th>, and every data-row <td>
+    // so visual order matches `order`. Call after load and after every drag
+    // drop. Does not touch widths (those are keyed by col-id separately).
+    function applyColumnOrderToTable(table, order) {
+        if (!table || !order || order.length === 0) return;
+        const colgroup = table.querySelector('colgroup');
+        const headerRow = table.querySelector('thead tr');
+        if (!colgroup || !headerRow) return;
+
+        const colsById = new Map();
+        Array.from(colgroup.children).forEach(col => {
+            if (col.dataset && col.dataset.colId) colsById.set(col.dataset.colId, col);
+        });
+        const thsById = new Map();
+        Array.from(headerRow.children).forEach(th => {
+            if (th.dataset && th.dataset.colId) thsById.set(th.dataset.colId, th);
+        });
+
+        order.forEach(id => {
+            const col = colsById.get(id);
+            if (col) colgroup.appendChild(col);
+            const th = thsById.get(id);
+            if (th) headerRow.appendChild(th);
+        });
+
+        const tbody = table.querySelector('tbody');
+        if (tbody) {
+            Array.from(tbody.rows).forEach(row => alignRowCellsToOrder(row, order));
+        }
+    }
+
+    // ensureRowMatchesTableOrder aligns a newly built or template-cloned
+    // row to the table's current visual column order before insertion.
+    function ensureRowMatchesTableOrder(row, table) {
+        if (!row || !table) return;
+        alignRowCellsToOrder(row, getColumnOrderFromDOM(table));
+    }
+
     // buildRuleRowElement creates a <tr> for a staged (not yet applied) new rule,
     // matching the structure of server-rendered rows in the "rules" template so
     // filtering, sorting, and the existing Edit/Delete delegation all work on it
-    // unmodified.
+    // unmodified. Cells carry stable data-col-id so reorder/sort/display stay
+    // correct regardless of visual column order.
     function buildRuleRowElement(clientId, type, pattern, enabled) {
         const row = document.createElement('tr');
         row.dataset.ruleId = clientId;
@@ -540,20 +653,24 @@
         row.classList.add('staged-add', 'staged');
 
         const typeTd = document.createElement('td');
+        typeTd.dataset.colId = 'type';
         typeTd.textContent = type;
         row.appendChild(typeTd);
 
         const idTd = document.createElement('td');
+        idTd.dataset.colId = 'id';
         idTd.textContent = '(pending)';
         idTd.title = '(pending \u2014 assigned on Apply)';
         row.appendChild(idTd);
 
         const patternTd = document.createElement('td');
+        patternTd.dataset.colId = 'pattern';
         patternTd.textContent = pattern;
         patternTd.title = pattern;
         row.appendChild(patternTd);
 
         const enabledTd = document.createElement('td');
+        enabledTd.dataset.colId = 'enabled';
         const span = document.createElement('span');
         span.className = enabled ? 'tag-enabled' : 'tag-disabled';
         span.textContent = enabled ? 'Active' : 'Paused';
@@ -561,12 +678,14 @@
         row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
+        modifiedTd.dataset.colId = 'modified';
         modifiedTd.className = 'text-muted';
         modifiedTd.textContent = '(pending)';
         modifiedTd.title = '(pending \u2014 set on Apply)';
         row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
+        actionsTd.dataset.colId = 'actions';
         actionsTd.className = 'actions';
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
@@ -587,20 +706,27 @@
     // applyRuleRowDisplay updates a rules-table row's dataset and visible cells
     // to reflect the given {type, pattern, enabled} values. Shared by the
     // optimistic post-Stage update and by baseline-restore (no-op stage / Discard).
+    // Cells are resolved by stable col-id so display stays correct after reorder.
     function applyRuleRowDisplay(row, type, pattern, enabled) {
         row.dataset.ruleType = type;
         row.dataset.rulePattern = pattern;
         row.dataset.ruleEnabled = enabled ? 'true' : 'false';
-        row.cells[0].textContent = type;
-        // cells[1] = ID, unchanged
-        row.cells[2].textContent = pattern;
-        row.cells[2].title = pattern;
-        const enabledCell = row.cells[3];
-        enabledCell.textContent = '';
-        const enabledSpan = document.createElement('span');
-        enabledSpan.className = enabled ? 'tag-enabled' : 'tag-disabled';
-        enabledSpan.textContent = enabled ? 'Active' : 'Paused';
-        enabledCell.appendChild(enabledSpan);
+        const typeCell = cellByColId(row, 'type');
+        if (typeCell) typeCell.textContent = type;
+        // id cell is left unchanged
+        const patternCell = cellByColId(row, 'pattern');
+        if (patternCell) {
+            patternCell.textContent = pattern;
+            patternCell.title = pattern;
+        }
+        const enabledCell = cellByColId(row, 'enabled');
+        if (enabledCell) {
+            enabledCell.textContent = '';
+            const enabledSpan = document.createElement('span');
+            enabledSpan.className = enabled ? 'tag-enabled' : 'tag-disabled';
+            enabledSpan.textContent = enabled ? 'Active' : 'Paused';
+            enabledCell.appendChild(enabledSpan);
+        }
     }
 
     // buildQueryBlockRowElement creates a <tr> for a staged (not yet applied) new
@@ -620,20 +746,24 @@
         row.classList.add('staged-add', 'staged');
 
         const categoryTd = document.createElement('td');
+        categoryTd.dataset.colId = 'category';
         categoryTd.textContent = category;
         row.appendChild(categoryTd);
 
         const idTd = document.createElement('td');
+        idTd.dataset.colId = 'id';
         idTd.textContent = '(pending)';
         idTd.title = '(pending \u2014 assigned on Apply)';
         row.appendChild(idTd);
 
         const patternTd = document.createElement('td');
+        patternTd.dataset.colId = 'pattern';
         patternTd.textContent = pattern;
         patternTd.title = pattern;
         row.appendChild(patternTd);
 
         const enabledTd = document.createElement('td');
+        enabledTd.dataset.colId = 'enabled';
         const span = document.createElement('span');
         span.className = enabled ? 'tag-enabled' : 'tag-disabled';
         span.textContent = enabled ? 'Active' : 'Paused';
@@ -641,12 +771,14 @@
         row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
+        modifiedTd.dataset.colId = 'modified';
         modifiedTd.className = 'text-muted';
         modifiedTd.textContent = '(pending)';
         modifiedTd.title = '(pending \u2014 set on Apply)';
         row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
+        actionsTd.dataset.colId = 'actions';
         actionsTd.className = 'actions';
 
         const editBtn = document.createElement('button');
@@ -684,16 +816,22 @@
         row.dataset.qbCategory = category;
         row.dataset.qbPattern = pattern;
         row.dataset.qbEnabled = enabled ? 'true' : 'false';
-        row.cells[0].textContent = category;
-        // cells[1] = ID, unchanged
-        row.cells[2].textContent = pattern;
-        row.cells[2].title = pattern;
-        const enabledCell = row.cells[3];
-        enabledCell.textContent = '';
-        const enabledSpan = document.createElement('span');
-        enabledSpan.className = enabled ? 'tag-enabled' : 'tag-disabled';
-        enabledSpan.textContent = enabled ? 'Active' : 'Paused';
-        enabledCell.appendChild(enabledSpan);
+        const categoryCell = cellByColId(row, 'category');
+        if (categoryCell) categoryCell.textContent = category;
+        // id cell is left unchanged
+        const patternCell = cellByColId(row, 'pattern');
+        if (patternCell) {
+            patternCell.textContent = pattern;
+            patternCell.title = pattern;
+        }
+        const enabledCell = cellByColId(row, 'enabled');
+        if (enabledCell) {
+            enabledCell.textContent = '';
+            const enabledSpan = document.createElement('span');
+            enabledSpan.className = enabled ? 'tag-enabled' : 'tag-disabled';
+            enabledSpan.textContent = enabled ? 'Active' : 'Paused';
+            enabledCell.appendChild(enabledSpan);
+        }
 
         const editBtnEl = row.querySelector('.js-qb-edit');
         if (editBtnEl) {
@@ -814,6 +952,7 @@
             updateTableBanner();
         }, { once: true });
 
+        ensureRowMatchesTableOrder(editRow, document.getElementById('queryBlocklistTable'));
         row.after(clone);
     }
 
@@ -835,16 +974,19 @@
         row.classList.add('staged-add', 'staged');
 
         const patternTd = document.createElement('td');
+        patternTd.dataset.colId = 'pattern';
         patternTd.textContent = pattern;
         patternTd.title = pattern;
         row.appendChild(patternTd);
 
         const ipsTd = document.createElement('td');
+        ipsTd.dataset.colId = 'ips';
         ipsTd.textContent = ipsDisplay;
         ipsTd.title = ipsDisplay;
         row.appendChild(ipsTd);
 
         const enabledTd = document.createElement('td');
+        enabledTd.dataset.colId = 'enabled';
         const enabledSpanEl = document.createElement('span');
         enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
         enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
@@ -852,12 +994,14 @@
         row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
+        modifiedTd.dataset.colId = 'modified';
         modifiedTd.className = 'text-muted';
         modifiedTd.textContent = '(pending)';
         modifiedTd.title = '(pending \u2014 set on Apply)';
         row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
+        actionsTd.dataset.colId = 'actions';
         actionsTd.className = 'actions';
 
         const editBtn = document.createElement('button');
@@ -896,16 +1040,24 @@
         row.dataset.hostPattern = pattern;
         row.dataset.hostIps = ips;
         row.dataset.hostEnabled = enabled ? 'true' : 'false';
-        row.cells[0].textContent = pattern;
-        row.cells[0].title = pattern;
-        row.cells[1].textContent = ips;
-        row.cells[1].title = ips;
-        const enabledCell = row.cells[2];
-        enabledCell.textContent = '';
-        const enabledSpanEl = document.createElement('span');
-        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
-        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
-        enabledCell.appendChild(enabledSpanEl);
+        const patternCell = cellByColId(row, 'pattern');
+        if (patternCell) {
+            patternCell.textContent = pattern;
+            patternCell.title = pattern;
+        }
+        const ipsCell = cellByColId(row, 'ips');
+        if (ipsCell) {
+            ipsCell.textContent = ips;
+            ipsCell.title = ips;
+        }
+        const enabledCell = cellByColId(row, 'enabled');
+        if (enabledCell) {
+            enabledCell.textContent = '';
+            const enabledSpanEl = document.createElement('span');
+            enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+            enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+            enabledCell.appendChild(enabledSpanEl);
+        }
 
         const editBtnEl = row.querySelector('.js-host-edit');
         if (editBtnEl) {
@@ -925,11 +1077,13 @@
         row.classList.add('staged-add', 'staged');
 
         const cidrTd = document.createElement('td');
+        cidrTd.dataset.colId = 'cidr';
         cidrTd.textContent = cidr;
         cidrTd.title = cidr;
         row.appendChild(cidrTd);
 
         const enabledTd = document.createElement('td');
+        enabledTd.dataset.colId = 'enabled';
         const enabledSpanEl = document.createElement('span');
         enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
         enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
@@ -937,12 +1091,14 @@
         row.appendChild(enabledTd);
 
         const modifiedTd = document.createElement('td');
+        modifiedTd.dataset.colId = 'modified';
         modifiedTd.className = 'text-muted';
         modifiedTd.textContent = '(pending)';
         modifiedTd.title = '(pending \u2014 set on Apply)';
         row.appendChild(modifiedTd);
 
         const actionsTd = document.createElement('td');
+        actionsTd.dataset.colId = 'actions';
         actionsTd.className = 'actions text-center';
 
         const editBtn = document.createElement('button');
@@ -980,14 +1136,19 @@
     function applyBlacklistRowDisplay(row, cidrVal, enabled) {
         row.dataset.cidr = cidrVal;
         row.dataset.enabled = enabled ? 'true' : 'false';
-        row.cells[0].textContent = cidrVal;
-        row.cells[0].title = cidrVal;
-        const enabledCell = row.cells[1];
-        enabledCell.textContent = '';
-        const enabledSpanEl = document.createElement('span');
-        enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
-        enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
-        enabledCell.appendChild(enabledSpanEl);
+        const cidrCell = cellByColId(row, 'cidr');
+        if (cidrCell) {
+            cidrCell.textContent = cidrVal;
+            cidrCell.title = cidrVal;
+        }
+        const enabledCell = cellByColId(row, 'enabled');
+        if (enabledCell) {
+            enabledCell.textContent = '';
+            const enabledSpanEl = document.createElement('span');
+            enabledSpanEl.className = enabled ? 'tag-enabled' : 'tag-disabled';
+            enabledSpanEl.textContent = enabled ? 'Active' : 'Paused';
+            enabledCell.appendChild(enabledSpanEl);
+        }
 
         const editBtnEl = row.querySelector('.js-blacklist-edit');
         if (editBtnEl) {
@@ -1615,13 +1776,12 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.ruleId || "", row.dataset.ruleType || "", row.dataset.rulePattern || ""].join(" "),
-            // Added highlighting for Type (0), ID (1), and Pattern (2) columns
+            // Highlight Type / ID / Pattern by stable col-id (order-independent).
             highlightTerms: (row, terms) => {
-                if (row.cells.length > 2) {
-                    highlightTextNodes(row.cells[0], terms);
-                    highlightTextNodes(row.cells[1], terms);
-                    highlightTextNodes(row.cells[2], terms);
-                }
+                ['type', 'id', 'pattern'].forEach(id => {
+                    const cell = cellByColId(row, id);
+                    if (cell) highlightTextNodes(cell, terms);
+                });
             }
         });
     }
@@ -1635,12 +1795,12 @@
             editRowClasses: ['edit-host-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.hostPattern || "", row.dataset.hostIps || ""].join(" "),
-            // Added highlighting for Pattern (0) and IPs (1) columns
+            // Highlight Pattern / IPs by stable col-id (order-independent).
             highlightTerms: (row, terms) => {
-                if (row.cells.length > 1) {
-                    highlightTextNodes(row.cells[0], terms);
-                    highlightTextNodes(row.cells[1], terms);
-                }
+                ['pattern', 'ips'].forEach(id => {
+                    const cell = cellByColId(row, id);
+                    if (cell) highlightTextNodes(cell, terms);
+                });
             }
         });
     }
@@ -1654,11 +1814,10 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => row.dataset.cidr || "",
-            // Added highlighting for CIDR (0) column
+            // Highlight CIDR by stable col-id (order-independent).
             highlightTerms: (row, terms) => {
-                if (row.cells.length > 0) {
-                    highlightTextNodes(row.cells[0], terms);
-                }
+                const cell = cellByColId(row, 'cidr');
+                if (cell) highlightTextNodes(cell, terms);
             }
         });
     }
@@ -1672,13 +1831,12 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.qbId || "", row.dataset.qbCategory || "", row.dataset.qbPattern || ""].join(" "),
-            // Added highlighting for Category (0), ID (1), and Pattern (2) columns
+            // Highlight Category / ID / Pattern by stable col-id (order-independent).
             highlightTerms: (row, terms) => {
-                if (row.cells.length > 2) {
-                    highlightTextNodes(row.cells[0], terms);
-                    highlightTextNodes(row.cells[1], terms);
-                    highlightTextNodes(row.cells[2], terms);
-                }
+                ['category', 'id', 'pattern'].forEach(id => {
+                    const cell = cellByColId(row, id);
+                    if (cell) highlightTextNodes(cell, terms);
+                });
             }
         });
     }
@@ -1861,7 +2019,8 @@
             updateTableBanner();
         }, { once: true });
         
-        // 6. Insert cleanly into the DOM
+        // 6. Insert cleanly into the DOM (cells aligned to current column order)
+        ensureRowMatchesTableOrder(editRow, document.getElementById('hostsTable'));
         row.after(clone);
     }
     
@@ -1978,6 +2137,7 @@
             updateTableBanner();
         }, { once: true });
         
+        ensureRowMatchesTableOrder(editRow, document.getElementById('blacklistTable'));
         row.after(clone);
     }
     
@@ -2331,7 +2491,9 @@
         //   .config-cancel-btn elements, removing any existing edit row before the new
         //   clone is inserted, so listeners are always on a fresh, short-lived element.
         
-        // Insert the edit row into the live DOM before any post-insertion adjustments.
+        // Align cells to current visual column order, then insert before any
+        // post-insertion measurements (textarea auto-size needs a live row).
+        ensureRowMatchesTableOrder(editRow, document.getElementById('configTable'));
         row.after(clone);
         
         // Post-insertion: auto-size the textarea now that it is in the DOM and
@@ -2462,35 +2624,64 @@
         return 'colwidths_' + storageKeyPrefix;
     }
 
+    // Widths are persisted as { colId: pct, ... } so they survive column
+    // reorder. Legacy array-by-index payloads (from before col-id support)
+    // are accepted once, mapped via the table's *current* DOM order, and
+    // rewritten in the new format on the next persist.
     function persistColumnWidths(storageKeyPrefix, cols) {
-        const widths = cols.map(getColWidthPct);
+        const widths = {};
+        cols.forEach(col => {
+            const id = col.dataset && col.dataset.colId;
+            if (!id) return;
+            widths[id] = getColWidthPct(col);
+        });
         uiStorage.setItem(colWidthsStorageKey(storageKeyPrefix), JSON.stringify(widths));
     }
 
-    function loadColumnWidths(storageKeyPrefix, expectedCount) {
+    function loadColumnWidthsMap(storageKeyPrefix, cols) {
         const raw = uiStorage.getItem(colWidthsStorageKey(storageKeyPrefix));
         if (!raw) return null;
-        let widths;
+        let parsed;
         try {
-            widths = JSON.parse(raw);
+            parsed = JSON.parse(raw);
         } catch {
             return null;
         }
-        if (!Array.isArray(widths) || widths.length !== expectedCount) return null;
-        if (!widths.every(w => typeof w === 'number' && Number.isFinite(w) && w > 0)) return null;
-        return widths;
+        // New format: object keyed by col-id.
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            const ids = cols.map(c => c.dataset && c.dataset.colId).filter(Boolean);
+            if (ids.length === 0) return null;
+            if (!ids.every(id => typeof parsed[id] === 'number' && Number.isFinite(parsed[id]) && parsed[id] > 0)) {
+                return null;
+            }
+            return parsed;
+        }
+        // Legacy format: array parallel to current DOM col order.
+        if (Array.isArray(parsed) && parsed.length === cols.length &&
+            parsed.every(w => typeof w === 'number' && Number.isFinite(w) && w > 0)) {
+            const map = {};
+            cols.forEach((col, i) => {
+                const id = col.dataset && col.dataset.colId;
+                if (id) map[id] = parsed[i];
+            });
+            return Object.keys(map).length === cols.length ? map : null;
+        }
+        return null;
     }
 
     // initializeColumnWidths bakes each column's effective width into an
     // explicit inline percentage on its <col> element: either a previously
-    // saved user preference, or (on first run) the width the browser is
-    // already rendering via the CSS .col-NN classes — so subsequent resize
-    // math always has a concrete, consistent starting point without
-    // changing how the table looks by default.
+    // saved user preference (keyed by stable col-id), or (on first run) the
+    // width the browser is already rendering via the CSS .col-NN classes —
+    // so subsequent resize math always has a concrete, consistent starting
+    // point without changing how the table looks by default.
     function initializeColumnWidths(table, cols, ths, storageKeyPrefix) {
-        const saved = loadColumnWidths(storageKeyPrefix, cols.length);
+        const saved = loadColumnWidthsMap(storageKeyPrefix, cols);
         if (saved) {
-            cols.forEach((col, i) => { col.style.width = saved[i] + '%'; });
+            cols.forEach(col => {
+                const id = col.dataset && col.dataset.colId;
+                if (id && saved[id] != null) col.style.width = saved[id] + '%';
+            });
             return;
         }
         const tableWidthPx = table.getBoundingClientRect().width;
@@ -2579,14 +2770,17 @@
     // autoFitColumn sets column `index`'s width to fit the widest content
     // currently displayed in it (header text plus every body row). Uses the
     // same proportional redistribution as a normal (non-Shift) drag so
-    // double-click behaviour matches the primary resize mode.
+    // double-click behaviour matches the primary resize mode. Body cells are
+    // resolved by the header's stable data-col-id so auto-fit survives reorder.
     function autoFitColumn(table, cols, ths, index, storageKeyPrefix) {
+        const colId = ths[index] && ths[index].dataset.colId;
         let maxWidthPx = measureTextWidthPx(table, ths[index].textContent);
         const tbody = table.querySelector('tbody');
         if (tbody) {
             for (const row of tbody.rows) {
-                if (row.cells.length <= index) continue;
-                const w = measureTextWidthPx(table, row.cells[index].textContent);
+                const cell = colId ? cellByColId(row, colId) : row.cells[index];
+                if (!cell) continue;
+                const w = measureTextWidthPx(table, cell.textContent);
                 if (w > maxWidthPx) maxWidthPx = w;
             }
         }
@@ -2645,23 +2839,30 @@
         document.body.classList.add('col-resizing');
     }
 
-    // setupColumnResizing wires hybrid drag-to-resize and double-click-to-
-    // auto-fit onto every column border of `tableId` except the very last
-    // (there is nothing to its right to trade width with). storageKeyPrefix
-    // scopes the persisted widths to this specific table, mirroring
-    // setupTableSorting's identical pattern.
-    function setupColumnResizing(tableId, storageKeyPrefix) {
-        const table = document.getElementById(tableId);
-        if (!table) return;
+    // liveColState reads the current colgroup/th order from the live DOM so
+    // resize/auto-fit keep working after column drag-reorder (indices change).
+    function liveColState(table) {
         const colgroup = table.querySelector('colgroup');
         const headerRow = table.querySelector('thead tr');
-        if (!colgroup || !headerRow) return;
-
+        if (!colgroup || !headerRow) return null;
         const cols = Array.from(colgroup.children);
         const ths = Array.from(headerRow.children);
-        if (cols.length !== ths.length || cols.length < 2) return;
+        if (cols.length !== ths.length || cols.length < 2) return null;
+        return { cols, ths };
+    }
 
-        initializeColumnWidths(table, cols, ths, storageKeyPrefix);
+    // rewireColumnResizeHandles strips any previous resize handles and
+    // attaches fresh ones bound to the *current* visual indices. Called on
+    // initial setup and after every successful column reorder.
+    function rewireColumnResizeHandles(table, storageKeyPrefix) {
+        const state = liveColState(table);
+        if (!state) return;
+        const { cols, ths } = state;
+
+        ths.forEach(th => {
+            th.classList.remove('resizable-col');
+            th.querySelectorAll('.col-resize-handle').forEach(h => h.remove());
+        });
 
         for (let i = 0; i < ths.length - 1; i++) {
             const th = ths[i];
@@ -2673,13 +2874,147 @@
             handle.title = 'Drag to resize (Shift+drag = adjacent only) \u2014 double-click to fit content';
             th.appendChild(handle);
 
-            handle.addEventListener('pointerdown', (e) => startColumnResize(e, handle, table, cols, i, storageKeyPrefix));
+            // Resolve index/cols from live DOM at event time so reorder cannot
+            // leave a stale closure pointing at the wrong column.
+            handle.addEventListener('pointerdown', (e) => {
+                const live = liveColState(table);
+                if (!live) return;
+                const idx = live.ths.indexOf(th);
+                if (idx < 0 || idx >= live.cols.length - 1) return;
+                startColumnResize(e, handle, table, live.cols, idx, storageKeyPrefix);
+            });
             handle.addEventListener('dblclick', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                autoFitColumn(table, cols, ths, i, storageKeyPrefix);
+                const live = liveColState(table);
+                if (!live) return;
+                const idx = live.ths.indexOf(th);
+                if (idx < 0 || idx >= live.cols.length - 1) return;
+                autoFitColumn(table, live.cols, live.ths, idx, storageKeyPrefix);
             });
         }
+    }
+
+    // setupColumnResizing wires hybrid drag-to-resize and double-click-to-
+    // auto-fit onto every column border of `tableId` except the very last
+    // (there is nothing to its right to trade width with). storageKeyPrefix
+    // scopes the persisted widths to this specific table, mirroring
+    // setupTableSorting's identical pattern.
+    function setupColumnResizing(tableId, storageKeyPrefix) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const state = liveColState(table);
+        if (!state) return;
+
+        initializeColumnWidths(table, state.cols, state.ths, storageKeyPrefix);
+        rewireColumnResizeHandles(table, storageKeyPrefix);
+    }
+
+    // setupColumnReorder enables drag-to-reorder of data columns (Actions
+    // stays pinned last). Order is persisted per table under colorder_*.
+    // Dropping a column reorders <col>, <th>, and every row's <td> cells by
+    // stable data-col-id, then rewires resize handles to the new indices.
+    function setupColumnReorder(tableId, storageKeyPrefix) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const headerRow = table.querySelector('thead tr');
+        if (!headerRow) return;
+
+        const defaultOrder = TABLE_DEFAULT_COL_ORDER[tableId];
+        if (!defaultOrder) return;
+
+        // Apply any previously saved order before wiring interaction.
+        const savedOrder = loadColumnOrder(storageKeyPrefix, defaultOrder);
+        if (savedOrder) {
+            applyColumnOrderToTable(table, savedOrder);
+        }
+
+        Array.from(headerRow.children).forEach(th => {
+            const colId = th.dataset.colId;
+            if (!colId || colId === 'actions') return;
+            th.classList.add('col-draggable');
+            th.setAttribute('draggable', 'true');
+            th.title = (th.title ? th.title + ' — ' : '') + 'Drag header to reorder columns';
+        });
+
+        let dragColId = null;
+
+        headerRow.addEventListener('dragstart', (e) => {
+            const th = e.target.closest('th');
+            if (!th || !headerRow.contains(th)) return;
+            // Resize handle and sort button must never start a column drag —
+            // those controls own their own pointer interactions.
+            if (e.target.closest('.col-resize-handle') || e.target.closest('.sort-button')) {
+                e.preventDefault();
+                return;
+            }
+            const colId = th.dataset.colId;
+            if (!colId || colId === 'actions') {
+                e.preventDefault();
+                return;
+            }
+            dragColId = colId;
+            th.classList.add('col-dragging');
+            try {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', colId);
+            } catch {
+                // Some browsers throw on setData during certain gesture paths.
+            }
+        });
+
+        headerRow.addEventListener('dragend', () => {
+            dragColId = null;
+            headerRow.querySelectorAll('.col-dragging, .col-drop-target').forEach(el => {
+                el.classList.remove('col-dragging', 'col-drop-target');
+            });
+        });
+
+        headerRow.addEventListener('dragover', (e) => {
+            if (!dragColId) return;
+            const th = e.target.closest('th');
+            if (!th || !headerRow.contains(th)) return;
+            const targetId = th.dataset.colId;
+            if (!targetId || targetId === 'actions' || targetId === dragColId) return;
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+            headerRow.querySelectorAll('.col-drop-target').forEach(el => el.classList.remove('col-drop-target'));
+            th.classList.add('col-drop-target');
+        });
+
+        headerRow.addEventListener('dragleave', (e) => {
+            const th = e.target.closest('th');
+            if (th) th.classList.remove('col-drop-target');
+        });
+
+        headerRow.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const th = e.target.closest('th');
+            headerRow.querySelectorAll('.col-drop-target').forEach(el => el.classList.remove('col-drop-target'));
+            if (!dragColId || !th || !headerRow.contains(th)) return;
+            const targetId = th.dataset.colId;
+            if (!targetId || targetId === 'actions' || targetId === dragColId) return;
+
+            const current = getColumnOrderFromDOM(table);
+            const fromIdx = current.indexOf(dragColId);
+            const toIdx = current.indexOf(targetId);
+            if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+
+            const next = current.slice();
+            next.splice(fromIdx, 1);
+            next.splice(toIdx, 0, dragColId);
+            // Force Actions last if present.
+            const withoutActions = next.filter(id => id !== 'actions');
+            if (current.includes('actions')) withoutActions.push('actions');
+
+            // Cancel any open inline edits before reshuffling cells under them.
+            document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+
+            applyColumnOrderToTable(table, withoutActions);
+            persistColumnOrder(storageKeyPrefix, withoutActions);
+            rewireColumnResizeHandles(table, storageKeyPrefix);
+            dragColId = null;
+        });
     }
 
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
@@ -2891,7 +3226,8 @@
                     updateTableBanner();
                 }, { once: true });
                 
-                // 6. Insert cleanly next to the original row
+                // 6. Insert cleanly next to the original row (cells match column order)
+                ensureRowMatchesTableOrder(editRow, document.getElementById('rulesTable'));
                 row.after(clone);
             } // end of 'if editBtn'
             
@@ -3014,6 +3350,7 @@
                 const row = buildRuleRowElement(clientId, type, pattern, enabled);
                 const tbody = document.querySelector('#rulesTable tbody');
                 if (tbody) {
+                    ensureRowMatchesTableOrder(row, document.getElementById('rulesTable'));
                     tbody.insertBefore(row, tbody.firstChild); // newest first, mirrors server-side prepend
                 }
 
@@ -3119,7 +3456,9 @@
                 const tbody = document.querySelector('#queryBlocklistTable tbody');
                 if (tbody) {
                     removePlaceholderRow(tbody);
-                    tbody.insertBefore(buildQueryBlockRowElement(clientId, category, pattern, enabled), tbody.firstChild);
+                    const newRow = buildQueryBlockRowElement(clientId, category, pattern, enabled);
+                    ensureRowMatchesTableOrder(newRow, document.getElementById('queryBlocklistTable'));
+                    tbody.insertBefore(newRow, tbody.firstChild);
                 }
 
                 patternInput.value = '';
@@ -3350,7 +3689,9 @@
             const tbody = document.querySelector('#hostsTable tbody');
             if (tbody) {
                 removePlaceholderRow(tbody);
-                tbody.appendChild(buildHostRowElement(clientId, pattern, ips, enabled));
+                const newRow = buildHostRowElement(clientId, pattern, ips, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('hostsTable'));
+                tbody.appendChild(newRow);
             }
 
             patternInput.value = '';
@@ -3517,7 +3858,9 @@
             const tbody = document.querySelector('#blacklistTable tbody');
             if (tbody) {
                 removePlaceholderRow(tbody);
-                tbody.insertBefore(buildBlacklistRowElement(clientId, cidrValue, enabled), tbody.firstChild);
+                const newRow = buildBlacklistRowElement(clientId, cidrValue, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('blacklistTable'));
+                tbody.insertBefore(newRow, tbody.firstChild);
             }
 
             cidrInput.value = '';
@@ -3692,10 +4035,9 @@
                 const type = fields.type || 'A';
                 const pattern = fields.pattern || '';
                 const enabled = fields.enabled !== 'false';
-                tbody.insertBefore(
-                    buildRuleRowElement(change.clientId, type, pattern, enabled),
-                    tbody.firstChild
-                );
+                const newRow = buildRuleRowElement(change.clientId, type, pattern, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('rulesTable'));
+                tbody.insertBefore(newRow, tbody.firstChild);
                 return;
             }
 
@@ -3737,7 +4079,9 @@
                 const pattern = fields.pattern || '';
                 const ips = fields.ips || '';
                 const enabled = fields.enabled !== 'false';
-                tbody.appendChild(buildHostRowElement(change.clientId, pattern, ips, enabled));
+                const newRow = buildHostRowElement(change.clientId, pattern, ips, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('hostsTable'));
+                tbody.appendChild(newRow);
                 return;
             }
 
@@ -3773,10 +4117,9 @@
             if (fields.action === 'add') {
                 const cidr = fields.cidr || '';
                 const enabled = fields.enabled !== 'false';
-                tbody.insertBefore(
-                    buildBlacklistRowElement(change.clientId, cidr, enabled),
-                    tbody.firstChild
-                );
+                const newRow = buildBlacklistRowElement(change.clientId, cidr, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('blacklistTable'));
+                tbody.insertBefore(newRow, tbody.firstChild);
                 return;
             }
 
@@ -3816,10 +4159,9 @@
                 const category = fields.category || 'block';
                 const pattern = fields.pattern || '';
                 const enabled = fields.enabled !== 'false';
-                tbody.insertBefore(
-                    buildQueryBlockRowElement(change.clientId, category, pattern, enabled),
-                    tbody.firstChild
-                );
+                const newRow = buildQueryBlockRowElement(change.clientId, category, pattern, enabled);
+                ensureRowMatchesTableOrder(newRow, document.getElementById('queryBlocklistTable'));
+                tbody.insertBefore(newRow, tbody.firstChild);
                 return;
             }
 
@@ -3909,12 +4251,20 @@
             originalRows.forEach((row, i) => row.dataset.origIndex = i);
             
             function applySort(th, newDir) {
-                const colIndex = parseInt(th.dataset.col);
-                
-                // 2. Save the new sorting state to uiStorage so it survives page reloads
-                uiStorage.setItem(storageKeyPrefix + '_sortCol', colIndex);
+                // Prefer stable col-id; fall back to legacy numeric data-col for
+                // any header that has not yet been annotated.
+                const colId = th.dataset.colId || null;
+                const legacyIndex = th.dataset.col != null ? parseInt(th.dataset.col, 10) : NaN;
+
+                // Persist by col-id so sort survives column reorder. Legacy
+                // numeric values are still accepted on restore (see below).
+                if (colId) {
+                    uiStorage.setItem(storageKeyPrefix + '_sortCol', colId);
+                } else if (Number.isFinite(legacyIndex)) {
+                    uiStorage.setItem(storageKeyPrefix + '_sortCol', String(legacyIndex));
+                }
                 uiStorage.setItem(storageKeyPrefix + '_sortDir', newDir);
-                
+
                 // Reset all headers
                 headers.forEach(h => {
                     h.setAttribute('aria-sort', 'none');
@@ -3922,10 +4272,9 @@
                     const icon = h.querySelector('.sort-icon');
                     if (icon) icon.textContent = '';
                 });
-                
+
                 // Update clicked header
                 th.dataset.sortDir = newDir;
-                // th.setAttribute('aria-sort', newDir);
                 th.setAttribute(
                     'aria-sort',
                     newDir === 'asc' ? 'ascending' :
@@ -3937,36 +4286,41 @@
                     if (newDir === 'asc') icon.textContent = '▲';
                     if (newDir === 'desc') icon.textContent = '▼';
                 }
-                
+
                 let rowsArray = Array.from(tbody.rows);
                 // Filter out custom inline edit rows and empty placeholder colspan messages
-                rowsArray = rowsArray.filter(row => row.cells.length > colIndex && !row.querySelector('td[colspan]') && !row.classList.contains('edit-row') && !row.classList.contains('edit-host-row'));
-                
+                rowsArray = rowsArray.filter(row =>
+                    !row.querySelector('td[colspan]') &&
+                    !row.classList.contains('edit-row') &&
+                    !row.classList.contains('edit-host-row') &&
+                    (colId ? !!cellByColId(row, colId) : row.cells.length > legacyIndex)
+                );
+
                 if (newDir === 'none') {
                     // Revert to original order
                     rowsArray.sort((a, b) => parseInt(a.dataset.origIndex) - parseInt(b.dataset.origIndex));
                 } else {
-                    // Sort ascending or descending
+                    // Sort ascending or descending using the cell for this col-id
                     rowsArray.sort((a, b) => {
-                        // FIX: Changed from innerText to textContent
-                        let valA = a.cells[colIndex].textContent.trim().toLowerCase();
-                        let valB = b.cells[colIndex].textContent.trim().toLowerCase();
-                        
+                        const cellA = colId ? cellByColId(a, colId) : a.cells[legacyIndex];
+                        const cellB = colId ? cellByColId(b, colId) : b.cells[legacyIndex];
+                        const valA = (cellA ? cellA.textContent : '').trim().toLowerCase();
+                        const valB = (cellB ? cellB.textContent : '').trim().toLowerCase();
+
                         if (valA < valB) return newDir === 'asc' ? -1 : 1;
                         if (valA > valB) return newDir === 'asc' ? 1 : -1;
                         return 0;
                     });
                 }
-                
+
                 // Append rows back to tbody in sorted order
                 rowsArray.forEach(row => tbody.appendChild(row));
-                // Re-apply filter immediately after sorting array structure changes
                 // Re-apply filter immediately if applicable
                 if (typeof postSortCallback === 'function') {
                     postSortCallback();
                 }
             }
-            
+
             headers.forEach(th => {
                 const button = th.querySelector('.sort-button');
                 if (!button) return;
@@ -3980,18 +4334,30 @@
                     applySort(th, newDir);
                 });
             });
-            
-            // Restore sort state on load WITHOUT a synthetic click / forced layout
+
+            // Restore sort state on load WITHOUT a synthetic click / forced layout.
+            // Accept both new col-id strings and legacy numeric data-col values.
             const savedCol = uiStorage.getItem(storageKeyPrefix + '_sortCol');
             const savedDir = uiStorage.getItem(storageKeyPrefix + '_sortDir');
-            
+
             if (savedCol !== null && savedDir !== null && savedDir !== 'none') {
-                const targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+                let targetHeader = table.querySelector('th.sortable[data-col-id="' + savedCol + '"]');
+                if (!targetHeader && /^\d+$/.test(savedCol)) {
+                    targetHeader = table.querySelector('th.sortable[data-col="' + savedCol + '"]');
+                }
                 if (targetHeader) {
                     applySort(targetHeader, savedDir);
                 }
             }
         }
+        // Column reorder must run before sort/resize so saved visual order is
+        // applied (and resize handles wired against the final DOM indices).
+        setupColumnReorder('rulesTable', 'rulesTable');
+        setupColumnReorder('hostsTable', 'hostsTable');
+        setupColumnReorder('blacklistTable', 'blacklistTable');
+        setupColumnReorder('queryBlocklistTable', 'queryBlocklistTable');
+        setupColumnReorder('configTable', 'configTable');
+
         // Initialize table sorting states across views
         setupTableSorting('rulesTable', 'rulesTable', applyRulesFilter);
         setupTableSorting('hostsTable', 'hostsTable', applyHostsFilter);
@@ -4000,7 +4366,7 @@
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
 
         // Initialize column resizing (drag + double-click auto-fit) across the
-        // same set of tables. Run after sorting/filtering setup so any
+        // same set of tables. Run after reorder + sorting/filtering so any
         // filter-driven layout has already settled before we measure widths.
         setupColumnResizing('rulesTable', 'rulesTable');
         setupColumnResizing('hostsTable', 'hostsTable');

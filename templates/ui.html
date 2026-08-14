@@ -133,58 +133,58 @@
 {{template "staged-table-banner" .}}
 <table id="rulesTable">
     <colgroup>
-        <col class="col-12">
-        <col class="col-14">
-        <col class="col-30">
-        <col class="col-12">
-        <col class="col-14">
-        <col class="col-18">
+        <col class="col-12" data-col-id="type">
+        <col class="col-14" data-col-id="id">
+        <col class="col-30" data-col-id="pattern">
+        <col class="col-12" data-col-id="enabled">
+        <col class="col-14" data-col-id="modified">
+        <col class="col-18" data-col-id="actions">
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+            <th class="sortable" data-col="0" data-col-id="type" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Type</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+            <th class="sortable" data-col="1" data-col-id="id" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>ID</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+            <th class="sortable" data-col="2" data-col-id="pattern" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Pattern</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+            <th class="sortable" data-col="3" data-col-id="enabled" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Enabled</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="4" scope="col" aria-sort="none">
+            <th class="sortable" data-col="4" data-col-id="modified" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th scope="col">Actions</th>
+            <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Rules}}
         <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}"
             data-orig-type="{{.Type}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}">
-            <td>{{.Type}}</td>
-            <td title="{{.ID}}">{{.ID}}</td>
-            <td title="{{.Pattern}}">{{.Pattern}}</td>
-            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td>{{.ModifiedAtDisplay}}</td>
-            <td class="actions">
+            <td data-col-id="type">{{.Type}}</td>
+            <td data-col-id="id" title="{{.ID}}">{{.ID}}</td>
+            <td data-col-id="pattern" title="{{.Pattern}}">{{.Pattern}}</td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
+            <td class="actions" data-col-id="actions">
                 <button class="btn-edit">Edit</button> 
                 <form method="post" action="/rules" class="form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -203,18 +203,18 @@
 {{end}}
 <template id="editRuleTemplate">
     <tr class="edit-row">
-        <td>
+        <td data-col-id="type">
             <select name="type" class="edit-type w-100">
                 {{range .DNSTypes}}
                 <option value="{{.}}">{{.}}</option>
                 {{end}}
             </select>
         </td>
-        <td class="edit-id-display"></td>
-        <td><input type="text" class="edit-pattern w-100"></td>
-        <td><label><input type="checkbox" class="edit-enabled rule-enabled-checkbox"></label></td>
-        <td class="text-muted">(updates on Apply)</td>
-        <td class="actions">
+        <td class="edit-id-display" data-col-id="id"></td>
+        <td data-col-id="pattern"><input type="text" class="edit-pattern w-100"></td>
+        <td data-col-id="enabled"><label><input type="checkbox" class="edit-enabled rule-enabled-checkbox"></label></td>
+        <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
+        <td class="actions" data-col-id="actions">
             <form method="post" action="/rules" class="edit-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
@@ -359,50 +359,50 @@
 {{template "staged-table-banner" .}}
 <table id="hostsTable">
     <colgroup>
-        <col class="col-26">
-        <col class="col-30">
-        <col class="col-12">
-        <col class="col-14">
-        <col class="col-18">
+        <col class="col-26" data-col-id="pattern">
+        <col class="col-30" data-col-id="ips">
+        <col class="col-12" data-col-id="enabled">
+        <col class="col-14" data-col-id="modified">
+        <col class="col-18" data-col-id="actions">
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+            <th class="sortable" data-col="0" data-col-id="pattern" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Pattern</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+            <th class="sortable" data-col="1" data-col-id="ips" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>IPs</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+            <th class="sortable" data-col="2" data-col-id="enabled" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Enabled</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+            <th class="sortable" data-col="3" data-col-id="modified" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th scope="col">Actions</th>
+            <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Hosts}}
         <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}" data-host-enabled="{{.Enabled}}"
             data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}" data-orig-enabled="{{.Enabled}}">
-            <td title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
-            <td title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
-            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td>{{.ModifiedAtDisplay}}</td>
-            <td class="actions">
+            <td data-col-id="pattern" title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
+            <td data-col-id="ips" title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
+            <td class="actions" data-col-id="actions">
                 <button class="btn-edit js-host-edit" 
                 data-index="{{.Index}}" 
                 data-pattern="{{.PatternDisplay}}" 
@@ -428,14 +428,14 @@
 
 <template id="editHostTemplate">
     <tr class="edit-host-row">
-        <td>
+        <td data-col-id="pattern">
             <input type="hidden" name="old_pattern" class="edit-host-old-pattern" form="">
             <input type="text" name="pattern" class="edit-host-pattern w-100" form="" required>
         </td>
-        <td><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
-        <td><label><input type="checkbox" name="enabled" class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
-        <td class="text-muted">(updates on Apply)</td>
-        <td class="actions">
+        <td data-col-id="ips"><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
+        <td data-col-id="enabled"><label><input type="checkbox" name="enabled" class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
+        <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
+        <td class="actions" data-col-id="actions">
             <form method="post" action="/hosts" class="edit-host-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
@@ -504,41 +504,41 @@
 {{template "staged-table-banner" .}}
 <table id="blacklistTable">
     <colgroup>
-        <col class="col-45">
-        <col class="col-15">
-        <col class="col-20">
-        <col class="col-20">
+        <col class="col-45" data-col-id="cidr">
+        <col class="col-15" data-col-id="enabled">
+        <col class="col-20" data-col-id="modified">
+        <col class="col-20" data-col-id="actions">
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+            <th class="sortable" data-col="0" data-col-id="cidr" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>IP / CIDR Block</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+            <th class="sortable" data-col="1" data-col-id="enabled" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Enabled</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+            <th class="sortable" data-col="2" data-col-id="modified" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="text-center" scope="col">Actions</th>
+            <th class="text-center" scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .ResponseBlacklist}}
         <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-enabled="{{.Enabled}}" data-orig-cidr="{{.CIDR}}" data-orig-enabled="{{.Enabled}}">
-            <td title="{{.CIDR}}">{{.CIDR}}</td>
-            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td>{{.ModifiedAtDisplay}}</td>
-            <td class="actions text-center">
+            <td data-col-id="cidr" title="{{.CIDR}}">{{.CIDR}}</td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
+            <td class="actions text-center" data-col-id="actions">
                 <button type="button" class="btn-edit js-blacklist-edit"
                 data-index="{{.Index}}"
                 data-cidr="{{.CIDR}}"
@@ -565,13 +565,13 @@
 
 <template id="editBlacklistTemplate">
     <tr class="edit-row">
-        <td>
+        <td data-col-id="cidr">
             <input type="hidden" name="old_cidr" class="edit-blacklist-old-cidr" form="">
             <input type="text" name="cidr" class="edit-blacklist-cidr w-100" form="" required>
         </td>
-        <td><label><input type="checkbox" name="enabled" class="edit-blacklist-enabled rule-enabled-checkbox" form=""></label></td>
-        <td class="text-muted">(updates on Apply)</td>
-        <td class="actions text-center">
+        <td data-col-id="enabled"><label><input type="checkbox" name="enabled" class="edit-blacklist-enabled rule-enabled-checkbox" form=""></label></td>
+        <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
+        <td class="actions text-center" data-col-id="actions">
             <form method="POST" action="/response-blacklist" class="edit-blacklist-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="action" value="edit">
@@ -626,58 +626,58 @@
 {{template "staged-table-banner" .}}
 <table id="queryBlocklistTable">
     <colgroup>
-        <col class="col-12">
-        <col class="col-14">
-        <col class="col-30">
-        <col class="col-12">
-        <col class="col-14">
-        <col class="col-18">
+        <col class="col-12" data-col-id="category">
+        <col class="col-14" data-col-id="id">
+        <col class="col-30" data-col-id="pattern">
+        <col class="col-12" data-col-id="enabled">
+        <col class="col-14" data-col-id="modified">
+        <col class="col-18" data-col-id="actions">
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+            <th class="sortable" data-col="0" data-col-id="category" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Category</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+            <th class="sortable" data-col="1" data-col-id="id" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>ID</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+            <th class="sortable" data-col="2" data-col-id="pattern" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Pattern</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="3" scope="col" aria-sort="none">
+            <th class="sortable" data-col="3" data-col-id="enabled" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Enabled</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="4" scope="col" aria-sort="none">
+            <th class="sortable" data-col="4" data-col-id="modified" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th scope="col">Actions</th>
+            <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .QueryBlockRules}}
         <tr id="qbRow_{{.ID}}" data-qb-id="{{.ID}}" data-qb-category="{{.Category}}" data-qb-pattern="{{.Pattern}}" data-qb-enabled="{{.Enabled}}"
             data-orig-category="{{.Category}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}">
-            <td>{{.Category}}</td>
-            <td title="{{.ID}}">{{.ID}}</td>
-            <td title="{{.Pattern}}">{{.Pattern}}</td>
-            <td>{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td>{{.ModifiedAtDisplay}}</td>
-            <td class="actions">
+            <td data-col-id="category">{{.Category}}</td>
+            <td data-col-id="id" title="{{.ID}}">{{.ID}}</td>
+            <td data-col-id="pattern" title="{{.Pattern}}">{{.Pattern}}</td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
+            <td class="actions" data-col-id="actions">
                 <button type="button" class="btn-edit js-qb-edit"
                     data-id="{{.ID}}"
                     data-category="{{.Category}}"
@@ -704,17 +704,17 @@
 
 <template id="editQueryBlockTemplate">
     <tr class="edit-row">
-        <td>
+        <td data-col-id="category">
             <select name="category" class="edit-qb-category w-100">
                 <option value="block">Block</option>
                 <option value="except">Except</option>
             </select>
         </td>
-        <td class="edit-id-display"></td>
-        <td><input type="text" class="edit-qb-pattern w-100"></td>
-        <td><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label></td>
-        <td class="text-muted">(updates on Apply)</td>
-        <td class="actions">
+        <td class="edit-id-display" data-col-id="id"></td>
+        <td data-col-id="pattern"><input type="text" class="edit-qb-pattern w-100"></td>
+        <td data-col-id="enabled"><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label></td>
+        <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
+        <td class="actions" data-col-id="actions">
             <form method="post" action="/query-blocklist" class="edit-qb-form form-inline-action2">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="edit" value="1">
@@ -815,44 +815,44 @@
 </div>
 <table id="configTable">
     <colgroup>
-        <col class="col-30">
-        <col class="col-40">
-        <col class="col-15">
-        <col class="col-15">
+        <col class="col-30" data-col-id="key">
+        <col class="col-40" data-col-id="value">
+        <col class="col-15" data-col-id="modified">
+        <col class="col-15" data-col-id="actions">
     </colgroup>
     <thead>
         <tr>
-            <th class="sortable" data-col="0" scope="col" aria-sort="none">
+            <th class="sortable" data-col="0" data-col-id="key" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Setting (Key)</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="1" scope="col" aria-sort="none">
+            <th class="sortable" data-col="1" data-col-id="value" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Current Value</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="sortable" data-col="2" scope="col" aria-sort="none">
+            <th class="sortable" data-col="2" data-col-id="modified" scope="col" aria-sort="none">
                 <button type="button" class="sort-button">
                     <span>Last Modified</span>
                     <span class="sort-icon" aria-hidden="true"></span>
                 </button>
             </th>
-            <th class="text-center" scope="col">Actions</th>
+            <th class="text-center" scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Fields}}
         <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}" data-true-original="{{.Value}}" data-list-json="{{.ValueJSON}}" data-true-list-json="{{.ValueJSON}}" data-is-pwd="{{.IsPassword}}">
-            <td class="config-key-code" title="{{.Desc}}">
+            <td class="config-key-code" data-col-id="key" title="{{.Desc}}">
                 <span class="config-key-text">{{.Key}}</span>
                 {{if .Desc}}<br><small class="config-field-desc">{{.Desc}}</small>{{end}}
             </td>
-            <td class="display-value" title="{{.Value}}">{{.Value}}</td>
-            <td>{{.ModifiedAtDisplay}}</td>
-            <td class="actions text-center">
+            <td class="display-value" data-col-id="value" title="{{.Value}}">{{.Value}}</td>
+            <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
+            <td class="actions text-center" data-col-id="actions">
                 <button class="btn-edit js-config-edit">Edit</button>
                 <button type="button" class="btn-discard-row inline-discard-btn js-config-discard">Discard</button>
             </td>
@@ -863,13 +863,13 @@
 
 <template id="editConfigTemplate">
     <tr class="edit-row edit-row-bg">
-        <td class="edit-key-display config-key-code"></td>
-        <td>
+        <td class="edit-key-display config-key-code" data-col-id="key"></td>
+        <td data-col-id="value">
             <div class="edit-input-container w-100"></div>
             <small class="edit-type-hint config-type-hint"></small>
         </td>
-        <td class="text-muted">(updates on Apply)</td>
-        <td class="actions text-center">
+        <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
+        <td class="actions text-center" data-col-id="actions">
             <button type="button" class="btn-save config-stage-btn">Stage</button>
             <button type="button" class="btn-cancel config-cancel-btn">Cancel</button>
         </td>

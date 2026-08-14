@@ -560,6 +560,26 @@ body.col-resizing * {
     user-select: none;
 }
 
+/* Column drag-reorder (data columns only; Actions stays pinned last) */
+th.col-draggable {
+    cursor: grab;
+}
+th.col-draggable.col-dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+}
+th.col-drop-target {
+    box-shadow: inset 3px 0 0 0 var(--accent);
+}
+th.col-draggable .sort-button {
+    /* Keep sort button clicks working; grab applies to the th chrome around it. */
+    cursor: pointer;
+}
+/* Native drag must not start from the resize handle. */
+th.col-draggable .col-resize-handle {
+    cursor: col-resize;
+}
+
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,

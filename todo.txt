@@ -1,7 +1,5 @@
 my todos:
 
-* Column drag-reordering: Every table's JS (sorting via data-col, the Rules/Hosts/Blacklist/QueryBlocklist row-builders using row.cells[N] for display updates, applyRuleRowDisplay/applyHostRowDisplay/etc.) is positional-index-based end to end so doing this properly means introducing a stable per-column id used everywhere instead of index, and reconciling it with colgroup/th DOM order at render, sort, resize and filter time.
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -75,4 +73,6 @@ done:
 #ff02::2 ip6-allrouters
 #ff02::3 ip6-allhosts
 #0.0.0.0 0.0.0.0
+
+//* Column drag-reordering: Every table's JS (sorting via data-col, the Rules/Hosts/Blacklist/QueryBlocklist row-builders using row.cells[N] for display updates, applyRuleRowDisplay/applyHostRowDisplay/etc.) is positional-index-based end to end so doing this properly means introducing a stable per-column id used everywhere instead of index, and reconciling it with colgroup/th DOM order at render, sort, resize and filter time.
 
