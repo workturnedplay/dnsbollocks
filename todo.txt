@@ -1,6 +1,6 @@
 my todos:
 
-* Column drag-reordering — deferring this one. Every table's JS (sorting via data-col, the Rules/Hosts/Blacklist/QueryBlocklist row-builders using row.cells[N] for display updates, applyRuleRowDisplay/applyHostRowDisplay/etc.) is positional-index-based end to end. Doing this properly means introducing a stable per-column id used everywhere instead of index, and reconciling it with colgroup/th DOM order at render, sort, resize and filter time.
+* Column drag-reordering: Every table's JS (sorting via data-col, the Rules/Hosts/Blacklist/QueryBlocklist row-builders using row.cells[N] for display updates, applyRuleRowDisplay/applyHostRowDisplay/etc.) is positional-index-based end to end so doing this properly means introducing a stable per-column id used everywhere instead of index, and reconciling it with colgroup/th DOM order at render, sort, resize and filter time.
 
 * maybe the non 0.0.0.0 entries in hosts file should be ignored rather than blocked because then `127.0.0.1 localhost` will get localhost blocked, well technically it should because if the query reaches the DNS it means it wanted to ask for it online rather than from the real hosts file from C:\Windows\System32\drivers\etc\hosts So not sure yet about this. For example I've had to comment-out these lines in StevenBlack's Hosts(and you see the one with "%" too which was invalid):
 #127.0.0.1 localhost
