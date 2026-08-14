@@ -2440,10 +2440,16 @@
     
     // --- Column resize (drag) + double-click auto-fit, applied generically to
     // every sortable data table (Rules/Hosts/Blacklist/Query-Blocklist/Config).
-    // Adjacent-column percentage resizing keeps every row summing to 100% width
+    // Hybrid percentage resizing keeps every row summing to 100% width
     // (matching the existing `table-layout: fixed` + percentage <col> approach),
     // so resizing never requires horizontal scrolling or changes to the overall
-    // table width. Preferences persist per table via uiStorage (localStorage).
+    // table width:
+    //   - Normal drag / double-click: the resized column takes the full delta;
+    //     the opposite delta is redistributed proportionally across every
+    //     column to its right (avoids crushing only the immediate neighbour).
+    //   - Shift-drag: classic adjacent-only trade with the single right-hand
+    //     neighbour (precise two-column adjustment).
+    // Preferences persist per table via uiStorage (localStorage).
 
     const COL_RESIZE_MIN_PCT = 4;
 
@@ -2512,10 +2518,68 @@
         return colResizeMeasureCtx.measureText(text || '').width;
     }
 
+    // applyColumnWidthChange sets cols[index] toward targetPct, taking the
+    // opposite delta either from the single right-hand neighbour (adjacentMode)
+    // or proportionally from every column to the right. Min-width clamps are
+    // enforced; any residual caused by clamping is absorbed so the row always
+    // sums to 100%. Returns false if the change cannot be applied without
+    // violating COL_RESIZE_MIN_PCT on the resized column itself.
+    function applyColumnWidthChange(cols, index, targetPct, adjacentMode) {
+        const n = cols.length;
+        if (index < 0 || index >= n - 1) return false;
+
+        const start = cols.map(getColWidthPct);
+        const rightIndices = [];
+        if (adjacentMode) {
+            rightIndices.push(index + 1);
+        } else {
+            for (let i = index + 1; i < n; i++) rightIndices.push(i);
+        }
+
+        const rightStartSum = rightIndices.reduce((s, i) => s + start[i], 0);
+        if (rightStartSum <= 0) return false;
+
+        // Hard upper bound: leave at least MIN for every column that will
+        // give up space (prevents the left column from swallowing the table).
+        const maxLeft = 100 - (n - 1) * COL_RESIZE_MIN_PCT;
+        let newLeft = Math.max(COL_RESIZE_MIN_PCT, Math.min(targetPct, maxLeft));
+        const actualDelta = newLeft - start[index];
+
+        const newWidths = start.slice();
+        newWidths[index] = newLeft;
+
+        let distributed = 0;
+        for (const i of rightIndices) {
+            const share = start[i] / rightStartSum;
+            let w = start[i] - actualDelta * share;
+            if (w < COL_RESIZE_MIN_PCT) w = COL_RESIZE_MIN_PCT;
+            newWidths[i] = w;
+            distributed += w;
+        }
+
+        // Clamping on the right-hand side can leave a residual. Absorb it into
+        // the resized column so the percentages still sum to 100%.
+        const residual = (rightStartSum - actualDelta) - distributed;
+        newWidths[index] += residual;
+        if (newWidths[index] < COL_RESIZE_MIN_PCT) return false;
+
+        // Final floating-point normalisation onto the last column.
+        const total = newWidths.reduce((s, w) => s + w, 0);
+        if (Math.abs(total - 100) > 0.001) {
+            newWidths[n - 1] += 100 - total;
+            if (newWidths[n - 1] < COL_RESIZE_MIN_PCT) return false;
+        }
+
+        for (let i = 0; i < n; i++) {
+            cols[i].style.width = newWidths[i].toFixed(3) + '%';
+        }
+        return true;
+    }
+
     // autoFitColumn sets column `index`'s width to fit the widest content
-    // currently displayed in it (header text plus every body row), taking
-    // the difference from its immediate right-hand neighbor so the row
-    // continues to sum to 100%.
+    // currently displayed in it (header text plus every body row). Uses the
+    // same proportional redistribution as a normal (non-Shift) drag so
+    // double-click behaviour matches the primary resize mode.
     function autoFitColumn(table, cols, ths, index, storageKeyPrefix) {
         let maxWidthPx = measureTextWidthPx(table, ths[index].textContent);
         const tbody = table.querySelector('tbody');
@@ -2533,16 +2597,9 @@
         const CELL_PADDING_PX = 34; // approximate cell left+right padding plus breathing room
         const desiredPct = ((maxWidthPx + CELL_PADDING_PX) / tableWidthPx) * 100;
 
-        const currentLeft = getColWidthPct(cols[index]);
-        const currentRight = getColWidthPct(cols[index + 1]);
-        const total = currentLeft + currentRight;
-
-        const newLeft = Math.max(COL_RESIZE_MIN_PCT, Math.min(desiredPct, total - COL_RESIZE_MIN_PCT));
-        const newRight = total - newLeft;
-
-        cols[index].style.width = newLeft.toFixed(3) + '%';
-        cols[index + 1].style.width = newRight.toFixed(3) + '%';
-        persistColumnWidths(storageKeyPrefix, cols);
+        if (applyColumnWidthChange(cols, index, desiredPct, /*adjacentMode=*/false)) {
+            persistColumnWidths(storageKeyPrefix, cols);
+        }
     }
 
     function startColumnResize(e, handle, table, cols, index, storageKeyPrefix) {
@@ -2558,28 +2615,15 @@
             console.warn('Column resize: setPointerCapture failed, drag may not track outside the handle:', err);
         }
 
+        // Capture the modifier at pointerdown so the mode cannot flip mid-drag
+        // if the user presses/releases Shift while moving.
+        const adjacentMode = e.shiftKey;
         const startX = e.clientX;
         const startLeftPct = getColWidthPct(cols[index]);
-        const startRightPct = getColWidthPct(cols[index + 1]);
 
         function onPointerMove(moveEvent) {
             const deltaPct = ((moveEvent.clientX - startX) / tableWidthPx) * 100;
-
-            let newLeft = startLeftPct + deltaPct;
-            let newRight = startRightPct - deltaPct;
-
-            if (newLeft < COL_RESIZE_MIN_PCT) {
-                newRight -= (COL_RESIZE_MIN_PCT - newLeft);
-                newLeft = COL_RESIZE_MIN_PCT;
-            }
-            if (newRight < COL_RESIZE_MIN_PCT) {
-                newLeft -= (COL_RESIZE_MIN_PCT - newRight);
-                newRight = COL_RESIZE_MIN_PCT;
-            }
-            if (newLeft < COL_RESIZE_MIN_PCT || newRight < COL_RESIZE_MIN_PCT) return;
-
-            cols[index].style.width = newLeft.toFixed(3) + '%';
-            cols[index + 1].style.width = newRight.toFixed(3) + '%';
+            applyColumnWidthChange(cols, index, startLeftPct + deltaPct, adjacentMode);
         }
 
         function finish() {
@@ -2601,11 +2645,11 @@
         document.body.classList.add('col-resizing');
     }
 
-    // setupColumnResizing wires drag-to-resize (adjacent-column, percentage
-    // based) and double-click-to-auto-fit onto every column border of
-    // `tableId` except the very last (there is nothing to its right to
-    // trade width with). storageKeyPrefix scopes the persisted widths to
-    // this specific table, mirroring setupTableSorting's identical pattern.
+    // setupColumnResizing wires hybrid drag-to-resize and double-click-to-
+    // auto-fit onto every column border of `tableId` except the very last
+    // (there is nothing to its right to trade width with). storageKeyPrefix
+    // scopes the persisted widths to this specific table, mirroring
+    // setupTableSorting's identical pattern.
     function setupColumnResizing(tableId, storageKeyPrefix) {
         const table = document.getElementById(tableId);
         if (!table) return;
@@ -2626,7 +2670,7 @@
             const handle = document.createElement('span');
             handle.className = 'col-resize-handle';
             handle.setAttribute('aria-hidden', 'true');
-            handle.title = 'Drag to resize \u2014 double-click to fit content';
+            handle.title = 'Drag to resize (Shift+drag = adjacent only) \u2014 double-click to fit content';
             th.appendChild(handle);
 
             handle.addEventListener('pointerdown', (e) => startColumnResize(e, handle, table, cols, i, storageKeyPrefix));
