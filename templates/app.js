@@ -123,6 +123,12 @@
 
     const tablePageKey = location.pathname;
 
+    // Per-page storage key for the /logs, /logs_queries, and /logs_queries_simple
+    // search filter (see the "Logs page: remember the filter text" block in the
+    // DOMContentLoaded handler below) — keyed by pathname so each of the three
+    // log pages remembers its own filter independently.
+    const logsFilterStorageKey = 'logs_filter_' + tablePageKey;
+
     const ADMIN_FETCH_TIMEOUT_MS = 30_000;
     const ADMIN_CHECK_FETCH_TIMEOUT_MS = 10_000;
 
@@ -3982,6 +3988,7 @@
                 }
                 const qInput = form.querySelector('[name="q"]');
                 if (qInput) qInput.value = '';
+                uiStorage.removeItem(logsFilterStorageKey);
                 form.submit();
             });
         }
@@ -4384,6 +4391,38 @@
         // highlights "Login" in the displayed log text too.
         const logsSearchInput = document.getElementById('logsSearchQuery');
         const logOutputPre = document.querySelector('.log-output-pre');
+
+        // ── Logs page: remember the filter text across navigating to another
+        // WebUI page and back, mirroring the table pages' persisted filters.
+        // /logs, /logs_queries, and /logs_queries_simple each get their own
+        // remembered value (see logsFilterStorageKey, keyed by pathname).
+        if (logsSearchInput) {
+            if (new URLSearchParams(location.search).has('q')) {
+                // A query string was explicitly supplied for this load (even an
+                // empty one, e.g. right after the Clear button) — honor it as the
+                // current filter and remember it for the next visit to this page.
+                uiStorage.setItem(logsFilterStorageKey, logsSearchInput.value);
+            } else {
+                // No filter was requested for this specific page load; restore
+                // whatever was last remembered for this log page, if anything.
+                const savedLogsFilter = uiStorage.getItem(logsFilterStorageKey);
+                if (savedLogsFilter) {
+                    location.replace(location.pathname + '?q=' + encodeURIComponent(savedLogsFilter));
+                    return; // Navigating away; nothing else on this page matters now.
+                }
+            }
+
+            // HTMLFormElement.submit() (used by the Clear button above) does not
+            // fire the 'submit' event, so this only covers the normal Filter
+            // button / Enter-key submission path — which is exactly right, since
+            // Clear already removes the stored value itself.
+            const logsForm = logsSearchInput.closest('form');
+            if (logsForm) {
+                logsForm.addEventListener('submit', () => {
+                    uiStorage.setItem(logsFilterStorageKey, logsSearchInput.value);
+                });
+            }
+        }
 
         if (logsSearchInput && logOutputPre) {
             const query = logsSearchInput.value.trim();
