@@ -552,14 +552,29 @@ func TestLoadExternalQueryBlocklist_MissingFileSetsLoadError(t *testing.T) {
 func TestLoadExternalQueryBlocklist_ParsesValidEntriesAndSkipsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hosts.txt")
+	// Mirrors the conventional StevenBlack / system hosts preamble that
+	// operators previously had to comment out by hand: only 0.0.0.0/::
+	// lines must become blocks; loopback/broadcast mappings must not.
 	content := "" +
 		"# comment line\n" +
 		"0.0.0.0 ads.example.com\n" +
 		"0.0.0.0 tracker.example.com alias.example.com # trailing comment\n" +
+		":: blocked-v6.example.com\n" +
 		"\n" +
 		"not-an-ip a-malformed-line.example.com\n" +
 		"justonefield\n" +
-		"192.168.1.1 nonstandard-ip.example.com\n"
+		"192.168.1.1 nonstandard-ip.example.com\n" +
+		"127.0.0.1 localhost\n" +
+		"127.0.0.1 localhost.localdomain\n" +
+		"127.0.0.1 local\n" +
+		"255.255.255.255 broadcasthost\n" +
+		"::1 localhost\n" +
+		"::1 ip6-localhost\n" +
+		"::1 ip6-loopback\n" +
+		"fe80::1%lo0 localhost\n" + // invalid IP token (zone id) → malformed
+		"ff00::0 ip6-localnet\n" +
+		"ff02::1 ip6-allnodes\n" +
+		"0.0.0.0 0.0.0.0\n" // unspecified IP + hostname "0.0.0.0" — still a valid block entry
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatalf("failed to write test hosts file: %v", err)
 	}
@@ -578,20 +593,41 @@ func TestLoadExternalQueryBlocklist_ParsesValidEntriesAndSkipsMalformed(t *testi
 		t.Errorf("expected no load error, got %q", src.LoadError)
 	}
 
-	for _, host := range []string{"ads.example.com", "tracker.example.com", "alias.example.com", "nonstandard-ip.example.com"} {
+	// Only unspecified-IP lines (0.0.0.0 / ::) contribute to the block set.
+	for _, host := range []string{"ads.example.com", "tracker.example.com", "alias.example.com", "blocked-v6.example.com", "0.0.0.0"} {
 		if !src.Contains(host) {
 			t.Errorf("expected %q to be present in external blocklist", host)
 		}
 	}
-	if src.Contains("a-malformed-line.example.com") {
-		t.Error("expected the malformed (bad IP) line's hostname to be skipped, not present")
+	// Non-unspecified mapping IPs are deliberately ignored for blocking so
+	// ordinary hosts-file loopback/broadcast entries never false-positive.
+	for _, host := range []string{
+		"nonstandard-ip.example.com",
+		"localhost",
+		"localhost.localdomain",
+		"local",
+		"broadcasthost",
+		"ip6-localhost",
+		"ip6-loopback",
+		"ip6-localnet",
+		"ip6-allnodes",
+		"a-malformed-line.example.com",
+	} {
+		if src.Contains(host) {
+			t.Errorf("expected %q to be ignored for blocking (non-unspecified or malformed), not present", host)
+		}
 	}
 
-	if src.MalformedLines != 2 { // "not-an-ip ..." and "justonefield"
-		t.Errorf("MalformedLines = %d, want 2", src.MalformedLines)
+	// "not-an-ip ...", "justonefield", and "fe80::1%lo0 ..." (zone id → ParseIP nil)
+	if src.MalformedLines != 3 {
+		t.Errorf("MalformedLines = %d, want 3", src.MalformedLines)
 	}
-	if src.NonStandardIPWarnings != 1 { // "192.168.1.1 ..."
-		t.Errorf("NonStandardIPWarnings = %d, want 1", src.NonStandardIPWarnings)
+	// 192.168.1.1, 127.0.0.1×3, 255.255.255.255, ::1×3, ff00::0, ff02::1
+	if src.NonStandardIPWarnings != 10 {
+		t.Errorf("NonStandardIPWarnings = %d, want 10", src.NonStandardIPWarnings)
+	}
+	if src.HostCount != 5 {
+		t.Errorf("HostCount = %d, want 5 (only the unspecified-IP lines)", src.HostCount)
 	}
 	if src.HostCount != len(src.hosts) {
 		t.Errorf("HostCount = %d, want len(hosts)=%d", src.HostCount, len(src.hosts))

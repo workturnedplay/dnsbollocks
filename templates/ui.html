@@ -736,7 +736,7 @@
     {{else}}
     Loaded: {{.External.LoadedAt}} &middot; {{.External.HostCount}} host(s) blocked
     {{if .External.MalformedLines}} &middot; {{.External.MalformedLines}} malformed line(s) skipped (see system log){{end}}
-    {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s) (see system log){{end}}
+    {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s) ignored for blocking (see system log){{end}}
     {{end}}
 </p>
 {{else}}

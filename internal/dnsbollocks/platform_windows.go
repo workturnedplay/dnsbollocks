@@ -150,7 +150,7 @@ type Config struct {
 	BlacklistFile                    string `json:"blacklist_file"       desc:"filename(no path!) of the response-IP blacklist JSON file, stored next to config.json. Created automatically with safe defaults if absent."`
 	HostsFile                        string `json:"hosts_file"           desc:"filename(no path!) of the local host-override JSON file, stored next to config.json. Resolved locally without needing to match the whitelist rules first. The query blocklist is checked before this and takes priority over it, unless local_hosts_override_query_blocklist is true."`
 	QueryBlocklistFile               string `json:"query_blocklist_file" desc:"filename(no path!) of the dnsbollocks-owned, mutable query-blocklist override JSON file, stored next to config.json. Holds 'block' patterns (always block a query outright, regardless of whitelist_mode or any whitelist rule) and 'except' patterns (cancel a block coming ONLY from query_blocklist_external_hosts_file — never from a 'block' pattern here, and never bypassing the normal whitelist/default policy on their own). Always checked first, before whitelist rules and local host overrides (see local_hosts_override_query_blocklist). Created automatically with an empty ruleset if absent."`
-	QueryBlocklistExternalHostsFile  string `json:"query_blocklist_external_hosts_file" desc:"optional path to a read-only, standard hosts-file (e.g. StevenBlack Hosts) used as an additional query-blocklist source; unlike other file settings this is NOT restricted to a bare filename (it can be absolute, or relative to the working directory) since dnsbollocks never writes to it. Syntax per line: '<IPv4|IPv6> <host> [<alias> ...]'; '#' starts a comment through end-of-line, even mid-line. The mapped IP is always ignored (every listed hostname is blocked outright, never used as a DNS answer); a non-0.0.0.0/:: mapping IP is logged as a warning. Matches exact hostnames only (no wildcards) — put dnsbollocks-specific wildcard patterns in query_blocklist_file instead. Empty (default) disables this layer entirely. A local 'except' pattern in query_blocklist_file can cancel a block coming from this file, but never bypasses whitelist_mode/whitelist rules on its own."`
+	QueryBlocklistExternalHostsFile  string `json:"query_blocklist_external_hosts_file" desc:"optional path to a read-only, standard hosts-file (e.g. StevenBlack Hosts) used as an additional query-blocklist source; unlike other file settings this is NOT restricted to a bare filename (it can be absolute, or relative to the working directory) since dnsbollocks never writes to it. Syntax per line: '<IPv4|IPv6> <host> [<alias> ...]'; '#' starts a comment through end-of-line, even mid-line. Only lines whose mapping IP is the unspecified address (0.0.0.0 or ::) contribute hostnames to the block set — this is the conventional blocklist signal used by StevenBlack Hosts and similar files. Lines with any other mapping IP (e.g. 127.0.0.1 localhost, ::1 localhost, 255.255.255.255 broadcasthost) are deliberately ignored for blocking (still counted/logged as non-standard) so ordinary hosts-file loopback/broadcast entries never false-positive-block. The mapped IP is never used as a DNS answer from this layer; intentional local overrides belong in hosts_file. Matches exact hostnames only (no wildcards) — put dnsbollocks-specific wildcard patterns in query_blocklist_file instead. Empty (default) disables this layer entirely. A local 'except' pattern in query_blocklist_file can cancel a block coming from this file, but never bypasses whitelist_mode/whitelist rules on its own."`
 	LocalHostsOverrideQueryBlocklist bool   `json:"local_hosts_override_query_blocklist" desc:"If false (default), the query blocklist (query_blocklist_file / query_blocklist_external_hosts_file) is checked before local host overrides (hosts_file), so a blocklisted domain stays blocked even if it also has a local host override. If true, a matching local host override is resolved directly and the query blocklist is skipped entirely for that query."`
 	LogDir                           string `json:"log_dir" desc:"Directory where all log files will be saved. Can be absolute or relative(to config dir). If empty aka \"\" then it defaults_to/uses config dir(which is current directory when exe was started). Log file names will be stripped of any folder paths and forced into this directory."`
 	LogQueriesFile                   string `json:"log_queries" desc:"filename(no path!) to the DNS query-only log file (JSON lines). Created automatically."`
@@ -17006,10 +17006,13 @@ type ExternalHostsBlocklistSource struct {
 	// "<ip> <host> [alias...]" hosts-file syntax.
 	MalformedLines int
 	// NonStandardIPWarnings counts lines whose mapping IP was neither
-	// 0.0.0.0 nor :: (still processed — the IP is always ignored, every
-	// listed hostname is blocked regardless — but flagged since it's
-	// unusual for a blocklist-style hosts file and may indicate the file
-	// isn't what the operator thinks it is).
+	// 0.0.0.0 nor ::. Those lines are deliberately ignored for blocking
+	// (their hostnames are never added to the block set) so ordinary
+	// hosts-file loopback/broadcast entries (127.0.0.1 localhost, ::1
+	// localhost, 255.255.255.255 broadcasthost, …) never false-positive.
+	// They are still counted and logged as a warning because a non-
+	// unspecified IP is unusual for a pure blocklist-style hosts file and
+	// may indicate the file isn't what the operator thinks it is.
 	NonStandardIPWarnings int
 	// LoadError is the last load attempt's error, if any. Non-empty means
 	// this layer is effectively disabled (hosts is empty or stale from a
@@ -17109,11 +17112,19 @@ func (s *Server) loadExternalQueryBlocklist() {
 				slog.String("path", path), slog.Int("line", lineNum), slog.String("content", line))
 			continue
 		}
+		// Only the unspecified address (0.0.0.0 / ::) is the conventional
+		// blocklist signal in hosts-style blocklists (StevenBlack Hosts etc.).
+		// Any other mapping IP is treated as a real hosts override, not a
+		// block: we count/log it and skip the line entirely so entries like
+		// "127.0.0.1 localhost", "::1 localhost", "255.255.255.255 broadcasthost"
+		// never false-positive-block. Intentional local IP answers belong in
+		// hosts_file / HostStore, not this read-only block layer.
 		if !ip.IsUnspecified() {
 			nonStandardIP++
 			log.Warn("Non-standard mapping IP in external query-blocklist hosts file (expected 0.0.0.0 or ::); "+
-				"the mapping IP is always ignored — every listed hostname is blocked outright regardless of it",
+				"line ignored for blocking — only unspecified-IP(ie. 0.0.0.0 or ::) lines contribute hostnames to the block set",
 				slog.String("path", path), slog.Int("line", lineNum), slog.String("ip", fields[0]))
+			continue
 		}
 
 		for _, host := range fields[1:] {

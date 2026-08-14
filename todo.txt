@@ -2,22 +2,6 @@ my todos:
 
 * Column drag-reordering: Every table's JS (sorting via data-col, the Rules/Hosts/Blacklist/QueryBlocklist row-builders using row.cells[N] for display updates, applyRuleRowDisplay/applyHostRowDisplay/etc.) is positional-index-based end to end so doing this properly means introducing a stable per-column id used everywhere instead of index, and reconciling it with colgroup/th DOM order at render, sort, resize and filter time.
 
-* maybe the non 0.0.0.0 entries in hosts file should be ignored rather than blocked because then `127.0.0.1 localhost` will get localhost blocked, well technically it should because if the query reaches the DNS it means it wanted to ask for it online rather than from the real hosts file from C:\Windows\System32\drivers\etc\hosts So not sure yet about this. For example I've had to comment-out these lines in StevenBlack's Hosts(and you see the one with "%" too which was invalid):
-#127.0.0.1 localhost
-#127.0.0.1 localhost.localdomain
-#127.0.0.1 local
-#255.255.255.255 broadcasthost
-#::1 localhost
-#::1 ip6-localhost
-#::1 ip6-loopback
-#fe80::1%lo0 localhost
-#ff00::0 ip6-localnet
-#ff00::0 ip6-mcastprefix
-#ff02::1 ip6-allnodes
-#ff02::2 ip6-allrouters
-#ff02::3 ip6-allhosts
-#0.0.0.0 0.0.0.0
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -75,4 +59,20 @@ done:
 //* in webui /response-blacklist and /hosts should have an Enabled toggle just like /rules has, which means on file too! The idea is, to disable a line temporarily without having to copy paste it out then put it back later on, like in the case of /hosts if I want to make online-check.safing.io not point to 0.65.67.75 temporarily which would cause portmaster (since it's pointing to only my program as the upstream dns) to think it's offline and cause it to block all traffic until it can resolve that first.
 
 //* shall we add modifiedAt(Last Modified) column for config.json too? just like all 3 others have (hosts,rules,blacklisted IPs), it would make things more crowded in the webUI, unless we also add ability to change column sizes via mouse (and double click on the right side of the column meaning auto-size it to fit longest text of any row or similar meaning; this column sizing feature would be ideal to have regardless; also ability to drag-move columns around would be nice too, even though this means lots of code which refers to the index of columns needs to be rewritten to target some kind of id of it instead. So that's like 3 features here requiring some careful consideration.
+
+//* maybe the non 0.0.0.0 entries in hosts file should be ignored rather than blocked because then `127.0.0.1 localhost` will get localhost blocked, well technically it should because if the query reaches the DNS it means it wanted to ask for it online rather than from the real hosts file from C:\Windows\System32\drivers\etc\hosts So not sure yet about this. For example I've had to comment-out these lines in StevenBlack's Hosts(and you see the one with "%" too which was invalid):
+#127.0.0.1 localhost
+#127.0.0.1 localhost.localdomain
+#127.0.0.1 local
+#255.255.255.255 broadcasthost
+#::1 localhost
+#::1 ip6-localhost
+#::1 ip6-loopback
+#fe80::1%lo0 localhost
+#ff00::0 ip6-localnet
+#ff00::0 ip6-mcastprefix
+#ff02::1 ip6-allnodes
+#ff02::2 ip6-allrouters
+#ff02::3 ip6-allhosts
+#0.0.0.0 0.0.0.0
 
