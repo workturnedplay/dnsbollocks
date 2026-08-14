@@ -16,7 +16,7 @@ my todos:
 #ff02::3 ip6-allhosts
 #0.0.0.0 0.0.0.0
 
-* shall we add modifiedAt(Last Modified) column for config.json too? just like all 3 others have (hosts,rules,blacklisted IPs), it would make things more crowded in the webUI, unless we also add ability to change column sizes via mouse (and double click on the right side of the column meaning auto-size it to fit longest text of any row or similar meaning; this column sizing feature would be ideal to have regardless; also ability to drag-move columns around would be nice too, even though this means lots of code which refers to the index of columns needs to be rewritted to target some kind of id of it instead. So that's like 3 features here requiring some careful consideration.
+* shall we add modifiedAt(Last Modified) column for config.json too? just like all 3 others have (hosts,rules,blacklisted IPs), it would make things more crowded in the webUI, unless we also add ability to change column sizes via mouse (and double click on the right side of the column meaning auto-size it to fit longest text of any row or similar meaning; this column sizing feature would be ideal to have regardless; also ability to drag-move columns around would be nice too, even though this means lots of code which refers to the index of columns needs to be rewritten to target some kind of id of it instead. So that's like 3 features here requiring some careful consideration.
 
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
