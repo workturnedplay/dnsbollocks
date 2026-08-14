@@ -1459,6 +1459,23 @@ var (
 	//Per Win32 docs, GetSystemMetrics returns 0 for both "the queried value is legitimately 0" and "the index is invalid/unsupported" — it does not set GetLastError in any meaningful way for these system-metric indices.
 	procGetSystemMetrics = NewBoundProc1(User32, "GetSystemMetrics", CheckNone) // returns int, 0 on failure for most indices
 	procSetCursorPos     = NewBoundProc2(User32, "SetCursorPos", CheckBool)
+	// LoadCursorW returns a shared system cursor handle; failure is NULL.
+	// SetCursor returns the previous HCURSOR (0 is a legitimate prior value
+	// and does not set GetLastError), so CheckNone — the public wrapper
+	// returns that previous handle as windows.Handle, matching SetCapture.
+	procLoadCursorW = NewBoundProc2(User32, "LoadCursorW", CheckNull)
+	procSetCursor   = NewBoundProc1(User32, "SetCursor", CheckNone)
+	// CopyIcon duplicates an icon/cursor; needed before SetSystemCursor, which
+	// destroys the handle it is given. Shared LoadCursor handles must not be
+	// passed to SetSystemCursor directly.
+	procCopyIcon = NewBoundProc1(User32, "CopyIcon", CheckNull)
+	// SetSystemCursor replaces a system cursor (OCR_*) globally. CheckBool.
+	procSetSystemCursor = NewBoundProc2(User32, "SetSystemCursor", CheckBool)
+	// SystemParametersInfoW: SPI_SETCURSORS restores all system cursors.
+	procSystemParametersInfoW = NewBoundProc4(User32, "SystemParametersInfoW", CheckBool)
+	// SetTimer returns the timer ID (non-zero) on success; 0 on failure.
+	procSetTimer  = NewBoundProc4(User32, "SetTimer", CheckZero)
+	procKillTimer = NewBoundProc2(User32, "KillTimer", CheckBool)
 
 	// procInvalidateRect = user32.NewProc("InvalidateRect")
 	procInvalidateRect = NewBoundProc3(User32, "InvalidateRect", CheckBool)
@@ -4983,6 +5000,121 @@ func LoadImageByID(hInstance windows.Handle, resourceID uint16, uType uint32, cx
 	return windows.Handle(res.R1), res
 }
 
+// Standard system cursor resource IDs for LoadCursorW(NULL, MAKEINTRESOURCE(id)).
+// These are shared OS cursors owned by USER32 — never DestroyCursor or CloseHandle them.
+const (
+	IDC_ARROW       uintptr = 32512
+	IDC_IBEAM       uintptr = 32513
+	IDC_WAIT        uintptr = 32514
+	IDC_CROSS       uintptr = 32515
+	IDC_UPARROW     uintptr = 32516
+	IDC_SIZENWSE    uintptr = 32642 // diagonal \ (top-left / bottom-right)
+	IDC_SIZENESW    uintptr = 32643 // diagonal / (top-right / bottom-left)
+	IDC_SIZEWE      uintptr = 32644 // horizontal
+	IDC_SIZENS      uintptr = 32645 // vertical
+	IDC_SIZEALL     uintptr = 32646 // four-way (move / omnidirectional)
+	IDC_NO          uintptr = 32648
+	IDC_HAND        uintptr = 32649
+	IDC_APPSTARTING uintptr = 32650
+	IDC_HELP        uintptr = 32651
+)
+
+// LoadCursor loads a cursor resource. Pass hInstance=0 and one of the IDC_*
+// constants to obtain a shared system cursor.
+//
+// Ownership: cursors loaded from a system resource (hInstance=0 + IDC_*) or
+// from a module via LoadCursorW are shared and owned by the system. Do not
+// pass them to DestroyCursor, and do not pass them to CloseHandle either —
+// HCURSOR is a USER object, not a kernel HANDLE. DestroyCursor is only valid
+// for cursors you created yourself (CreateCursor / LoadCursorFromFile /
+// LoadImage without LR_SHARED).
+func LoadCursor(hInstance windows.Handle, resourceID uintptr) (windows.Handle, WinResult) {
+	res := procLoadCursorW.Call(uintptr(hInstance), resourceID)
+	return windows.Handle(res.R1), res
+}
+
+// SetCursor sets the cursor shape for the calling thread's input queue.
+//
+// Returns the handle of the previous cursor, or 0 if there was none.
+// SetCursor does not set GetLastError and treats a NULL previous cursor as a
+// normal outcome, so there is no WinResult — same pattern as SetCapture /
+// GetCapture. Callers that only need to force a shape (and do not restore the
+// previous one) can ignore the return value.
+//
+// Thread-affinity: has no effect unless the mouse is over a window of the
+// calling thread or the calling thread holds mouse capture. To force a shape
+// while the cursor is over another process's window, use SetSystemCursor.
+func SetCursor(hCursor windows.Handle) (prevCursor windows.Handle) {
+	res := procSetCursor.Call(uintptr(hCursor))
+	return windows.Handle(res.R1)
+}
+
+// System cursor IDs for SetSystemCursor (OCR_*). OCR_NORMAL is the standard
+// arrow — replacing it makes every app that loads IDC_ARROW show your cursor.
+const (
+	OCR_NORMAL      uint32 = 32512
+	OCR_IBEAM       uint32 = 32513
+	OCR_WAIT        uint32 = 32514
+	OCR_CROSS       uint32 = 32515
+	OCR_UP          uint32 = 32516
+	OCR_SIZENWSE    uint32 = 32642
+	OCR_SIZENESW    uint32 = 32643
+	OCR_SIZEWE      uint32 = 32644
+	OCR_SIZENS      uint32 = 32645
+	OCR_SIZEALL     uint32 = 32646
+	OCR_NO          uint32 = 32648
+	OCR_HAND        uint32 = 32649
+	OCR_APPSTARTING uint32 = 32650
+)
+
+// SPI_SETCURSORS reloads all system cursors from the registry / defaults.
+// Pass to SystemParametersInfo after SetSystemCursor to undo replacements.
+const SPI_SETCURSORS uint32 = 0x0057
+
+// CopyIcon creates a private duplicate of an icon or cursor. Required before
+// SetSystemCursor: that API destroys the handle it receives, so a shared
+// LoadCursor handle must never be passed to it directly.
+func CopyIcon(h windows.Handle) (windows.Handle, WinResult) {
+	res := procCopyIcon.Call(uintptr(h))
+	return windows.Handle(res.R1), res
+}
+
+// SetSystemCursor replaces the system-wide cursor identified by id (OCR_*)
+// with hcur. The system takes ownership of hcur and destroys it — pass only
+// a CopyIcon/CreateCursor/LoadCursorFromFile handle, never a shared
+// LoadCursor result. To restore defaults, call SystemParametersInfo with
+// SPI_SETCURSORS (not another SetSystemCursor).
+func SetSystemCursor(hcur windows.Handle, id uint32) WinResult {
+	return procSetSystemCursor.Call(uintptr(hcur), uintptr(id))
+}
+
+// SystemParametersInfo wraps SystemParametersInfoW.
+// For SPI_SETCURSORS: uiParam=0, pvParam=nil, fWinIni=0.
+func SystemParametersInfo(uiAction, uiParam uint32, pvParam unsafe.Pointer, fWinIni uint32) WinResult {
+	return procSystemParametersInfoW.Call(
+		uintptr(uiAction),
+		uintptr(uiParam),
+		uintptr(pvParam),
+		uintptr(fWinIni),
+	)
+}
+
+// SetTimer creates a periodic timer that posts WM_TIMER to hwnd.
+// nIDEvent is the timer ID; uElapse is the interval in milliseconds.
+// timerFunc must be 0 to receive WM_TIMER (non-null callback is not used here).
+func SetTimer(hwnd windows.Handle, nIDEvent uintptr, uElapse uint32, timerFunc uintptr) (id uintptr, res WinResult) {
+	res = procSetTimer.Call(uintptr(hwnd), nIDEvent, uintptr(uElapse), timerFunc)
+	return res.R1, res
+}
+
+// KillTimer stops a timer previously created with SetTimer.
+func KillTimer(hwnd windows.Handle, nIDEvent uintptr) WinResult {
+	return procKillTimer.Call(uintptr(hwnd), nIDEvent)
+}
+
+// WM_TIMER is posted to a window when a SetTimer interval elapses.
+const WM_TIMER = 0x0113
+
 // UnregisterClassW unregisters a window class.
 func UnregisterClassW(lpClassName *uint16, hInstance windows.Handle) WinResult {
 	return procUnregisterClassW.Call(
@@ -5561,8 +5693,12 @@ const (
 	WM_CONTEXTMENU = 0x007B // winxp won't have this tho
 
 	WM_NCLBUTTONDOWN = 0x00A1
+	// WM_SETCURSOR is sent to a window to set the cursor. LOWORD(lParam) is the
+	// hit-test code; return TRUE if the cursor was set (skip DefWindowProc).
+	WM_SETCURSOR = 0x0020
 
 	HTCAPTION = 2
+	HTCLIENT  = 1
 )
 
 const (
