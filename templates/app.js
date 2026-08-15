@@ -1483,12 +1483,15 @@
     // per-row actions where an inline status message is preferable to a
     // blocking dialog. The server recognizes the X-DNSBollocks-Ajax header
     // and responds with a plain status code instead of a redirect.
-    async function postBlocksAction(domain, type, action, isRetry = false) {
+    async function postBlocksAction(domain, type, action, id, isRetry = false) {
         const formData = new FormData();
         formData.append('csrf_token', csrfToken);
         formData.append('domain', domain);
         formData.append('type', type);
         formData.append('action', action);
+        if (id) {
+            formData.append('id', id);
+        }
         
         let res;
         try {
@@ -1510,7 +1513,7 @@
             console.log("CSRF token invalid/expired in blocks AJAX. Attempting recovery...");
             if (await refreshCSRFToken()) {
                 console.log("Successfully obtained new CSRF token. Retrying request...");
-                return await postBlocksAction(domain, type, action, true);
+                return await postBlocksAction(domain, type, action, id, true);
             }
         }
         
@@ -3535,6 +3538,8 @@
                 const type = form.querySelector('[name="type"]').value;
                 const actionInput = form.querySelector('[name="action"]');
                 const action = actionInput.value;
+                const idInput = form.querySelector('[name="id"]');
+                const id = idInput ? idInput.value : '';
                 const btn = form.querySelector('button[type="submit"]');
                 const feedback = form.parentElement.querySelector('.block-action-feedback');
                 
@@ -3544,14 +3549,14 @@
                 const originalClass = btn.className;
                 
                 btn.disabled = true;
-                btn.textContent = action === 'reblock' ? 'Re-blocking\u2026' : 'Unblocking\u2026';
+                btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' : (action === 'reblock' ? 'Re-blocking…' : 'Unblocking…');
                 btn.classList.add('btn-action-pending');
                 if (feedback) {
                     feedback.textContent = '';
                     feedback.className = 'block-action-feedback';
                 }
                 
-                const result = await postBlocksAction(domain, type, action);
+                const result = await postBlocksAction(domain, type, action, id);
                 
                 if (result.ok) {
                     // Flip the form to perform the opposite action next time, and
