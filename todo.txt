@@ -1,5 +1,9 @@
 my todos for dnsbollocks:
 
+* are the 3 log viewing pages in webUI actually looking at all log files even the rotated ones or only the curreng *.log one?! maybe we can add a toggle on that page (remembered like the filter) as to whether or not to look at rotated ones too and maybe also how far back, how many rotations eg. 10.
+
+* when I Stage a change anywhere, the whole list shifts down because the banner with Apply/Discard now appears for the first time. Let's avoid this shift somehow, maybe by preallocating the space for the banner, even if it will look empty or something, or maybe it can float somehow, since it already has to float in the way that it remains on top of page even when scrolled down.
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
