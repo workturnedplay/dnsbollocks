@@ -128,6 +128,8 @@
     // DOMContentLoaded handler below) — keyed by pathname so each of the three
     // log pages remembers its own filter independently.
     const logsFilterStorageKey = 'logs_filter_' + tablePageKey;
+    const logsRotatedStorageKey = 'logs_rotated_' + tablePageKey;
+    const logsMaxRotStorageKey = 'logs_maxrot_' + tablePageKey;
 
     const ADMIN_FETCH_TIMEOUT_MS = 30_000;
     const ADMIN_CHECK_FETCH_TIMEOUT_MS = 10_000;
@@ -3549,7 +3551,9 @@
                 const originalClass = btn.className;
                 
                 btn.disabled = true;
-                btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' : (action === 'reblock' ? 'Re-blocking…' : 'Unblocking…');
+                btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' :
+                    action === 'block_qb_local' ? 'Blocking…' :
+                    action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
                 btn.classList.add('btn-action-pending');
                 if (feedback) {
                     feedback.textContent = '';
@@ -3583,6 +3587,13 @@
                         // /query-blocklist, so there's no "undo" toggle here —
                         // just remove the control once it's done its job.
                         form.remove();
+                    } else if (action === 'block_qb_local') {
+                        // We don't have the newly created/enabled rule's ID
+                        // here (needed to build the corresponding "Unblock
+                        // (Pause)" toggle, which targets a rule by ID via
+                        // disable_qb_local_rule), so just reload to pick up
+                        // the fresh server-side state instead of guessing.
+                        location.reload();
                     }
                     btn.disabled = false;
                     if (feedback) {
@@ -3977,6 +3988,25 @@
                         alert('Shutdown request sent. If the server does not respond, it likely already stopped.');
                     }
                 })();
+            });
+        }
+
+        // ── Control page: Reload Config / Clear DNS Cache ──
+        const controlReloadForm = document.querySelector('.js-control-reload-form');
+        if (controlReloadForm) {
+            controlReloadForm.addEventListener('submit', function(e) {
+                if (!confirm('Reload configuration now? This re-reads config.json and the dependent rule/host/blocklist files, and may briefly rebind listeners if their settings changed.')) {
+                    e.preventDefault();
+                }
+            });
+        }
+
+        const controlClearCacheForm = document.querySelector('.js-control-clear-cache-form');
+        if (controlClearCacheForm) {
+            controlClearCacheForm.addEventListener('submit', function(e) {
+                if (!confirm('Clear the DNS cache now? All cached responses will be dropped immediately.')) {
+                    e.preventDefault();
+                }
             });
         }
         
@@ -4402,17 +4432,29 @@
         // /logs, /logs_queries, and /logs_queries_simple each get their own
         // remembered value (see logsFilterStorageKey, keyed by pathname).
         if (logsSearchInput) {
+            const logsRotatedCheckbox = document.getElementById('logsIncludeRotated');
+            const logsMaxRotInput = document.getElementById('logsMaxRotations');
+
             if (new URLSearchParams(location.search).has('q')) {
                 // A query string was explicitly supplied for this load (even an
                 // empty one, e.g. right after the Clear button) — honor it as the
-                // current filter and remember it for the next visit to this page.
+                // current filter and remember it (plus the rotated-logs settings)
+                // for the next visit to this page.
                 uiStorage.setItem(logsFilterStorageKey, logsSearchInput.value);
+                if (logsRotatedCheckbox) uiStorage.setItem(logsRotatedStorageKey, logsRotatedCheckbox.checked ? '1' : '0');
+                if (logsMaxRotInput) uiStorage.setItem(logsMaxRotStorageKey, logsMaxRotInput.value);
             } else {
                 // No filter was requested for this specific page load; restore
                 // whatever was last remembered for this log page, if anything.
                 const savedLogsFilter = uiStorage.getItem(logsFilterStorageKey);
-                if (savedLogsFilter) {
-                    location.replace(location.pathname + '?q=' + encodeURIComponent(savedLogsFilter));
+                const savedLogsRotated = uiStorage.getItem(logsRotatedStorageKey);
+                const savedLogsMaxRot = uiStorage.getItem(logsMaxRotStorageKey);
+                if (savedLogsFilter || savedLogsRotated || savedLogsMaxRot) {
+                    const restoreParams = new URLSearchParams();
+                    restoreParams.set('q', savedLogsFilter || '');
+                    if (savedLogsRotated === '1') restoreParams.set('rotated', '1');
+                    if (savedLogsMaxRot) restoreParams.set('maxrot', savedLogsMaxRot);
+                    location.replace(location.pathname + '?' + restoreParams.toString());
                     return; // Navigating away; nothing else on this page matters now.
                 }
             }
@@ -4420,11 +4462,14 @@
             // HTMLFormElement.submit() (used by the Clear button above) does not
             // fire the 'submit' event, so this only covers the normal Filter
             // button / Enter-key submission path — which is exactly right, since
-            // Clear already removes the stored value itself.
+            // Clear already removes the stored filter value itself (rotated/maxrot
+            // settings are deliberately left untouched by Clear).
             const logsForm = logsSearchInput.closest('form');
             if (logsForm) {
                 logsForm.addEventListener('submit', () => {
                     uiStorage.setItem(logsFilterStorageKey, logsSearchInput.value);
+                    if (logsRotatedCheckbox) uiStorage.setItem(logsRotatedStorageKey, logsRotatedCheckbox.checked ? '1' : '0');
+                    if (logsMaxRotInput) uiStorage.setItem(logsMaxRotStorageKey, logsMaxRotInput.value);
                 });
             }
         }

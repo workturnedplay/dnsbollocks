@@ -199,14 +199,24 @@ mark.filter-highlight {
 
 /* Config Sub-view Specifics */
 .staged-changes-banner {
-    background: var(--accent); 
-    color: white; 
-    padding: 15px; 
-    border-radius: 4px; 
-    margin-bottom: 20px; 
-    position: sticky; 
-    top: 10px; 
-    z-index: 100; 
+    background: var(--accent);
+    color: white;
+    padding: 15px;
+    border-radius: 4px;
+    /* position: fixed removes the banner from normal document flow entirely,
+       so toggling its `hidden` attribute (when staged changes appear or
+       disappear) never shifts any other content on the page — it simply
+       floats above whatever currently occupies the top of the viewport
+       instead of reserving space inline. */
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 95%;
+    max-width: 2000px;
+    min-width: 800px;
+    box-sizing: border-box;
+    z-index: 1000;
     box-shadow: 0 4px 6px rgba(0,0,0,0.3);
 }
 .config-banner-actions {

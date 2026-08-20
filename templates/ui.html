@@ -230,20 +230,26 @@
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
 
+{{if .WhitelistMode}}
 <div class="info-banner">
     <strong>Note:</strong> Only queries blocked by the whitelist rules are shown here. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
 </div>
+{{else}}
+<div class="info-banner">
+    <strong>Note:</strong> whitelist_mode is off, so every query is allowed by default except what's blocked by the <a href="/query-blocklist">Query Blocklist</a>. This shows recently resolved (allowed) domains instead of blocks, with a quick way to add a local Query Blocklist "block" rule for one. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
+</div>
+{{end}}
 
 {{template "alert-banner" .}}
 <div class="section-header-row">
-    <h2 class="header-inline">Recent Blocks (Quick Unblock)</h2>
+    <h2 class="header-inline">{{if .WhitelistMode}}Recent Blocks (Quick Unblock){{else}}Recent Allows (Quick Block){{end}}</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
     
     <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="clear">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
-        <button type="submit" class="btn-del">Clear Shown Blocks</button>
+        <button type="submit" class="btn-del">{{if .WhitelistMode}}Clear Shown Blocks{{else}}Clear Shown Allows{{end}}</button>
     </form>
 </div>
 
@@ -252,6 +258,7 @@
     <li>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
+        {{if $.WhitelistMode}}
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -269,6 +276,7 @@
             <button type="submit" class="btn-edit">Unblock {{.Type}} [Whitelist]</button>
         </form>
         {{end}}
+        {{end}}
 
         {{if .QueryBlocklistLocalBlocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -277,7 +285,15 @@
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.QueryBlocklistLocalRuleID}}">
             <input type="hidden" name="action" value="disable_qb_local_rule">
-            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright, regardless of the whitelist above.">Disable Blocking Rule [Query&nbsp;Blocklist]</button>
+            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright{{if $.WhitelistMode}}, regardless of the whitelist above{{end}}.">{{if $.WhitelistMode}}Disable Blocking Rule{{else}}Unblock (Pause){{end}} [Query&nbsp;Blocklist]</button>
+        </form>
+        {{else if not $.WhitelistMode}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="block_qb_local">
+            <button type="submit" class="btn-edit" title="Adds a local Query Blocklist rule that blocks this domain outright, for every query type.">Block [Query&nbsp;Blocklist]</button>
         </form>
         {{end}}
 
@@ -452,9 +468,15 @@
 {{define "logs"}}
 <h2>{{.Title}}</h2>
 
-<form method="get" class="mb-20">
+<form method="get" class="mb-20 d-flex gap-10" id="logsFilterForm">
     <label class="visually-hidden" for="logsSearchQuery">Search logs</label>
     <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." class="w-300">
+    <label class="lbl-spaced">
+        <input type="checkbox" id="logsIncludeRotated" name="rotated" value="1" {{if .IncludeRotated}}checked{{end}}>
+        Include rotated logs
+    </label>
+    <label class="lbl-spaced" for="logsMaxRotations">Rotations back:</label>
+    <input id="logsMaxRotations" type="number" name="maxrot" min="1" max="50" value="{{.MaxRotations}}" class="w-280">
     <button type="submit">Filter</button>
     <button type="button" class="btn-cancel js-logs-clear-btn">Clear</button>
 </form>
@@ -758,6 +780,23 @@
 {{define "control"}}
 <h2>Server Control</h2>
 <p class="section-desc">Actions that affect the entire running dnsbollocks process. See the Stats page for read-only engine statistics.</p>
+{{template "alert-banner" .}}
+
+<h2>Reload Configuration</h2>
+<p class="section-desc">Re-reads config.json and the dependent rule/host/blocklist files from disk and applies them, without restarting the process — the WebUI equivalent of pressing Ctrl+R at the console. Listener settings that changed will be rebound.</p>
+<form method="post" action="/control" class="js-control-reload-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="reload">
+    <button type="submit" class="btn-edit">Reload Config</button>
+</form>
+
+<h2>Clear DNS Cache</h2>
+<p class="section-desc">Empties the internal DNS response cache immediately. Rules, hosts, and blocklists are left untouched.</p>
+<form method="post" action="/control" class="js-control-clear-cache-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="clear_cache">
+    <button type="submit" class="btn-edit">Clear DNS Cache</button>
+</form>
 
 <h2>Shutdown</h2>
 <p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits). This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.</p>

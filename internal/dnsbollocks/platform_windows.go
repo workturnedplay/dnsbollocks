@@ -248,6 +248,15 @@ type Server struct {
 	hostStore    *HostStore
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
+	// recentAllowed mirrors recentBlocks but records recently ALLOWED
+	// queries instead, populated only when cfg.WhitelistMode is false (see
+	// handleDNSQuery's blacklist-mode branch). Powers the WebUI's /blocks
+	// page "Recent Allows" view — the inverse of "Recent Blocks" — shown
+	// instead of the whitelist-based one when running in allow-mode, where
+	// the whitelist plays no role in the allow/deny decision and the
+	// ordinary recentBlocks tracker would only ever show query-blocklist
+	// hits.
+	recentAllowed *RecentBlocksTracker
 
 	// queryBlocklistStore holds the mutable "block"/"except" override rules
 	// for the query-blocklist feature (implemented in this same file — see
@@ -364,7 +373,15 @@ type AdminUI struct {
 	queryBlocklistStore *RuleStore
 	externalBlocklist   *atomic.Pointer[ExternalHostsBlocklistSource]
 	recentBlocks        *RecentBlocksTracker
-	blockedQueries      *expvar.Int
+	// recentAllowed mirrors Server.recentAllowed — see that field's doc
+	// comment. Set directly by initAdminUI after construction (like
+	// queryBlocklistStore below), rather than added to NewAdminUI's
+	// parameter list, so existing test call sites that construct AdminUI
+	// directly don't need updating. nil is nil-safe: getRecentAllowedCopy
+	// and buildIsLocallyBlockedPredicate simply behave as "no entries" /
+	// "never blocked".
+	recentAllowed  *RecentBlocksTracker
+	blockedQueries *expvar.Int
 
 	// rateLimiter enforces a global + per-client-IP cap on WebUI HTTP request
 	// volume, independent of loginTracker (only throttles failed logins) and
@@ -403,6 +420,14 @@ type AdminUI struct {
 	OnInvalidatePatterns  func(patterns map[string]struct{})
 	OnInvalidateBlacklist func()
 	OnApplyConfig         func(cfg *Config) error
+	// OnReloadConfig triggers a full config/dependent-file reload without
+	// modifying config.json first — the WebUI equivalent of pressing Ctrl+R
+	// at the console. Wired directly to Server.Reload in initAdminUI.
+	OnReloadConfig func() error
+	// OnClearCache empties the internal DNS response cache immediately,
+	// without touching rules/hosts/blocklists. Wired directly to
+	// Server.flushDNSCache in initAdminUI.
+	OnClearCache func()
 
 	//UI calls this when a fatal exception or manual admin shutdown occurs
 	OnShutdown func(exitCode int)
@@ -479,6 +504,7 @@ func NewServer(rt *Runtime, resolvedCfg, rawCfg *Config) *Server {
 		blacklist:           newBlacklistStore(),
 		queryBlocklistStore: newRuleStore(),
 		recentBlocks:        newRecentBlocksTracker(),
+		recentAllowed:       newRecentBlocksTracker(),
 		forwardInFlight:     make(map[string]*forwardInFlightEntry),
 		//dnsTCPSem is set by startDNSListener after the config is loaded, not here.
 		errChan:        make(chan error, 10), // We use a buffer of (e.g.) 10 so multiple services failing at once won't block
@@ -5444,6 +5470,14 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		if matchedID == "" && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 			matchedID, _ = s.ruleStore.MatchForType("A", domain)
 		}
+		// Record for the WebUI's "Recent Allows" view (see recentAllowed's
+		// doc comment). Defensive nil-check: NewServer always initializes
+		// this, but some tests construct a bare &Server{...} directly,
+		// bypassing NewServer (mirrors the identical s.forwardInFlight
+		// nil-check elsewhere in this function).
+		if s.recentAllowed != nil {
+			s.recentAllowed.Record(domain, qtype, cfg.MaxRecentBlocks)
+		}
 	}
 
 	if !allowed {
@@ -7877,16 +7911,57 @@ func (ui *AdminUI) statsHandler(w http.ResponseWriter, r *http.Request) {
 // actions (currently just Shutdown) separately from the purely informational,
 // read-only /stats page.
 func (ui *AdminUI) controlHandler(w http.ResponseWriter, r *http.Request) {
-	const allowedMethods = "GET, HEAD, OPTIONS"
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
 	if writeAllowHeaderResponse(w, r, allowedMethods) {
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+	log := ui.getLogger()
+
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		ui.renderTemplate(w, r, "control", map[string]any{
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
+		})
 		return
 	}
 
-	ui.renderTemplate(w, r, "control", map[string]any{})
+	if r.Method == http.MethodPost {
+		action := r.FormValue("action")
+		switch action {
+		case "reload":
+			if ui.OnReloadConfig == nil {
+				log.Error("BUG: WebUI config reload requested but no reload handler is wired (likely in a test environment)")
+				http.Error(w, "config reload is not available in this environment", http.StatusServiceUnavailable)
+				return
+			}
+			if err := ui.OnReloadConfig(); err != nil {
+				log.Warn("WebUI-triggered config reload failed", wincoe.SafeErr(err))
+				http.Redirect(w, r, "/control?error="+url.QueryEscape("Reload failed: "+err.Error()), http.StatusSeeOther)
+				return
+			}
+			log.Info("Config reload triggered via WebUI")
+			http.Redirect(w, r, "/control?success="+url.QueryEscape("Configuration reloaded successfully."), http.StatusSeeOther)
+			return
+
+		case "clear_cache":
+			if ui.OnClearCache == nil {
+				log.Error("BUG: WebUI DNS-cache clear requested but no handler is wired (likely in a test environment)")
+				http.Error(w, "clearing the DNS cache is not available in this environment", http.StatusServiceUnavailable)
+				return
+			}
+			ui.OnClearCache()
+			log.Info("DNS cache cleared via WebUI")
+			http.Redirect(w, r, "/control?success="+url.QueryEscape("DNS cache cleared."), http.StatusSeeOther)
+			return
+
+		default:
+			log.Warn("Control handler received unknown action", slog.String("action", action))
+			http.Error(w, fmt.Sprintf("unknown action %q", action), http.StatusBadRequest)
+			return
+		}
+	}
+
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
 }
 
 // RuleStore manages the in-memory DNS query whitelist.
@@ -9223,6 +9298,40 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	return blocks
 }
 
+// buildIsLocallyBlockedPredicate mirrors buildIsUnblockedPredicate but for
+// the query-blocklist "block" layer, used by the /blocks page's "Clear
+// Shown Allows" action in allow-mode: an entry the operator just blocked
+// via the quick "Block" button stays visible (still showing "Unblock
+// (Pause)") rather than being cleared out from under them.
+func (ui *AdminUI) buildIsLocallyBlockedPredicate() func(domain, qtype string) bool {
+	return func(domain, _ string) bool {
+		if ui.queryBlocklistStore == nil {
+			return false
+		}
+		_, matched := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domain)
+		return matched
+	}
+}
+
+// getRecentAllowedCopy mirrors getRecentBlocksCopy but sources its entries
+// from ui.recentAllowed instead of ui.recentBlocks — used for the /blocks
+// page's "Recent Allows" view when the server is running in allow-mode
+// (WhitelistMode=false). IsUnblocked is always left at its zero value
+// (false) here since the whitelist-based unblock/reblock concept doesn't
+// apply in allow-mode; only the query-blocklist "block" state
+// (QueryBlocklistLocalBlocked et al., populated below) is meaningful.
+func (ui *AdminUI) getRecentAllowedCopy() []BlockedQuery {
+	if ui.recentAllowed == nil {
+		return nil
+	}
+	allowed := ui.recentAllowed.Snapshot(func(_, _ string) bool { return false })
+	for i := range allowed {
+		allowed[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(allowed[i].Domain)
+		ui.populateQueryBlocklistRowState(&allowed[i])
+	}
+	return allowed
+}
+
 // populateQueryBlocklistRowState fills bq's four QueryBlocklist* fields by
 // re-evaluating the query-blocklist layer live against bq.Domain — never
 // from any cached/stored state — mirroring exactly how buildIsUnblockedPredicate
@@ -9310,9 +9419,17 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
 	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD" {
+		cfg := ui.getConfig()
+		var blocks []BlockedQuery
+		if cfg.WhitelistMode {
+			blocks = ui.getRecentBlocksCopy()
+		} else {
+			blocks = ui.getRecentAllowedCopy()
+		}
 		data := map[string]any{
 			//"Page":           "blocks",
-			"Blocks":         ui.getRecentBlocksCopy(),
+			"Blocks":         blocks,
+			"WhitelistMode":  cfg.WhitelistMode,
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
 			"EnteredValue":   r.URL.Query().Get("val"),
@@ -9328,7 +9445,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		action := r.FormValue("action")
 
 		switch action {
-		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
 			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
 				log.Error("BUG: query-blocklist /blocks POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
 				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
@@ -9336,7 +9453,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// --- NEW: Handle the Clear Action ---
+		// --- Handle the Clear Action ---
 		if action == "clear" {
 			cutoffStr := r.FormValue("cutoff")
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
@@ -9346,18 +9463,31 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
-			// Only clear rows currently showing "Unblock X" (still actively blocked).
-			// Rows showing "Re-block (Pause)" are preserved — see ClearBefore's doc comment.
-			cleared := ui.recentBlocks.ClearBefore(cutoff, ui.buildIsUnblockedPredicate())
+			cfg := ui.getConfig()
 
-			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
-			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
+			var cleared int
+			var msg string
+			if cfg.WhitelistMode {
+				// Only clear rows currently showing "Unblock X" (still actively blocked).
+				// Rows showing "Re-block (Pause)" are preserved — see ClearBefore's doc comment.
+				cleared = ui.recentBlocks.ClearBefore(cutoff, ui.buildIsUnblockedPredicate())
+				msg = fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
+				log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
+			} else {
+				// Allow-mode "Recent Allows" view: preserve rows the operator
+				// just blocked (still showing "Unblock (Pause)") the same way.
+				if ui.recentAllowed != nil {
+					cleared = ui.recentAllowed.ClearBefore(cutoff, ui.buildIsLocallyBlockedPredicate())
+				}
+				msg = fmt.Sprintf("Cleared %d recent allow(s) from the list.", cleared)
+				log.Info("WebUI: Cleared visible recent allows", slog.Int("cleared", cleared))
+			}
 
 			// This will automatically redirect and reload the page with the success banner
 			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
 			return
 		}
-		// --- END NEW ---
+		// --- END Clear Action ---
 
 		// Quick unblock/reblock mutates the RuleStore and persists it, exactly
 		// like the single-item /rules POST path — serialize against a
@@ -9469,6 +9599,35 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 					successMessage = fmt.Sprintf("Local query-blocklist rule for %s is already disabled.", displayDomain)
 				}
 
+			case "block_qb_local":
+				// Quick "Block" action for the /blocks page's allow-mode
+				// ("Recent Allows") view — the inverse of the whitelist's
+				// unblock/reblock actions above. Creates (or re-enables, if
+				// a matching disabled rule already exists) an exact-pattern
+				// local query-blocklist "block" rule for this domain.
+				// Unlike whitelist rules, query-blocklist rules are
+				// type-agnostic (see checkQueryBlocklist's doc comment), so
+				// this applies to every query type for the domain at once.
+				found, changed := ui.queryBlocklistStore.SetEnabled(queryBlockCategoryBlock, domainLowercased, true, log)
+				switch {
+				case found && changed:
+					successMessage = fmt.Sprintf("Blocked %s: activated an existing paused local query-blocklist rule.", displayDomain)
+				case found:
+					successMessage = fmt.Sprintf("%s is already blocked by an existing local query-blocklist rule.", displayDomain)
+				default:
+					if _, addErr := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, domainLowercased, true, log); addErr != nil {
+						log.Warn("Failed quick block via WebUI (query-blocklist local block)",
+							wincoe.SafeErr(addErr),
+							slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+						respondBlocksResult(log, w, r, false, http.StatusConflict, addErr.Error(), raw)
+						return
+					}
+					successMessage = fmt.Sprintf("Blocked %s: added a new local query-blocklist rule.", displayDomain)
+				}
+				log.Info("Quick block via WebUI (query-blocklist local block)",
+					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+				ui.OnInvalidatePattern(domainLowercased)
+
 			default:
 				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
 				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
@@ -9484,7 +9643,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			// initAdminUI, exactly like queryBlocklistHandler already assumes.
 			var saveErr error
 			switch action {
-			case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+			case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
 				saveErr = ui.OnSaveQueryBlocklist()
 				if saveErr != nil {
 					saveErr = ui.logPersistFailure("query blocklist", saveErr)
@@ -9612,80 +9771,93 @@ func (ui *AdminUI) logPathMismatchNotice(kind logKind, activePath string) string
 	)
 }
 
-func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageName, title, filePath, filter, notice string) {
-	cfg := ui.getConfig()
-	log := ui.getLogger()
-	if pageName == "" {
-		panic2("BUG: called with empty pageName arg in renderLogPage!")
-	}
+// logRingBuffer is a small fixed-capacity ring buffer of the most recent
+// matching log lines seen so far, shared across every file renderLogPage
+// scans (the live log plus, optionally, its rotated backups) so a single
+// "keep only the last maxLines matches" cap applies across all of them
+// combined, not per-file.
+type logRingBuffer struct {
+	ring     []string
+	maxLines int
+	count    int
+}
 
-	file, err := os.Open(filePath)
+func newLogRingBuffer(maxLines int) *logRingBuffer {
+	return &logRingBuffer{ring: make([]string, maxLines), maxLines: maxLines}
+}
+
+func (b *logRingBuffer) add(line string) {
+	b.ring[b.count%b.maxLines] = line
+	b.count++
+}
+
+// orderedNewestFirst extracts the buffer's currently retained lines in
+// chronological order (oldest first) then reverses them so the result is
+// newest-first, matching renderLogPage's original single-file extraction
+// logic.
+func (b *logRingBuffer) orderedNewestFirst() []string {
+	var filtered []string
+	start := 0
+	limit := b.count
+	if b.count > b.maxLines {
+		start = b.count % b.maxLines
+		limit = b.maxLines
+	}
+	for i := 0; i < limit; i++ {
+		filtered = append(filtered, b.ring[(start+i)%b.maxLines])
+	}
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+	return filtered
+}
+
+// scanLogFileInto opens path (a rotated backup or the live log file) and
+// streams its lines into buf, applying the same 20MB-lookback truncation
+// for oversized files that renderLogPage has always used. Lines are matched
+// against searchLower (already-lowercased filter text; empty means "match
+// everything") before being added to buf.
+//
+// A missing/unreadable path is silently skipped rather than treated as an
+// error: for a rotated backup that simply doesn't exist (fewer rotations
+// have happened than the requested lookback), that's the expected, normal
+// case.
+func scanLogFileInto(log *slog.Logger, path, searchLower string, buf *logRingBuffer) {
+	file, err := os.Open(path)
 	if err != nil {
-		// Fallback if file doesn't exist yet
-		ui.renderTemplate(w, r, pageName, map[string]any{
-			//"Page": "logs",
-			//"Path":  r.URL.Path,
-			"Title": title, "Filter": filter, "Content": notice + "No log entries found.",
-		})
 		return
-	} else {
-		defer func() {
-			if closeErr := file.Close(); closeErr != nil {
-				log.Error("failed to close log file", wincoe.SafeErr(closeErr), slog.String("filename", filePath))
-			}
-		}()
 	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Error("failed to close log file", wincoe.SafeErr(closeErr), slog.String("filename", path))
+		}
+	}()
 
-	searchLower := strings.ToLower(filter)
-
-	// Cap the output to the last 5000 matches to save RAM and prevent browser crashes
-	var maxLines = cfg.UILogMaxLines
-	ring := make([]string, maxLines)
-	count := 0
-
-	// 1. Get stats and check size
 	var didSeek bool
-	stat, err := file.Stat()
-	if err == nil {
+	if stat, statErr := file.Stat(); statErr == nil {
 		const maxReadBytes = 20 * 1024 * 1024 // 20MB Lookback Limit
 		if stat.Size() > maxReadBytes {
 			startOffset := stat.Size() - maxReadBytes
-			// 2. Seek to the lookback offset with error checking
 			if _, err2 := file.Seek(startOffset, io.SeekStart); err2 == nil {
 				didSeek = true
 			} else {
-				log.Warn("failed to seek ahead in log", slog.String("log_file", filePath), slog.Int64("seek_to_offset", startOffset))
-				// Fallback: If seeking fails, reset to the beginning so the UI doesn't break
+				log.Warn("failed to seek ahead in log", slog.String("log_file", path), slog.Int64("seek_to_offset", startOffset))
 				if _, err3 := file.Seek(0, io.SeekStart); err3 != nil {
-					log.Warn("failed to seek back to beginning in log", slog.String("log_file", filePath))
+					log.Warn("failed to seek back to beginning in log", slog.String("log_file", path))
 				}
 			}
-			// // Read until the next newline to ensure we don't parse a truncated string
-			// bufio.NewReader(file).ReadBytes('\n')
-			/*
-				When you instantiate a temporary bufio.NewReader(file), it creates an internal buffer (typically 4KB) and eagerly reads a large block from the file to satisfy your ReadBytes('\n') request.
-				Even if your first newline is only 50 bytes away, the remaining ~4046 bytes inside that reader's internal buffer are thrown away when the object is discarded. When you call scanner := bufio.NewScanner(file) right after, the scanner reads from the file descriptor's current position (which has advanced by 4KB), causing a chunk of your logs to silently disappear from the WebUI.
-			*/
 		}
 	}
 
-	// Stream the file line-by-line instead of loading it all at once
 	scanner := bufio.NewScanner(file)
-	// This tells the scanner:
-	// 1. Start with a 64KB internal buffer.
-	// 2. Allow it to grow automatically up to 1MB if it finds a very long line.
 	const maxCapacity = 1024 * 1024 // 1 MB
 	lineBuf := make([]byte, 2*1024) // 2 KB initial size
 	scanner.Buffer(lineBuf, maxCapacity)
 
-	// 4. If we successfully jumped into the middle of a large file,
-	// discard the very first scanned line since it's likely truncated.
 	if didSeek {
 		if !scanner.Scan() {
 			if parseErr := scanner.Err(); parseErr != nil {
-				// Fallback: If scanning the first chunk fails, you could log it
-				// or reset, though scanner will stop execution gracefully.\
-				log.Warn("failed to read the first line after seeking in the log", slog.String("log_file", filePath), wincoe.SafeErr(parseErr))
+				log.Warn("failed to read the first line after seeking in the log", slog.String("log_file", path), wincoe.SafeErr(parseErr))
 			}
 		}
 	}
@@ -9695,55 +9867,128 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageNam
 		if line == "" {
 			continue
 		}
-
 		if searchLower == "" || strings.Contains(strings.ToLower(line), searchLower) {
-			// Overwrite the oldest entry when we exceed maxLines
-			ring[count%maxLines] = line
-			count++
+			buf.add(line)
 		}
 	}
 
-	// ALWAYS check for errors after the loop.
-	// If a line was too long ( > 1MB), the scanner stops here.
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			log.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.Int("line_number", count), slog.String("filename", filePath))
+			log.Error("A log line exceeded the bytes-per-line limit", slog.Int("line_limit_bytes", maxCapacity), slog.String("filename", path))
+		} else {
+			log.Warn("error scanning log file", slog.String("filename", path), wincoe.SafeErr(err))
 		}
 	}
+}
 
-	// Extract the lines from the ring buffer in chronological order
-	var filtered []string
-	start := 0
-	limit := count
-	if count > maxLines {
-		start = count % maxLines
-		limit = maxLines
+// listLogRotationFiles returns full paths for up to maxRotations of the
+// MOST RECENT rotated backups of basePath (basePath+".1", basePath+".2",
+// ...), using the same ".N" suffix convention as getNextLogBackupName /
+// rotateYouHoldLock (higher N = more recently rotated). The result is
+// ordered oldest-to-newest (lowest included N first), so callers can feed
+// it directly into a ring buffer alongside the live file, in the same
+// oldest-to-newest order the live file's own lines are already scanned in.
+// Returns nil if maxRotations <= 0 or no rotated backups exist yet.
+func listLogRotationFiles(basePath string, maxRotations int) []string {
+	if maxRotations <= 0 {
+		return nil
+	}
+	// Find the highest existing rotation number by probing sequentially,
+	// mirroring getNextLogBackupName's own sequential probe but stopping at
+	// the first gap instead of the first free slot.
+	const maxProbe = 100000 // safety valve; mirrors maxNumberOfRotations elsewhere
+	highest := 0
+	for i := 1; i <= maxProbe; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", basePath, i)); err != nil {
+			break
+		}
+		highest = i
+	}
+	if highest == 0 {
+		return nil
+	}
+	start := highest - maxRotations + 1
+	if start < 1 {
+		start = 1
+	}
+	files := make([]string, 0, highest-start+1)
+	for i := start; i <= highest; i++ {
+		files = append(files, fmt.Sprintf("%s.%d", basePath, i))
+	}
+	return files
+}
+
+// defaultLogMaxRotations / maxLogMaxRotations bound the "how many rotated
+// log files to also search" WebUI setting on the /logs* pages (see
+// parseLogRotationParams). The upper bound keeps a single page render from
+// ever having to open an unbounded number of files.
+const (
+	defaultLogMaxRotations = 5
+	maxLogMaxRotations     = 50
+)
+
+// parseLogRotationParams extracts and validates the "rotated"/"maxrot"
+// query parameters shared by all three /logs* handlers (see
+// renderLogPage's includeRotated/maxRotations parameters).
+func parseLogRotationParams(r *http.Request) (includeRotated bool, maxRotations int) {
+	includeRotated = r.URL.Query().Get("rotated") == "1"
+	maxRotations = defaultLogMaxRotations
+	if raw := r.URL.Query().Get("maxrot"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxRotations = n
+		}
+	}
+	if maxRotations > maxLogMaxRotations {
+		maxRotations = maxLogMaxRotations
+	}
+	if maxRotations < 1 {
+		maxRotations = 1
+	}
+	return includeRotated, maxRotations
+}
+
+// renderLogPage streams filePath (and, if includeRotated is true, up to
+// maxRotations of its most recent rotated backups — see
+// listLogRotationFiles) into a single "last cfg.UILogMaxLines matches,
+// newest first" view, optionally filtered by filter (a case-insensitive
+// substring match). Every included file is scanned in oldest-to-newest
+// order (oldest rotation first, live file last) into one shared
+// logRingBuffer so the retained-matches cap applies across all of them
+// combined.
+func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageName, title, filePath, filter, notice string, includeRotated bool, maxRotations int) {
+	cfg := ui.getConfig()
+	log := ui.getLogger()
+	if pageName == "" {
+		panic2("BUG: called with empty pageName arg in renderLogPage!")
 	}
 
-	for i := 0; i < limit; i++ {
-		filtered = append(filtered, ring[(start+i)%maxLines])
-	}
+	searchLower := strings.ToLower(filter)
+	buf := newLogRingBuffer(cfg.UILogMaxLines)
 
-	// Reverse so the newest lines are at the top
-	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
-		filtered[i], filtered[j] = filtered[j], filtered[i]
+	if includeRotated {
+		for _, rotFile := range listLogRotationFiles(filePath, maxRotations) {
+			scanLogFileInto(log, rotFile, searchLower, buf)
+		}
 	}
+	scanLogFileInto(log, filePath, searchLower, buf)
 
 	var content string
-	if err := scanner.Err(); err != nil {
-		content = fmt.Sprintf("Error reading log: %v\n\n", err) + strings.Join(filtered, "\n")
+	if buf.count == 0 {
+		content = "No log entries found."
 	} else {
+		filtered := buf.orderedNewestFirst()
 		content = strings.Join(filtered, "\n")
-		// Add a helpful warning if we truncated the results
-		if count > maxLines {
-			content = fmt.Sprintf("... showing only the last %d out of %d matches to reduce RAM usage ...\n\n", maxLines, count) + content
+		if buf.count > buf.maxLines {
+			content = fmt.Sprintf("... showing only the last %d out of %d matches to reduce RAM usage ...\n\n", buf.maxLines, buf.count) + content
 		}
 	}
 
 	renderData := map[string]any{
-		"Title":   title,
-		"Filter":  filter,
-		"Content": notice + content,
+		"Title":          title,
+		"Filter":         filter,
+		"Content":        notice + content,
+		"IncludeRotated": includeRotated,
+		"MaxRotations":   maxRotations,
 	}
 
 	ui.renderTemplate(w, r, pageName, renderData)
@@ -9764,9 +10009,10 @@ func (ui *AdminUI) logsQueriesHandler(w http.ResponseWriter, r *http.Request) {
 	// if filter == "" {
 	//     filter = r.URL.Query().Get("domain")
 	// }
+	includeRotated, maxRotations := parseLogRotationParams(r)
 
 	activePath := ui.activeLogFilePath(logKindQueries)
-	ui.renderLogPage(w, r, "logs_queries", "Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueries, activePath))
+	ui.renderLogPage(w, r, "logs_queries", "Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueries, activePath), includeRotated, maxRotations)
 }
 
 // logsQueriesSimpleHandler serves the plain-text, single-line-per-query
@@ -9783,8 +10029,9 @@ func (ui *AdminUI) logsQueriesSimpleHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	filter := r.URL.Query().Get("q")
+	includeRotated, maxRotations := parseLogRotationParams(r)
 	activePath := ui.activeLogFilePath(logKindQueriesSimple)
-	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueriesSimple, activePath))
+	ui.renderLogPage(w, r, "logs_queries_simple", "Simple Query Logs", activePath, filter, ui.logPathMismatchNotice(logKindQueriesSimple, activePath), includeRotated, maxRotations)
 }
 
 func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -9798,8 +10045,9 @@ func (ui *AdminUI) logsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := r.URL.Query().Get("q")
+	includeRotated, maxRotations := parseLogRotationParams(r)
 	activePath := ui.activeLogFilePath(logKindEverything)
-	ui.renderLogPage(w, r, "logs", "System & Error Logs", activePath, filter, ui.logPathMismatchNotice(logKindEverything, activePath))
+	ui.renderLogPage(w, r, "logs", "System & Error Logs", activePath, filter, ui.logPathMismatchNotice(logKindEverything, activePath), includeRotated, maxRotations)
 }
 
 func (s *Server) shutdown(exitCode int) {
@@ -12198,6 +12446,9 @@ func (s *Server) initAdminUI() {
 	// snapshot the DNS hot path reads via s.checkQueryBlocklist.
 	ui.queryBlocklistStore = s.queryBlocklistStore
 	ui.externalBlocklist = &s.externalBlocklist
+	// Powers the /blocks page's "Recent Allows" view shown in allow-mode
+	// (WhitelistMode=false) — see Server.recentAllowed's doc comment.
+	ui.recentAllowed = s.recentAllowed
 
 	// Wire up the side-effects
 	ui.OnSaveWhitelist = s.saveQueryWhitelist
@@ -12223,6 +12474,11 @@ func (s *Server) initAdminUI() {
 		}
 		return nil
 	}
+	// OnReloadConfig / OnClearCache power the /control page's "Reload
+	// Config" and "Clear DNS Cache" buttons — see their doc comments on
+	// AdminUI for what each does.
+	ui.OnReloadConfig = s.Reload
+	ui.OnClearCache = s.flushDNSCache
 	//Pass the server's shutdown method directly
 	ui.OnShutdown = s.shutdown
 	// ui.getExpectedHost = s.currentUIExpectedHost // used by hostValidation
