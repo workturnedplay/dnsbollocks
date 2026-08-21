@@ -3491,23 +3491,27 @@
         }
         
         // ── Blocks page ─────────────
-        // Refresh button navigates to /blocks via GET, bypassing any cached POST state.
-        const blocksRefreshBtn = document.querySelector('.js-blocks-refresh-btn');
-        if (blocksRefreshBtn) {
-            blocksRefreshBtn.addEventListener('click', () => {
+        // Refresh button(s) navigate to /blocks via GET, bypassing any cached POST
+        // state. There can be up to two of these now (one per section — Recent
+        // Blocks and, outside whitelist_mode, Recent Allows).
+        document.querySelectorAll('.js-blocks-refresh-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
                 window.location.href = '/blocks';
             });
-        }
+        });
         
-        // Clear Shown Blocks: grey the button while the request is in flight
-        // (matching withApplyButtonBusy's pattern used elsewhere) so a slow or
-        // temporarily-firewalled backend can't be double-submitted by a second
-        // click, and un-grey it again on failure so the user can retry.
-        const blocksClearForm = document.querySelector('.js-blocks-clear-form');
-        if (blocksClearForm) {
+        // Clear Shown Blocks/Allows: grey the button while the request is in
+        // flight (matching withApplyButtonBusy's pattern used elsewhere) so a
+        // slow or temporarily-firewalled backend can't be double-submitted by a
+        // second click, and un-grey it again on failure so the user can retry.
+        // There can be up to two of these forms now — see the refresh-button
+        // comment above — each with its own "action" (clear / clear_allowed).
+        document.querySelectorAll('.js-blocks-clear-form').forEach(blocksClearForm => {
             blocksClearForm.addEventListener('submit', function(e) {
                 e.preventDefault();
-                if (!confirm('Clear all currently shown blocks?\n\n(New blocks that occurred since you loaded the page will be kept safely.)')) {
+                const actionValue = blocksClearForm.querySelector('[name="action"]').value;
+                const noun = actionValue === 'clear_allowed' ? 'allows' : 'blocks';
+                if (!confirm('Clear all currently shown ' + noun + '?\n\n(New ' + noun + ' that occurred since you loaded the page will be kept safely.)')) {
                     return;
                 }
                 const btn = blocksClearForm.querySelector('button[type="submit"]');
@@ -3515,17 +3519,17 @@
                     const success = await withApplyButtonBusy(btn, 'Clearing\u2026', () => postAdminForm(
                         blocksClearForm.getAttribute('action'),// this is '/blocks'
                         {
-                            action: blocksClearForm.querySelector('[name="action"]').value,
+                            action: actionValue,
                             cutoff: blocksClearForm.querySelector('[name="cutoff"]').value,
                         },
-                        'Failed to clear shown blocks'
+                        'Failed to clear shown ' + noun
                     ));
                     if (success) {
                         location.reload();
                     }
                 })();
             });
-        }
+        });
         
         // Unblock/Re-block buttons: submit in the background via fetchWithTimeout() instead
         // of a full page POST+redirect+reload, so several clicks in quick

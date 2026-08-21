@@ -9313,6 +9313,55 @@ func (ui *AdminUI) buildIsLocallyBlockedPredicate() func(domain, qtype string) b
 	}
 }
 
+// buildIsQueryBlocklistUnblockedPredicate reports whether a specific (domain,
+// qtype) recent-block entry is no longer blocked by the query-blocklist layer
+// (see checkQueryBlocklist) — i.e. the operator has since disabled the local
+// "block" rule that matched it, or added/enabled an "except" rule cancelling
+// an external-source block. Mirrors buildIsUnblockedPredicate's whitelist-layer
+// semantics ("does this entry currently have an active control to re-block
+// it") so ClearBefore preserves exactly the entries still worth showing an
+// operator a revert control for.
+func (ui *AdminUI) buildIsQueryBlocklistUnblockedPredicate() func(domain, qtype string) bool {
+	return func(domain, _ string) bool {
+		if ui.queryBlocklistStore != nil {
+			if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domain); ok {
+				return false // still locally blocked
+			}
+		}
+		if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(domain) {
+			if ui.queryBlocklistStore != nil {
+				if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryExcept, domain); ok {
+					return true // excepted -> currently unblocked, has a Re-block control
+				}
+			}
+			return false // still blocked by the external source, no except in effect
+		}
+		return true // not blocked by either query-blocklist sub-layer anymore
+	}
+}
+
+// buildIsRecentBlockUnblockedPredicate returns the isUnblocked predicate used
+// by "Clear Shown Blocks" (see recentBlocks.ClearBefore) for the /blocks
+// page's "Recent Blocks" list. A recorded block there can come from either
+// the query blocklist (checkQueryBlocklist, active regardless of
+// whitelist_mode) or, only when whitelist_mode is true, from lacking an
+// enabled whitelist rule (see handleDNSQuery). An entry is preserved from
+// clearing if EITHER layer that could have caused it currently has it
+// unblocked, so whichever revert control the operator used stays visible.
+func (ui *AdminUI) buildIsRecentBlockUnblockedPredicate() func(domain, qtype string) bool {
+	qbUnblocked := ui.buildIsQueryBlocklistUnblockedPredicate()
+	if !ui.getConfig().WhitelistMode {
+		// Outside whitelist_mode, whitelist rules never cause a recentBlocks
+		// entry (see handleDNSQuery's allowed=true short-circuit), so
+		// checking them here would only add noise.
+		return qbUnblocked
+	}
+	whitelistUnblocked := ui.buildIsUnblockedPredicate()
+	return func(domain, qtype string) bool {
+		return whitelistUnblocked(domain, qtype) || qbUnblocked(domain, qtype)
+	}
+}
+
 // getRecentAllowedCopy mirrors getRecentBlocksCopy but sources its entries
 // from ui.recentAllowed instead of ui.recentBlocks — used for the /blocks
 // page's "Recent Allows" view when the server is running in allow-mode
@@ -9420,15 +9469,20 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD" {
 		cfg := ui.getConfig()
-		var blocks []BlockedQuery
-		if cfg.WhitelistMode {
-			blocks = ui.getRecentBlocksCopy()
-		} else {
-			blocks = ui.getRecentAllowedCopy()
+		// Recent Blocks always reflects the query blocklist layer (active
+		// regardless of whitelist_mode); when whitelist_mode is also true it
+		// additionally includes blocks caused by lacking an enabled whitelist
+		// rule. Recent Allows is only meaningful (and only populated) outside
+		// whitelist_mode — see Server.recentAllowed's doc comment.
+		blocks := ui.getRecentBlocksCopy()
+		var allowed []BlockedQuery
+		if !cfg.WhitelistMode {
+			allowed = ui.getRecentAllowedCopy()
 		}
 		data := map[string]any{
 			//"Page":           "blocks",
 			"Blocks":         blocks,
+			"Allowed":        allowed,
 			"WhitelistMode":  cfg.WhitelistMode,
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
@@ -9453,27 +9507,28 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// --- Handle the Clear Action ---
-		if action == "clear" {
+		// --- Handle the Clear actions ---
+		if action == "clear" || action == "clear_allowed" {
 			cutoffStr := r.FormValue("cutoff")
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
-				log.Warn("Failed to clear blocks: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
+				log.Warn("Failed to clear blocks/allows: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
 				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
-			cfg := ui.getConfig()
 
 			var cleared int
 			var msg string
-			if cfg.WhitelistMode {
-				// Only clear rows currently showing "Unblock X" (still actively blocked).
-				// Rows showing "Re-block (Pause)" are preserved — see ClearBefore's doc comment.
-				cleared = ui.recentBlocks.ClearBefore(cutoff, ui.buildIsUnblockedPredicate())
+			if action == "clear" {
+				// Only clear rows that no longer have an active revert control
+				// (still actively blocked by whichever layer caused them).
+				// Rows still showing a Re-block/Unblock control are preserved
+				// — see buildIsRecentBlockUnblockedPredicate's doc comment.
+				cleared = ui.recentBlocks.ClearBefore(cutoff, ui.buildIsRecentBlockUnblockedPredicate())
 				msg = fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
 				log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
-			} else {
+			} else { // clear_allowed
 				// Allow-mode "Recent Allows" view: preserve rows the operator
 				// just blocked (still showing "Unblock (Pause)") the same way.
 				if ui.recentAllowed != nil {
@@ -9487,7 +9542,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
 			return
 		}
-		// --- END Clear Action ---
+		// --- END Clear actions ---
 
 		// Quick unblock/reblock mutates the RuleStore and persists it, exactly
 		// like the single-item /rules POST path — serialize against a

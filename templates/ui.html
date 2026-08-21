@@ -236,20 +236,20 @@
 </div>
 {{else}}
 <div class="info-banner">
-    <strong>Note:</strong> whitelist_mode is off, so every query is allowed by default except what's blocked by the <a href="/query-blocklist">Query Blocklist</a>. This shows recently resolved (allowed) domains instead of blocks, with a quick way to add a local Query Blocklist "block" rule for one. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
+    <strong>Note:</strong> whitelist_mode is off, so every query is allowed by default except what's blocked by the <a href="/query-blocklist">Query Blocklist</a>. The list below shows domains currently blocked by that layer, followed by a list of recently resolved (allowed) domains with a quick way to add a local Query Blocklist "block" rule for one. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
 </div>
 {{end}}
 
 {{template "alert-banner" .}}
 <div class="section-header-row">
-    <h2 class="header-inline">{{if .WhitelistMode}}Recent Blocks (Quick Unblock){{else}}Recent Allows (Quick Block){{end}}</h2>
+    <h2 class="header-inline">{{if .WhitelistMode}}Recent Blocks (Quick Unblock){{else}}Recent Blocks (Query Blocklist){{end}}</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
-    
+
     <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="clear">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
-        <button type="submit" class="btn-del">{{if .WhitelistMode}}Clear Shown Blocks{{else}}Clear Shown Allows{{end}}</button>
+        <button type="submit" class="btn-del">Clear Shown Blocks</button>
     </form>
 </div>
 
@@ -287,7 +287,63 @@
             <input type="hidden" name="action" value="disable_qb_local_rule">
             <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright{{if $.WhitelistMode}}, regardless of the whitelist above{{end}}.">{{if $.WhitelistMode}}Disable Blocking Rule{{else}}Unblock (Pause){{end}} [Query&nbsp;Blocklist]</button>
         </form>
-        {{else if not $.WhitelistMode}}
+        {{end}}
+
+        {{if .QueryBlocklistExternalListed}}
+        {{if .QueryBlocklistExternalExcepted}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="reblock_qb">
+            <button type="submit" class="btn-cancel" title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+        </form>
+        {{else}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="action" value="unblock_qb">
+            <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+        </form>
+        {{end}}
+        {{end}}
+
+        <span class="block-action-feedback" aria-live="polite" aria-atomic="true"></span>
+    </li>
+    {{else}}
+    <li class="text-muted">No recent blocks.</li>
+    {{end}}
+</ul>
+
+{{if not .WhitelistMode}}
+<div class="section-header-row">
+    <h2 class="header-inline">Recent Allows (Quick Block)</h2>
+    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
+
+    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="action" value="clear_allowed">
+        <input type="hidden" name="cutoff" value="{{.RenderTime}}">
+        <button type="submit" class="btn-del">Clear Shown Allows</button>
+    </form>
+</div>
+
+<ul>
+    {{range .Allowed}}
+    <li>
+        <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
+
+        {{if .QueryBlocklistLocalBlocked}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="{{.QueryBlocklistLocalRuleID}}">
+            <input type="hidden" name="action" value="disable_qb_local_rule">
+            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright.">Unblock (Pause) [Query&nbsp;Blocklist]</button>
+        </form>
+        {{else}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
@@ -319,8 +375,11 @@
 
         <span class="block-action-feedback" aria-live="polite" aria-atomic="true"></span>
     </li>
+    {{else}}
+    <li class="text-muted">No recent allows.</li>
     {{end}}
 </ul>
+{{end}}
 {{end}}
 
 {{define "hosts"}}
