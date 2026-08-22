@@ -1892,7 +1892,7 @@ func defaultConfig() Config {
 		WebUIForceTLSOnNonLocalhost:      true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
 		WebUIMaxLoginFailures:            5,
 		WebUILoginLockoutSec:             5 * 60, // 5 minutes, in seconds
-		WebUIAuthSessionMode:             webUIAuthSessionModeTimeBucket,
+		WebUIAuthSessionMode:             webUIAuthSessionModeSessionCookie,
 		WebUIAuthSessionTimeoutMinutes:   30,
 
 		WebUIReadHeaderTimeoutSec: 5,
@@ -8026,7 +8026,7 @@ func (ui *AdminUI) proceedAfterAuthSuccess(w http.ResponseWriter, r *http.Reques
 	}
 
 	log := ui.getLogger()
-	log.Info("WebUI session cookie missing/expired; forcing credential re-prompt",
+	log.Info("WebUI session cookie missing/expired or cookies aren't allowed in browser; forcing credential re-prompt",
 		slog.String("client", clientIP),
 		slog.Int("timeout_minutes", cfg.WebUIAuthSessionTimeoutMinutes))
 
@@ -8037,7 +8037,7 @@ func (ui *AdminUI) proceedAfterAuthSuccess(w http.ResponseWriter, r *http.Reques
 	// new session window.
 	ui.setSessionAuthCookie(w, r, time.Now())
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", ui.currentAuthRealm()))
-	http.Error(w, "401 Unauthorized - WebUI session expired, please re-authenticate", http.StatusUnauthorized)
+	http.Error(w, "401 Unauthorized - WebUI session expired(or cookies aren't allowed in browser), please re-authenticate", http.StatusUnauthorized)
 	return false
 }
 

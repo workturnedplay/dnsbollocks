@@ -355,7 +355,6 @@
     function updateTableBanner() {
         const count = stagedTableChanges.length;
         document.querySelectorAll('.staged-table-banner').forEach(banner => {
-            // banner.style.display = count > 0 ? 'block' : 'none';
             banner.hidden = count === 0;
             
             const countEl = banner.querySelector('.staged-table-count');
@@ -1890,7 +1889,6 @@
         
         const row = document.getElementById(rowId);
         if (row) {
-            // row.style.display = '';
             row.hidden = false;
             row.classList.remove('being-edited');
             if (resetRowId) row.removeAttribute('id'); // Clean up the temporary ID
@@ -1926,7 +1924,6 @@
         const origPattern = row.dataset.origPattern;
         const origIps = row.dataset.origIps;
         const origEnabled = row.dataset.origEnabled === 'true';
-        // row.style.display = 'none';
         row.hidden = true;
         row.classList.add('being-edited');
         
@@ -2002,7 +1999,6 @@
             }
 
             row.classList.remove('being-edited');
-            // row.style.display = '';
             row.hidden = false;
 
             editRow.remove();
@@ -2024,7 +2020,6 @@
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
                 discardHostEdits(row, origPattern, origIps, origEnabled);
                 row.classList.remove('being-edited');
-                // row.style.display = '';
                 row.hidden = false;
                 editRow.remove();
             }
@@ -2062,7 +2057,6 @@
         const clientId = row.dataset.stagedClientId;
         const origCidr = row.dataset.origCidr;
         const origEnabled = row.dataset.origEnabled === 'true';
-        // row.style.display = 'none';
         row.hidden = true;
         row.classList.add('being-edited');
         
@@ -2121,7 +2115,6 @@
             }
 
             row.classList.remove('being-edited');
-            // row.style.display = '';
             row.hidden = false;
 
             editRow.remove();
@@ -2142,7 +2135,6 @@
                 if (!confirm('Discard all staged changes for this entry and revert it to its original state?')) return;
                 discardBlacklistEdits(row, origCidr, origEnabled);
                 row.classList.remove('being-edited');
-                // row.style.display = '';
                 row.hidden = false;
                 editRow.remove();
             }
@@ -2230,7 +2222,6 @@
         // somehow unmeasurable (e.g., hidden by an active filter).
         const rowHeight = Math.max(64, row.getBoundingClientRect().height);
         
-        // row.style.display = 'none';
         row.hidden = true;
         row.classList.add('being-edited');
         
@@ -2389,7 +2380,6 @@
         // Handle Cancel
         clone.querySelector('.config-cancel-btn').addEventListener('click', () => {
             editRow.remove();
-            // row.style.display = '';
             row.hidden = false;
             row.classList.remove('being-edited');
             applyConfigFilter();
@@ -2492,7 +2482,6 @@
             row.classList.remove('being-edited'); 
             
             editRow.remove();
-            // row.style.display = '';
             row.hidden = false;
             
             applyConfigFilter();
@@ -3145,7 +3134,6 @@
                 
                 // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
                 row.id = 'rule-row-' + id;
-                // row.style.display = 'none';
                 row.hidden = true;
                 row.classList.add('being-edited');
                 
@@ -3215,7 +3203,6 @@
                     }
 
                     row.classList.remove('being-edited');
-                    // row.style.display = '';
                     row.hidden = false;
 
                     editRow.remove();
@@ -3235,7 +3222,6 @@
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
                         discardStagedEdit(existingIdx, row, () => applyRuleRowDisplay(row, origType, origPattern, origEnabled));
                         row.classList.remove('being-edited');
-                        // row.style.display = '';
                         row.hidden = false;
                         editRow.remove();
                     }
