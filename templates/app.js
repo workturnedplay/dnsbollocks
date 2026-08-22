@@ -94,6 +94,7 @@
         consoleLogLevel:       _cfgKeysEl.dataset.keyConsoleLogLevel       || '',
         blockMode:             _cfgKeysEl.dataset.keyBlockMode             || '',
         webuiPasswordHash:     _cfgKeysEl.dataset.keyWebuiPasswordHash     || '',
+        webuiAuthSessionMode:  _cfgKeysEl.dataset.keyWebuiAuthSessionMode  || '',
         // Valid option arrays for select-type fields.
         // Comma-separated from Go (all values are plain lowercase ASCII, no commas),
         // split here. An empty attribute produces [] → buildSelectElement falls back to
@@ -101,6 +102,7 @@
         optsUpstreamSelectionMode: (_cfgKeysEl.dataset.optsUpstreamSelectionMode || '').split(',').filter(Boolean),
         optsConsoleLogLevel:       (_cfgKeysEl.dataset.optsConsoleLogLevel       || '').split(',').filter(Boolean),
         optsBlockMode:             (_cfgKeysEl.dataset.optsBlockMode             || '').split(',').filter(Boolean),
+        optsWebUIAuthSessionMode:  (_cfgKeysEl.dataset.optsWebuiAuthSessionMode  || '').split(',').filter(Boolean),
     } : {
         //XXX: the following(or any) fallbacks to empty aren't needed because all are only used in /config
         // optsUpstreamSelectionMode: [],
@@ -2278,6 +2280,10 @@
             // Option values come from Go's blockMode* constants via CONFIG_KEYS.
             container.appendChild(buildSelectElement(CONFIG_KEYS.optsBlockMode, currentDisplay, key + ' value'));
             hint.innerText = "Action taken when blocking queries";
+        } else if (key === CONFIG_KEYS.webuiAuthSessionMode) {
+            // Option values come from Go's webUIAuthSessionMode* constants via CONFIG_KEYS.
+            container.appendChild(buildSelectElement(CONFIG_KEYS.optsWebUIAuthSessionMode, currentDisplay, key + ' value'));
+            hint.innerText = "How the WebUI forces Basic-Auth clients to periodically re-authenticate";
         } else if (key === CONFIG_KEYS.webuiPasswordHash) {
             // Both fields are type="password" (masked) rather than plain text,
             // and the confirmation is compared directly against this second

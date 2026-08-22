@@ -165,16 +165,18 @@ type Config struct {
 	RemoveHTTPSIPHints               bool   `json:"remove_https_ip_hints"     desc:"Strip ipv4hint and ipv6hint parameters from HTTPS DNS records in upstream responses, forcing clients to resolve IPs via A/AAAA queries instead of using embedded hints."`
 	UseEDEInBlockedReply             bool   `json:"use_ede_in_blocked_reply"  desc:"Attach an EDNS0 Extended DNS Error (EDE) record to blocked responses so clients and diagnostic tools can see a human-readable reason for the block."`
 
-	WebUIPasswordHash           string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
-	WebUIPasswordBcryptCost     int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 4, max is 31). Higher values are slower but more resistant to brute-force."`
-	WebUIUseTLS                 bool   `json:"webui_use_tls"                     desc:"Serve the web admin UI over HTTPS using the auto-generated self-signed certificate. Strongly recommended for any non-loopback address."`
-	WebUIForceTLSOnNonLocalhost bool   `json:"webui_force_tls_on_non_localhost"  desc:"Automatically promote webui_use_tls to true when listen_ui is bound to a non-loopback address, preventing the password from being transmitted as plaintext."`
-	WebUIMaxLoginFailures       int    `json:"webui_max_login_failures"          desc:"Number of consecutive failed WebUI login attempts from a single IP before that IP is locked out."`
-	WebUILoginLockoutSec        int    `json:"webui_login_lockout_sec"           desc:"Duration in seconds a client IP remains locked out after exceeding webui_max_login_failures."`
-	WebUIReadHeaderTimeoutSec   int    `json:"webui_read_header_timeout_sec"     desc:"Seconds the WebUI HTTP server waits for a client to send request headers before closing the connection (Slowloris defence)."`
-	WebUIReadTimeoutSec         int    `json:"webui_read_timeout_sec"            desc:"Seconds the WebUI HTTP server waits for a complete request body."`
-	WebUIWriteTimeoutSec        int    `json:"webui_write_timeout_sec"           desc:"Seconds the WebUI HTTP server waits while writing the HTTP response to a client."`
-	WebUIIdleTimeoutSec         int    `json:"webui_idle_timeout_sec"            desc:"Seconds the WebUI HTTP server keeps an idle keep-alive connection open. Auto-clamped to at least 2x webui_read_timeout_sec."`
+	WebUIPasswordHash              string `json:"webui_password_hash"               desc:"Bcrypt hash of the web admin UI password. Set via --hash-password flag or the WebUI config page. Never store a plaintext password here."`
+	WebUIPasswordBcryptCost        int    `json:"webui_password_bcrypt_cost"        desc:"Bcrypt cost factor used when hashing new passwords (minimum enforced: 4, max is 31). Higher values are slower but more resistant to brute-force."`
+	WebUIUseTLS                    bool   `json:"webui_use_tls"                     desc:"Serve the web admin UI over HTTPS using the auto-generated self-signed certificate. Strongly recommended for any non-loopback address."`
+	WebUIForceTLSOnNonLocalhost    bool   `json:"webui_force_tls_on_non_localhost"  desc:"Automatically promote webui_use_tls to true when listen_ui is bound to a non-loopback address, preventing the password from being transmitted as plaintext."`
+	WebUIMaxLoginFailures          int    `json:"webui_max_login_failures"          desc:"Number of consecutive failed WebUI login attempts from a single IP before that IP is locked out."`
+	WebUILoginLockoutSec           int    `json:"webui_login_lockout_sec"           desc:"Duration in seconds a client IP remains locked out after exceeding webui_max_login_failures."`
+	WebUIAuthSessionMode           string `json:"webui_auth_session_mode"            desc:"How the WebUI forces Basic-Auth clients to periodically re-enter credentials: 'legacy' (default) never forces it — the browser keeps sending its cached credential until it exits. 'session_cookie' issues an HMAC-signed, HttpOnly cookie alongside a successful login; once webui_auth_session_timeout_minutes elapses since that cookie was (re)issued, the next request is rejected with 401 (forcing the browser to evict its cached credential and re-prompt) and a fresh cookie is issued so the immediate retry succeeds. 'time_bucket' rotates the WWW-Authenticate realm string every webui_auth_session_timeout_minutes so a browser whose cached credential is keyed to a now-stale realm can no longer auto-supply it and must re-prompt; needs no cookies, but forces every connected client to re-prompt at the same moment."`
+	WebUIAuthSessionTimeoutMinutes int    `json:"webui_auth_session_timeout_minutes" desc:"Minutes before webui_auth_session_mode ('session_cookie' or 'time_bucket') forces WebUI Basic-Auth clients to re-authenticate. Ignored when webui_auth_session_mode is 'legacy'."`
+	WebUIReadHeaderTimeoutSec      int    `json:"webui_read_header_timeout_sec"     desc:"Seconds the WebUI HTTP server waits for a client to send request headers before closing the connection (Slowloris defence)."`
+	WebUIReadTimeoutSec            int    `json:"webui_read_timeout_sec"            desc:"Seconds the WebUI HTTP server waits for a complete request body."`
+	WebUIWriteTimeoutSec           int    `json:"webui_write_timeout_sec"           desc:"Seconds the WebUI HTTP server waits while writing the HTTP response to a client."`
+	WebUIIdleTimeoutSec            int    `json:"webui_idle_timeout_sec"            desc:"Seconds the WebUI HTTP server keeps an idle keep-alive connection open. Auto-clamped to at least 2x webui_read_timeout_sec."`
 
 	MaxConcurrentDNSTCPConns   int `json:"max_concurrent_dns_tcp_conns"    desc:"Maximum simultaneous DNS-over-TCP connections. Connections beyond this limit are rejected immediately to bound memory and goroutine count."`
 	MaxConcurrentDNSUDPQueries int `json:"max_concurrent_dns_udp_queries"  desc:"Maximum DNS-over-UDP packets being processed concurrently. Excess packets are dropped rather than queued."`
@@ -401,6 +403,15 @@ type AdminUI struct {
 	// Never persisted or logged; a fresh one is generated every process
 	// start via NewAdminUI.
 	csrfSecret []byte
+
+	// sessionAuthSecret is a random, process-lifetime-only HMAC key used to
+	// sign/verify the WebUI's session-expiry cookie for
+	// webui_auth_session_mode='session_cookie' (see
+	// newSessionAuthToken/verifySessionAuthToken and
+	// AdminUI.proceedAfterAuthSuccess). Kept independent from csrfSecret so
+	// the two concerns never share key material. Never persisted or logged;
+	// a fresh one is generated every process start via NewAdminUI.
+	sessionAuthSecret []byte
 
 	// configApplyMu serializes the entire check-version -> read -> merge ->
 	// validate -> write -> reload sequence in configHandler's "apply" action
@@ -1881,6 +1892,8 @@ func defaultConfig() Config {
 		WebUIForceTLSOnNonLocalhost:      true, //if WebUIUseTLS is false and ListenUI is non-localhost-like IP, then force WebUIUseTLS to true ?
 		WebUIMaxLoginFailures:            5,
 		WebUILoginLockoutSec:             5 * 60, // 5 minutes, in seconds
+		WebUIAuthSessionMode:             webUIAuthSessionModeTimeBucket,
+		WebUIAuthSessionTimeoutMinutes:   30,
 
 		WebUIReadHeaderTimeoutSec: 5,
 		WebUIReadTimeoutSec:       15,
@@ -7780,12 +7793,21 @@ func (ui *AdminUI) hostValidationMiddleware(expectedHost string, next http.Handl
 // rationale elsewhere in this file: a predictable/absent entropy source
 // here would make every CSRF token forgeable, so failing loudly beats
 // silently running with a weak or zero-value secret.
-func newCSRFSecret() []byte {
-	secret := make([]byte, 32)
+// newRandomSecret returns n cryptographically random bytes, or panics if the
+// OS CSPRNG is unavailable — mirrors getSecureID's rationale elsewhere in
+// this file: a predictable/absent entropy source here would make every
+// derived secret forgeable, so failing loudly beats silently running with a
+// weak or zero-value secret.
+func newRandomSecret(n int) []byte {
+	secret := make([]byte, n)
 	if _, err := rand.Read(secret); err != nil {
-		panic2("BUG: critical system error: failed to generate CSRF HMAC secret: " + err.Error())
+		panic2("BUG: critical system error: failed to generate random secret: " + err.Error())
 	}
 	return secret
+}
+
+func newCSRFSecret() []byte {
+	return newRandomSecret(32)
 }
 
 // newCSRFToken produces a fresh CSRF token of the form "<nonce>.<hmac>",
@@ -7839,6 +7861,184 @@ func verifyCSRFToken(token string, secret []byte) bool {
 	mac.Write(nonce)
 	expected := mac.Sum(nil)
 	return hmac.Equal(sig, expected)
+}
+
+// webUISessionAuthCookieBaseName is the cookie name used to carry the
+// signed session-issued-at timestamp for webui_auth_session_mode=
+// 'session_cookie' (see AdminUI.proceedAfterAuthSuccess). The name sent to
+// the browser is prefixed with "__Host-" over HTTPS, mirroring
+// csrfCookieName's identical host-locking rationale.
+const webUISessionAuthCookieBaseName = "webui_session_auth"
+
+// sessionAuthCookieClockSkewTolerance permits a small amount of forward
+// clock skew so a cookie whose signed timestamp appears to be a few seconds
+// "in the future" (relative to a slightly-fast/slow local clock, or simple
+// request-processing latency) isn't spuriously rejected as invalid.
+const sessionAuthCookieClockSkewTolerance = 5 * time.Second
+
+// newSessionAuthSecret generates a fresh, process-lifetime-only HMAC key
+// used to sign/verify the WebUI's session-expiry cookie (see
+// newSessionAuthToken/verifySessionAuthToken and
+// Config.WebUIAuthSessionMode's doc comment), kept independent from
+// csrfSecret so the two concerns never share key material.
+func newSessionAuthSecret() []byte {
+	return newRandomSecret(32)
+}
+
+// newSessionAuthToken produces a fresh session-expiry cookie value of the
+// form "<timestamp>.<hmac>", both base64url-encoded, where
+// hmac = HMAC-SHA256(timestamp, secret) and timestamp is issuedAt's Unix
+// seconds. Mirrors newCSRFToken's shape/rationale.
+func newSessionAuthToken(secret []byte, issuedAt time.Time) string {
+	ts := strconv.FormatInt(issuedAt.Unix(), 10)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(ts))
+	sig := mac.Sum(nil)
+	return base64.RawURLEncoding.EncodeToString([]byte(ts)) + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// verifySessionAuthToken reports whether token carries a validly-signed
+// timestamp under secret (i.e. was minted by THIS server, not forged or
+// tampered with — see verifyCSRFToken's doc comment for the identical
+// cookie-fixation rationale this guards against), and if so returns the
+// timestamp it encodes.
+func verifySessionAuthToken(token string, secret []byte) (issuedAt time.Time, ok bool) {
+	tsB64, sigB64, cut := strings.Cut(token, ".")
+	if !cut {
+		return time.Time{}, false
+	}
+	tsBytes, err := base64.RawURLEncoding.DecodeString(tsB64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(tsBytes)
+	expected := mac.Sum(nil)
+	if !hmac.Equal(sig, expected) {
+		return time.Time{}, false
+	}
+	sec, perr := strconv.ParseInt(string(tsBytes), 10, 64)
+	if perr != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(sec, 0), true
+}
+
+// defaultWWWAuthenticateRealm is the static realm string used for WebUI
+// Basic-Auth challenges when webui_auth_session_mode is not 'time_bucket'.
+const defaultWWWAuthenticateRealm = "dnsbollocks webUI aka Management Interface aka Control Panel"
+
+// currentAuthRealm returns the realm string to use in a WWW-Authenticate
+// challenge for this request. In every mode except 'time_bucket' this is a
+// fixed string; in 'time_bucket' mode it rotates once per
+// webui_auth_session_timeout_minutes (see Config.WebUIAuthSessionMode's doc
+// comment), which is what lets a browser's realm-keyed Basic-Auth
+// credential cache go stale and force a fresh prompt once the bucket
+// advances.
+func (ui *AdminUI) currentAuthRealm() string {
+	cfg := ui.getConfig()
+	if cfg.WebUIAuthSessionMode != webUIAuthSessionModeTimeBucket {
+		return defaultWWWAuthenticateRealm
+	}
+	timeoutSec := int64(cfg.WebUIAuthSessionTimeoutMinutes) * 60
+	if timeoutSec <= 0 {
+		// Defensive: sanitizeAndValidateConfig clamps this to > 0.
+		timeoutSec = 60
+	}
+	bucket := time.Now().Unix() / timeoutSec
+	return fmt.Sprintf("%s [slot %d]", defaultWWWAuthenticateRealm, bucket)
+}
+
+// sessionAuthCookieName returns the cookie name used for the session-expiry
+// timestamp cookie, mirroring csrfCookieName's identical __Host- prefixing
+// rule (only usable, and only sent, over HTTPS).
+func (ui *AdminUI) sessionAuthCookieName(r *http.Request) string {
+	if r.TLS != nil {
+		return "__Host-" + webUISessionAuthCookieBaseName
+	}
+	return webUISessionAuthCookieBaseName
+}
+
+// setSessionAuthCookie issues a fresh, HMAC-signed session-expiry cookie
+// timestamped at issuedAt.
+func (ui *AdminUI) setSessionAuthCookie(w http.ResponseWriter, r *http.Request, issuedAt time.Time) {
+	http.SetCookie(w,
+		//nolint:gosec // HttpOnly and SameSite are set; Secure is conditional on HTTPS support, mirroring getOrCreateCSRFToken's identical cookie.
+		&http.Cookie{
+			Name:     ui.sessionAuthCookieName(r),
+			Value:    newSessionAuthToken(ui.sessionAuthSecret, issuedAt),
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   r.TLS != nil,
+		},
+	)
+}
+
+// sessionAuthCookieFresh reports whether r carries a validly-signed
+// session-expiry cookie issued within the last timeoutMinutes.
+func (ui *AdminUI) sessionAuthCookieFresh(r *http.Request, timeoutMinutes int) bool {
+	cookie, err := r.Cookie(ui.sessionAuthCookieName(r))
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	issuedAt, ok := verifySessionAuthToken(cookie.Value, ui.sessionAuthSecret)
+	if !ok {
+		return false
+	}
+	now := time.Now()
+	if issuedAt.After(now.Add(sessionAuthCookieClockSkewTolerance)) {
+		return false // cookie claims to be issued in the future; reject defensively
+	}
+	timeout := time.Duration(timeoutMinutes) * time.Minute
+	if timeout <= 0 {
+		// Defensive: sanitizeAndValidateConfig clamps this to > 0.
+		timeout = time.Minute
+	}
+	return now.Sub(issuedAt) <= timeout
+}
+
+// proceedAfterAuthSuccess finalizes a successful WebUI Basic-Auth
+// verification: it clears any prior failed-login streak for clientIP, then
+// enforces the configured session-expiry policy (see
+// Config.WebUIAuthSessionMode's doc comment). It returns true if the
+// request should proceed to the protected handler; false if it has already
+// written a 401 response itself (session_cookie mode only, when the
+// existing session cookie is missing/expired — a fresh cookie is issued
+// alongside that 401 so the browser's immediate credential re-submission,
+// triggered by the 401, succeeds on the very next request) and the caller
+// must not call next.ServeHTTP.
+func (ui *AdminUI) proceedAfterAuthSuccess(w http.ResponseWriter, r *http.Request, clientIP string) bool {
+	// Clear any prior failure streak so a legitimate user is never stuck in
+	// a lockout after recovering from a typo run.
+	ui.recordLoginSuccess(clientIP)
+
+	cfg := ui.getConfig()
+	if cfg.WebUIAuthSessionMode != webUIAuthSessionModeSessionCookie {
+		return true
+	}
+	if ui.sessionAuthCookieFresh(r, cfg.WebUIAuthSessionTimeoutMinutes) {
+		return true
+	}
+
+	log := ui.getLogger()
+	log.Info("WebUI session cookie missing/expired; forcing credential re-prompt",
+		slog.String("client", clientIP),
+		slog.Int("timeout_minutes", cfg.WebUIAuthSessionTimeoutMinutes))
+
+	// Issue a fresh cookie alongside this 401: the browser evicts its cached
+	// Basic-Auth credential upon receiving 401 and immediately re-submits it
+	// (prompting the user if needed), and that retry request will carry this
+	// freshly-issued cookie, passing the freshness check above and starting a
+	// new session window.
+	ui.setSessionAuthCookie(w, r, time.Now())
+	w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", ui.currentAuthRealm()))
+	http.Error(w, "401 Unauthorized - WebUI session expired, please re-authenticate", http.StatusUnauthorized)
+	return false
 }
 
 type csrfTokenKey struct{}
@@ -10633,7 +10833,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// FIX: Check if the browser hasn't attempted to send credentials yet
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", ui.currentAuthRealm()))
 			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 			return
 		}
@@ -10644,8 +10844,9 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// see verifiedAuthCache's doc comment for why this is safe.
 		authCacheKey := computeAuthCacheKey(authHeader, cfg.WebUIPasswordHash)
 		if ui.verifiedAuthCache.check(authCacheKey) {
-			ui.recordLoginSuccess(clientIP)
-			next.ServeHTTP(w, r)
+			if ui.proceedAfterAuthSuccess(w, r, clientIP) {
+				next.ServeHTTP(w, r)
+			}
 			return
 		}
 
@@ -10717,7 +10918,7 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 			}
 
 			// This header triggers the browser's native login modal
-			w.Header().Set("WWW-Authenticate", `Basic realm="dnsbollocks webUI aka Management Interface aka Control Panel"`)
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", ui.currentAuthRealm()))
 			http.Error(w, "401 Unauthorized - WebUI Access Restricted", http.StatusUnauthorized)
 			return
 		}
@@ -10726,11 +10927,12 @@ func (ui *AdminUI) authMiddleware(next http.Handler) http.Handler {
 		// Remember this exact header as verified so the next request bearing
 		// it can skip bcrypt entirely (see verifiedAuthCache's doc comment).
 		ui.verifiedAuthCache.remember(authCacheKey, verifiedAuthCacheTTL)
-		// Clear any prior failure streak so a legitimate user is never stuck
-		// in a lockout after recovering from a typo run.
-		ui.recordLoginSuccess(clientIP)
-		// Password is correct, let the request pass through to the target handler
-		next.ServeHTTP(w, r)
+		// proceedAfterAuthSuccess clears any prior failure streak and enforces
+		// the configured session-expiry policy (see its doc comment).
+		if ui.proceedAfterAuthSuccess(w, r, clientIP) {
+			// Password is correct, let the request pass through to the target handler
+			next.ServeHTTP(w, r)
+		}
 	})
 }
 
@@ -11121,6 +11323,7 @@ func NewAdminUI(
 		blockedQueries:    blockedQueries,
 		verifiedAuthCache: newVerifiedAuthCache(),
 		csrfSecret:        newCSRFSecret(),
+		sessionAuthSecret: newSessionAuthSecret(),
 		uiTemplates:       tpls,
 	}
 }
@@ -13184,6 +13387,7 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 			"KeyConsoleLogLevel":       getJSONTagByOffset(unsafe.Offsetof(Config{}.ConsoleLogLevel)),
 			"KeyBlockMode":             getJSONTagByOffset(unsafe.Offsetof(Config{}.BlockMode)),
 			"KeyWebUIPasswordHash":     getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordHash)),
+			"KeyWebUIAuthSessionMode":  getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIAuthSessionMode)),
 			// Valid option values for select-type fields, comma-separated so app.js never
 			// hard-codes enum strings. Changing a constant in Go propagates automatically.
 			"OptsUpstreamSelectionMode": strings.Join([]string{
@@ -13201,6 +13405,11 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 				blockModeNXDOMAIN,
 				blockModeIPBlock,
 				blockModeDrop,
+			}, ","),
+			"OptsWebUIAuthSessionMode": strings.Join([]string{
+				webUIAuthSessionModeLegacy,
+				webUIAuthSessionModeSessionCookie,
+				webUIAuthSessionModeTimeBucket,
 			}, ","),
 		}
 		ui.renderTemplate(w, r, "config", data)
@@ -13987,6 +14196,36 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	tagWebUIPasswordBcryptCost := getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIPasswordBcryptCost))
 	if clampBcryptCostField(log, tagWebUIPasswordBcryptCost, &resolvedCfg.WebUIPasswordBcryptCost, &rawCfg.WebUIPasswordBcryptCost, defaultCfg.WebUIPasswordBcryptCost) {
+		shouldSaveConfig = true
+	}
+
+	// WebUI Basic-Auth session-expiry policy (webui_auth_session_mode /
+	// webui_auth_session_timeout_minutes) — see Config.WebUIAuthSessionMode's
+	// doc comment for what each mode does.
+	origWebUIAuthSessionMode := resolvedCfg.WebUIAuthSessionMode
+	resolvedCfg.WebUIAuthSessionMode = strings.ToLower(strings.TrimSpace(origWebUIAuthSessionMode))
+	switch resolvedCfg.WebUIAuthSessionMode {
+	case webUIAuthSessionModeLegacy, webUIAuthSessionModeSessionCookie, webUIAuthSessionModeTimeBucket:
+		// valid
+	default:
+		msg := fmt.Sprintf("Unknown webui_auth_session_mode %q in config file %q, must be one of these: %q, %q, %q",
+			resolvedCfg.WebUIAuthSessionMode,
+			configFileName,
+			webUIAuthSessionModeLegacy,
+			webUIAuthSessionModeSessionCookie,
+			webUIAuthSessionModeTimeBucket,
+		)
+		log.Error(msg, slog.String("webui_auth_session_mode", resolvedCfg.WebUIAuthSessionMode))
+		return shouldSaveConfig, fmt.Errorf("%s", msg)
+	}
+	if origWebUIAuthSessionMode != resolvedCfg.WebUIAuthSessionMode {
+		shouldSaveConfig = true
+	}
+	rawCfg.WebUIAuthSessionMode = resolvedCfg.WebUIAuthSessionMode
+
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIAuthSessionTimeoutMinutes)),
+		&resolvedCfg.WebUIAuthSessionTimeoutMinutes, &rawCfg.WebUIAuthSessionTimeoutMinutes,
+		func(v int) bool { return v <= 0 }, defaultCfg.WebUIAuthSessionTimeoutMinutes, "") {
 		shouldSaveConfig = true
 	}
 
@@ -14975,6 +15214,14 @@ const (
 	upstreamSelectionModeFailover = "failover"
 	upstreamSelectionModeFastest  = "fastest"
 	upstreamSelectionModeStrict   = "strict"
+)
+
+// webUIAuthSessionMode* are the only valid values for Config.WebUIAuthSessionMode.
+// See that field's doc comment for what each mode does.
+const (
+	webUIAuthSessionModeLegacy        = "legacy"
+	webUIAuthSessionModeSessionCookie = "session_cookie"
+	webUIAuthSessionModeTimeBucket    = "time_bucket"
 )
 
 // consoleLogLevel* are the canonical values for Config.ConsoleLogLevel understood by
