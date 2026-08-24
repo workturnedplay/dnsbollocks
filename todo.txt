@@ -1,5 +1,12 @@
 my todos for dnsbollocks:
 
+* this thing happens when I login after say 2 days, because the session cookie expired I've to enter the password 2 times in a row and I see this on console:
+INFO 2026-08-24T23:57:22.2014579+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:22.2014579+02:00 WebUI session cookie missing/expired or cookies aren't allowed in browser; forcing credential re-prompt pid=4456 client=localhost timeout_minutes=30
+.INFO 2026-08-24T23:57:31.2573807+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:31.3199360+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:31.3209467+02:00 Login success pid=4456 client=localhost
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.

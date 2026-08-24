@@ -33,6 +33,7 @@
             <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Local Hosts</a>
             <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Blacklisted IPs(in responses)</a>
             <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Recent Blocks</a>
+            <a href="/allows" {{if eq .Page "allows" }} class="active" {{end}}>Recent Allows</a>
             <a href="/logs" {{if eq .Page "logs" }} class="active" {{end}}>System Log(incl.queries)</a>
             <a href="/logs_queries" {{if eq .Page "logs_queries" }} class="active" {{end}}>Query(only) Log</a>
             <a href="/logs_queries_simple" {{if eq .Page "logs_queries_simple" }} class="active" {{end}}>Simple-Query Log</a>
@@ -52,6 +53,8 @@
         {{template "hosts" .}}
         {{else if eq .Page "blocks"}}
         {{template "blocks" .}}
+        {{else if eq .Page "allows"}}
+        {{template "allows" .}}
         {{else if eq .Page "response-blacklist"}}
         {{template "response-blacklist" .}}
         {{else if or (eq .Page "logs") (eq .Page "logs_queries") (eq .Page "logs_queries_simple")}}
@@ -229,20 +232,12 @@
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
-
-{{if .WhitelistMode}}
 <div class="info-banner">
-    <strong>Note:</strong> Only queries blocked by the whitelist rules are shown here. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
+    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, and by not matching any enabled whitelist rule{{end}}. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here. See <a href="/allows">Recent Allows</a> for domains that were resolved.
 </div>
-{{else}}
-<div class="info-banner">
-    <strong>Note:</strong> whitelist_mode is off, so every query is allowed by default except what's blocked by the <a href="/query-blocklist">Query Blocklist</a>. The list below shows domains currently blocked by that layer, followed by a list of recently resolved (allowed) domains with a quick way to add a local Query Blocklist "block" rule for one. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here.
-</div>
-{{end}}
-
 {{template "alert-banner" .}}
 <div class="section-header-row">
-    <h2 class="header-inline">{{if .WhitelistMode}}Recent Blocks (Quick Unblock){{else}}Recent Blocks (Query Blocklist){{end}}</h2>
+    <h2 class="header-inline">Recent Blocks</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
 
     <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
@@ -315,15 +310,21 @@
     <li class="text-muted">No recent blocks.</li>
     {{end}}
 </ul>
+{{end}}
 
-{{if not .WhitelistMode}}
+{{/* --- SUB-TEMPLATE FOR ALLOWS --- */}}
+{{define "allows"}}
+<div class="info-banner">
+    <strong>Note:</strong> This shows recently resolved (allowed) domains{{if .WhitelistMode}} — allowed via a whitelist rule or local host override{{else}} — allowed because whitelist_mode is off{{end}}, with a quick way to add a local <a href="/query-blocklist">Query Blocklist</a> "block" rule for one (which always takes priority, regardless of whitelist_mode). See <a href="/blocks">Recent Blocks</a> for domains that were blocked.
+</div>
+{{template "alert-banner" .}}
 <div class="section-header-row">
     <h2 class="header-inline">Recent Allows (Quick Block)</h2>
     <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
 
-    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
+    <form method="post" action="/allows" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <input type="hidden" name="action" value="clear_allowed">
+        <input type="hidden" name="action" value="clear">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
         <button type="submit" class="btn-del">Clear Shown Allows</button>
     </form>
@@ -335,7 +336,7 @@
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .QueryBlocklistLocalBlocked}}
-        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+        <form method="post" action="/allows" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -344,7 +345,7 @@
             <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright.">Unblock (Pause) [Query&nbsp;Blocklist]</button>
         </form>
         {{else}}
-        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+        <form method="post" action="/allows" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -355,7 +356,7 @@
 
         {{if .QueryBlocklistExternalListed}}
         {{if .QueryBlocklistExternalExcepted}}
-        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+        <form method="post" action="/allows" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -363,7 +364,7 @@
             <button type="submit" class="btn-cancel" title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
         {{else}}
-        <form method="post" action="/blocks" class="d-inline js-block-action-form">
+        <form method="post" action="/allows" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -379,7 +380,6 @@
     <li class="text-muted">No recent allows.</li>
     {{end}}
 </ul>
-{{end}}
 {{end}}
 
 {{define "hosts"}}

@@ -1486,7 +1486,7 @@
     // per-row actions where an inline status message is preferable to a
     // blocking dialog. The server recognizes the X-DNSBollocks-Ajax header
     // and responds with a plain status code instead of a redirect.
-    async function postBlocksAction(domain, type, action, id, isRetry = false) {
+    async function postBlocksAction(targetUrl, domain, type, action, id, isRetry = false) {
         const formData = new FormData();
         formData.append('csrf_token', csrfToken);
         formData.append('domain', domain);
@@ -1498,7 +1498,7 @@
         
         let res;
         try {
-            res = await fetchWithTimeout('/blocks', {
+            res = await fetchWithTimeout(targetUrl, {
                 method: 'POST',
                 body: formData,
                 headers: { 'X-DNSBollocks-Ajax': '1' },
@@ -1516,7 +1516,7 @@
             console.log("CSRF token invalid/expired in blocks AJAX. Attempting recovery...");
             if (await refreshCSRFToken()) {
                 console.log("Successfully obtained new CSRF token. Retrying request...");
-                return await postBlocksAction(domain, type, action, id, true);
+                return await postBlocksAction(targetUrl, domain, type, action, id, true);
             }
         }
         
@@ -3488,7 +3488,7 @@
         // Blocks and, outside whitelist_mode, Recent Allows).
         document.querySelectorAll('.js-blocks-refresh-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                window.location.href = '/blocks';
+                location.reload();
             });
         });
         
@@ -3502,14 +3502,15 @@
             blocksClearForm.addEventListener('submit', function(e) {
                 e.preventDefault();
                 const actionValue = blocksClearForm.querySelector('[name="action"]').value;
-                const noun = actionValue === 'clear_allowed' ? 'allows' : 'blocks';
+                const targetUrl = blocksClearForm.getAttribute('action'); // '/blocks' or '/allows'
+                const noun = targetUrl === '/allows' ? 'allows' : 'blocks';
                 if (!confirm('Clear all currently shown ' + noun + '?\n\n(New ' + noun + ' that occurred since you loaded the page will be kept safely.)')) {
                     return;
                 }
                 const btn = blocksClearForm.querySelector('button[type="submit"]');
                 (async () => {
                     const success = await withApplyButtonBusy(btn, 'Clearing\u2026', () => postAdminForm(
-                        blocksClearForm.getAttribute('action'),// this is '/blocks'
+                        targetUrl,
                         {
                             action: actionValue,
                             cutoff: blocksClearForm.querySelector('[name="cutoff"]').value,
@@ -3556,7 +3557,7 @@
                     feedback.className = 'block-action-feedback';
                 }
                 
-                const result = await postBlocksAction(domain, type, action, id);
+                const result = await postBlocksAction(form.getAttribute('action'), domain, type, action, id);
                 
                 if (result.ok) {
                     // Flip the form to perform the opposite action next time, and

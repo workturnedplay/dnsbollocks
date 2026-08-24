@@ -251,13 +251,13 @@ type Server struct {
 	blacklist    *BlacklistStore
 	recentBlocks *RecentBlocksTracker
 	// recentAllowed mirrors recentBlocks but records recently ALLOWED
-	// queries instead, populated only when cfg.WhitelistMode is false (see
-	// handleDNSQuery's blacklist-mode branch). Powers the WebUI's /blocks
-	// page "Recent Allows" view — the inverse of "Recent Blocks" — shown
-	// instead of the whitelist-based one when running in allow-mode, where
-	// the whitelist plays no role in the allow/deny decision and the
-	// ordinary recentBlocks tracker would only ever show query-blocklist
-	// hits.
+	// queries instead (see handleDNSQuery, which records into it whenever a
+	// query is allowed, regardless of whitelist_mode). Powers the WebUI's
+	// dedicated "/allows" page (Recent Allows) — the sibling of "/blocks"
+	// (Recent Blocks) — letting an operator see, and optionally add a
+	// query-blocklist "block" rule for, any domain that was just resolved,
+	// whether it was allowed via a whitelist rule/local host override
+	// (whitelist_mode=true) or simply because whitelist_mode is off.
 	recentAllowed *RecentBlocksTracker
 
 	// queryBlocklistStore holds the mutable "block"/"except" override rules
@@ -2553,14 +2553,15 @@ type BlockedQuery struct {
 	IsUnblocked   bool      `json:"-"` // dynamically set for the UI: whether the whitelist layer currently allows this exact domain+type (see buildIsUnblockedPredicate)
 
 	// The following are also dynamically computed for the UI (see
-	// AdminUI.populateQueryBlocklistRowState, called from getRecentBlocksCopy)
-	// and reflect the query blocklist layer's CURRENT, independently
-	// re-evaluated state for this domain, which may differ from (and can
-	// combine with) the whitelist layer's state above. A local "block" match
-	// always wins and can never be cancelled by an "except" pattern (see
-	// checkQueryBlocklist's doc comment), so the local and external
-	// sub-layers are reported independently here rather than collapsed into
-	// one flag, letting the /blocks page show a distinct, honest control for
+	// AdminUI.populateQueryBlocklistRowState, called from both
+	// getRecentBlocksCopy and getRecentAllowedCopy) and reflect the query
+	// blocklist layer's CURRENT, independently re-evaluated state for this
+	// domain, which may differ from (and can combine with) the whitelist
+	// layer's state above. A local "block" match always wins and can never
+	// be cancelled by an "except" pattern (see checkQueryBlocklist's doc
+	// comment), so the local and external sub-layers are reported
+	// independently here rather than collapsed into one flag, letting the
+	// /blocks and /allows pages show a distinct, honest control for
 	// whichever sub-layer(s) actually apply instead of a button that might
 	// silently do nothing.
 	QueryBlocklistLocalBlocked     bool   `json:"-"` // an enabled local "block" pattern currently matches this domain
@@ -5483,14 +5484,16 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 		if matchedID == "" && cfg.AllowHTTPSIfAAllowed && qtype == "HTTPS" {
 			matchedID, _ = s.ruleStore.MatchForType("A", domain)
 		}
-		// Record for the WebUI's "Recent Allows" view (see recentAllowed's
-		// doc comment). Defensive nil-check: NewServer always initializes
-		// this, but some tests construct a bare &Server{...} directly,
-		// bypassing NewServer (mirrors the identical s.forwardInFlight
-		// nil-check elsewhere in this function).
-		if s.recentAllowed != nil {
-			s.recentAllowed.Record(domain, qtype, cfg.MaxRecentBlocks)
-		}
+	}
+
+	// Record every allowed query — regardless of whitelist_mode — for the
+	// WebUI's "/allows" (Recent Allows) page; see recentAllowed's doc
+	// comment. Defensive nil-check: NewServer always initializes this, but
+	// some tests construct a bare &Server{...} directly, bypassing
+	// NewServer (mirrors the identical s.forwardInFlight nil-check
+	// elsewhere in this function).
+	if allowed && s.recentAllowed != nil {
+		s.recentAllowed.Record(domain, qtype, cfg.MaxRecentBlocks)
 	}
 
 	if !allowed {
@@ -7309,6 +7312,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/rules", ui.rulesHandler)
 	innerMux.HandleFunc("/hosts", ui.hostsHandler)
 	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
+	innerMux.HandleFunc("/allows", ui.allowsHandler) // Sibling of "/blocks" (Recent Allows vs Recent Blocks); same XXX note applies.
 	innerMux.HandleFunc("/response-blacklist", ui.responseBlacklistHandler)
 	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
 	innerMux.HandleFunc("/query-blocklist", ui.queryBlocklistHandler)
@@ -9499,10 +9503,10 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 }
 
 // buildIsLocallyBlockedPredicate mirrors buildIsUnblockedPredicate but for
-// the query-blocklist "block" layer, used by the /blocks page's "Clear
-// Shown Allows" action in allow-mode: an entry the operator just blocked
-// via the quick "Block" button stays visible (still showing "Unblock
-// (Pause)") rather than being cleared out from under them.
+// the query-blocklist "block" layer, used by the /allows page's "Clear
+// Shown Allows" action: an entry the operator just blocked via the quick
+// "Block" button stays visible (still showing "Unblock (Pause)") rather
+// than being cleared out from under them.
 func (ui *AdminUI) buildIsLocallyBlockedPredicate() func(domain, qtype string) bool {
 	return func(domain, _ string) bool {
 		if ui.queryBlocklistStore == nil {
@@ -9563,12 +9567,13 @@ func (ui *AdminUI) buildIsRecentBlockUnblockedPredicate() func(domain, qtype str
 }
 
 // getRecentAllowedCopy mirrors getRecentBlocksCopy but sources its entries
-// from ui.recentAllowed instead of ui.recentBlocks — used for the /blocks
-// page's "Recent Allows" view when the server is running in allow-mode
-// (WhitelistMode=false). IsUnblocked is always left at its zero value
-// (false) here since the whitelist-based unblock/reblock concept doesn't
-// apply in allow-mode; only the query-blocklist "block" state
-// (QueryBlocklistLocalBlocked et al., populated below) is meaningful.
+// from ui.recentAllowed instead of ui.recentBlocks — used for the
+// dedicated "/allows" page ("Recent Allows"), populated regardless of
+// whitelist_mode (see recentAllowed's doc comment). IsUnblocked is always
+// left at its zero value (false) here since the whitelist-based
+// unblock/reblock concept doesn't apply to this list; only the
+// query-blocklist "block" state (QueryBlocklistLocalBlocked et al.,
+// populated below) is meaningful.
 func (ui *AdminUI) getRecentAllowedCopy() []BlockedQuery {
 	if ui.recentAllowed == nil {
 		return nil
@@ -9605,22 +9610,22 @@ func (ui *AdminUI) populateQueryBlocklistRowState(bq *BlockedQuery) {
 	}
 }
 
-// blocksAjaxHeader is the custom header the /blocks page's JS sets on its
-// background fetch() calls so blocksHandler can respond with a plain status
-// code instead of a redirect+querystring, avoiding a full page reload for
-// every Unblock/Re-block click.
+// blocksAjaxHeader is the custom header the /blocks and /allows pages' JS
+// sets on their background fetch() calls so blocksHandler/allowsHandler can
+// respond with a plain status code instead of a redirect+querystring,
+// avoiding a full page reload for every Unblock/Re-block/Block click.
 const blocksAjaxHeader = "X-DNSBollocks-Ajax"
 
 func isBlocksAjaxRequest(r *http.Request) bool {
 	return r.Header.Get(blocksAjaxHeader) == "1"
 }
 
-// respondBlocksResult replies to a /blocks POST either with a redirect
-// carrying success/error query params (progressive-enhancement fallback for
-// non-JS clients, preserving the existing full-page-reload behavior) or, for
-// background/AJAX requests (see isBlocksAjaxRequest), with a plain status
-// code and short text body so the caller can update the UI in place without
-// a full page reload.
+// respondBlocksResult replies to a /blocks or /allows POST either with a
+// redirect back to whichever page issued the request, carrying success/error
+// query params (progressive-enhancement fallback for non-JS clients,
+// preserving the existing full-page-reload behavior) or, for background/AJAX
+// requests (see isBlocksAjaxRequest), with a plain status code and short text
+// body so the caller can update the UI in place without a full page reload.
 func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Request, ok bool, status int, message, enteredValue string) {
 	if isBlocksAjaxRequest(r) {
 		// Always treat AJAX block-action responses as plain text.
@@ -9649,11 +9654,16 @@ func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+	// Redirect back to whichever page issued this POST (either "/blocks" or
+	// "/allows" — this helper is shared by both blocksHandler and
+	// allowsHandler) rather than a hardcoded path, so the non-AJAX
+	// (progressive-enhancement) fallback always lands the user back on the
+	// page they were actually using.
 	if ok {
-		http.Redirect(w, r, "/blocks?success="+url.QueryEscape(message), http.StatusSeeOther)
+		http.Redirect(w, r, r.URL.Path+"?success="+url.QueryEscape(message), http.StatusSeeOther)
 		return
 	}
-	redirectURL := "/blocks?error=" + url.QueryEscape(message)
+	redirectURL := r.URL.Path + "?error=" + url.QueryEscape(message)
 	if enteredValue != "" {
 		redirectURL += "&val=" + url.QueryEscape(enteredValue)
 	}
@@ -9669,20 +9679,8 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet || r.Method == http.MethodHead { //"GET" or "HEAD" {
 		cfg := ui.getConfig()
-		// Recent Blocks always reflects the query blocklist layer (active
-		// regardless of whitelist_mode); when whitelist_mode is also true it
-		// additionally includes blocks caused by lacking an enabled whitelist
-		// rule. Recent Allows is only meaningful (and only populated) outside
-		// whitelist_mode — see Server.recentAllowed's doc comment.
-		blocks := ui.getRecentBlocksCopy()
-		var allowed []BlockedQuery
-		if !cfg.WhitelistMode {
-			allowed = ui.getRecentAllowedCopy()
-		}
 		data := map[string]any{
-			//"Page":           "blocks",
-			"Blocks":         blocks,
-			"Allowed":        allowed,
+			"Blocks":         ui.getRecentBlocksCopy(),
 			"WhitelistMode":  cfg.WhitelistMode,
 			"SuccessMessage": r.URL.Query().Get("success"),
 			"ErrorMessage":   r.URL.Query().Get("error"),
@@ -9699,7 +9697,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		action := r.FormValue("action")
 
 		switch action {
-		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
 			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
 				log.Error("BUG: query-blocklist /blocks POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
 				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
@@ -9707,229 +9705,349 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// --- Handle the Clear actions ---
-		if action == "clear" || action == "clear_allowed" {
+		// --- Handle the Clear action ---
+		if action == "clear" {
 			cutoffStr := r.FormValue("cutoff")
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
-				log.Warn("Failed to clear blocks/allows: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
+				log.Warn("Failed to clear blocks: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
+				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
+				return
+			}
+			cutoff := time.Unix(0, cutoffNano)
+
+			// Only clear rows that no longer have an active revert control
+			// (still actively blocked by whichever layer caused them).
+			// Rows still showing a Re-block/Unblock control are preserved
+			// — see buildIsRecentBlockUnblockedPredicate's doc comment.
+			cleared := ui.recentBlocks.ClearBefore(cutoff, ui.buildIsRecentBlockUnblockedPredicate())
+			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
+			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
+
+			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
+			return
+		}
+		// --- END Clear action ---
+
+		// Quick unblock/reblock mutates the RuleStore (whitelist) or the
+		// query-blocklist RuleStore and persists it, exactly like the
+		// single-item /rules POST path — serialize against a concurrent
+		// Reload()/batch-apply for the same reason (see the lock in
+		// rulesHandler's POST branch).
+		ui.tableMutationMu.Lock()
+		defer ui.tableMutationMu.Unlock()
+
+		raw := r.FormValue("domain")
+		domainLowercased, displayDomain, sanitizeErr := sanitizeBlocksQuickActionDomain(raw)
+		if sanitizeErr != nil {
+			log.Warn("Invalid domain input submitted via Quick Unblock (blocks)",
+				slog.String("raw", raw), wincoe.SafeErr(sanitizeErr))
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
+			return
+		}
+
+		typ := r.FormValue("type")
+
+		if domainLowercased == "" || typ == "" {
+			payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
+			attrs := []any{slog.String("domain", domainLowercased), slog.String("type", typ)}
+			if displayDomain != domainLowercased {
+				attrs = append(attrs, slog.String("domain_idn", displayDomain))
+			}
+			log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", attrs...)
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
+			return
+		}
+
+		var successMessage string
+		switch action {
+		case "reblock", "unblock":
+			msg, toggleErr := quickToggleExactRule(ui.ruleStore, typ, domainLowercased, displayDomain, action == "unblock", log, "whitelist")
+			if toggleErr != nil {
+				log.Warn("Failed quick unblock/reblock via WebUI (whitelist)",
+					slog.String("action", action), wincoe.SafeErr(toggleErr),
+					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+				respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
+				return
+			}
+			successMessage = msg
+			log.Info("Quick "+action+" via WebUI (whitelist)",
+				slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
+			ui.OnInvalidatePattern(domainLowercased)
+
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+			msg, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
+			if qbErr != nil {
+				respondBlocksResult(log, w, r, false, status, qbErr.Error(), raw)
+				return
+			}
+			successMessage = msg
+
+		default:
+			log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
+			return
+		} //switch
+
+		// Both the whitelist rule store and the query-blocklist rule store
+		// may have just been mutated above (never both in the same
+		// request, since action selects exactly one branch), so persist
+		// whichever one actually changed.
+		var saveErr error
+		switch action {
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
+			saveErr = ui.OnSaveQueryBlocklist()
+			if saveErr != nil {
+				saveErr = ui.logPersistFailure("query blocklist", saveErr)
+			}
+		default:
+			saveErr = /*uses lock*/ ui.OnSaveWhitelist()
+			if saveErr != nil {
+				saveErr = ui.logPersistFailure("whitelist", saveErr)
+			}
+		}
+		if saveErr != nil {
+			respondBlocksResult(log, w, r, false, http.StatusInternalServerError, saveErr.Error(), "")
+			return
+		}
+		respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
+		return
+	} // end "POST"
+	ui.rejectUnsupportedMethod(w, r, allowedMethods)
+} // end blocksHandler
+
+// sanitizeBlocksQuickActionDomain normalizes and validates the "domain" form
+// field submitted by the /blocks and /allows pages' quick-action forms
+// (Unblock/Reblock, Block, etc.). It first converts any Unicode (IDN)
+// domain (e.g. "café.com") to punycode/ASCII, exactly as a browser would
+// before ever sending the query on the wire, so the character-set/validity
+// checks below don't reject it as "containing illegal characters". Returns
+// the ASCII/punycode form (used for every store lookup/mutation) and its
+// Unicode display form (used only in human-facing messages).
+func sanitizeBlocksQuickActionDomain(raw string) (domainLowercased, displayDomain string, err error) {
+	encodedRaw, _, encErr := punycodeEncodePattern(NormalizeDomain(raw))
+	if encErr != nil {
+		return "", "", fmt.Errorf("invalid domain format: %w", encErr)
+	}
+
+	sanitized, modified := sanitizeDomainInput(encodedRaw)
+	if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern here, but an actual valid DNS query domain (and without ending in a dot)
+		return "", "", fmt.Errorf("invalid domain format %q", raw)
+	}
+
+	domainLowercased = strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
+	displayDomain, _ = punycodeDecodePatternForDisplay(domainLowercased)
+	return domainLowercased, displayDomain, nil
+}
+
+// processQueryBlocklistQuickAction implements the shared query-blocklist
+// quick-action logic — reblock_qb / unblock_qb / disable_qb_local_rule /
+// block_qb_local — used by both blocksHandler ("/blocks") and allowsHandler
+// ("/allows") for their per-row quick controls. Callers must already hold
+// ui.tableMutationMu and must have already confirmed
+// ui.queryBlocklistStore/ui.OnSaveQueryBlocklist are wired (see either
+// handler's guard at the top of its POST branch). ruleID is only used by
+// "disable_qb_local_rule" (the "id" form field); it may be empty for the
+// other three actions.
+//
+// On success this has already invalidated whatever cache pattern(s) the
+// change affects; callers are only responsible for persisting via
+// ui.OnSaveQueryBlocklist and writing the HTTP response.
+func (ui *AdminUI) processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, ruleID string) (successMessage string, status int, err error) {
+	log := ui.getLogger()
+
+	switch action {
+	case "reblock_qb", "unblock_qb":
+		// Query-blocklist "except" layer: an "except" rule only ever
+		// cancels an EXTERNAL-source block (see checkQueryBlocklist's doc
+		// comment); it never overrides a local "block" pattern.
+		msg, toggleErr := quickToggleExactRule(ui.queryBlocklistStore, queryBlockCategoryExcept, domainLowercased, displayDomain, action == "unblock_qb", log, "query blocklist: external-source except")
+		if toggleErr != nil {
+			log.Warn("Failed quick unblock/reblock via WebUI (query-blocklist except)",
+				slog.String("action", action), wincoe.SafeErr(toggleErr),
+				slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+			return "", http.StatusNotFound, toggleErr
+		}
+		log.Info("Quick "+action+" via WebUI (query-blocklist except)",
+			slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+		ui.OnInvalidatePattern(domainLowercased)
+		return msg, http.StatusOK, nil
+
+	case "disable_qb_local_rule":
+		// Disables the specific local "block" rule (matched earlier, by ID
+		// — see the "id" form field) that is currently blocking this
+		// domain outright. One-directional: re-enabling it is done from
+		// the /query-blocklist page itself.
+		if ruleID == "" {
+			log.Warn("Failed to disable query-blocklist local rule: missing id", slog.String("domainLowercased", domainLowercased))
+			return "", http.StatusBadRequest, errors.New("missing rule id")
+		}
+		pattern, found, changed := ui.queryBlocklistStore.SetEnabledByID(queryBlockCategoryBlock, ruleID, false, log)
+		if !found {
+			log.Warn("Failed to disable query-blocklist local rule: not found",
+				slog.String("id", ruleID), slog.String("domainLowercased", domainLowercased))
+			return "", http.StatusNotFound, errors.New("that query-blocklist rule no longer exists")
+		}
+		if !changed {
+			return fmt.Sprintf("Local query-blocklist rule for %s is already disabled.", displayDomain), http.StatusOK, nil
+		}
+		log.Info("Quick-disabled query-blocklist local block rule via WebUI",
+			slog.String("id", ruleID), slog.String("pattern", pattern), slog.String("domainLowercased", domainLowercased))
+		ui.OnInvalidatePattern(pattern)
+		return fmt.Sprintf("Disabled the local query-blocklist rule blocking %s.", displayDomain), http.StatusOK, nil
+
+	case "block_qb_local":
+		// Quick "Block" action: creates (or re-enables, if a matching
+		// disabled rule already exists) an exact-pattern local
+		// query-blocklist "block" rule for this domain. Unlike whitelist
+		// rules, query-blocklist rules are type-agnostic (see
+		// checkQueryBlocklist's doc comment), so this applies to every
+		// query type for the domain at once.
+		found, changed := ui.queryBlocklistStore.SetEnabled(queryBlockCategoryBlock, domainLowercased, true, log)
+		var msg string
+		switch {
+		case found && changed:
+			msg = fmt.Sprintf("Blocked %s: activated an existing paused local query-blocklist rule.", displayDomain)
+		case found:
+			msg = fmt.Sprintf("%s is already blocked by an existing local query-blocklist rule.", displayDomain)
+		default:
+			if _, addErr := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, domainLowercased, true, log); addErr != nil {
+				log.Warn("Failed quick block via WebUI (query-blocklist local block)",
+					wincoe.SafeErr(addErr),
+					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+				return "", http.StatusConflict, addErr
+			}
+			msg = fmt.Sprintf("Blocked %s: added a new local query-blocklist rule.", displayDomain)
+		}
+		log.Info("Quick block via WebUI (query-blocklist local block)",
+			slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
+		ui.OnInvalidatePattern(domainLowercased)
+		return msg, http.StatusOK, nil
+
+	default:
+		return "", http.StatusBadRequest, fmt.Errorf("invalid action specified: %q", action)
+	}
+}
+
+// allowsHandler serves the dedicated "/allows" page ("Recent Allows"), the
+// sibling of "/blocks" ("Recent Blocks"): a list of recently allowed
+// (resolved) queries, populated regardless of whitelist_mode (see
+// recentAllowed's doc comment), with a quick way to add a local
+// query-blocklist "block" rule for one — the query blocklist is always
+// checked before any whitelist decision, so this works identically whether
+// the domain was allowed via a matching whitelist rule/host override
+// (whitelist_mode=true) or simply because whitelist_mode is off.
+func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "GET, HEAD, POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	log := ui.getLogger()
+
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		cfg := ui.getConfig()
+		data := map[string]any{
+			"Allowed":        ui.getRecentAllowedCopy(),
+			"WhitelistMode":  cfg.WhitelistMode,
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
+			"EnteredValue":   r.URL.Query().Get("val"),
+			"RenderTime":     fmt.Sprintf("%d", time.Now().UnixNano()),
+		}
+		ui.renderTemplate(w, r, "allows", data)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		action := r.FormValue("action")
+
+		switch action {
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
+			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
+				log.Error("BUG: query-blocklist /allows POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
+				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
+				return
+			}
+		}
+
+		// --- Handle the Clear action ---
+		if action == "clear" {
+			cutoffStr := r.FormValue("cutoff")
+			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
+			if err != nil {
+				log.Warn("Failed to clear allows: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
 				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
 
 			var cleared int
-			var msg string
-			if action == "clear" {
-				// Only clear rows that no longer have an active revert control
-				// (still actively blocked by whichever layer caused them).
-				// Rows still showing a Re-block/Unblock control are preserved
-				// — see buildIsRecentBlockUnblockedPredicate's doc comment.
-				cleared = ui.recentBlocks.ClearBefore(cutoff, ui.buildIsRecentBlockUnblockedPredicate())
-				msg = fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
-				log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
-			} else { // clear_allowed
-				// Allow-mode "Recent Allows" view: preserve rows the operator
-				// just blocked (still showing "Unblock (Pause)") the same way.
-				if ui.recentAllowed != nil {
-					cleared = ui.recentAllowed.ClearBefore(cutoff, ui.buildIsLocallyBlockedPredicate())
-				}
-				msg = fmt.Sprintf("Cleared %d recent allow(s) from the list.", cleared)
-				log.Info("WebUI: Cleared visible recent allows", slog.Int("cleared", cleared))
+			if ui.recentAllowed != nil {
+				// Preserve rows the operator just blocked (still showing
+				// "Unblock (Pause)") — see buildIsLocallyBlockedPredicate's
+				// doc comment.
+				cleared = ui.recentAllowed.ClearBefore(cutoff, ui.buildIsLocallyBlockedPredicate())
 			}
+			msg := fmt.Sprintf("Cleared %d recent allow(s) from the list.", cleared)
+			log.Info("WebUI: Cleared visible recent allows", slog.Int("cleared", cleared))
 
-			// This will automatically redirect and reload the page with the success banner
 			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
 			return
 		}
-		// --- END Clear actions ---
+		// --- END Clear action ---
 
-		// Quick unblock/reblock mutates the RuleStore and persists it, exactly
-		// like the single-item /rules POST path — serialize against a
-		// concurrent Reload()/batch-apply for the same reason (see the lock
-		// in rulesHandler's POST branch).
+		// Quick block/unblock mutates the query-blocklist RuleStore and
+		// persists it — serialize against a concurrent Reload()/batch-apply,
+		// exactly like blocksHandler's identical quick-action path.
 		ui.tableMutationMu.Lock()
 		defer ui.tableMutationMu.Unlock()
 
 		raw := r.FormValue("domain")
-
-		// Convert any Unicode (IDN) domain (e.g. "café.com") to punycode/ASCII
-		// before the character-set/validity checks below, exactly as a browser
-		// would before ever sending the query on the wire — otherwise it would
-		// be rejected here as "containing illegal characters".
-		encodedRaw, wasIDN, encErr := punycodeEncodePattern(NormalizeDomain(raw))
-		_ = wasIDN
-		if encErr != nil {
-			log.Warn("Invalid domain input submitted via Quick Unblock",
-				slog.String("raw", raw),
-				wincoe.SafeErr(encErr),
-			)
+		domainLowercased, displayDomain, sanitizeErr := sanitizeBlocksQuickActionDomain(raw)
+		if sanitizeErr != nil {
+			log.Warn("Invalid domain input submitted via Quick Block (allows)",
+				slog.String("raw", raw), wincoe.SafeErr(sanitizeErr))
 			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
 			return
 		}
 
-		sanitized, modified := sanitizeDomainInput(encodedRaw)
-
-		if modified || !isValidDNSName(sanitized) { // XXX: doesn't expect a pattern via Quick Unblock here, but an actual valid DNS query domain (and without ending in a dot)
-			log.Warn("Invalid domain input submitted via Quick Unblock",
-				slog.String("raw", raw),
-				slog.String("sanitized", sanitized),
-				slog.Bool("modified", modified),
-			)
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
-			return
-		}
-		domainLowercased := strings.ToLower(sanitized) //XXX: must keep it lowercased for matchPattern() later on.
-		// Unicode form for user-facing success messages only; all store
-		// operations below keep using domainLowercased (ASCII/punycode).
-		displayDomain, _ := punycodeDecodePatternForDisplay(domainLowercased)
-
-		// accept sanitized
 		typ := r.FormValue("type")
-
-		var successMessage string // Hold our feedback text
-		if domainLowercased != "" && typ != "" {
-			switch action {
-			case "reblock", "unblock":
-				msg, toggleErr := quickToggleExactRule(ui.ruleStore, typ, domainLowercased, displayDomain, action == "unblock", log, "whitelist")
-				if toggleErr != nil {
-					log.Warn("Failed quick unblock/reblock via WebUI (whitelist)",
-						slog.String("action", action), wincoe.SafeErr(toggleErr),
-						slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
-					respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
-					return
-				}
-				successMessage = msg
-				log.Info("Quick "+action+" via WebUI (whitelist)",
-					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
-				ui.OnInvalidatePattern(domainLowercased)
-
-			case "reblock_qb", "unblock_qb":
-				// Query-blocklist "except" layer: managed exactly like the
-				// whitelist above, but under queryBlockCategoryExcept in
-				// queryBlocklistStore instead. An "except" rule only ever
-				// cancels an EXTERNAL-source block (see checkQueryBlocklist's
-				// doc comment); it never overrides a local "block" pattern,
-				// which is why this is a separate control from the local-rule
-				// toggle below rather than reusing the same action names.
-				msg, toggleErr := quickToggleExactRule(ui.queryBlocklistStore, queryBlockCategoryExcept, domainLowercased, displayDomain, action == "unblock_qb", log, "query blocklist: external-source except")
-				if toggleErr != nil {
-					log.Warn("Failed quick unblock/reblock via WebUI (query-blocklist except)",
-						slog.String("action", action), wincoe.SafeErr(toggleErr),
-						slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
-					respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
-					return
-				}
-				successMessage = msg
-				log.Info("Quick "+action+" via WebUI (query-blocklist except)",
-					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
-				ui.OnInvalidatePattern(domainLowercased)
-
-			case "disable_qb_local_rule":
-				// Disables the specific local "block" rule (matched earlier,
-				// by ID — see the "id" form field) that is currently blocking
-				// this domain outright. One-directional: re-enabling it is
-				// done from the /query-blocklist page itself, mirroring how a
-				// local whitelist rule disabled here can only be re-enabled
-				// via /rules, not re-toggled from /blocks a second time.
-				id := r.FormValue("id")
-				if id == "" {
-					log.Warn("Failed to disable query-blocklist local rule: missing id", slog.String("domainLowercased", domainLowercased))
-					respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Missing rule id.", raw)
-					return
-				}
-				pattern, found, changed := ui.queryBlocklistStore.SetEnabledByID(queryBlockCategoryBlock, id, false, log)
-				if !found {
-					log.Warn("Failed to disable query-blocklist local rule: not found",
-						slog.String("id", id), slog.String("domainLowercased", domainLowercased))
-					respondBlocksResult(log, w, r, false, http.StatusNotFound, "That query-blocklist rule no longer exists.", raw)
-					return
-				}
-				if changed {
-					successMessage = fmt.Sprintf("Disabled the local query-blocklist rule blocking %s.", displayDomain)
-					log.Info("Quick-disabled query-blocklist local block rule via WebUI",
-						slog.String("id", id), slog.String("pattern", pattern), slog.String("domainLowercased", domainLowercased))
-					ui.OnInvalidatePattern(pattern)
-				} else {
-					successMessage = fmt.Sprintf("Local query-blocklist rule for %s is already disabled.", displayDomain)
-				}
-
-			case "block_qb_local":
-				// Quick "Block" action for the /blocks page's allow-mode
-				// ("Recent Allows") view — the inverse of the whitelist's
-				// unblock/reblock actions above. Creates (or re-enables, if
-				// a matching disabled rule already exists) an exact-pattern
-				// local query-blocklist "block" rule for this domain.
-				// Unlike whitelist rules, query-blocklist rules are
-				// type-agnostic (see checkQueryBlocklist's doc comment), so
-				// this applies to every query type for the domain at once.
-				found, changed := ui.queryBlocklistStore.SetEnabled(queryBlockCategoryBlock, domainLowercased, true, log)
-				switch {
-				case found && changed:
-					successMessage = fmt.Sprintf("Blocked %s: activated an existing paused local query-blocklist rule.", displayDomain)
-				case found:
-					successMessage = fmt.Sprintf("%s is already blocked by an existing local query-blocklist rule.", displayDomain)
-				default:
-					if _, addErr := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, domainLowercased, true, log); addErr != nil {
-						log.Warn("Failed quick block via WebUI (query-blocklist local block)",
-							wincoe.SafeErr(addErr),
-							slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
-						respondBlocksResult(log, w, r, false, http.StatusConflict, addErr.Error(), raw)
-						return
-					}
-					successMessage = fmt.Sprintf("Blocked %s: added a new local query-blocklist rule.", displayDomain)
-				}
-				log.Info("Quick block via WebUI (query-blocklist local block)",
-					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
-				ui.OnInvalidatePattern(domainLowercased)
-
-			default:
-				log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
-				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
-				return
-			} //switch
-
-			// Both the whitelist rule store and the query-blocklist rule store
-			// may have just been mutated above (never both in the same
-			// request, since action selects exactly one branch), so persist
-			// whichever one actually changed. OnSaveQueryBlocklist is nil-safe
-			// here only in the sense that this branch is unreachable unless
-			// ui.queryBlocklistStore/OnSaveQueryBlocklist were wired by
-			// initAdminUI, exactly like queryBlocklistHandler already assumes.
-			var saveErr error
-			switch action {
-			case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
-				saveErr = ui.OnSaveQueryBlocklist()
-				if saveErr != nil {
-					saveErr = ui.logPersistFailure("query blocklist", saveErr)
-				}
-			default:
-				saveErr = /*uses lock*/ ui.OnSaveWhitelist()
-				if saveErr != nil {
-					saveErr = ui.logPersistFailure("whitelist", saveErr)
-				}
+		if domainLowercased == "" || typ == "" {
+			payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
+			attrs := []any{slog.String("domain", domainLowercased), slog.String("type", typ)}
+			if displayDomain != domainLowercased {
+				attrs = append(attrs, slog.String("domain_idn", displayDomain))
 			}
-			if saveErr != nil {
-				respondBlocksResult(log, w, r, false, http.StatusInternalServerError, saveErr.Error(), "")
-				return
-			}
-			respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
+			log.Warn("Failed quick block via WebUI (allows): missing domain or type", attrs...)
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process request. "+payloadDetails, raw)
 			return
 		}
 
-		payloadDetails := fmt.Sprintf("Missing or corrupted data. (Processed Domain: %q, Type: %q)", domainLowercased, typ)
-
-		attrs := []any{slog.String("domain", domainLowercased), slog.String("type", typ)}
-		if displayDomain != domainLowercased {
-			attrs = append(attrs, slog.String("domain_idn", displayDomain))
+		switch action {
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
+			// handled below via the shared query-blocklist quick-action helper
+		default:
+			log.Warn("Failed quick block via WebUI (allows): invalid action specified", slog.String("action", action))
+			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
+			return
 		}
-		log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", attrs...)
 
-		respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
+		successMessage, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
+		if qbErr != nil {
+			respondBlocksResult(log, w, r, false, status, qbErr.Error(), raw)
+			return
+		}
+
+		if err := ui.OnSaveQueryBlocklist(); err != nil {
+			respondBlocksResult(log, w, r, false, http.StatusInternalServerError, ui.logPersistFailure("query blocklist", err).Error(), "")
+			return
+		}
+		respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
 		return
-	} // end "POST"
+	}
+
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
-} // end blocksHandler
+} // end allowsHandler
 
 // logKind identifies which of the three on-disk log files (see
 // Config.LogEverythingFile, Config.LogQueriesFile, Config.LogQueriesSimpleFile)

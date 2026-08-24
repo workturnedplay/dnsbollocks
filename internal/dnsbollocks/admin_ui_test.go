@@ -48,6 +48,7 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 		{{define "rules"}}{{end}}
 		{{define "hosts"}}{{end}}
 		{{define "blocks"}}{{end}}
+		{{define "allows"}}{{end}}
 		{{define "response-blacklist"}}{{end}}
 		{{define "logs"}}{{end}}
 		{{define "stats"}}{{end}}
