@@ -253,7 +253,7 @@ type Server struct {
 	// recentAllowed mirrors recentBlocks but records recently ALLOWED
 	// queries instead (see handleDNSQuery, which records into it whenever a
 	// query is allowed, regardless of whitelist_mode). Powers the WebUI's
-	// dedicated "/allows" page (Recent Allows) — the sibling of "/blocks"
+	// dedicated TheAllowsPage page (Recent Allows) — the sibling of TheBlocksPage
 	// (Recent Blocks) — letting an operator see, and optionally add a
 	// query-blocklist "block" rule for, any domain that was just resolved,
 	// whether it was allowed via a whitelist rule/local host override
@@ -5487,7 +5487,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 
 	// Record every allowed query — regardless of whitelist_mode — for the
-	// WebUI's "/allows" (Recent Allows) page; see recentAllowed's doc
+	// WebUI's TheAllowsPage (Recent Allows) page; see recentAllowed's doc
 	// comment. Defensive nil-check: NewServer always initializes this, but
 	// some tests construct a bare &Server{...} directly, bypassing
 	// NewServer (mirrors the identical s.forwardInFlight nil-check
@@ -7292,6 +7292,9 @@ func (ui *AdminUI) robotsTxtHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+const TheAllowsPage string = "/allows"
+const TheBlocksPage string = "/blocks"
+
 func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	// ── Inner mux: all routes that require authentication ─
 	innerMux := http.NewServeMux()
@@ -7311,8 +7314,8 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/control", ui.controlHandler)
 	innerMux.HandleFunc("/rules", ui.rulesHandler)
 	innerMux.HandleFunc("/hosts", ui.hostsHandler)
-	innerMux.HandleFunc("/blocks", ui.blocksHandler) // XXX: changing this "/blocks" requires changing more occurrences in other places in the uiTemplates as well!
-	innerMux.HandleFunc("/allows", ui.allowsHandler) // Sibling of "/blocks" (Recent Allows vs Recent Blocks); same XXX note applies.
+	innerMux.HandleFunc(TheBlocksPage, ui.blocksHandler) // XXX: changing this TheBlocksPage requires changing more occurrences in other places in the uiTemplates as well!
+	innerMux.HandleFunc(TheAllowsPage, ui.allowsHandler) // Sibling of TheBlocksPage (Recent Allows vs Recent Blocks); same XXX note applies.
 	innerMux.HandleFunc("/response-blacklist", ui.responseBlacklistHandler)
 	innerMux.HandleFunc("/response-blacklist/check", ui.responseBlacklistCheckHandler)
 	innerMux.HandleFunc("/query-blocklist", ui.queryBlocklistHandler)
@@ -9568,7 +9571,7 @@ func (ui *AdminUI) buildIsRecentBlockUnblockedPredicate() func(domain, qtype str
 
 // getRecentAllowedCopy mirrors getRecentBlocksCopy but sources its entries
 // from ui.recentAllowed instead of ui.recentBlocks — used for the
-// dedicated "/allows" page ("Recent Allows"), populated regardless of
+// dedicated TheAllowsPage page ("Recent Allows"), populated regardless of
 // whitelist_mode (see recentAllowed's doc comment). IsUnblocked is always
 // left at its zero value (false) here since the whitelist-based
 // unblock/reblock concept doesn't apply to this list; only the
@@ -9626,7 +9629,7 @@ func isBlocksAjaxRequest(r *http.Request) bool {
 // preserving the existing full-page-reload behavior) or, for background/AJAX
 // requests (see isBlocksAjaxRequest), with a plain status code and short text
 // body so the caller can update the UI in place without a full page reload.
-func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Request, ok bool, status int, message, enteredValue string) {
+func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Request, redirectPath string, ok bool, status int, message, enteredValue string) {
 	if isBlocksAjaxRequest(r) {
 		// Always treat AJAX block-action responses as plain text.
 		// This eliminates any XSS surface (G705) and matches what the
@@ -9654,16 +9657,16 @@ func respondBlocksResult(log *slog.Logger, w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	// Redirect back to whichever page issued this POST (either "/blocks" or
-	// "/allows" — this helper is shared by both blocksHandler and
+	// Redirect back to whichever page issued this POST (either TheBlocksPage or
+	// TheAllowsPage — this helper is shared by both blocksHandler and
 	// allowsHandler) rather than a hardcoded path, so the non-AJAX
 	// (progressive-enhancement) fallback always lands the user back on the
 	// page they were actually using.
 	if ok {
-		http.Redirect(w, r, r.URL.Path+"?success="+url.QueryEscape(message), http.StatusSeeOther)
+		http.Redirect(w, r, redirectPath+"?success="+url.QueryEscape(message), http.StatusSeeOther)
 		return
 	}
-	redirectURL := r.URL.Path + "?error=" + url.QueryEscape(message)
+	redirectURL := redirectPath + "?error=" + url.QueryEscape(message)
 	if enteredValue != "" {
 		redirectURL += "&val=" + url.QueryEscape(enteredValue)
 	}
@@ -9700,7 +9703,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
 			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
 				log.Error("BUG: query-blocklist /blocks POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
-				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
+				respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
 				return
 			}
 		}
@@ -9711,7 +9714,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
 				log.Warn("Failed to clear blocks: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
-				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
+				respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
@@ -9724,7 +9727,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
 			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
 
-			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
+			respondBlocksResult(log, w, r, TheBlocksPage, true, http.StatusOK, msg, "")
 			return
 		}
 		// --- END Clear action ---
@@ -9742,7 +9745,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		if sanitizeErr != nil {
 			log.Warn("Invalid domain input submitted via Quick Unblock (blocks)",
 				slog.String("raw", raw), wincoe.SafeErr(sanitizeErr))
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
+			respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
 			return
 		}
 
@@ -9755,7 +9758,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				attrs = append(attrs, slog.String("domain_idn", displayDomain))
 			}
 			log.Warn("Failed quick unblock/reblock via WebUI: missing domain or type", attrs...)
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
+			respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusBadRequest, "Failed to process unblock request. "+payloadDetails, raw)
 			return
 		}
 
@@ -9767,7 +9770,7 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				log.Warn("Failed quick unblock/reblock via WebUI (whitelist)",
 					slog.String("action", action), wincoe.SafeErr(toggleErr),
 					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
-				respondBlocksResult(log, w, r, false, http.StatusNotFound, toggleErr.Error(), raw)
+				respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusNotFound, toggleErr.Error(), raw)
 				return
 			}
 			successMessage = msg
@@ -9778,14 +9781,14 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
 			msg, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
 			if qbErr != nil {
-				respondBlocksResult(log, w, r, false, status, qbErr.Error(), raw)
+				respondBlocksResult(log, w, r, TheBlocksPage, false, status, qbErr.Error(), raw)
 				return
 			}
 			successMessage = msg
 
 		default:
 			log.Warn("Failed quick unblock/reblock via WebUI: invalid action specified", slog.String("action", action))
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
+			respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusBadRequest, "Invalid action specified", raw)
 			return
 		} //switch
 
@@ -9807,10 +9810,10 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if saveErr != nil {
-			respondBlocksResult(log, w, r, false, http.StatusInternalServerError, saveErr.Error(), "")
+			respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusInternalServerError, saveErr.Error(), "")
 			return
 		}
-		respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
+		respondBlocksResult(log, w, r, TheBlocksPage, true, http.StatusOK, successMessage, "")
 		return
 	} // end "POST"
 	ui.rejectUnsupportedMethod(w, r, allowedMethods)
@@ -9842,8 +9845,8 @@ func sanitizeBlocksQuickActionDomain(raw string) (domainLowercased, displayDomai
 
 // processQueryBlocklistQuickAction implements the shared query-blocklist
 // quick-action logic — reblock_qb / unblock_qb / disable_qb_local_rule /
-// block_qb_local — used by both blocksHandler ("/blocks") and allowsHandler
-// ("/allows") for their per-row quick controls. Callers must already hold
+// block_qb_local — used by both blocksHandler (TheBlocksPage) and allowsHandler
+// (TheAllowsPage) for their per-row quick controls. Callers must already hold
 // ui.tableMutationMu and must have already confirmed
 // ui.queryBlocklistStore/ui.OnSaveQueryBlocklist are wired (see either
 // handler's guard at the top of its POST branch). ruleID is only used by
@@ -9929,8 +9932,8 @@ func (ui *AdminUI) processQueryBlocklistQuickAction(action, domainLowercased, di
 	}
 }
 
-// allowsHandler serves the dedicated "/allows" page ("Recent Allows"), the
-// sibling of "/blocks" ("Recent Blocks"): a list of recently allowed
+// allowsHandler serves the dedicated TheAllowsPage page ("Recent Allows"), the
+// sibling of TheBlocksPage ("Recent Blocks"): a list of recently allowed
 // (resolved) queries, populated regardless of whitelist_mode (see
 // recentAllowed's doc comment), with a quick way to add a local
 // query-blocklist "block" rule for one — the query blocklist is always
@@ -9965,7 +9968,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
 			if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
 				log.Error("BUG: query-blocklist /allows POST action reached without queryBlocklistStore/OnSaveQueryBlocklist wired", slog.String("action", action))
-				respondBlocksResult(log, w, r, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
+				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
 				return
 			}
 		}
@@ -9976,7 +9979,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
 				log.Warn("Failed to clear allows: invalid cutoff timestamp", slog.String("cutoff", cutoffStr), wincoe.SafeErr(err))
-				respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
+				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusBadRequest, "Invalid cutoff timestamp.", "")
 				return
 			}
 			cutoff := time.Unix(0, cutoffNano)
@@ -9991,7 +9994,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			msg := fmt.Sprintf("Cleared %d recent allow(s) from the list.", cleared)
 			log.Info("WebUI: Cleared visible recent allows", slog.Int("cleared", cleared))
 
-			respondBlocksResult(log, w, r, true, http.StatusOK, msg, "")
+			respondBlocksResult(log, w, r, TheAllowsPage, true, http.StatusOK, msg, "")
 			return
 		}
 		// --- END Clear action ---
@@ -10007,7 +10010,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 		if sanitizeErr != nil {
 			log.Warn("Invalid domain input submitted via Quick Block (allows)",
 				slog.String("raw", raw), wincoe.SafeErr(sanitizeErr))
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
+			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusBadRequest, "Invalid domain format. Please enter a valid domain name.", raw)
 			return
 		}
 
@@ -10019,7 +10022,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 				attrs = append(attrs, slog.String("domain_idn", displayDomain))
 			}
 			log.Warn("Failed quick block via WebUI (allows): missing domain or type", attrs...)
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Failed to process request. "+payloadDetails, raw)
+			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusBadRequest, "Failed to process request. "+payloadDetails, raw)
 			return
 		}
 
@@ -10028,21 +10031,21 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			// handled below via the shared query-blocklist quick-action helper
 		default:
 			log.Warn("Failed quick block via WebUI (allows): invalid action specified", slog.String("action", action))
-			respondBlocksResult(log, w, r, false, http.StatusBadRequest, "Invalid action specified", raw)
+			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusBadRequest, "Invalid action specified", raw)
 			return
 		}
 
 		successMessage, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
 		if qbErr != nil {
-			respondBlocksResult(log, w, r, false, status, qbErr.Error(), raw)
+			respondBlocksResult(log, w, r, TheAllowsPage, false, status, qbErr.Error(), raw)
 			return
 		}
 
 		if err := ui.OnSaveQueryBlocklist(); err != nil {
-			respondBlocksResult(log, w, r, false, http.StatusInternalServerError, ui.logPersistFailure("query blocklist", err).Error(), "")
+			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusInternalServerError, ui.logPersistFailure("query blocklist", err).Error(), "")
 			return
 		}
-		respondBlocksResult(log, w, r, true, http.StatusOK, successMessage, "")
+		respondBlocksResult(log, w, r, TheAllowsPage, true, http.StatusOK, successMessage, "")
 		return
 	}
 
