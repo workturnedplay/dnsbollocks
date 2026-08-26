@@ -1,12 +1,5 @@
 my todos for dnsbollocks:
 
-* this thing happens when I login after say 2 days, because the session cookie expired I've to enter the password 2 times in a row and I see this on console:
-INFO 2026-08-24T23:57:22.2014579+02:00 Login success pid=4456 client=localhost
-INFO 2026-08-24T23:57:22.2014579+02:00 WebUI session cookie missing/expired or cookies aren't allowed in browser; forcing credential re-prompt pid=4456 client=localhost timeout_minutes=30
-.INFO 2026-08-24T23:57:31.2573807+02:00 Login success pid=4456 client=localhost
-INFO 2026-08-24T23:57:31.3199360+02:00 Login success pid=4456 client=localhost
-INFO 2026-08-24T23:57:31.3209467+02:00 Login success pid=4456 client=localhost
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -18,6 +11,16 @@ INFO 2026-08-24T23:57:31.3209467+02:00 Login success pid=4456 client=localhost
 
 
 nevermind/quirks(I don't wanna fix these, or AI thinks we shouldn't):
+
+//* this thing happens when I login after say 2 days, because the session cookie expired I've to enter the password 2 times in a row and I see this on console:
+INFO 2026-08-24T23:57:22.2014579+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:22.2014579+02:00 WebUI session cookie missing/expired or cookies aren't allowed in browser; forcing credential re-prompt pid=4456 client=localhost timeout_minutes=30
+.INFO 2026-08-24T23:57:31.2573807+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:31.3199360+02:00 Login success pid=4456 client=localhost
+INFO 2026-08-24T23:57:31.3209467+02:00 Login success pid=4456 client=localhost
+Claude says: "Reconsider the double-login-prompt issue (todo.txt item #1) as a bigger, optional redesign
+I looked closely at this one and I don't think it's fixable within the current Basic-Auth-based design. webui_auth_session_mode = session_cookie does the right thing internally (issues a fresh session cookie alongside a 401 so the next request succeeds automatically), but browsers do not silently resubmit the same cached Basic-Auth credential after receiving a 401 for it — they discard the cached credential and force a new interactive prompt. That's a browser policy, not a bug in your code. The only real fix is dropping Basic Auth for a proper login-form + session-cookie flow (POST credentials once, get a signed session cookie, no more WWW-Authenticate challenges at all) — a legitimately bigger change (new login page/template, changed authMiddleware, migration of loginTracker semantics) I'd want to scope separately rather than bolt onto the current mechanism."
+
 //* do these for v0.15.2 (dontdo: 1_1 todo: 4_2(HttpOnly session cookie) done: the rest): https://gemini.google.com/app/277f8cbefd801877
 //* currently: the new CIDR is still the old CIDR, I guess the wrong one is sent to the backend? in /response-blacklist page at least(?!) Actually, my bad it only happens for old_cidr=127.0.0.0/8 new_cidr=127.0.0.0/8  when my edited was 127.0.0.20/8 but this makes sense.
 * if I Edit an entry(Stage it but not Apply it), then Delete it, the Undelete will recover the original one not the last edited value(s).
@@ -59,11 +62,4 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 //didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
-//* when I'm in allow mode instead of whitelist-mode, then the webUI should probably show Recent Allows instead of Recent Blocks with buttons to block (so basically the inverse of Recent Blocks when whitelist mode is on)
-
-//* in the Control page of webUI I need a button that does what Ctrl+R does, and also one that just clears DNS cache, please.
-
-//* are the 3 log viewing pages in webUI actually looking at all log files even the rotated ones or only the curreng *.log one?! maybe we can add a toggle on that page (remembered like the filter) as to whether or not to look at rotated ones too and maybe also how far back, how many rotations eg. 10.
-
-//* when I Stage a change anywhere, the whole list shifts down because the banner with Apply/Discard now appears for the first time. Let's avoid this shift somehow, maybe by preallocating the space for the banner, even if it will look empty or something, or maybe it can float somehow, since it already has to float in the way that it remains on top of page even when scrolled down.
 
