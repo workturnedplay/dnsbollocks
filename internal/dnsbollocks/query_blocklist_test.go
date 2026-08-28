@@ -467,6 +467,60 @@ func TestPopulateQueryBlocklistRowState_ExternalListedWithAndWithoutExcept(t *te
 	})
 }
 
+func TestPopulateQueryBlocklistRowState_ExceptedRequiresExactPattern(t *testing.T) {
+	log := discardLogger()
+	store := newRuleStore()
+
+	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
+	extPtr.Store(&ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"tracker.example.com": {}},
+		HostCount: 1,
+	})
+
+	ui := &AdminUI{queryBlocklistStore: store, externalBlocklist: &extPtr}
+
+	// A wildcard except rule matches "tracker.example.com" for DNS purposes,
+	// but must not be reported as "Excepted" here since the "Re-block
+	// (Pause)" button this flag drives can only toggle an exact-pattern
+	// except rule and would find nothing to disable for this exact domain.
+	if _, err := store.AddRule(queryBlockCategoryExcept, "*.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	bq := &BlockedQuery{Domain: "tracker.example.com", Type: "A"}
+	ui.populateQueryBlocklistRowState(bq)
+
+	if !bq.QueryBlocklistExternalListed {
+		t.Error("expected QueryBlocklistExternalListed=true")
+	}
+	if bq.QueryBlocklistExternalExcepted {
+		t.Error("expected QueryBlocklistExternalExcepted=false when only a wildcard except rule matches (no exact-pattern rule exists to toggle)")
+	}
+}
+
+func TestBuildIsQueryBlocklistUnblockedPredicate_ExceptedRequiresExactPattern(t *testing.T) {
+	log := discardLogger()
+	store := newRuleStore()
+
+	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
+	extPtr.Store(&ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"tracker.example.com": {}},
+		HostCount: 1,
+	})
+
+	ui := &AdminUI{queryBlocklistStore: store, externalBlocklist: &extPtr}
+
+	if _, err := store.AddRule(queryBlockCategoryExcept, "*.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	pred := ui.buildIsQueryBlocklistUnblockedPredicate()
+
+	if pred("tracker.example.com", "A") {
+		t.Error("expected wildcard except match to NOT count as 'unblocked' (no exact-pattern rule to re-block via the UI control)")
+	}
+}
+
 func TestPopulateQueryBlocklistRowState_NotListedAtAll(t *testing.T) {
 	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
 	extPtr.Store(&ExternalHostsBlocklistSource{hosts: map[string]struct{}{"other.example.com": {}}, HostCount: 1})

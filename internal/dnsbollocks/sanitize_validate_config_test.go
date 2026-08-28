@@ -1323,3 +1323,45 @@ func TestSanitizeAndValidateConfig_DistinctFilePaths_StillCatchesRealCollision(t
 		t.Fatal("expected a collision error when log_dir is empty (same directory as WhitelistFile), got nil")
 	}
 }
+
+// ─── ClientMetadataLookupSlowWarnThresholdMs: 0 valid, negative clamped ───────
+
+func TestSanitizeAndValidateConfig_ClientMetadataLookupSlowWarnThresholdMsZeroIsValid(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.ClientMetadataLookupSlowWarnThresholdMs = 0
+	resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.ClientMetadataLookupSlowWarnThresholdMs != 0 {
+		t.Errorf("resolved: zero should be valid (disables warnings), got %d", resolved.ClientMetadataLookupSlowWarnThresholdMs)
+	}
+	if raw.ClientMetadataLookupSlowWarnThresholdMs != 0 {
+		t.Errorf("raw: zero should be valid (disables warnings), got %d", raw.ClientMetadataLookupSlowWarnThresholdMs)
+	}
+	if modified {
+		t.Error("expected modified=false; zero must not trigger a clamp/save")
+	}
+}
+
+func TestSanitizeAndValidateConfig_ClientMetadataLookupSlowWarnThresholdMsNegativeClamped(t *testing.T) {
+	t.Parallel()
+	def := defaultConfig()
+
+	cfg := defaultConfig()
+	cfg.ClientMetadataLookupSlowWarnThresholdMs = -5
+	resolved, raw, modified, err := sanitizeHelper(t, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.ClientMetadataLookupSlowWarnThresholdMs != def.ClientMetadataLookupSlowWarnThresholdMs {
+		t.Errorf("resolved: got %d, want default %d", resolved.ClientMetadataLookupSlowWarnThresholdMs, def.ClientMetadataLookupSlowWarnThresholdMs)
+	}
+	if raw.ClientMetadataLookupSlowWarnThresholdMs != def.ClientMetadataLookupSlowWarnThresholdMs {
+		t.Errorf("raw: got %d, want default %d", raw.ClientMetadataLookupSlowWarnThresholdMs, def.ClientMetadataLookupSlowWarnThresholdMs)
+	}
+	if !modified {
+		t.Error("expected modified=true because a negative value was clamped")
+	}
+}

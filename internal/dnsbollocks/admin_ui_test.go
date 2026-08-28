@@ -288,3 +288,26 @@ func TestAdminUI_ShutdownCallback(t *testing.T) {
 	// This call panics, jumping straight to the deferred block above
 	uiWithHandler.logFatal("Critical UI Failure", errors.New("database connection lost"))
 }
+
+func TestBuildIsUnblockedPredicate_ExactVsWildcard(t *testing.T) {
+	ui, _ := setupTestAdminUI(t)
+	log := discardLogger()
+
+	if _, err := ui.ruleStore.AddRule("A", "*.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	pred := ui.buildIsUnblockedPredicate()
+
+	// A wildcard rule resolves "sub.example.com" for DNS purposes, but must
+	// not be reported as "unblocked" here since the /blocks page's
+	// "Re-block (Pause)" button can only toggle an exact-pattern rule (see
+	// RuleStore.HasExactEnabledPattern's doc comment) and would find nothing
+	// to disable for "sub.example.com" specifically.
+	if pred("sub.example.com", "A") {
+		t.Error("expected wildcard match to NOT be reported as unblocked for a non-exact domain")
+	}
+	if !pred("*.example.com", "A") {
+		t.Error("expected the wildcard pattern's own literal text to be reported as unblocked")
+	}
+}

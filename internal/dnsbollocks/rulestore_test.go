@@ -404,6 +404,51 @@ func TestRuleStore_MatchForType_EnabledWinsOverDisabled(t *testing.T) {
 	}
 }
 
+// ── HasExactEnabledPattern ───────────────────────────────────────────────────
+
+func TestRuleStore_HasExactEnabledPattern_ExactMatch(t *testing.T) {
+	rs := newRuleStore()
+	mustAdd(t, rs, "A", "example.com", true)
+
+	if !rs.HasExactEnabledPattern("A", "example.com") {
+		t.Error("expected exact enabled pattern to be found")
+	}
+}
+
+func TestRuleStore_HasExactEnabledPattern_WildcardDoesNotMatchOtherDomain(t *testing.T) {
+	rs := newRuleStore()
+	mustAdd(t, rs, "A", "*.example.com", true)
+
+	// A wildcard rule matches "sub.example.com" via MatchForType, but
+	// HasExactEnabledPattern must not report it as an exact match for
+	// "sub.example.com" — only the literal pattern "*.example.com" itself
+	// counts as an exact match.
+	if rs.HasExactEnabledPattern("A", "sub.example.com") {
+		t.Error("expected wildcard pattern to NOT satisfy an exact-pattern check for a different domain")
+	}
+	if !rs.HasExactEnabledPattern("A", "*.example.com") {
+		t.Error("expected exact match against the wildcard pattern's own literal text to succeed")
+	}
+}
+
+func TestRuleStore_HasExactEnabledPattern_DisabledRuleIsSkipped(t *testing.T) {
+	rs := newRuleStore()
+	mustAdd(t, rs, "A", "example.com", false)
+
+	if rs.HasExactEnabledPattern("A", "example.com") {
+		t.Error("expected disabled rule to not satisfy HasExactEnabledPattern")
+	}
+}
+
+func TestRuleStore_HasExactEnabledPattern_WrongTypeMisses(t *testing.T) {
+	rs := newRuleStore()
+	mustAdd(t, rs, "A", "example.com", true)
+
+	if rs.HasExactEnabledPattern("AAAA", "example.com") {
+		t.Error("expected rule stored under A to not satisfy HasExactEnabledPattern for AAAA")
+	}
+}
+
 // ── CountAll ─────────────────────────────────────────────────────────────────
 
 func TestRuleStore_CountAll_AcrossTypes(t *testing.T) {

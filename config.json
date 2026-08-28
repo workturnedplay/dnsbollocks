@@ -168,6 +168,8 @@
   "localhosts_override_ttl_sec": 300,
   "_description_ui_log_max_lines": "Maximum log lines shown per page in the WebUI log viewer. Older lines are omitted to prevent excessive RAM usage and browser freezes.",
   "ui_log_max_lines": 5000,
+  "_description_client_metadata_lookup_slow_warn_threshold_ms": "Milliseconds a per-query client PID/executable-name/service-list lookup (used for {builtin:clientexe} substitution and for attributing a DNS query to the requesting process in logs) must take before a 'slow lookup' warning is logged. These OS-level lookups legitimately take longer on slower hardware or under heavier system load, so raise this if you see frequent slow-lookup warnings on an otherwise healthy machine. 0 disables these warnings entirely.",
+  "client_metadata_lookup_slow_warn_threshold_ms": 10,
   "_description_extra_safety": "Enable extra defensive checks: duplicate-entry detection in JSON files, power-loss staging files for atomic writes, and strict purging of malformed or duplicate rules on load. Recommended for production.",
   "extra_safety": true
 }

@@ -217,6 +217,8 @@ type Config struct {
 
 	UILogMaxLines int `json:"ui_log_max_lines" desc:"Maximum log lines shown per page in the WebUI log viewer. Older lines are omitted to prevent excessive RAM usage and browser freezes."`
 
+	ClientMetadataLookupSlowWarnThresholdMs int `json:"client_metadata_lookup_slow_warn_threshold_ms" desc:"Milliseconds a per-query client PID/executable-name/service-list lookup (used for {builtin:clientexe} substitution and for attributing a DNS query to the requesting process in logs) must take before a 'slow lookup' warning is logged. These OS-level lookups legitimately take longer on slower hardware or under heavier system load, so raise this if you see frequent slow-lookup warnings on an otherwise healthy machine. 0 disables these warnings entirely."`
+
 	ExtraSafety bool `json:"extra_safety" desc:"Enable extra defensive checks: duplicate-entry detection in JSON files, power-loss staging files for atomic writes, and strict purging of malformed or duplicate rules on load. Recommended for production."`
 }
 
@@ -1954,6 +1956,11 @@ func defaultConfig() Config {
 
 		//You added a smart truncation limit to prevent browser crashes when reading massive logs. However, some admins might have beefy machines and want to see 20,000 lines, while others might be running the UI on an old phone and need it capped at 1,000.
 		UILogMaxLines: 5000,
+
+		// Matches the threshold this warning previously used unconditionally;
+		// raise it on slower hardware to quiet spurious warnings, or set to 0
+		// to disable these warnings entirely.
+		ClientMetadataLookupSlowWarnThresholdMs: 10,
 
 		UseEDEInBlockedReply: true,
 
@@ -4780,6 +4787,27 @@ func (f *ClientMetadataFuture) TryExe() (exe string, ready bool) {
 	}
 }
 
+// logIfSlowMetadataLookup logs a "slow lookup" warning via
+// wincoe.GetBugLogger if elapsed is at or above
+// cfg.ClientMetadataLookupSlowWarnThresholdMs. A configured threshold of 0
+// (or less) disables these warnings entirely — see that field's doc comment
+// for why a fixed hardcoded threshold doesn't work well across machines of
+// very different speeds: what's "slow" on a fast desktop is routine on a
+// budget or loaded box, and a hardcoded threshold would either spam the log
+// on slower hardware or fail to flag a genuine slowdown on fast hardware.
+func logIfSlowMetadataLookup(cfg *Config, what string, elapsed time.Duration) {
+	thresholdMs := cfg.ClientMetadataLookupSlowWarnThresholdMs
+	if thresholdMs <= 0 {
+		return
+	}
+	if elapsed >= time.Duration(thresholdMs)*time.Millisecond {
+		wincoe.GetBugLogger().Warn("slow "+what+" in startMetadataLookup",
+			slog.Duration("elapsed", elapsed),
+			slog.Int("threshold_ms", thresholdMs),
+		)
+	}
+}
+
 func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clientAddr net.Addr) context.Context {
 	future := &ClientMetadataFuture{done: make(chan struct{})}
 	future.info.protocol = protocol
@@ -4794,27 +4822,20 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 		var exe string
 		var err error
 		log := s.getLogger()
+		cfg := s.getConfig()
 
 		switch protocol {
 		case "UDP":
 			if udpAddr, ok := clientAddr.(*net.UDPAddr); ok {
 				start := time.Now()
 				pid, exe, err = wincoe.PidAndExeForUDP(udpAddr)
-				if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
-					wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForUDP() in startMetadataLookup",
-						slog.Duration("elapsed", elapsed),
-					)
-				}
+				logIfSlowMetadataLookup(cfg, "wincoe.PidAndExeForUDP()", time.Since(start))
 			}
 		case "TCP", "DoH":
 			if tcpAddr, ok := clientAddr.(*net.TCPAddr); ok {
 				start := time.Now()
 				pid, exe, err = wincoe.PidAndExeForTCP(tcpAddr)
-				if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
-					wincoe.GetBugLogger().Warn("slow wincoe.PidAndExeForTCP() in startMetadataLookup",
-						slog.Duration("elapsed", elapsed),
-					)
-				}
+				logIfSlowMetadataLookup(cfg, "wincoe.PidAndExeForTCP()", time.Since(start))
 			}
 		}
 
@@ -4834,11 +4855,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 		} else { //err==nil
 			start := time.Now()
 			services, err2 := wincoe.GetServiceNamesFromPIDCached(pid)
-			if elapsed := time.Since(start); elapsed > 10*time.Millisecond {
-				wincoe.GetBugLogger().Warn("slow wincoe.GetServiceNamesFromPIDCached() in startMetadataLookup",
-					slog.Duration("elapsed", elapsed),
-				)
-			}
+			logIfSlowMetadataLookup(cfg, "wincoe.GetServiceNamesFromPIDCached()", time.Since(start))
 			future.info.services, future.info.err = services, err2
 			if err2 != nil {
 				serviceInfo = fmt.Sprintf("err=%v", err)
@@ -8238,6 +8255,31 @@ func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
 	return "", false
 }
 
+// HasExactEnabledPattern reports whether an enabled rule with a pattern
+// EXACTLY equal to pattern (byte-for-byte, no wildcard expansion) exists in
+// typ.
+//
+// This exists because several WebUI display predicates need to answer "is
+// there a rule that SetEnabled/quickToggleExactRule could actually find and
+// toggle for this exact pattern", not "would a query for this domain
+// currently match some rule" (which MatchForType answers, wildcards
+// included). Conflating the two let a wildcard rule (e.g. "*.example.com")
+// make the UI believe a specific domain (e.g. "sub.example.com") had its own
+// togglable rule, when in fact SetEnabled's exact-pattern lookup would find
+// nothing and the "Re-block"/"Unblock" button would silently fail. See
+// buildIsUnblockedPredicate's doc comment for the original report of this
+// class of bug.
+func (rs *RuleStore) HasExactEnabledPattern(typ, pattern string) bool {
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	for _, rule := range current[typ] {
+		if rule.Enabled && rule.Pattern == pattern {
+			return true
+		}
+	}
+	return false
+}
+
 // CountAll returns the total rule count across all types.
 func (rs *RuleStore) CountAll() uint64 {
 	// 100% lock-free read
@@ -9489,10 +9531,18 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 // active HTTPS rule to pause — when no such rule was ever created, so
 // clicking Re-block silently did nothing (SetEnabled found no HTTPS rule
 // to disable).
+//
+// This also deliberately checks for an EXACT-pattern rule (via
+// RuleStore.HasExactEnabledPattern), not merely whether some rule —
+// possibly a wildcard like "*.example.com" — would currently match this
+// domain (which MatchForType, wildcards included, would report). The
+// /blocks page's "Re-block (Pause)" button can only ever act on an exact
+// pattern (via SetEnabled/quickToggleExactRule), so reporting "unblocked"
+// based on a broader wildcard match let the button appear even though
+// clicking it would find no matching rule to disable and fail silently.
 func (ui *AdminUI) buildIsUnblockedPredicate() func(domain, qtype string) bool {
 	return func(domain, qtype string) bool {
-		_, matched := ui.ruleStore.MatchForType(qtype, domain)
-		return matched
+		return ui.ruleStore.HasExactEnabledPattern(qtype, domain)
 	}
 }
 
@@ -9537,7 +9587,14 @@ func (ui *AdminUI) buildIsQueryBlocklistUnblockedPredicate() func(domain, qtype 
 		}
 		if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(domain) {
 			if ui.queryBlocklistStore != nil {
-				if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryExcept, domain); ok {
+				// Exact-pattern (see RuleStore.HasExactEnabledPattern's doc
+				// comment): mirrors QueryBlocklistExternalExcepted / the
+				// "Re-block (Pause)" button's own exact-match requirement, so
+				// a domain only excepted via a broader wildcard rule is
+				// treated the same as "still blocked" here too, and its
+				// recent-blocks entry is preserved (not cleared) exactly as
+				// if no except rule existed at all.
+				if ui.queryBlocklistStore.HasExactEnabledPattern(queryBlockCategoryExcept, domain) {
 					return true // excepted -> currently unblocked, has a Re-block control
 				}
 			}
@@ -9606,7 +9663,12 @@ func (ui *AdminUI) populateQueryBlocklistRowState(bq *BlockedQuery) {
 	if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(bq.Domain) {
 		bq.QueryBlocklistExternalListed = true
 		if ui.queryBlocklistStore != nil {
-			if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryExcept, bq.Domain); ok {
+			// Deliberately exact-pattern (see RuleStore.HasExactEnabledPattern's
+			// doc comment): the "Re-block (Pause)" button this flag drives
+			// disables the except rule via an exact-pattern SetEnabled call
+			// (quickToggleExactRule), which a wildcard except rule matching
+			// bq.Domain only via wildcard expansion could not actually satisfy.
+			if ui.queryBlocklistStore.HasExactEnabledPattern(queryBlockCategoryExcept, bq.Domain) {
 				bq.QueryBlocklistExternalExcepted = true
 			}
 		}
@@ -14534,6 +14596,15 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientTCPTimeoutSec)),
 		&resolvedCfg.ClientTCPTimeoutSec, &rawCfg.ClientTCPTimeoutSec,
 		func(v int) bool { return v <= 0 }, defaultCfg.ClientTCPTimeoutSec, "") {
+		shouldSaveConfig = true
+	}
+
+	// NOTE: 0 is intentionally valid here ("disable these warnings entirely",
+	// per the field's desc tag); only negative values are clamped.
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.ClientMetadataLookupSlowWarnThresholdMs)),
+		&resolvedCfg.ClientMetadataLookupSlowWarnThresholdMs, &rawCfg.ClientMetadataLookupSlowWarnThresholdMs,
+		func(v int) bool { return v < 0 }, defaultCfg.ClientMetadataLookupSlowWarnThresholdMs,
+		" (must be >= 0; 0 disables slow client-metadata-lookup warnings)") {
 		shouldSaveConfig = true
 	}
 
