@@ -9675,18 +9675,20 @@ func (ui *AdminUI) populateQueryBlocklistRowState(bq *BlockedQuery) {
 	}
 }
 
-// blocksAjaxHeader is the custom header the /blocks and /allows pages' JS
-// sets on their background fetch() calls so blocksHandler/allowsHandler can
+// blocksAjaxHeader is the custom header the /blocks, /allows, and
+// /query-blocklist pages' JS sets on their background fetch() calls (see
+// the shared js-block-action-form wiring in app.js) so their handlers can
 // respond with a plain status code instead of a redirect+querystring,
-// avoiding a full page reload for every Unblock/Re-block/Block click.
+// avoiding a full page reload for every Unblock/Re-block/Block/Except click.
 const blocksAjaxHeader = "X-DNSBollocks-Ajax"
 
 func isBlocksAjaxRequest(r *http.Request) bool {
 	return r.Header.Get(blocksAjaxHeader) == "1"
 }
 
-// respondBlocksResult replies to a /blocks or /allows POST either with a
-// redirect back to whichever page issued the request, carrying success/error
+// respondBlocksResult replies to a /blocks, /allows, or /query-blocklist quick-action
+// POST either with a redirect back to whichever page issued the request, carrying
+// success/error
 // query params (progressive-enhancement fallback for non-JS clients,
 // preserving the existing full-page-reload behavior) or, for background/AJAX
 // requests (see isBlocksAjaxRequest), with a plain status code and short text
@@ -9907,8 +9909,11 @@ func sanitizeBlocksQuickActionDomain(raw string) (domainLowercased, displayDomai
 
 // processQueryBlocklistQuickAction implements the shared query-blocklist
 // quick-action logic — reblock_qb / unblock_qb / disable_qb_local_rule /
-// block_qb_local — used by both blocksHandler (TheBlocksPage) and allowsHandler
-// (TheAllowsPage) for their per-row quick controls. Callers must already hold
+// block_qb_local — used by blocksHandler (TheBlocksPage), allowsHandler
+// (TheAllowsPage), and queryBlocklistHandler's external hosts-file search
+// (unblock_qb/reblock_qb only, for a host surfaced by
+// AdminUI.buildExternalHostMatches) for their per-row quick controls.
+// Callers must already hold
 // ui.tableMutationMu and must have already confirmed
 // ui.queryBlocklistStore/ui.OnSaveQueryBlocklist are wired (see either
 // handler's guard at the top of its POST branch). ruleID is only used by
@@ -17809,6 +17814,60 @@ func (src *ExternalHostsBlocklistSource) Contains(domain string) bool {
 	return ok
 }
 
+// externalHostsSearchDefaultMaxResults / externalHostsSearchHardCapMaxResults
+// bound the "extmax" query parameter accepted by the /query-blocklist page's
+// external hosts-file search box (see parseExternalHostsSearchParams),
+// mirroring parseLogRotationParams's identical default-then-hard-cap pattern
+// for the /logs* pages' "maxrot" parameter.
+const (
+	externalHostsSearchDefaultMaxResults = 100
+	externalHostsSearchHardCapMaxResults = 2000
+)
+
+// SearchHosts returns up to maxResults hostnames from src whose stored
+// ASCII/punycode form OR human-readable Unicode display form contains query
+// as a case-insensitive substring, along with the FULL match count (which
+// may exceed len(matches) when capped by maxResults, letting callers report
+// "showing X of Y matches"). An empty (after trimming) query intentionally
+// matches nothing and returns (nil, 0): the external source can hold
+// hundreds of thousands of entries (e.g. StevenBlack Hosts), so scanning and
+// sorting the entire set on every /query-blocklist page view — even when the
+// operator hasn't typed anything to search for — would be wasted work on a
+// page that's otherwise a cheap, mostly-static read.
+//
+// Matches are returned in a stable, sorted (ascending) order so repeated
+// identical searches always return the same page of results; Go map
+// iteration order is otherwise randomized on every call.
+//
+// Safe to call on a nil src or one with no hosts loaded (returns nil, 0).
+func (src *ExternalHostsBlocklistSource) SearchHosts(query string, maxResults int) (matches []string, total int) {
+	if src == nil || len(src.hosts) == 0 {
+		return nil, 0
+	}
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	if queryLower == "" {
+		return nil, 0
+	}
+	if maxResults <= 0 {
+		maxResults = externalHostsSearchDefaultMaxResults
+	}
+
+	var all []string
+	for host := range src.hosts {
+		display, _ := punycodeDecodePatternForDisplay(host)
+		if strings.Contains(strings.ToLower(host), queryLower) || strings.Contains(strings.ToLower(display), queryLower) {
+			all = append(all, host)
+		}
+	}
+	sort.Strings(all)
+
+	total = len(all)
+	if total > maxResults {
+		all = all[:maxResults]
+	}
+	return all, total
+}
+
 // loadExternalQueryBlocklist (re)loads the read-only external hosts-file
 // configured via Config.QueryBlocklistExternalHostsFile into
 // s.externalBlocklist, replacing any previously loaded snapshot wholesale.
@@ -18044,6 +18103,82 @@ func (ui *AdminUI) getExternalBlocklistView() ExternalBlocklistView {
 	}
 }
 
+// ExternalHostBlockMatchView is the /query-blocklist page's per-row view for
+// a search match against the external, read-only hosts-file source (see
+// ExternalHostsBlocklistSource.SearchHosts).
+type ExternalHostBlockMatchView struct {
+	// Host is the ASCII/punycode form, submitted back as the "domain" field
+	// for the except/un-except quick-action buttons.
+	Host string
+	// HostDisplay is the human-readable Unicode form (same as Host when not an IDN).
+	HostDisplay string
+	// Excepted reports whether an enabled, exact-pattern local "except" rule
+	// currently exempts this host from the external-source block — mirrors
+	// populateQueryBlocklistRowState's identical exact-pattern requirement
+	// (see RuleStore.HasExactEnabledPattern's doc comment) so the toggle
+	// button this drives never claims to control a rule it can't actually find.
+	Excepted bool
+	// LocallyBlocked reports whether an enabled local "block" pattern
+	// (exact OR wildcard — mirroring checkQueryBlocklist's real precedence,
+	// unlike Excepted's exact-only requirement) ALSO matches this host, in
+	// which case it stays blocked regardless of Excepted: a local "block"
+	// always wins over any "except" (see checkQueryBlocklist's doc comment).
+	LocallyBlocked bool
+}
+
+// buildExternalHostMatches searches the currently-loaded external hosts-file
+// source (see ExternalHostsBlocklistSource.SearchHosts) for query and
+// resolves each match's current except/local-block state for display.
+// Returns (nil, 0) if the external-hosts feature isn't wired up
+// (ui.externalBlocklist == nil) or query is empty — see SearchHosts's doc
+// comment for why an empty query intentionally matches nothing.
+func (ui *AdminUI) buildExternalHostMatches(query string, maxResults int) (matches []ExternalHostBlockMatchView, total int) {
+	if ui.externalBlocklist == nil {
+		return nil, 0
+	}
+	hosts, total := ui.externalBlocklist.Load().SearchHosts(query, maxResults)
+	if len(hosts) == 0 {
+		return nil, total
+	}
+	matches = make([]ExternalHostBlockMatchView, len(hosts))
+	for i, host := range hosts {
+		display, _ := punycodeDecodePatternForDisplay(host)
+		var excepted, locallyBlocked bool
+		if ui.queryBlocklistStore != nil {
+			excepted = ui.queryBlocklistStore.HasExactEnabledPattern(queryBlockCategoryExcept, host)
+			_, locallyBlocked = ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, host)
+		}
+		matches[i] = ExternalHostBlockMatchView{
+			Host:           host,
+			HostDisplay:    display,
+			Excepted:       excepted,
+			LocallyBlocked: locallyBlocked,
+		}
+	}
+	return matches, total
+}
+
+// parseExternalHostsSearchParams extracts and validates the "extq"/"extmax"
+// query parameters for the /query-blocklist page's external hosts-file
+// search box, mirroring parseLogRotationParams's identical pattern for the
+// /logs* pages' "rotated"/"maxrot" parameters.
+func parseExternalHostsSearchParams(r *http.Request) (query string, maxResults int) {
+	query = r.URL.Query().Get("extq")
+	maxResults = externalHostsSearchDefaultMaxResults
+	if raw := r.URL.Query().Get("extmax"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxResults = n
+		}
+	}
+	if maxResults > externalHostsSearchHardCapMaxResults {
+		maxResults = externalHostsSearchHardCapMaxResults
+	}
+	if maxResults < 1 {
+		maxResults = 1
+	}
+	return query, maxResults
+}
+
 func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request) {
 	const allowedMethods = "GET, HEAD, POST, OPTIONS"
 	if writeAllowHeaderResponse(w, r, allowedMethods) {
@@ -18069,19 +18204,27 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
+		extQuery, extMaxResults := parseExternalHostsSearchParams(r)
+		externalMatches, externalTotal := ui.buildExternalHostMatches(extQuery, extMaxResults)
+
 		data := map[string]any{
-			"QueryBlockRules": views,
-			"External":        ui.getExternalBlocklistView(),
-			"SuccessMessage":  r.URL.Query().Get("success"),
-			"ErrorMessage":    r.URL.Query().Get("error"),
+			"QueryBlockRules":       views,
+			"External":              ui.getExternalBlocklistView(),
+			"ExternalSearchQuery":   extQuery,
+			"ExternalSearchMax":     extMaxResults,
+			"ExternalSearchHardCap": externalHostsSearchHardCapMaxResults,
+			"ExternalSearchTotal":   externalTotal,
+			"ExternalMatches":       externalMatches,
+			"SuccessMessage":        r.URL.Query().Get("success"),
+			"ErrorMessage":          r.URL.Query().Get("error"),
 		}
 		ui.renderTemplate(w, r, "query-blocklist", data)
 		return
 	}
 
 	if r.Method == http.MethodPost {
+		log := ui.getLogger()
 		if ui.queryBlocklistStore == nil || ui.OnSaveQueryBlocklist == nil {
-			log := ui.getLogger()
 			log.Error("BUG: query-blocklist WebUI POST reached without queryBlocklistStore/OnSaveQueryBlocklist wired")
 			http.Error(w, "query blocklist is not available in this environment", http.StatusServiceUnavailable)
 			return
@@ -18091,6 +18234,34 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 		// (or a concurrent WebUI mutation), exactly like rulesHandler.
 		ui.tableMutationMu.Lock()
 		defer ui.tableMutationMu.Unlock()
+
+		// Quick except/un-except toggle for a host surfaced by the external
+		// hosts-file search box (see buildExternalHostMatches): reuses the
+		// exact same except-layer toggle the /blocks and /allows pages'
+		// quick actions already use (see processQueryBlocklistQuickAction),
+		// and the same generic AJAX form wiring (see js-block-action-form
+		// in app.js and respondBlocksResult's doc comment).
+		if action := r.FormValue("action"); action == "unblock_qb" || action == "reblock_qb" {
+			raw := r.FormValue("domain")
+			domainLowercased, displayDomain, sanitizeErr := sanitizeBlocksQuickActionDomain(raw)
+			if sanitizeErr != nil {
+				log.Warn("Invalid domain input submitted via external-hosts except toggle",
+					slog.String("raw", raw), wincoe.SafeErr(sanitizeErr))
+				respondBlocksResult(log, w, r, "/query-blocklist", false, http.StatusBadRequest, "Invalid domain format.", raw)
+				return
+			}
+			successMessage, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, "")
+			if qbErr != nil {
+				respondBlocksResult(log, w, r, "/query-blocklist", false, status, qbErr.Error(), raw)
+				return
+			}
+			if err := ui.OnSaveQueryBlocklist(); err != nil {
+				respondBlocksResult(log, w, r, "/query-blocklist", false, http.StatusInternalServerError, ui.logPersistFailure("query blocklist", err).Error(), "")
+				return
+			}
+			respondBlocksResult(log, w, r, "/query-blocklist", true, http.StatusOK, successMessage, "")
+			return
+		}
 
 		fields := map[string]string{
 			"delete":   r.FormValue("delete"),

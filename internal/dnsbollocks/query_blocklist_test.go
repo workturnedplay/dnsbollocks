@@ -1103,3 +1103,285 @@ func TestApplyTablesHandler_QueryBlocklistBatchStaleVersionRejected(t *testing.T
 		}
 	}
 }
+
+// ── ExternalHostsBlocklistSource.SearchHosts ────────────────────────────────
+
+func TestExternalHostsBlocklistSource_SearchHosts_NilSourceIsSafe(t *testing.T) {
+	var src *ExternalHostsBlocklistSource
+	matches, total := src.SearchHosts("ads", 100)
+	if matches != nil || total != 0 {
+		t.Errorf("expected (nil, 0) for nil source, got (%v, %d)", matches, total)
+	}
+}
+
+func TestExternalHostsBlocklistSource_SearchHosts_EmptyQueryMatchesNothing(t *testing.T) {
+	src := &ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"ads.example.com": {}, "tracker.example.com": {}},
+		HostCount: 2,
+	}
+	matches, total := src.SearchHosts("", 100)
+	if matches != nil {
+		t.Errorf("expected nil matches for empty query, got %v", matches)
+	}
+	if total != 0 {
+		t.Errorf("expected total=0 for empty query, got %d", total)
+	}
+}
+
+func TestExternalHostsBlocklistSource_SearchHosts_CaseInsensitiveSubstringMatch(t *testing.T) {
+	src := &ExternalHostsBlocklistSource{
+		hosts: map[string]struct{}{
+			"ads.example.com":       {},
+			"tracker.example.com":   {},
+			"unrelated.example.org": {},
+		},
+		HostCount: 3,
+	}
+	matches, total := src.SearchHosts("EXAMPLE.COM", 100)
+	if total != 2 {
+		t.Fatalf("expected 2 total matches, got %d: %v", total, matches)
+	}
+	if len(matches) != 2 || matches[0] != "ads.example.com" || matches[1] != "tracker.example.com" {
+		t.Errorf("expected sorted [ads.example.com tracker.example.com], got %v", matches)
+	}
+}
+
+func TestExternalHostsBlocklistSource_SearchHosts_CapsAtMaxResultsButReportsFullTotal(t *testing.T) {
+	src := &ExternalHostsBlocklistSource{
+		hosts: map[string]struct{}{
+			"a.example.com": {}, "b.example.com": {}, "c.example.com": {}, "d.example.com": {},
+		},
+		HostCount: 4,
+	}
+	matches, total := src.SearchHosts("example.com", 2)
+	if total != 4 {
+		t.Errorf("expected total=4 (uncapped), got %d", total)
+	}
+	if len(matches) != 2 || matches[0] != "a.example.com" || matches[1] != "b.example.com" {
+		t.Errorf("expected matches capped to sorted [a.example.com b.example.com], got %v", matches)
+	}
+}
+
+func TestExternalHostsBlocklistSource_SearchHosts_MatchesUnicodeDisplayForm(t *testing.T) {
+	encoded, _, err := punycodeEncodePattern("café.example.com")
+	if err != nil {
+		t.Fatalf("punycodeEncodePattern failed: %v", err)
+	}
+	src := &ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{encoded: {}},
+		HostCount: 1,
+	}
+	matches, total := src.SearchHosts("café", 100)
+	if total != 1 || len(matches) != 1 || matches[0] != encoded {
+		t.Errorf("expected unicode search to match the stored punycode host %q, got matches=%v total=%d", encoded, matches, total)
+	}
+}
+
+func TestExternalHostsBlocklistSource_SearchHosts_NonMatchingQueryReturnsEmpty(t *testing.T) {
+	src := &ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"ads.example.com": {}},
+		HostCount: 1,
+	}
+	matches, total := src.SearchHosts("nonexistent", 100)
+	if matches != nil || total != 0 {
+		t.Errorf("expected (nil, 0) for non-matching query, got (%v, %d)", matches, total)
+	}
+}
+
+// ── AdminUI.buildExternalHostMatches ─────────────────────────────────────────
+
+func TestBuildExternalHostMatches_PopulatesExceptedAndLocallyBlocked(t *testing.T) {
+	log := discardLogger()
+	store := newRuleStore()
+
+	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
+	extPtr.Store(&ExternalHostsBlocklistSource{
+		hosts: map[string]struct{}{
+			"excepted.example.com":        {},
+			"blocked-locally.example.com": {},
+			"plain.example.com":           {},
+		},
+		HostCount: 3,
+	})
+
+	if _, err := store.AddRule(queryBlockCategoryExcept, "excepted.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+	if _, err := store.AddRule(queryBlockCategoryBlock, "blocked-locally.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+
+	ui := &AdminUI{queryBlocklistStore: store, externalBlocklist: &extPtr}
+
+	matches, total := ui.buildExternalHostMatches("example.com", 100)
+	if total != 3 {
+		t.Fatalf("expected total=3, got %d", total)
+	}
+	byHost := make(map[string]ExternalHostBlockMatchView, len(matches))
+	for _, m := range matches {
+		byHost[m.Host] = m
+	}
+
+	if !byHost["excepted.example.com"].Excepted {
+		t.Error("expected excepted.example.com to be reported as Excepted")
+	}
+	if byHost["excepted.example.com"].LocallyBlocked {
+		t.Error("expected excepted.example.com to NOT be reported as LocallyBlocked")
+	}
+	if byHost["blocked-locally.example.com"].Excepted {
+		t.Error("expected blocked-locally.example.com to NOT be reported as Excepted")
+	}
+	if !byHost["blocked-locally.example.com"].LocallyBlocked {
+		t.Error("expected blocked-locally.example.com to be reported as LocallyBlocked")
+	}
+	if byHost["plain.example.com"].Excepted || byHost["plain.example.com"].LocallyBlocked {
+		t.Error("expected plain.example.com to have neither flag set")
+	}
+}
+
+func TestBuildExternalHostMatches_NilExternalBlocklistReturnsNothing(t *testing.T) {
+	ui := &AdminUI{}
+	matches, total := ui.buildExternalHostMatches("example.com", 100)
+	if matches != nil || total != 0 {
+		t.Errorf("expected (nil, 0) when externalBlocklist is nil, got (%v, %d)", matches, total)
+	}
+}
+
+func TestBuildExternalHostMatches_EmptyQueryReturnsNothing(t *testing.T) {
+	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
+	extPtr.Store(&ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"ads.example.com": {}},
+		HostCount: 1,
+	})
+	ui := &AdminUI{externalBlocklist: &extPtr}
+	matches, total := ui.buildExternalHostMatches("", 100)
+	if matches != nil || total != 0 {
+		t.Errorf("expected (nil, 0) for empty query, got (%v, %d)", matches, total)
+	}
+}
+
+// ── parseExternalHostsSearchParams ───────────────────────────────────────────
+
+func TestParseExternalHostsSearchParams_DefaultsAndCaps(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawURL    string
+		wantQuery string
+		wantMax   int
+	}{
+		{"no params", "/query-blocklist", "", externalHostsSearchDefaultMaxResults},
+		{"query only", "/query-blocklist?extq=ads", "ads", externalHostsSearchDefaultMaxResults},
+		{"explicit valid max", "/query-blocklist?extq=ads&extmax=50", "ads", 50},
+		{"max exceeding hard cap is clamped", "/query-blocklist?extmax=999999", "", externalHostsSearchHardCapMaxResults},
+		{"zero max falls back to default", "/query-blocklist?extmax=0", "", externalHostsSearchDefaultMaxResults},
+		{"negative max falls back to default", "/query-blocklist?extmax=-5", "", externalHostsSearchDefaultMaxResults},
+		{"non-numeric max falls back to default", "/query-blocklist?extmax=abc", "", externalHostsSearchDefaultMaxResults},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.rawURL, http.NoBody)
+			gotQuery, gotMax := parseExternalHostsSearchParams(req)
+			if gotQuery != tt.wantQuery {
+				t.Errorf("query = %q, want %q", gotQuery, tt.wantQuery)
+			}
+			if gotMax != tt.wantMax {
+				t.Errorf("maxResults = %d, want %d", gotMax, tt.wantMax)
+			}
+		})
+	}
+}
+
+// ── queryBlocklistHandler: external-hosts except toggle ─────────────────────
+
+func TestQueryBlocklistHandler_ExternalHostsExceptToggle_Unblock(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	ui.externalBlocklist.Store(&ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"tracker.example.com": {}},
+		HostCount: 1,
+	})
+
+	form := url.Values{}
+	form.Set("csrf_token", "mock-token-pass")
+	form.Set("domain", "tracker.example.com")
+	form.Set("type", "")
+	form.Set("action", "unblock_qb")
+
+	req := httptest.NewRequest(http.MethodPost, "/query-blocklist", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.queryBlocklistHandler(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect (non-AJAX fallback), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	found := false
+	for _, rule := range snap[queryBlockCategoryExcept] {
+		if rule.Pattern == "tracker.example.com" && rule.Enabled {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an enabled except rule for tracker.example.com to be created")
+	}
+}
+
+func TestQueryBlocklistHandler_ExternalHostsExceptToggle_Reblock(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	log := discardLogger()
+
+	if _, err := ui.queryBlocklistStore.AddRule(queryBlockCategoryExcept, "tracker.example.com", true, log); err != nil {
+		t.Fatalf("AddRule failed: %v", err)
+	}
+	ui.externalBlocklist.Store(&ExternalHostsBlocklistSource{
+		hosts:     map[string]struct{}{"tracker.example.com": {}},
+		HostCount: 1,
+	})
+
+	form := url.Values{}
+	form.Set("csrf_token", "mock-token-pass")
+	form.Set("domain", "tracker.example.com")
+	form.Set("type", "")
+	form.Set("action", "reblock_qb")
+
+	req := httptest.NewRequest(http.MethodPost, "/query-blocklist", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.queryBlocklistHandler(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	snap := ui.queryBlocklistStore.Snapshot()
+	for _, rule := range snap[queryBlockCategoryExcept] {
+		if rule.Pattern == "tracker.example.com" && rule.Enabled {
+			t.Error("expected except rule to be paused (disabled), but it is still enabled")
+		}
+	}
+}
+
+func TestQueryBlocklistHandler_ExternalHostsExceptToggle_InvalidDomainRejected(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+
+	form := url.Values{}
+	form.Set("csrf_token", "mock-token-pass")
+	form.Set("domain", "not a valid domain!!")
+	form.Set("type", "")
+	form.Set("action", "unblock_qb")
+
+	req := httptest.NewRequest(http.MethodPost, "/query-blocklist", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	ui.queryBlocklistHandler(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect carrying the error, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("expected redirect Location to carry an error param, got %q", loc)
+	}
+}

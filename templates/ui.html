@@ -820,6 +820,68 @@
     {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s) ignored for blocking (see system log){{end}}
     {{end}}
 </p>
+{{if not .External.LoadError}}
+<form method="get" action="/query-blocklist" class="mb-20 d-flex gap-10" id="extHostsSearchForm">
+    <label class="visually-hidden" for="extHostsSearchQuery">Search external hosts-file source</label>
+    <input id="extHostsSearchQuery" type="text" name="extq" value="{{.ExternalSearchQuery}}" placeholder="Search this read-only file (e.g. tracker or ads.example.com)..." class="w-300">
+    <label class="lbl-spaced" for="extHostsMaxResults">Max results:</label>
+    <input id="extHostsMaxResults" type="number" name="extmax" min="1" max="{{.ExternalSearchHardCap}}" value="{{.ExternalSearchMax}}" class="w-280">
+    <button type="submit">Search</button>
+    <button type="button" class="btn-cancel js-ext-hosts-clear-btn">Clear</button>
+</form>
+
+{{if .ExternalSearchQuery}}
+<p class="section-desc">
+    Showing {{len .ExternalMatches}} of {{.ExternalSearchTotal}} match(es) for "<code>{{.ExternalSearchQuery}}</code>". Toggling a host below only adds/pauses a local "except" rule in the table above; it never modifies this read-only file.
+</p>
+<table id="externalHostsTable">
+    <colgroup>
+        <col class="col-70">
+        <col class="col-30">
+    </colgroup>
+    <thead>
+        <tr>
+            <th scope="col">Host (from external file)</th>
+            <th scope="col">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .ExternalMatches}}
+        <tr>
+            <td title="{{.HostDisplay}}">
+                {{.HostDisplay}}
+                {{if .LocallyBlocked}}<br><small class="tag-disabled">Also matched by an enabled local "block" rule above; stays blocked even if excepted here.</small>{{end}}
+            </td>
+            <td class="actions">
+                {{if .Excepted}}
+                <form method="post" action="/query-blocklist" class="d-inline js-block-action-form">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="domain" value="{{.Host}}">
+                    <input type="hidden" name="type" value="">
+                    <input type="hidden" name="action" value="reblock_qb">
+                    <button type="submit" class="btn-cancel" title="This host is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+                </form>
+                {{else}}
+                <form method="post" action="/query-blocklist" class="d-inline js-block-action-form">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="domain" value="{{.Host}}">
+                    <input type="hidden" name="type" value="">
+                    <input type="hidden" name="action" value="unblock_qb">
+                    <button type="submit" class="btn-edit" title="This host is blocked by the external hosts-file source; excepting it adds an Except rule for it above.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+                </form>
+                {{end}}
+                <span class="block-action-feedback" aria-live="polite" aria-atomic="true"></span>
+            </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="2" class="text-center text-muted">No matching hosts found.</td></tr>
+        {{end}}
+    </tbody>
+</table>
+{{else}}
+<p class="section-desc">Type a search term above to look up entries in this read-only file (currently {{.External.HostCount}} host(s) loaded).</p>
+{{end}}
+{{end}}
 {{else}}
 <p class="section-desc maxw-600">Not configured (query_blocklist_external_hosts_file is empty). This is a read-only source; dnsbollocks never modifies it — set it in <a href="/config">config.json</a> to enable.</p>
 {{end}}

@@ -3482,6 +3482,33 @@
             applyQueryBlocklistFilter();
         }
         
+        // ── Query Blocklist page: External Hosts-File Source search ──
+        // Search itself is a plain server-rendered GET (see
+        // parseExternalHostsSearchParams/buildExternalHostMatches in Go);
+        // this just pre-fills the last-used search text from localStorage
+        // for convenience, without forcing an automatic page navigation.
+        const extHostsSearchInput = document.getElementById('extHostsSearchQuery');
+        if (extHostsSearchInput) {
+            if (new URLSearchParams(location.search).has('extq')) {
+                uiStorage.setItem('extHostsSearch_query', extHostsSearchInput.value);
+            } else {
+                const savedExtQuery = uiStorage.getItem('extHostsSearch_query');
+                if (savedExtQuery && !extHostsSearchInput.value) {
+                    extHostsSearchInput.value = savedExtQuery;
+                }
+            }
+
+            const extHostsClearBtn = document.querySelector('.js-ext-hosts-clear-btn');
+            if (extHostsClearBtn) {
+                extHostsClearBtn.addEventListener('click', function() {
+                    extHostsSearchInput.value = '';
+                    uiStorage.removeItem('extHostsSearch_query');
+                    const form = extHostsClearBtn.closest('form');
+                    if (form) form.submit();
+                });
+            }
+        }
+        
         // ── Blocks page ─────────────
         // Refresh button(s) navigate to /blocks via GET, bypassing any cached POST
         // state. There can be up to two of these now (one per section — Recent
@@ -3575,10 +3602,21 @@
                         actionInput.value = 'reblock_qb';
                         btn.textContent = 'Re-block (Pause) [Query Blocklist, External]';
                         btn.className = 'btn-cancel';
+                        // On the /query-blocklist page itself (unlike /blocks and /allows,
+                        // which don't render this table), toggling an except rule from the
+                        // External Hosts-File search results also changes the "Local
+                        // Query-Blocklist Rules" table further up the same page; reload to
+                        // keep the two sections in sync instead of leaving that table stale.
+                        if (document.getElementById('queryBlocklistTable')) {
+                            location.reload();
+                        }
                     } else if (action === 'reblock_qb') {
                         actionInput.value = 'unblock_qb';
                         btn.textContent = 'Unblock [Query Blocklist, External]';
                         btn.className = 'btn-edit';
+                        if (document.getElementById('queryBlocklistTable')) {
+                            location.reload();
+                        }
                     } else if (action === 'disable_qb_local_rule') {
                         // One-directional from /blocks: re-enabling happens on
                         // /query-blocklist, so there's no "undo" toggle here —
