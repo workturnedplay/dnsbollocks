@@ -73,7 +73,7 @@ func setupTestAdminUI(t *testing.T) (*AdminUI, *httptest.ResponseRecorder) {
 	ui.queryBlocklistStore = qbs
 	ui.externalBlocklist = &atomic.Pointer[ExternalHostsBlocklistSource]{}
 	ui.OnSaveQueryBlocklist = func() error { return nil }
-	ui.OnInvalidatePattern = func(pattern string) {}
+	ui.OnInvalidatePattern = func(_ string) {}
 	rec := httptest.NewRecorder()
 
 	return ui, rec
