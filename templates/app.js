@@ -3489,12 +3489,32 @@
         // for convenience, without forcing an automatic page navigation.
         const extHostsSearchInput = document.getElementById('extHostsSearchQuery');
         if (extHostsSearchInput) {
-            if (new URLSearchParams(location.search).has('extq')) {
+            const extHostsUrlParams = new URLSearchParams(location.search);
+            const extHostsHasQueryParam = extHostsUrlParams.has('extq');
+
+            if (extHostsHasQueryParam) {
                 uiStorage.setItem('extHostsSearch_query', extHostsSearchInput.value);
             } else {
                 const savedExtQuery = uiStorage.getItem('extHostsSearch_query');
                 if (savedExtQuery && !extHostsSearchInput.value) {
                     extHostsSearchInput.value = savedExtQuery;
+                }
+            }
+
+            // A real Search submission lands here as a full page navigation
+            // (not an AJAX update), so the browser resets scroll to the very
+            // top on load, leaving the user staring at the top of the page
+            // while the actual results sit further down inside the
+            // "External Hosts-File Source" section. Scroll the search form
+            // (and thus the results table rendered directly below it) into
+            // view so the results are immediately visible without manual
+            // scrolling. A bare Clear (extq present but empty) intentionally
+            // leaves the browser's default top-of-page scroll alone, since
+            // there's nothing new to reveal after clearing.
+            if (extHostsHasQueryParam && extHostsUrlParams.get('extq')) {
+                const extHostsSearchForm = document.getElementById('extHostsSearchForm');
+                if (extHostsSearchForm) {
+                    extHostsSearchForm.scrollIntoView({ block: 'start' });
                 }
             }
 

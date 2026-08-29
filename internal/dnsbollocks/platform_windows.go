@@ -17782,6 +17782,14 @@ type ExternalHostsBlocklistSource struct {
 	// LoadedAt is when this snapshot was successfully built. Zero if the
 	// load failed (see LoadError) or nothing is configured.
 	LoadedAt time.Time
+	// FileModTime is the on-disk hosts file's own last-modified timestamp,
+	// as reported by the filesystem — distinct from LoadedAt (which is when
+	// dnsbollocks itself last read the file into memory). This lets an
+	// operator see when the underlying file (e.g. a StevenBlack Hosts
+	// download) was actually last updated/downloaded, independent of how
+	// recently dnsbollocks happened to reload it. Zero if the stat failed
+	// or nothing is configured.
+	FileModTime time.Time
 	// HostCount is len(hosts), exposed for the WebUI without leaking the map itself.
 	HostCount int
 	// MalformedLines counts lines skipped for not matching the expected
@@ -17914,6 +17922,19 @@ func (s *Server) loadExternalQueryBlocklist() {
 		}
 	}()
 
+	// Capture the file's own last-modified timestamp (distinct from
+	// LoadedAt below) so the WebUI can show when the underlying file was
+	// actually last updated/downloaded, not merely when dnsbollocks last
+	// read it. A stat failure here is non-fatal: we already have the file
+	// open and readable, so just proceed without that timestamp.
+	var fileModTime time.Time
+	if fi, statErr := f.Stat(); statErr == nil {
+		fileModTime = fi.ModTime()
+	} else {
+		log.Warn("Failed to stat external query-blocklist hosts file for its modification time",
+			slog.String("path", path), wincoe.SafeErr(statErr))
+	}
+
 	hosts := make(map[string]struct{})
 	var malformed, nonStandardIP int
 	scanner := bufio.NewScanner(f)
@@ -17990,6 +18011,7 @@ func (s *Server) loadExternalQueryBlocklist() {
 		hosts:                 hosts,
 		Path:                  path,
 		LoadedAt:              time.Now(),
+		FileModTime:           fileModTime,
 		HostCount:             len(hosts),
 		MalformedLines:        malformed,
 		NonStandardIPWarnings: nonStandardIP,
@@ -18074,6 +18096,7 @@ type ExternalBlocklistView struct {
 	Configured            bool
 	Path                  string
 	LoadedAt              string
+	FileModTimeDisplay    string
 	HostCount             int
 	MalformedLines        int
 	NonStandardIPWarnings int
@@ -18092,10 +18115,15 @@ func (ui *AdminUI) getExternalBlocklistView() ExternalBlocklistView {
 	if !src.LoadedAt.IsZero() {
 		loadedAt = formatModifiedAt(src.LoadedAt)
 	}
+	fileModTimeDisplay := ""
+	if !src.FileModTime.IsZero() {
+		fileModTimeDisplay = formatModifiedAt(src.FileModTime)
+	}
 	return ExternalBlocklistView{
 		Configured:            true,
 		Path:                  src.Path,
 		LoadedAt:              loadedAt,
+		FileModTimeDisplay:    fileModTimeDisplay,
 		HostCount:             src.HostCount,
 		MalformedLines:        src.MalformedLines,
 		NonStandardIPWarnings: src.NonStandardIPWarnings,
