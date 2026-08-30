@@ -920,6 +920,13 @@
     <button type="submit" class="btn-edit">Clear DNS Cache</button>
 </form>
 
+<h2>Logout</h2>
+<p class="section-desc">Forces this browser to discard its cached WebUI login credentials by responding to this request with an HTTP 401 challenge. Your browser will very likely prompt for credentials again immediately afterward &mdash; cancel that prompt to actually remain logged out (entering the same password again simply logs back in). This is a limitation of HTTP Basic Auth, which has no server-side session to invalidate directly; see webui_auth_session_mode in config.json for related behavior.</p>
+<form method="post" action="/logout" class="js-control-logout-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <button type="submit" class="btn-cancel">Logout</button>
+</form>
+
 <h2>Shutdown</h2>
 <p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits). This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.</p>
 <form method="post" action="/shutdown" class="js-shutdown-form">

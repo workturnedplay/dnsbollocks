@@ -4064,6 +4064,21 @@
                 }
             });
         }
+
+        // Deliberately a plain (non-fetch/AJAX) form submission: the server
+        // responds with a 401 + WWW-Authenticate challenge, and letting the
+        // browser handle that natively (rather than intercepting it via
+        // fetch) is what makes it actually discard the cached credential and
+        // reprompt, instead of just seeing a 401 status in a JS response
+        // object with no effect on the browser's own auth cache.
+        const controlLogoutForm = document.querySelector('.js-control-logout-form');
+        if (controlLogoutForm) {
+            controlLogoutForm.addEventListener('submit', function(e) {
+                if (!confirm('Log out now? Your browser will likely prompt for credentials again immediately afterward \u2014 cancel that prompt to remain logged out.')) {
+                    e.preventDefault();
+                }
+            });
+        }
         
         // ── Logs page ───────────────
         // Clear button resets the q field and submits, matching the original

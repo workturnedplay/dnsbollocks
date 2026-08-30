@@ -7342,6 +7342,7 @@ func (ui *AdminUI) SetupRoutes(boundAddr string, usedTLS bool) http.Handler {
 	innerMux.HandleFunc("/logs_queries_simple", ui.logsQueriesSimpleHandler)
 	innerMux.HandleFunc("/config", ui.configHandler)
 	innerMux.HandleFunc("/shutdown", ui.shutdownHandler)
+	innerMux.HandleFunc("/logout", ui.logoutHandler)
 	innerMux.HandleFunc("/csrf-token", ui.csrfTokenHandler)
 	innerMux.Handle("/debug/vars", expvar.Handler()) // Stats endpoint
 
@@ -7999,6 +8000,30 @@ func (ui *AdminUI) setSessionAuthCookie(w http.ResponseWriter, r *http.Request, 
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 			Secure:   r.TLS != nil,
+		},
+	)
+}
+
+// clearSessionAuthCookie expires the session-expiry cookie issued by
+// setSessionAuthCookie, used by logoutHandler for
+// webui_auth_session_mode='session_cookie'. This is defense-in-depth on top
+// of logoutHandler's 401 challenge: even if some client somehow retains and
+// resends the just-discarded Basic-Auth credential without a fresh prompt,
+// the next request will still fail sessionAuthCookieFresh's check (cookie
+// absent) and be rejected, re-triggering the same 401-challenge/fresh-cookie
+// cycle documented on Config.WebUIAuthSessionMode rather than silently
+// resuming the old session.
+func (ui *AdminUI) clearSessionAuthCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w,
+		//nolint:gosec // HttpOnly and SameSite are set; Secure is conditional on HTTPS support, mirroring setSessionAuthCookie's identical cookie.
+		&http.Cookie{
+			Name:     ui.sessionAuthCookieName(r),
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   r.TLS != nil,
+			MaxAge:   -1,
 		},
 	)
 }
@@ -13941,6 +13966,47 @@ func (ui *AdminUI) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		ui.OnShutdown(0)
 	}()
+}
+
+// logoutHandler is the WebUI's best-effort "Logout" action for HTTP Basic
+// Auth, which has no server-side session for this to actually invalidate.
+// It works by relying on ordinary browser behavior: a browser that receives
+// a 401 challenge in response to a request it auto-attached its cached
+// Basic-Auth credential to will discard that credential and, for a normal
+// top-level form submission like this one, immediately reprompt for new
+// credentials. There is no way to force the discard without also triggering
+// that reprompt — declining/cancelling the reprompt is what actually leaves
+// the browser logged out; re-entering the same password simply logs back in
+// immediately, which is expected (this never revokes or changes the
+// password itself).
+//
+// For webui_auth_session_mode='session_cookie' this additionally expires
+// the session-expiry cookie (see clearSessionAuthCookie's doc comment) so a
+// subsequent request is treated as a brand-new session rather than silently
+// resuming; for 'legacy' and 'time_bucket' there is no such cookie, and the
+// 401 challenge alone is the entire mechanism.
+func (ui *AdminUI) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	const allowedMethods = "POST, OPTIONS"
+	if writeAllowHeaderResponse(w, r, allowedMethods) {
+		return
+	}
+	log := ui.getLogger()
+
+	if r.Method != http.MethodPost {
+		ui.rejectUnsupportedMethod(w, r, allowedMethods)
+		return
+	}
+
+	cfg := ui.getConfig()
+	if cfg.WebUIAuthSessionMode == webUIAuthSessionModeSessionCookie {
+		ui.clearSessionAuthCookie(w, r)
+	}
+
+	log.Info("WebUI logout requested; forcing Basic-Auth credential discard via 401 challenge",
+		slog.String("client", r.RemoteAddr))
+
+	w.Header().Set("WWW-Authenticate", fmt.Sprintf("Basic realm=%q", ui.currentAuthRealm()))
+	http.Error(w, "401 Unauthorized - You have been logged out. If your browser immediately prompts for credentials again, cancel that prompt to remain logged out.", http.StatusUnauthorized)
 }
 
 func isValidBcryptHash(s string) bool {
