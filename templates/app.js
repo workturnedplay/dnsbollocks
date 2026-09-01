@@ -168,6 +168,145 @@
         ));
     }
 
+    // justAppliedStorageKey / persistJustAppliedIdentities / extractAddIdentity /
+    // findRowForAddIdentity / restoreJustAppliedRows implement a one-shot,
+    // sessionStorage-backed "what did I just successfully Add?" handoff across
+    // the full-page reload that follows a successful (or partially
+    // successful) staged-table Apply. Without this, a newly added rule/host/
+    // blacklist entry/query-blocklist rule reappears after the reload exactly
+    // like any other pre-existing row: possibly hidden by a leftover filter,
+    // and wherever a persisted column sort happens to place it — easy to lose
+    // track of right after deliberately adding it.
+    const justAppliedStorageKey = `dnsbollocks:justApplied:${tablePageKey}`;
+
+    // extractAddIdentity returns a small, JSON-serializable descriptor
+    // identifying the persisted row a staged "Add" change (never Edit/Delete)
+    // will become after Apply, or null if change isn't an Add for a
+    // recognized table. Uses only fields already stable/unique post-Apply
+    // (never the server-assigned id, which isn't known until after Apply).
+    function extractAddIdentity(url, fields) {
+        switch (url) {
+            case '/rules':
+                if (fields.id || fields.delete || fields.edit) return null;
+                return { url, type: fields.type, pattern: fields.pattern };
+            case '/hosts':
+                if (fields.old_pattern || fields.edit || fields.delete) return null;
+                return { url, pattern: fields.pattern };
+            case '/response-blacklist':
+                if (fields.action !== 'add') return null;
+                return { url, cidr: fields.cidr };
+            case '/query-blocklist':
+                if (fields.id || fields.delete || fields.edit) return null;
+                return { url, category: fields.category, pattern: fields.pattern };
+            default:
+                return null;
+        }
+    }
+
+    // persistJustAppliedIdentities stashes the add-identities (see
+    // extractAddIdentity) of every change in appliedChanges, to be consumed
+    // exactly once by restoreJustAppliedRows after the reload that follows a
+    // successful Apply. Call this BEFORE stagedTableChanges is cleared/
+    // filtered, passing only the subset of changes that actually applied.
+    function persistJustAppliedIdentities(appliedChanges) {
+        const identities = [];
+        for (const change of appliedChanges) {
+            const identity = extractAddIdentity(change.url, change.fields);
+            if (identity) identities.push(identity);
+        }
+        if (identities.length === 0) {
+            stagedStorage.removeItem(justAppliedStorageKey);
+            return;
+        }
+        try {
+            stagedStorage.setItem(justAppliedStorageKey, JSON.stringify({ schema: 1, identities }));
+        } catch (err) {
+            console.warn('Failed to persist just-applied row identities for post-reload highlighting:', err);
+        }
+    }
+
+    // findRowForAddIdentity locates the freshly-rendered persisted row (if
+    // any) matching a stored identity, using the ASCII/punycode form stored
+    // in data-orig-* attributes, which every server-rendered row always
+    // carries (see ui.html). A pattern the operator entered containing
+    // Unicode (IDN) characters is compared as typed, so it may fail to match
+    // the server's punycode-encoded identity — a graceful, non-fatal
+    // degradation (the row simply isn't specially highlighted) rather than a
+    // hard requirement.
+    function findRowForAddIdentity(identity) {
+        switch (identity.url) {
+            case '/rules': {
+                for (const row of document.querySelectorAll('#rulesTable tbody tr[data-rule-id]')) {
+                    if (row.dataset.origType === identity.type && row.dataset.origPattern === identity.pattern) return row;
+                }
+                return null;
+            }
+            case '/hosts': {
+                for (const row of document.querySelectorAll('#hostsTable tbody tr[data-orig-pattern]')) {
+                    if (row.dataset.origPattern === identity.pattern) return row;
+                }
+                return null;
+            }
+            case '/response-blacklist': {
+                for (const row of document.querySelectorAll('#blacklistTable tbody tr[data-orig-cidr]')) {
+                    if (row.dataset.origCidr === identity.cidr) return row;
+                }
+                return null;
+            }
+            case '/query-blocklist': {
+                for (const row of document.querySelectorAll('#queryBlocklistTable tbody tr[data-orig-category]')) {
+                    if (row.dataset.origCategory === identity.category && row.dataset.origPattern === identity.pattern) return row;
+                }
+                return null;
+            }
+            default:
+                return null;
+        }
+    }
+
+    // restoreJustAppliedRows consumes (one-shot) whatever persistJustAppliedIdentities
+    // stashed right before the page reloaded, and for every identity that
+    // resolves to a real row on this freshly-rendered page: marks it
+    // `.just-applied` (permanently exempted from the active filter — see
+    // applyTableFilter — and, via a very negative data-orig-index, from ever
+    // sinking back below original load order if the user later reverts an
+    // active sort to "none"; see setupTableSorting/applySort) and pins it to
+    // the very top of its table right now, regardless of whatever column
+    // sort is currently active. Must run AFTER setupTableSorting for every
+    // table (so its initial sort pass, and its data-orig-index snapshot,
+    // don't undo/precede this).
+    function restoreJustAppliedRows() {
+        const raw = stagedStorage.getItem(justAppliedStorageKey);
+        if (!raw) return;
+        stagedStorage.removeItem(justAppliedStorageKey);
+
+        let record;
+        try {
+            record = JSON.parse(raw);
+        } catch {
+            return;
+        }
+        if (!isPlainObject(record) || record.schema !== 1 || !Array.isArray(record.identities)) {
+            return;
+        }
+
+        // Processed in original staging order; each match is prepended to the
+        // top of its table in turn, so the LAST-staged (and thus, pre-apply,
+        // topmost-displayed) entry ends up at the very top again.
+        for (const identity of record.identities) {
+            if (!isPlainObject(identity) || typeof identity.url !== 'string') continue;
+            const row = findRowForAddIdentity(identity);
+            if (!row) continue;
+
+            row.classList.add('just-applied');
+            row.classList.remove('filtered-out');
+            row.dataset.origIndex = String(nextStagedRowOrigIndex());
+
+            const tbody = row.parentElement;
+            if (tbody) tbody.insertBefore(row, tbody.firstChild);
+        }
+    }
+
     // storagePersistenceWarningEl lazily holds a DOM banner warning the user
     // that staged changes can no longer be saved to sessionStorage (e.g.
     // quota exceeded or storage unavailable), so a page refresh/crash/close
@@ -394,17 +533,16 @@
     let nextStagedRowOrigIndexCounter = -1;
 
     // nextStagedRowOrigIndex returns a monotonically decreasing integer used
-    // to seed a freshly built staged-add row's data-orig-index (see
-    // setupTableSorting's originalRows/applySort below). Without this, a
-    // staged-add row inserted after setupTableSorting has already run would
-    // have no data-orig-index at all; reverting an active column sort back
-    // to 'none' would then compare parseInt(undefined) (NaN) against real
-    // rows' numeric indices — technically spec-defined but fragile to rely
-    // on. Seeding a distinct, always-negative index instead guarantees
-    // staged-add rows sort ahead of every originally-loaded row (whose
-    // indices start at 0) when reverting to 'none', with the most-recently-
-    // added row first — matching where it visually landed when first
-    // inserted (pinned to the top of the table).
+    // to seed a row's data-orig-index (see setupTableSorting's originalRows/
+    // applySort below) for a row inserted after setupTableSorting has already
+    // run — either a freshly staged Add, or a row restoreJustAppliedRows()
+    // pins to the top after Apply. Without this, such a row would have no
+    // data-orig-index at all; reverting an active column sort back to 'none'
+    // would then compare parseInt(undefined) (NaN) against real rows'
+    // numeric indices — technically spec-defined but fragile to rely on.
+    // Seeding a distinct, always-negative index instead guarantees these
+    // rows sort ahead of every originally-loaded row (whose indices start at
+    // 0) when reverting to 'none', with the most-recently-touched row first.
     function nextStagedRowOrigIndex() {
         return nextStagedRowOrigIndexCounter--;
     }
@@ -1424,6 +1562,7 @@
 
         if (res.status === 422) {
             const appliedIds = new Set(body?.applied_client_ids || []);
+            persistJustAppliedIdentities(stagedTableChanges.filter(change => appliedIds.has(change.clientId)));
             stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
             // Adopt the server's authoritative post-mutation versions before
             // persisting, so the reload below's restore-matching succeeds for
@@ -1451,6 +1590,7 @@
                 // already live, and any retry would be rejected as a stale
                 // version conflict.
                 const appliedIds = new Set(body?.applied_client_ids || []);
+                persistJustAppliedIdentities(stagedTableChanges.filter(change => appliedIds.has(change.clientId)));
                 stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
                 updateTableVersions(body?.versions);
                 updateTableBanner();
@@ -1470,6 +1610,7 @@
             return false;
         }
 
+        persistJustAppliedIdentities(stagedTableChanges);
         stagedTableChanges = [];
         stagedStorage.removeItem(stagedStorageKey);
         updateTableBanner();
@@ -1788,6 +1929,16 @@
                 // attribute — `hidden` is reserved for edit-mode row-swapping
                 // and component visibility (banners), so the two mechanisms
                 // can never fight over the same row.
+                row.classList.remove('filtered-out');
+                return;
+            }
+
+            // A row that was just committed by the most recent Apply (see
+            // restoreJustAppliedRows) always stays visible too, regardless of
+            // table or of the currently active filter text, so the operator
+            // can immediately confirm what they just added instead of it
+            // disappearing behind a leftover filter.
+            if (row.classList.contains('just-applied')) {
                 row.classList.remove('filtered-out');
                 return;
             }
@@ -4509,6 +4660,13 @@
         setupTableSorting('blacklistTable', 'blacklistTable', applyBlacklistFilter);
         setupTableSorting('queryBlocklistTable', 'queryBlocklistTable', applyQueryBlocklistFilter);
         setupTableSorting('configTable', 'configTable', applyConfigFilter);
+
+        // Pin whatever row(s) the most recent Apply just committed to the top
+        // of their table, and exempt them from the active filter — see
+        // restoreJustAppliedRows's doc comment. Must run after every
+        // setupTableSorting() call above, since it deliberately overrides
+        // both the sort's initial ordering and its data-orig-index snapshot.
+        restoreJustAppliedRows();
 
         // Initialize column resizing (drag + double-click auto-fit) across the
         // same set of tables. Run after reorder + sorting/filtering so any

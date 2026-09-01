@@ -398,6 +398,11 @@ tr.staged-add td { border-bottom: 2px solid var(--success); background-color: #1
    strike-through, so the user can still find them via the filter and Undelete them. */
 tr.staged-delete td { border-bottom: 2px solid var(--danger); background-color: #241616; text-decoration: line-through; opacity: 0.7; }
 
+/* Marks a row that was just committed by the most recent Apply (see
+   restoreJustAppliedRows in app.js), pinned to the top of its table so it
+   stays easy to spot even though it is no longer a pending/staged change. */
+tr.just-applied td { border-bottom: 2px solid var(--accent); }
+
 /* Undelete only makes sense (and is only shown) once a row is staged for deletion. */
 .btn-undelete { display: none; background-color: var(--cancel) !important; color: white !important; border: none !important; }
 .btn-undelete:hover { background-color: var(--cancel-hover) !important; }
