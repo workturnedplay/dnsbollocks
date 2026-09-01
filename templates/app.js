@@ -390,6 +390,25 @@
 
     let fallbackClientIdCounter = 0;
 
+    // nextStagedRowOrigIndexCounter feeds nextStagedRowOrigIndex() below.
+    let nextStagedRowOrigIndexCounter = -1;
+
+    // nextStagedRowOrigIndex returns a monotonically decreasing integer used
+    // to seed a freshly built staged-add row's data-orig-index (see
+    // setupTableSorting's originalRows/applySort below). Without this, a
+    // staged-add row inserted after setupTableSorting has already run would
+    // have no data-orig-index at all; reverting an active column sort back
+    // to 'none' would then compare parseInt(undefined) (NaN) against real
+    // rows' numeric indices — technically spec-defined but fragile to rely
+    // on. Seeding a distinct, always-negative index instead guarantees
+    // staged-add rows sort ahead of every originally-loaded row (whose
+    // indices start at 0) when reverting to 'none', with the most-recently-
+    // added row first — matching where it visually landed when first
+    // inserted (pinned to the top of the table).
+    function nextStagedRowOrigIndex() {
+        return nextStagedRowOrigIndexCounter--;
+    }
+
     // generateClientId produces a short, session-unique token used to track a
     // staged "Add" entry (rule/host/blacklist) before it has a real server-assigned
     // identity, so a subsequent staged Edit/Delete of that same not-yet-applied
@@ -660,6 +679,7 @@
         row.dataset.ruleEnabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
+        row.dataset.origIndex = String(nextStagedRowOrigIndex());
 
         const typeTd = document.createElement('td');
         typeTd.dataset.colId = 'type';
@@ -753,6 +773,7 @@
         row.dataset.qbEnabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
+        row.dataset.origIndex = String(nextStagedRowOrigIndex());
 
         const categoryTd = document.createElement('td');
         categoryTd.dataset.colId = 'category';
@@ -981,6 +1002,7 @@
         row.dataset.hostEnabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
+        row.dataset.origIndex = String(nextStagedRowOrigIndex());
 
         const patternTd = document.createElement('td');
         patternTd.dataset.colId = 'pattern';
@@ -1084,6 +1106,7 @@
         row.dataset.enabled = enabled ? 'true' : 'false';
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
+        row.dataset.origIndex = String(nextStagedRowOrigIndex());
 
         const cidrTd = document.createElement('td');
         cidrTd.dataset.colId = 'cidr';
@@ -3330,7 +3353,6 @@
         if (addForm) {
             addForm.addEventListener('submit', function(e) {
                 e.preventDefault(); // Stop native browser submission
-                if (stagedTableChanges.length > 0 && !confirm('You have staged changes. Continuing will discard them. Proceed?')) return;
 
                 const patternInput = addForm.querySelector('[name="pattern"]');
                 const typeSelect = addForm.querySelector('[name="type"]');
@@ -3768,7 +3790,15 @@
                 removePlaceholderRow(tbody);
                 const newRow = buildHostRowElement(clientId, pattern, ips, enabled);
                 ensureRowMatchesTableOrder(newRow, document.getElementById('hostsTable'));
-                tbody.appendChild(newRow);
+                // Prepend (not append) so a newly staged host, like every other
+                // staged-add row on this page, appears pinned at the top of the
+                // table instead of at the bottom, where an active filter/sort
+                // could make it easy to miss. The backend itself still appends
+                // new hosts on Apply (HostStore.AddHost has no ordering
+                // guarantee), so this is purely a staging-time visibility aid;
+                // the real persisted order takes over once the page reloads
+                // after Apply.
+                tbody.insertBefore(newRow, tbody.firstChild);
             }
 
             patternInput.value = '';
@@ -4193,7 +4223,10 @@
                 const enabled = fields.enabled !== 'false';
                 const newRow = buildHostRowElement(change.clientId, pattern, ips, enabled);
                 ensureRowMatchesTableOrder(newRow, document.getElementById('hostsTable'));
-                tbody.appendChild(newRow);
+                // Mirrors the live Add-form handler above: prepend, not
+                // append, so a restored staged host is pinned at the top
+                // like every other restored staged-add row.
+                tbody.insertBefore(newRow, tbody.firstChild);
                 return;
             }
 
