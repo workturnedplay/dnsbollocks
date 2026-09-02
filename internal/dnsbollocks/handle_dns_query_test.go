@@ -880,6 +880,17 @@ func TestHandleDNSQuery_Forward_ZeroIP_BlockedByUpstream(t *testing.T) {
 		t.Errorf("rcode: want NXDOMAIN(%d) for zero-IP upstream block, got %d",
 			dns.RcodeNameError, resp.Rcode)
 	}
+
+	// A zero-IP upstream block must also surface on the WebUI's /blocks page,
+	// flagged as upstream-caused (no local toggle can fix it) — see
+	// RecentBlocksTracker.RecordUpstreamBlocked.
+	snap := s.recentBlocks.Snapshot(func(_, _ string) bool { return false })
+	if len(snap) != 1 {
+		t.Fatalf("recentBlocks length: want 1, got %d", len(snap))
+	}
+	if !snap[0].UpstreamBlocked {
+		t.Error("expected recentBlocks entry to have UpstreamBlocked=true for a zero-IP upstream block")
+	}
 }
 
 func TestHandleDNSQuery_Forward_PartialFilter_ReturnsOnlyCleanIPs(t *testing.T) {

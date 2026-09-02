@@ -62,4 +62,7 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 //didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
+//* the /blocks webUI page should also show the upstream-blocked hosts (eg. those which return 0.0.0.0 and our Go code already blocks) even though no buttons should be present for it because it's an upstream block, although, if any previous IPs were used for it(ie. it used to work before) they would be present in say the "Simple-Query Log" webUI page, so maybe a button to switch to that page with the search field prepopulated with this host would still be in order.
+
+//* i need webUI page /hosts to accept space separated IPs too, not just comma-separated ones; also when it fails to apply it asks me if to restore staged changes, but maybe it shouldn't ask me, it should restore them because simply they weren't applied(or not all were applied) so not losing them makes sense (can always discard them after if the answer to that ask would've been "no")
 

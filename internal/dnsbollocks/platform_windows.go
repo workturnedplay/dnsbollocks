@@ -45,6 +45,7 @@ import (
 	"sort"
 	"strconv"
 	"sync/atomic"
+	"unicode"
 	"unsafe"
 
 	"fmt"
@@ -2558,6 +2559,17 @@ type BlockedQuery struct {
 	Type          string    `json:"type"`
 	Time          time.Time `json:"time"`
 	IsUnblocked   bool      `json:"-"` // dynamically set for the UI: whether the whitelist layer currently allows this exact domain+type (see buildIsUnblockedPredicate)
+
+	// UpstreamBlocked reports whether this entry's most recent block was
+	// caused by the upstream resolver's own response (e.g. it returned
+	// 0.0.0.0/::, or one of its answer IPs matched the response IP
+	// blacklist) rather than by local policy (query blocklist, or lack of an
+	// enabled whitelist rule). Set via RecentBlocksTracker.RecordUpstreamBlocked.
+	// There is no local per-domain control that can affect an upstream-level
+	// block, so the WebUI shows this without any Unblock/Re-block controls —
+	// only a link to the query logs, where any IP this domain previously
+	// resolved to (before the upstream started blocking it) can still be found.
+	UpstreamBlocked bool `json:"-"`
 
 	// The following are also dynamically computed for the UI (see
 	// AdminUI.populateQueryBlocklistRowState, called from both
@@ -5752,6 +5764,13 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 			filterReason+returnedModifiedSTR, //doneFIXME: this here is a guess because the upstream answer was filtered out likely due to having an IP like 0.0.0.0 returned, but could also be any of the blocked IPs specified in the config like 127.0.0.1/8 or 192.168.0.0/16 therefore this could mean the upstream tried to return a local or LAN IP but we stripped it out and we should notify accordingly! not just say that upstream blocked the hostname request which it only does if IP was 0.0.0.0 and nothing else.
 			matchedID, blockedIPs, blocked, upstreamState3)
 
+		// Surface this on the WebUI's /blocks page too: even though there's no
+		// local per-domain control that can affect an upstream-level block
+		// (see BlockedQuery.UpstreamBlocked's doc comment), the operator can
+		// still look up what IP(s) this domain used to resolve to via the
+		// query logs.
+		s.recentBlocks.RecordUpstreamBlocked(domain, qtype, cfg.MaxRecentBlocks)
+
 		//The Bug: You return blocked directly to the client, but you never cache it.
 		//Because it isn't cached, the forwardInFlight leader finishes, unlocks the followers, and the followers check the cache. They miss the cache, and all of them instantly hammer the upstream resolver again. If a malicious script aggressively queries a domain that resolves to a blacklisted IP, it will bypass your cache entirely and DoS your upstream provider.
 		//The Fix: Cache the blocked response using your cfg.BlockedResponseTTLSec or cfg.CacheNegativeTTLSec before returning it:
@@ -8852,14 +8871,29 @@ func (t *RecentBlocksTracker) ClearBefore(cutoff time.Time, isUnblocked func(dom
 
 // Record adds or bumps a recent block entry, evicting the oldest if over maxBlocks.
 func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
+	t.record(domain, qtype, maxBlocks, false)
+}
+
+// RecordUpstreamBlocked mirrors Record, but marks the entry as caused by an
+// upstream-level block (see BlockedQuery.UpstreamBlocked's doc comment for
+// what that means and why the WebUI treats it differently) rather than by
+// local policy.
+func (t *RecentBlocksTracker) RecordUpstreamBlocked(domain, qtype string, maxBlocks int) {
+	t.record(domain, qtype, maxBlocks, true)
+}
+
+// record is the shared implementation behind Record and RecordUpstreamBlocked.
+func (t *RecentBlocksTracker) record(domain, qtype string, maxBlocks int, upstreamBlocked bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	key := domain + ":" + qtype
 	if elem, ok := t.m[key]; ok {
-		// We already have this block. Update the time and bump it to the front.
-		// (Zero allocations!)
+		// We already have this block. Update the time (and upstream-blocked
+		// reason, which may have changed since the last record of this exact
+		// domain+type) and bump it to the front. (Zero allocations!)
 		if bq, ok := elem.Value.(*BlockedQuery); ok {
 			bq.Time = time.Now()
+			bq.UpstreamBlocked = upstreamBlocked
 		} else {
 			// Log a severe bug: something else got put in this list!
 			panic2("BUG: not of *BlockedQuery type")
@@ -8868,7 +8902,7 @@ func (t *RecentBlocksTracker) Record(domain, qtype string, maxBlocks int) {
 		return
 	}
 	// Brand new block. Add to the front of our list and map.
-	elem := t.lst.PushFront(&BlockedQuery{Domain: domain, Type: qtype, Time: time.Now()})
+	elem := t.lst.PushFront(&BlockedQuery{Domain: domain, Type: qtype, Time: time.Now(), UpstreamBlocked: upstreamBlocked})
 	t.m[key] = elem
 	// Evict the oldest item if we exceed the tracked limit
 	for t.lst.Len() > maxBlocks {
@@ -17048,6 +17082,18 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 	return http.StatusOK, nil
 }
 
+// splitIPListInput splits a WebUI "ips" form field into individual IP
+// tokens, accepting commas and/or any whitespace (space, tab, newline) as
+// separators. This lets an operator paste IPs copied from the Simple Query
+// Log page (space-separated) just as easily as hand-typing a comma-separated
+// list. Consecutive separators, and any leading/trailing separators, are
+// collapsed/ignored — every returned token is already non-empty.
+func splitIPListInput(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
 func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(pattern string)) (int, error) {
 	log := ui.getLogger()
 	// --- DELETE ---
@@ -17150,13 +17196,9 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 		}
 	}
 
-	ipsRaw := strings.Split(fields["ips"], ",")
+	ipsRaw := splitIPListInput(fields["ips"])
 	var netIPs []net.IP
 	for _, ipStr := range ipsRaw {
-		ipStr = strings.TrimSpace(ipStr)
-		if ipStr == "" {
-			continue
-		}
 		if ip := net.ParseIP(ipStr); ip != nil {
 			netIPs = append(netIPs, ip)
 		} else {

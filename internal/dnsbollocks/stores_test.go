@@ -125,6 +125,32 @@ func TestRecentBlocksTracker(t *testing.T) {
 	}
 }
 
+func TestRecentBlocksTracker_RecordUpstreamBlocked(t *testing.T) {
+	tracker := newRecentBlocksTracker()
+	maxBlocks := 10
+
+	tracker.RecordUpstreamBlocked("upstream-blocked.example.com", "A", maxBlocks)
+
+	snap := tracker.Snapshot(func(_, _ string) bool { return false })
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(snap))
+	}
+	if !snap[0].UpstreamBlocked {
+		t.Error("expected UpstreamBlocked=true for an entry recorded via RecordUpstreamBlocked")
+	}
+
+	// A plain Record() call for the same domain+type is treated as a
+	// fresh reason for the block, so it must clear the flag back to false.
+	tracker.Record("upstream-blocked.example.com", "A", maxBlocks)
+	snap = tracker.Snapshot(func(_, _ string) bool { return false })
+	if len(snap) != 1 {
+		t.Fatalf("expected still 1 entry (same domain+type), got %d", len(snap))
+	}
+	if snap[0].UpstreamBlocked {
+		t.Error("expected UpstreamBlocked to be cleared after a plain Record() call for the same entry")
+	}
+}
+
 // --- HostStore Tests ---
 
 func TestHostStore(t *testing.T) {

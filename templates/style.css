@@ -283,6 +283,19 @@ th { background: var(--bg-panel-alt); color: var(--text-secondary); font-size: 0
     border: none !important;
 }
 
+/* Anchor elements reusing a button class (e.g. the /blocks page's "View in
+   Simple Query Log" link for upstream-blocked entries) need the padding/
+   border-radius/no-underline treatment that <button>/<input> already get
+   for free from the generic form-control rule near the top of this file,
+   since that rule doesn't target <a>. */
+a.btn-edit, a.btn-add, a.btn-del, a.btn-save, a.btn-cancel {
+    display: inline-block;
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
 .btn-edit, .btn-add { background-color: var(--accent) !important; }
 .btn-edit:hover, .btn-add:hover { background-color: var(--accent-hover) !important; }
 

@@ -303,3 +303,33 @@ func TestPunycodeDecodePatternForDisplay(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitIPListInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"comma separated", "1.2.3.4,5.6.7.8", []string{"1.2.3.4", "5.6.7.8"}},
+		{"comma+space separated", "1.2.3.4, 5.6.7.8", []string{"1.2.3.4", "5.6.7.8"}},
+		{"space separated only", "1.2.3.4 5.6.7.8", []string{"1.2.3.4", "5.6.7.8"}},
+		{"mixed separators and whitespace runs", "  1.2.3.4 ,, 5.6.7.8   9.9.9.9\t2001:db8::1\n", []string{"1.2.3.4", "5.6.7.8", "9.9.9.9", "2001:db8::1"}},
+		{"single value", "1.2.3.4", []string{"1.2.3.4"}},
+		{"empty string", "", nil},
+		{"only separators", " , , ", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitIPListInput(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitIPListInput(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("splitIPListInput(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

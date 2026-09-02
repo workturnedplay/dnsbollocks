@@ -233,7 +233,7 @@
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
 <div class="info-banner">
-    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, and by not matching any enabled whitelist rule{{end}}. Blocks applied by Response Blacklist IPs or by upstream providers (like Quad9 or NextDNS) are not tracked here. See <a href="/allows">Recent Allows</a> for domains that were resolved.
+    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, by not matching any enabled whitelist rule,{{end}} or because the upstream DNS provider's own response was entirely blocked/filtered (e.g. it returned 0.0.0.0/::, or every returned IP matched the Response Blacklist) &mdash; the latter are shown for visibility only, with no local unblock/re-block control since there's nothing local to toggle for them. See <a href="/allows">Recent Allows</a> for domains that were resolved.
 </div>
 {{template "alert-banner" .}}
 <div class="section-header-row">
@@ -253,6 +253,10 @@
     <li>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
+        {{if .UpstreamBlocked}}
+        <span class="tag-disabled" title="Blocked by the upstream DNS provider's own response (e.g. it returned 0.0.0.0/::, or a returned IP matched the Response Blacklist), not by local policy here - there is nothing local to unblock or re-block for this.">[Upstream Block]</span>
+        <a href="/logs_queries_simple?q={{.DomainDisplay}}" class="btn-edit" target="_blank" rel="noopener noreferrer" title="Look up this domain in the Simple Query Log, e.g. to find an IP address it previously resolved to.">View in Simple Query Log ↗</a>
+        {{else}}
         {{if $.WhitelistMode}}
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -301,6 +305,7 @@
             <input type="hidden" name="action" value="unblock_qb">
             <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
+        {{end}}
         {{end}}
         {{end}}
 
@@ -411,7 +416,7 @@
         id="addHostIPs"
         type="text"
         name="ips"
-        placeholder="IPs (comma separated, e.g. 192.168.1.1)"
+        placeholder="IPs (comma or space separated, e.g. 192.168.1.1, 192.168.1.2)"
         class="w-280"
         required
     >

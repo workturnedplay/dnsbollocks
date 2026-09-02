@@ -579,11 +579,15 @@
         throw new Error('Unable to generate a unique staged-change client ID');
     }
 
-    // normalizeIPListString parses a comma-separated IP list input (arbitrary
-    // spacing) into a canonical "a, b, c" form so staged-edit comparisons against
-    // the original baseline aren't fooled by cosmetic whitespace/comma differences.
+    // normalizeIPListString parses a comma-and/or-whitespace-separated IP list
+    // input into a canonical "a, b, c" form so staged-edit comparisons against
+    // the original baseline aren't fooled by cosmetic whitespace/comma/separator
+    // differences. Accepting whitespace as a separator (not just commas) mirrors
+    // splitIPListInput on the Go side, so IPs pasted space-separated (e.g. copied
+    // from the Simple Query Log page) are treated identically to a comma-separated
+    // list here too.
     function normalizeIPListString(str) {
-        return (str || '').split(',').map(s => s.trim()).filter(Boolean).join(', ');
+        return (str || '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean).join(', ');
     }
 
     // findStagedEntryIndex returns the index of an existing staged change in
@@ -4510,27 +4514,31 @@
 
         const restoredChanges = loadStoredStagedTableChanges();
         if (restoredChanges) {
-            if (confirm(`Restore ${restoredChanges.length} staged change(s) from this tab's previous session?`)) {
-                stagedTableChanges = restoredChanges;
-                for (const change of stagedTableChanges) {
-                    renderStoredStagedChange(change);
-                }
-                // A restored staged EDIT of an existing row only updates that
-                // row's display and adds the 'staged' class — it never touches
-                // .filtered-out. If that row was hidden by a filter restored
-                // earlier in this same DOMContentLoaded pass (before this
-                // restore ran), it would otherwise stay invisible even though
-                // it's now staged and must always be shown. Re-running the
-                // filters clears .filtered-out on every staged row via the
-                // alwaysShowStaged branch above.
-                applyRulesFilter();
-                applyHostsFilter();
-                applyBlacklistFilter();
-                applyQueryBlocklistFilter();
-                updateTableBanner();
-            } else {
-                stagedStorage.removeItem(stagedStorageKey);
+            // Auto-restore without prompting: these changes were staged but
+            // never successfully applied (e.g. the tab was reloaded/closed
+            // mid-edit, or a previous Apply only partially succeeded and
+            // reloaded to show the remainder), so silently discarding them
+            // would be the more surprising and costlier mistake. If they
+            // aren't wanted, "Discard All" — shown as soon as the staged-table
+            // banner appears below — removes them just as easily as declining
+            // a prompt would have.
+            stagedTableChanges = restoredChanges;
+            for (const change of stagedTableChanges) {
+                renderStoredStagedChange(change);
             }
+            // A restored staged EDIT of an existing row only updates that
+            // row's display and adds the 'staged' class — it never touches
+            // .filtered-out. If that row was hidden by a filter restored
+            // earlier in this same DOMContentLoaded pass (before this
+            // restore ran), it would otherwise stay invisible even though
+            // it's now staged and must always be shown. Re-running the
+            // filters clears .filtered-out on every staged row via the
+            // alwaysShowStaged branch above.
+            applyRulesFilter();
+            applyHostsFilter();
+            applyBlacklistFilter();
+            applyQueryBlocklistFilter();
+            updateTableBanner();
         }
 
         // --- Generic Sorting Framework Initialization ---
