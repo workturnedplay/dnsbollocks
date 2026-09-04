@@ -576,10 +576,12 @@ func TestHandleDNSQuery_Forward_ZeroCacheMinTTL_RespectsShortUpstreamTTL(t *test
 }
 
 func TestHandleDNSQuery_Forward_NilResponse_ZeroCacheNegativeTTL_NotCached(t *testing.T) {
-	// With CacheNegativeTTLSec=0 ("don't cache"), a SERVFAIL synthesized from
-	// a total upstream failure (fwd returns nil) must never be inserted into
-	// the cache — every query should hit the forwarder again instead of
-	// replaying a stale cached SERVFAIL.
+	// A SERVFAIL synthesized from a total upstream failure (fwd returns nil)
+	// must never be inserted into the cache — every query should hit the
+	// forwarder again instead of replaying a stale cached SERVFAIL. This now
+	// holds unconditionally (see
+	// TestHandleDNSQuery_Forward_NilResponse_NeverCachedEvenWithNonZeroTTL);
+	// CacheNegativeTTLSec=0 is kept here too as a belt-and-suspenders check.
 	cfg := defaultConfig()
 	cfg.CacheNegativeTTLSec = 0
 
@@ -813,10 +815,12 @@ func TestHandleDNSQuery_Forward_NonSuccessRcode_ServFail(t *testing.T) {
 	}
 }
 
-func TestHandleDNSQuery_Forward_NegativeResultCached(t *testing.T) {
-	// A SERVFAIL must be cached under CacheNegativeTTLSec so the second
-	// identical query does not hit the forwarder again.
-	q := aQuery("example.com")
+func TestHandleDNSQuery_Forward_NilResponse_NeverCachedEvenWithNonZeroTTL(t *testing.T) {
+	// A SERVFAIL synthesized from a total upstream failure (fwd returns nil)
+	// must never be cached, even with a healthy nonzero CacheNegativeTTLSec:
+	// every subsequent identical query must hit the forwarder again instead
+	// of replaying a stale cached SERVFAIL for the rest of the negative-TTL
+	// window after the upstreams recover.
 	fwd := nilFwd()
 	s := newQueryTestServer(t, defaultConfig(), fwd)
 	addWhitelistRule(t, s, "A", "example.com")
@@ -826,14 +830,13 @@ func TestHandleDNSQuery_Forward_NegativeResultCached(t *testing.T) {
 		t.Fatalf("first request: forwarder call count want 1, got %d", fwd.CallCount())
 	}
 
-	_ = q // second query below
 	resp := s.handleDNSQuery(context.Background(), aQuery("example.com"), testClient)
-	if fwd.CallCount() != 1 {
-		t.Errorf("second request: forwarder must not be called again (negative cached), got %d calls", fwd.CallCount())
+	if fwd.CallCount() != 2 {
+		t.Errorf("second request: expected forwarder to be called again (not cached), got %d total calls", fwd.CallCount())
 	}
-	// The cached SERVFAIL must still come back as SERVFAIL.
+	// It must still come back as SERVFAIL (the forwarder is still nilFwd()).
 	if resp != nil && resp.Rcode != dns.RcodeServerFailure {
-		t.Errorf("cached negative response rcode: want SERVFAIL(%d), got %d",
+		t.Errorf("response rcode: want SERVFAIL(%d), got %d",
 			dns.RcodeServerFailure, resp.Rcode)
 	}
 }

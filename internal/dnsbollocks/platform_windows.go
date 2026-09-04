@@ -208,7 +208,7 @@ type Config struct {
 	DNSUDPBufferSize       int `json:"dns_udp_buffer_size"        desc:"Per-packet receive buffer size in bytes for UDP DNS (512–65535). 4096 safely handles modern EDNS0 payloads."`
 
 	CacheJanitorIntervalMinutes int    `json:"cachejanitor_interval_minutes" desc:"Interval in minutes at which the DNS cache background janitor sweeps for and removes expired entries."`
-	CacheNegativeTTLSec         uint32 `json:"cache_negative_ttl_sec" desc:"Seconds to cache SERVFAIL and other negative upstream responses (respecting RFC 2308 tho), reducing retry storms during upstream outages. 0 means don't cache."`
+	CacheNegativeTTLSec         uint32 `json:"cache_negative_ttl_sec" desc:"Seconds to cache a negative rcode actually RETURNED by an upstream resolver (NXDOMAIN, REFUSED, etc.; respecting RFC 2308 tho), reducing retry storms during genuine negative-answer floods. Does NOT apply to a SERVFAIL synthesized here because every configured upstream failed to respond at all — that case is always re-attempted on the very next query instead of being cached, since caching it would replay a stale failure for the whole TTL window even after the upstreams recover. 0 means don't cache."`
 
 	FileWriterMaxRetries     int `json:"file_writer_max_retries" desc:"Maximum number of retries for atomic file writes. (Default: 6)"`
 	FileWriterRetryBackoffMs int `json:"file_writer_retry_backoff_ms" desc:"Delay in milliseconds between file write retries. (Default: 100)"`
@@ -5708,14 +5708,17 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 
 	// FIX: Handle complete network failures (resp == nil)
 	if resp == nil {
+		// Deliberately NEVER cached, regardless of cfg.CacheNegativeTTLSec:
+		// this SERVFAIL means every configured upstream failed to answer at
+		// all, which is a transient infrastructure problem, not a
+		// legitimate negative answer from a resolver that's actually up.
+		// Caching it would replay a stale SERVFAIL as a cache_hit for the
+		// full negative-TTL window even after every upstream recovers,
+		// instead of re-attempting resolution on the very next identical
+		// query. Contrast with the "valid negative rcode from upstream"
+		// branch just below, which legitimately IS cached per RFC 2308.
 		negResp := servfailResponse(reqMsg)
 		s.logQuery(ctx, clientAddr, domain, qtype, forwardedButFailedSoSERVFAIL, matchedID, nil, negResp, upstreamState3)
-		if cfg.CacheNegativeTTLSec > 0 {
-			cachee.Set(key, CacheEntry{
-				Msg:   negResp.Copy(),
-				State: upstreamState3,
-			}, time.Duration(cfg.CacheNegativeTTLSec)*time.Second)
-		}
 		return negResp
 	}
 
