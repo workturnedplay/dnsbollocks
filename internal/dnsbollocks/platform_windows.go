@@ -9632,59 +9632,55 @@ func (ui *AdminUI) buildIsLocallyBlockedPredicate() func(domain, qtype string) b
 	}
 }
 
-// buildIsQueryBlocklistUnblockedPredicate reports whether a specific (domain,
-// qtype) recent-block entry is no longer blocked by the query-blocklist layer
-// (see checkQueryBlocklist) — i.e. the operator has since disabled the local
-// "block" rule that matched it, or added/enabled an "except" rule cancelling
-// an external-source block. Mirrors buildIsUnblockedPredicate's whitelist-layer
-// semantics ("does this entry currently have an active control to re-block
-// it") so ClearBefore preserves exactly the entries still worth showing an
-// operator a revert control for.
-func (ui *AdminUI) buildIsQueryBlocklistUnblockedPredicate() func(domain, qtype string) bool {
-	return func(domain, _ string) bool {
-		if ui.queryBlocklistStore != nil {
-			if _, ok := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domain); ok {
-				return false // still locally blocked
-			}
-		}
-		if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(domain) {
-			if ui.queryBlocklistStore != nil {
-				// Exact-pattern (see RuleStore.HasExactEnabledPattern's doc
-				// comment): mirrors QueryBlocklistExternalExcepted / the
-				// "Re-block (Pause)" button's own exact-match requirement, so
-				// a domain only excepted via a broader wildcard rule is
-				// treated the same as "still blocked" here too, and its
-				// recent-blocks entry is preserved (not cleared) exactly as
-				// if no except rule existed at all.
-				if ui.queryBlocklistStore.HasExactEnabledPattern(queryBlockCategoryExcept, domain) {
-					return true // excepted -> currently unblocked, has a Re-block control
-				}
-			}
-			return false // still blocked by the external source, no except in effect
-		}
-		return true // not blocked by either query-blocklist sub-layer anymore
-	}
-}
-
 // buildIsRecentBlockUnblockedPredicate returns the isUnblocked predicate used
 // by "Clear Shown Blocks" (see recentBlocks.ClearBefore) for the /blocks
-// page's "Recent Blocks" list. A recorded block there can come from either
-// the query blocklist (checkQueryBlocklist, active regardless of
-// whitelist_mode) or, only when whitelist_mode is true, from lacking an
-// enabled whitelist rule (see handleDNSQuery). An entry is preserved from
-// clearing if EITHER layer that could have caused it currently has it
-// unblocked, so whichever revert control the operator used stays visible.
+// page's "Recent Blocks" list.
+//
+// IMPORTANT: "unblocked" here means that the operator currently has a
+// deliberate revert control for this entry (Re-block/Pause). It does NOT mean
+// merely "the query-blocklist does not currently block this domain". A recent
+// block can be caused by whitelist policy, the local query blocklist, the
+// external query blocklist, or an upstream block; only the first two cases
+// have a locally-created revert state worth preserving.
+//
+// The whitelist control is meaningful only when whitelist_mode is enabled.
+// For the query-blocklist layer, only an exact external "except" rule creates
+// a Re-block control: a missing local block rule does not mean the entry was
+// operator-unblocked.
 func (ui *AdminUI) buildIsRecentBlockUnblockedPredicate() func(domain, qtype string) bool {
-	qbUnblocked := ui.buildIsQueryBlocklistUnblockedPredicate()
-	if !ui.getConfig().WhitelistMode {
-		// Outside whitelist_mode, whitelist rules never cause a recentBlocks
-		// entry (see handleDNSQuery's allowed=true short-circuit), so
-		// checking them here would only add noise.
-		return qbUnblocked
-	}
-	whitelistUnblocked := ui.buildIsUnblockedPredicate()
+	whitelistMode := ui.getConfig().WhitelistMode
+
 	return func(domain, qtype string) bool {
-		return whitelistUnblocked(domain, qtype) || qbUnblocked(domain, qtype)
+		// In whitelist mode, an exact enabled whitelist rule means this entry
+		// was deliberately unblocked and the /blocks page exposes a
+		// "Re-block (Pause) [Whitelist]" control for it.
+		if whitelistMode && ui.ruleStore.HasExactEnabledPattern(qtype, domain) {
+			return true
+		}
+
+		// A local query-blocklist "block" is still actively blocking the
+		// domain, so there is no "unblocked" state to preserve here.
+		if ui.queryBlocklistStore != nil {
+			if _, blocked := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domain); blocked {
+				return false
+			}
+		}
+
+		// An external hosts-file block is deliberately preserved only when
+		// the operator has an exact local "except" rule for it, because that
+		// is the state represented by the /blocks page's "Re-block (Pause)"
+		// control.
+		if ui.externalBlocklist != nil && ui.externalBlocklist.Load().Contains(domain) {
+			if ui.queryBlocklistStore != nil &&
+				ui.queryBlocklistStore.HasExactEnabledPattern(queryBlockCategoryExcept, domain) {
+				return true
+			}
+			return false
+		}
+
+		// No active operator-created revert state exists, so this visible
+		// recent-block entry is safe to clear.
+		return false
 	}
 }
 

@@ -66,3 +66,5 @@ done:
 
 //* i need webUI page /hosts to accept space separated IPs too, not just comma-separated ones; also when it fails to apply it asks me if to restore staged changes, but maybe it shouldn't ask me, it should restore them because simply they weren't applied(or not all were applied) so not losing them makes sense (can always discard them after if the answer to that ask would've been "no")
 
+//* "Clear Shown Blocks" button in webUI's /blocks page is clearing nothing: "INFO 2026-09-07T22:25:39.1172047+02:00 WebUI: Cleared visible recent blocks pid=7356 cleared=0". It used to work, not sure why it's broken now!
+

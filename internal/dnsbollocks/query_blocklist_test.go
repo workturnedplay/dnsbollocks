@@ -498,9 +498,18 @@ func TestPopulateQueryBlocklistRowState_ExceptedRequiresExactPattern(t *testing.
 	}
 }
 
-func TestBuildIsQueryBlocklistUnblockedPredicate_ExceptedRequiresExactPattern(t *testing.T) {
+func TestBuildIsRecentBlockUnblockedPredicate_ExceptedRequiresExactPattern(t *testing.T) {
 	log := discardLogger()
 	store := newRuleStore()
+
+	cfg := Config{
+		WhitelistMode: false,
+	}
+	var liveConfigs atomic.Pointer[LiveConfigs]
+	liveConfigs.Store(&LiveConfigs{
+		Resolved: &cfg,
+		Raw:      &cfg,
+	})
 
 	var extPtr atomic.Pointer[ExternalHostsBlocklistSource]
 	extPtr.Store(&ExternalHostsBlocklistSource{
@@ -508,13 +517,17 @@ func TestBuildIsQueryBlocklistUnblockedPredicate_ExceptedRequiresExactPattern(t 
 		HostCount: 1,
 	})
 
-	ui := &AdminUI{queryBlocklistStore: store, externalBlocklist: &extPtr}
+	ui := &AdminUI{
+		liveConfigs:         &liveConfigs,
+		queryBlocklistStore: store,
+		externalBlocklist:   &extPtr,
+	}
 
 	if _, err := store.AddRule(queryBlockCategoryExcept, "*.example.com", true, log); err != nil {
 		t.Fatalf("AddRule failed: %v", err)
 	}
 
-	pred := ui.buildIsQueryBlocklistUnblockedPredicate()
+	pred := ui.buildIsRecentBlockUnblockedPredicate()
 
 	if pred("tracker.example.com", "A") {
 		t.Error("expected wildcard except match to NOT count as 'unblocked' (no exact-pattern rule to re-block via the UI control)")
