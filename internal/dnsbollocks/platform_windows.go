@@ -159,6 +159,8 @@ type Config struct {
 	LogEverythingFile                string `json:"log_file"    desc:"filename(no path!) to the full system log file (JSON lines, all levels including debug). Created automatically."`
 	ConsoleLogLevel                  string `json:"console_log_level" desc:"Minimum log level printed to the console: 'debug', 'info', 'warn', or 'error'. File logs always receive all levels."`
 	LogMaxSizeMB                     int    `json:"log_max_size_mb"   desc:"Maximum log file size in megabytes before rotation. Rotated files are renamed with a sequential numeric suffix (.1, .2, ...)."`
+	LogSyncIntervalSec               int    `json:"log_sync_interval_sec" desc:"Seconds between forced flushes (fsync) of all log files to stable storage. Whichever of this or log_sync_every_n_messages trips first syncs ALL log files at once and resets both counters, so neither fires again early. 0 disables the time-based trigger. Without any trigger, log data reaches disk whenever the OS decides (or at rotation/shutdown), so a power loss can lose recent lines."`
+	LogSyncEveryNMessages            int    `json:"log_sync_every_n_messages" desc:"Number of log lines written (counted across all log files combined) after which ALL log files are synced to stable storage; see log_sync_interval_sec, which shares the same reset behaviour. 0 disables the message-count trigger."`
 	AllowRunAsAdmin                  bool   `json:"allow_run_as_admin" desc:"If false (default), the process exits immediately when running with Windows administrator privileges as a safety guardrail."`
 	HideConsole                      bool   `json:"hide_console" desc:"If true, detaches from the console window entirely at startup (equivalent in effect to a -H=windowsgui build)(for max.effect run it from a .lnk not from a .bat unless you append an & in the .bat): no console window is shown and no console I/O is possible for the remainder of this run. Interactive features (initial password-setup prompt, Ctrl+R/Ctrl+X/Ctrl+C/Alt+V keyboard shortcuts) become unavailable once detached, so webui_password_hash must already be set beforehand (e.g. run --hash-password once with this off first). Use the WebUI instead: Apply & Reload replaces Ctrl+R, and the Shutdown button on the Stats page replaces Ctrl+X. Logging continues to the configured log files unaffected. Re-checked only at startup, never on reload; toggling this requires a full process restart to take effect."`
 	BlockAAAAasEmptyNoError          bool   `json:"block_aaaa_as_empty_noerror" desc:"Return NOERROR with an empty answer for blocked AAAA queries instead of NXDOMAIN, preventing Windows from caching the domain as non-existent and breaking IPv4 fallback (e.g. ssh to github.com)."`
@@ -1885,6 +1887,8 @@ func defaultConfig() Config {
 		LogEverythingFile:                "dnsbollocks.log",
 		ConsoleLogLevel:                  consoleLogLevelInfo,
 		LogMaxSizeMB:                     4095, // Rotation threshold
+		LogSyncIntervalSec:               30,
+		LogSyncEveryNMessages:            100,
 		AllowRunAsAdmin:                  false,
 		HideConsole:                      false,
 		BlockAAAAasEmptyNoError:          true,
@@ -13279,6 +13283,12 @@ type rotatingLogWriter struct {
 	file     *os.File
 	size     int64
 	logger   *slog.Logger
+
+	// onWrite, if non-nil, is called (while w.mu is held) after every
+	// successful Write. It MUST be non-blocking and must never call back into
+	// this writer (see logSyncCoordinator.NoteMessage). Set once, right after
+	// construction and before the writer is shared with any other goroutine.
+	onWrite func()
 }
 
 func newRotatingLogWriter(path string, maxMB int, logger *slog.Logger) (*rotatingLogWriter, error) {
@@ -13362,6 +13372,9 @@ func (w *rotatingLogWriter) Write(p []byte) (n int, err error) {
 	}
 
 	if err == nil {
+		if w.onWrite != nil {
+			w.onWrite()
+		}
 		return n, nil
 	} else {
 		return n, fmt.Errorf("rotatingLogWriter, failed to write to the rotating logger file: %w", err)
@@ -14887,6 +14900,22 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		shouldSaveConfig = true
 	}
 
+	// NOTE: 0 is intentionally valid for both log-sync settings (disables that
+	// trigger, per each field's desc tag); only negative values are clamped.
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogSyncIntervalSec)),
+		&resolvedCfg.LogSyncIntervalSec, &rawCfg.LogSyncIntervalSec,
+		func(v int) bool { return v < 0 }, defaultCfg.LogSyncIntervalSec,
+		" (must be >= 0; 0 disables the time-based log sync)") {
+		shouldSaveConfig = true
+	}
+
+	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.LogSyncEveryNMessages)),
+		&resolvedCfg.LogSyncEveryNMessages, &rawCfg.LogSyncEveryNMessages,
+		func(v int) bool { return v < 0 }, defaultCfg.LogSyncEveryNMessages,
+		" (must be >= 0; 0 disables the message-count-based log sync)") {
+		shouldSaveConfig = true
+	}
+
 	// =========================================================================
 	// IP Strings Parsing & Post-Processing Operations
 	// =========================================================================
@@ -15768,6 +15797,23 @@ func extractFieldModifiedAtTimestamps(log *slog.Logger, data []byte) (map[string
 	return out, nil
 }
 
+// Sync flushes the current log file's OS buffers to stable storage. It is safe
+// to call from any goroutine (it takes w.mu, exactly like Write/Close), and is
+// a no-op returning nil if the file is currently closed (e.g. after Close).
+func (w *rotatingLogWriter) Sync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	if err := w.file.Sync(); err != nil {
+		return fmt.Errorf("rotatingLogWriter.Sync() failed for %q: %w", w.path, err)
+	}
+	return nil
+}
+
+var _ logSyncer = (*rotatingLogWriter)(nil)
+
 // Close syncs and closes the underlying log file.
 // The writer must not be used after Close returns.
 func (w *rotatingLogWriter) Close() error {
@@ -16071,6 +16117,182 @@ func (w *AsyncLogWriter) Close() error {
 var _ io.Writer = (*AsyncLogWriter)(nil)
 var _ io.Closer = (*AsyncLogWriter)(nil)
 
+// logSyncer is anything logSyncCoordinator can flush to stable storage.
+type logSyncer interface {
+	Sync() error
+}
+
+type registeredLogSyncer struct {
+	name   string
+	syncer logSyncer
+}
+
+// logSyncCoordinator syncs ALL registered log files together whenever either
+// trigger trips: interval elapsed (Config.LogSyncIntervalSec) or everyN log
+// lines were written across all files combined (Config.LogSyncEveryNMessages).
+// After any sync both triggers are reset, so the other trigger never causes an
+// early redundant sync right afterward. A trigger value <= 0 is disabled; if
+// both are disabled no goroutine is ever started.
+//
+// Syncs happen on the coordinator's own goroutine, never on the goroutine
+// producing log lines: NoteMessage (the only thing the write path calls) is
+// an atomic increment plus a non-blocking channel send.
+//
+// One instance is created per LoggerManager.ApplyConfig call and registered as
+// an io.Closer ahead of the writers it syncs, so a Reload() stops the old
+// coordinator before closing the old writers.
+type logSyncCoordinator struct {
+	interval time.Duration
+	everyN   int64
+
+	mu      sync.Mutex
+	syncers []registeredLogSyncer
+
+	pending atomic.Int64
+	trigger chan struct{} // capacity 1; a pending trigger is never queued twice
+	stop    chan struct{}
+	done    chan struct{}
+
+	startOnce sync.Once
+	closeOnce sync.Once
+	started   atomic.Bool
+}
+
+func newLogSyncCoordinator(intervalSec, everyN int) *logSyncCoordinator {
+	var n int64
+	if everyN > 0 {
+		n = int64(everyN)
+	}
+	return &logSyncCoordinator{
+		interval: secondsToDuration(intervalSec), // saturating; <= 0 -> 0 (disabled)
+		everyN:   n,
+		trigger:  make(chan struct{}, 1),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+// register adds a syncer. Must be called before Start.
+func (c *logSyncCoordinator) register(name string, s logSyncer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.syncers = append(c.syncers, registeredLogSyncer{name: name, syncer: s})
+}
+
+// NoteMessage records that one log line was written. Never blocks; safe to
+// call while holding a writer's mutex. Safe on a nil receiver.
+func (c *logSyncCoordinator) NoteMessage() {
+	if c == nil || c.everyN <= 0 {
+		return
+	}
+	if c.pending.Add(1) >= c.everyN {
+		select {
+		case c.trigger <- struct{}{}:
+		default: // a trigger is already pending
+		}
+	}
+}
+
+// Start launches the background goroutine if at least one trigger is enabled.
+func (c *logSyncCoordinator) Start() {
+	if c.interval <= 0 && c.everyN <= 0 {
+		return
+	}
+	c.startOnce.Do(func() {
+		c.started.Store(true)
+		go c.run()
+	})
+}
+
+func (c *logSyncCoordinator) run() {
+	defer close(c.done)
+
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if c.interval > 0 {
+		timer = time.NewTimer(c.interval)
+		defer timer.Stop()
+		timerC = timer.C
+	}
+
+	for {
+		var reason string
+		select {
+		case <-c.stop:
+			return
+		case <-c.trigger:
+			reason = "message_count"
+		case <-timerC:
+			reason = "interval"
+		}
+
+		// Reset BOTH triggers before syncing (lines written during the sync
+		// count toward the next round), and discard any trigger that raced in
+		// alongside the one we're handling so it can't cause an immediate
+		// redundant second sync. If N lines really did arrive in that tiny
+		// window, the very next NoteMessage re-trips the trigger.
+		c.pending.Store(0)
+		select {
+		case <-c.trigger:
+		default:
+		}
+
+		c.syncAll(reason)
+
+		if timer != nil {
+			timer.Reset(c.interval) // Go 1.23+ semantics: no stale-value drain needed
+		}
+	}
+}
+
+// syncAll syncs every registered file sequentially. Failures and stalls are
+// reported straight to os.Stderr rather than through slog: logging from here
+// would itself produce log lines (feeding the message counter) and would go
+// through the very files that may be failing.
+func (c *logSyncCoordinator) syncAll(reason string) {
+	c.mu.Lock()
+	targets := slices.Clone(c.syncers)
+	c.mu.Unlock()
+
+	for _, t := range targets {
+		select {
+		case <-c.stop:
+			return
+		default:
+		}
+
+		start := time.Now()
+		err := t.syncer.Sync()
+		if elapsed := time.Since(start); elapsed > DISK_STALL_DETECT_AFTER_THIS_MANY_SECONDS*time.Second {
+			fmt.Fprintf(os.Stderr, "[logSyncCoordinator] sync of %q took %v (reason: %s)\n", t.name, elapsed, reason)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[logSyncCoordinator] sync of %q failed (reason: %s): %v\n", t.name, reason, err)
+		}
+	}
+}
+
+// Close stops the coordinator and waits (bounded by
+// asyncLogWriterCloseDrainTimeout, so a hung fsync can't hang Reload/shutdown)
+// for its goroutine to exit. Idempotent; safe if never started. Always returns
+// nil: a sync stall is reported on stderr, not treated as a Close failure.
+func (c *logSyncCoordinator) Close() error {
+	c.closeOnce.Do(func() { close(c.stop) })
+	if !c.started.Load() {
+		return nil
+	}
+	timer := time.NewTimer(asyncLogWriterCloseDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-c.done:
+	case <-timer.C:
+		fmt.Fprintf(os.Stderr, "[logSyncCoordinator] WARNING: sync goroutine did not exit within %s during Close(); a log file sync is probably stuck\n", asyncLogWriterCloseDrainTimeout)
+	}
+	return nil
+}
+
+var _ io.Closer = (*logSyncCoordinator)(nil)
+
 // LoggerManager owns the active *slog.Logger and any underlying file handles
 // (rotatingLogWriters) so callers can reinitialise or close them cleanly.
 //
@@ -16250,6 +16472,11 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// succeeded (see closeOpenedOnFailure).
 	var asyncWriters []*AsyncLogWriter
 
+	// One coordinator per ApplyConfig: syncs every log file opened below
+	// together (see logSyncCoordinator). Registered with lm.closers further
+	// down, ahead of the writers it syncs.
+	syncCoord := newLogSyncCoordinator(cfg.LogSyncIntervalSec, cfg.LogSyncEveryNMessages)
+
 	// closeOpenedOnFailure releases every writer opened so far in this call.
 	// Without this, a later openLog() failing (e.g. the queries log file,
 	// after the full log file already opened successfully) would silently
@@ -16257,6 +16484,9 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	// goroutine forever, since it would never be registered with
 	// lm.closers and thus never closed by anyone.
 	closeOpenedOnFailure := func() {
+		if err := syncCoord.Close(); err != nil {
+			log.Warn("error closing log sync coordinator while unwinding a failed ApplyConfig", wincoe.SafeErr(err))
+		}
 		for _, w := range asyncWriters {
 			if err := w.Close(); err != nil {
 				log.Warn("error closing log writer while unwinding a failed ApplyConfig", wincoe.SafeErr(err))
@@ -16298,6 +16528,10 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		// background drain goroutine starts, so blocking briefly here (unlike
 		// per-query log writes further below) is fine.
 		writer.RotateIfNeeded()
+		// Wired before the writer is shared with its drain goroutine (started
+		// by newAsyncLogWriter below), so onWrite needs no synchronization.
+		writer.onWrite = syncCoord.NoteMessage
+		syncCoord.register(path, writer)
 		async := newAsyncLogWriter(writer, path)
 		asyncWriters = append(asyncWriters, async)
 		return async, nil
@@ -16348,9 +16582,13 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 	}).With(slog.Int("pid", os.Getpid()))
 
 	// Reinit closes old async log writers (if any) and registers these new ones.
-	closers := make([]io.Closer, len(asyncWriters))
-	for i, w := range asyncWriters {
-		closers[i] = w
+	// The coordinator goes FIRST so that, on the next reinit/shutdown, it stops
+	// before the writers it syncs are closed.
+	syncCoord.Start()
+	closers := make([]io.Closer, 0, len(asyncWriters)+1)
+	closers = append(closers, syncCoord)
+	for _, w := range asyncWriters {
+		closers = append(closers, w)
 	}
 	// Reinit publishes improvedLogger to wincoe's package-level fallbacks too
 	// (before closing anything old) — see Reinit's doc comment.
@@ -16378,6 +16616,8 @@ func (lm *LoggerManager) ApplyConfig(cfg *Config) error {
 		slog.String("queries_log", cfg.LogQueriesFile),
 		slog.String("queries_simple_log", cfg.LogQueriesSimpleFile),
 		slog.String("console_level", cfg.ConsoleLogLevel),
+		slog.Int("log_sync_interval_sec", cfg.LogSyncIntervalSec),
+		slog.Int("log_sync_every_n_messages", cfg.LogSyncEveryNMessages),
 	)
 	return nil
 }

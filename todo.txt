@@ -68,3 +68,5 @@ done:
 
 //* "Clear Shown Blocks" button in webUI's /blocks page is clearing nothing: "INFO 2026-09-07T22:25:39.1172047+02:00 WebUI: Cleared visible recent blocks pid=7356 cleared=0". It used to work, not sure why it's broken now!
 
+//* add 2 config.json settings which say how often to sync the log files: one which says sync every X seconds(or minutes) and one which says sync after Y messages were logged; and whichever happens first it syncs then resets the other one so both continue fresh, this resetting will avoid sync-ing more often than it should. These will allow sync-ing less often than on every log line (presumably what's currently happening is sync on every log line). But since there are more than 1 log files, it's unclear to me how this sync-ing of files will happen for all files so that all log files are sync-ed at once instead of each holding a state of the two lines and seconds to sync at thus each would sync whenever their state trips. So I guess then whiever files sends Y messages will trigger the sync for all of them, which is fine with me; also every X seconds all will get sync-ed is also fine with me.
+
