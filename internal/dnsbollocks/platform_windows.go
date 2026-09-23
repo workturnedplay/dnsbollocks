@@ -2123,15 +2123,21 @@ func (h *ColoredConsoleHandler) Handle(ctx context.Context, r slog.Record) error
 	case slog.LevelDebug: // already handled in an 'if' above
 	}
 
-	// --- NEW: Pre-scan for action color ---
+	// --- Pre-scan for query status color ---
 	var statusColor string
+	var cacheNonSuccessResponse bool
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "action" {
+		switch a.Key {
+		case "action":
 			statusColor = QueryActionANSI[a.Value.String()]
-			return false // Stop iterating
+		case "cache_non_success_response":
+			cacheNonSuccessResponse = a.Value.Bool()
 		}
 		return true
 	})
+	if cacheNonSuccessResponse {
+		statusColor = "\x1b[91m" // Bright Red: cached non-NOERROR response
+	}
 	// --------------------------------------
 
 	timeStr := r.Time.Format(TimeStampsFormat) //"15:04:05.000")
@@ -7031,6 +7037,9 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 			slog.String("domain", displayDomain),
 			slog.String("type", typ),
 			slog.String("action", action),
+		}
+		if action == cacheHit && respMsg != nil && respMsg.Rcode != dns.RcodeSuccess {
+			attrs = append(attrs, slog.Bool("cache_non_success_response", true))
 		}
 		if domainIsIDN {
 			attrs = append(attrs, slog.String("domain_punycode", domain))
