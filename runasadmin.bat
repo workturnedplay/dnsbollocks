@@ -16,7 +16,7 @@ setlocal enabledelayedexpansion
 :: 3. Test: Use !SCRIPT_DIR! (safe), do NOT use %SCRIPT_DIR% or %~dp0 (unsafe)
 rem echo Current DIR: "!SCRIPT_DIR!"
 
-echo "It's not necessary to run it as admin at this time (except for seeing full paths for the exe clients that run as Admin)"
+echo "It's not necessary to run it as admin at this time (except for seeing full paths for the exe clients that run as Admin) but also be aware that the script is outdated compared to run.bat !"
 echo "Press Ctrl+C to stop it or..."
 pause
 
