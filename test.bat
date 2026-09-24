@@ -51,7 +51,7 @@ if "!HAS_WORKSPACE!"=="1" (
 )
 
 
-cd /d "%~dp0"
+rem cd /d "%~dp0"
 
 ::echo Running go vet ... (not here, we do this in build.bat)
 ::go.exe vet -mod=vendor ./...

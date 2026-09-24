@@ -9,9 +9,10 @@ setlocal disabledelayedexpansion
 :: ^ needed if called by a 'call me.bat' command where it's already enabled in parent!
 cd /d "%~dp0"
 set "SCRIPT_DIR=%~dp0"
-
+set "scriptf0=%~f0"
+rem endlocal
 :: 2. Enable delayed expansion for script logic
-setlocal enabledelayedexpansion
+rem setlocal enabledelayedexpansion
 
 :: 3. Test: Use !SCRIPT_DIR! (safe), do NOT use %SCRIPT_DIR% or %~dp0 (unsafe)
 rem echo Current DIR: "!SCRIPT_DIR!"
@@ -40,7 +41,10 @@ if "%~1"=="--resized" goto :MAIN_LOGIC
 :: -d: Start in current directory
 :: "%~f0": The full path to THIS script
 :: --resized: A flag we pass so the script knows it's already resized
-wt -w 100 --size 300,30 --pos 0,1100 -d "%cd%" cmd /c "%~f0" --resized %*
+rem echo on
+rem echo "!scriptf0!"
+wt -w 100 --size 300,30 --pos 0,1100 -d "!cd!" cmd /c "!scriptf0!" --resized %*
+rem pause
 exit /b
 
 :MAIN_LOGIC
@@ -81,10 +85,10 @@ rem set "SHIFTED_ARGS=!ALL_ARGS:--resized =!"
 @rem pause
 echo Current working directory is on next line:
 cd
-echo Script is running from "%~dp0"
+echo Script is running from "!SCRIPT_DIR!"
 rem cd /d is a built-in that parses the path differently, it accepts the trailing ^ literally and changes the working directory.
 rem No, lol, it's because of this: "When you do just echo "%~dp0", CMD treats %~dp0 as a standalone token inside quotes, and it preserves the trailing ^ because it’s not immediately followed by another character. So you see the caret in your output. But when you do concatenation... caret is interpreted as an escape → lost."
-cd /d "%~dp0"
+rem cd /d "%~dp0" XXX: we're already in here!
 :: What %~dp0 actually is
 :: %0 → the path used to launch the script
 :: ~d → drive letter
@@ -99,17 +103,16 @@ rem set "READCFG_PRIME=1" not needed anymore
 rem call .\readcfg.bat
 rem even tho we are in %~dp0 already, still doing this to be sure, doesn't work due to "^"(in dir name) getting eaten.
 rem call "%~dp0\readcfg.bat"
-for %%I in (.) do (
-    if /i "%%~fI\" NEQ "%~dp0" (
-        echo Current dir^(1^) does NOT match script dir^(2^) ie. cd /d must've failed earlier, thus we don't want to accidentally call a .bat from the wrong dir.
-        for %%I in (.) do echo 1: "%%~fI"
-        echo 2: "%~dp0"
-    )
+:: Compare !CD!\ against !SCRIPT_DIR! (note the trailing backslash addition)
+if /i "!CD!\" NEQ "!SCRIPT_DIR!" (
+    echo Current dir^(1^) does NOT match script dir^(2^) ie. cd /d must've failed earlier, thus we don't want to accidentally call a .bat from the wrong dir.
+    echo 1: "!CD!"
+    echo 2: "!SCRIPT_DIR!"
 )
 call ".\readcfg.bat" wtw
 set "ec=%ERRORLEVEL%"
 if "!ec!" NEQ "0" (
-  echo Couldn't find readcfg.bat in "%~dp0"
+  echo Couldn't find readcfg.bat in current dir which is "!SCRIPT_DIR!" or it failed with exitcode !ec!
   pause
   exit /b 1
 )

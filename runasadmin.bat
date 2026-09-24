@@ -45,7 +45,7 @@ cd
 echo Script is running from "%~dp0"
 rem cd /d is a built-in that parses the path differently, it accepts the trailing ^ literally and changes the working directory.
 rem No, lol, it's because of this: "When you do just echo "%~dp0", CMD treats %~dp0 as a standalone token inside quotes, and it preserves the trailing ^ because it’s not immediately followed by another character. So you see the caret in your output. But when you do concatenation... caret is interpreted as an escape → lost."
-cd /d "%~dp0"
+rem cd /d "%~dp0" XXX: we're already in here!
 :: What %~dp0 actually is
 :: %0 → the path used to launch the script
 :: ~d → drive letter
@@ -61,10 +61,10 @@ rem call .\readcfg.bat
 rem even tho we are in %~dp0 already, still doing this to be sure, doesn't work due to "^"(in dir name) getting eaten.
 rem call "%~dp0\readcfg.bat"
 for %%I in (.) do (
-    if /i "%%~fI\" NEQ "%~dp0" (
+    if /i "%%~fI\" NEQ "!SCRIPT_DIR!" (
         echo Current dir^(1^) does NOT match script dir^(2^) ie. cd /d must've failed earlier, thus we don't want to accidentally call a .bat from the wrong dir.
         for %%I in (.) do echo 1: "%%~fI"
-        echo 2: "%~dp0"
+        echo 2: "!SCRIPT_DIR!"
     )
 )
 call ".\readcfg.bat" wtw
