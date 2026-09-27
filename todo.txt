@@ -1,5 +1,7 @@
 my todos for dnsbollocks:
 
+* in /rules webui page we should list the symbols (and what they do) that are allowed in a pattern, either next to the "Note:"(tho i don't want it to shift the page too much down vertically and it would if it's listing them and it's visually visible all the time, so maybe make it a toggleable hints section which is hidden by default ? or better: it is open by default but it can remember its state, just like other things we have that remember their state like the filter text, this way it's always showing first time and user can hide it once user knows the symbols thus not using screen real estate unnecessarily) or in the tooltip of the pattern edit box, or better: in both.
+
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.

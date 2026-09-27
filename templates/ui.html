@@ -250,7 +250,8 @@
 
 <ul>
     {{range .Blocks}}
-    <li>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim"{{end}}>
+        <span class="block-time" title="Most recent time this query was blocked (local time). Repeat blocks answered from the DNS cache do not refresh it.">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .UpstreamBlocked}}
@@ -337,7 +338,8 @@
 
 <ul>
     {{range .Allowed}}
-    <li>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim"{{end}}>
+        <span class="block-time" title="Most recent time this query was allowed (local time).">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .QueryBlocklistLocalBlocked}}

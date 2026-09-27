@@ -2568,7 +2568,18 @@ type BlockedQuery struct {
 	DomainDisplay string    `json:"-"` // Unicode display form for the WebUI; computed on read, same as Domain when not an IDN
 	Type          string    `json:"type"`
 	Time          time.Time `json:"time"`
-	IsUnblocked   bool      `json:"-"` // dynamically set for the UI: whether the whitelist layer currently allows this exact domain+type (see buildIsUnblockedPredicate)
+	// TimeDisplay is Time rendered via formatModifiedAt, deliberately the same
+	// "2006-01-02 15:04:05.000" layout the /rules, /hosts, etc. "Last Modified"
+	// columns use, so a block can be compared directly against a rule's
+	// timestamp. Computed on read (see populateBlockedQueryDisplayFields).
+	TimeDisplay string `json:"-"`
+
+	// IsLowPriorityType marks record types (AAAA/HTTPS) that operators rarely
+	// act on, so the /blocks and /allows pages render them dimmed instead of
+	// hiding them. Computed on read (see isLowPriorityRecordType).
+	IsLowPriorityType bool `json:"-"`
+
+	IsUnblocked bool `json:"-"` // dynamically set for the UI: whether the whitelist layer currently allows this exact domain+type (see buildIsUnblockedPredicate)
 
 	// UpstreamBlocked reports whether this entry's most recent block was
 	// caused by the upstream resolver's own response (e.g. it returned
@@ -9621,11 +9632,28 @@ func (ui *AdminUI) buildIsUnblockedPredicate() func(domain, qtype string) bool {
 	}
 }
 
+// isLowPriorityRecordType reports whether qtype is one the /blocks and
+// /allows pages should render dimmed (still listed, just visually
+// de-emphasized): AAAA and HTTPS are almost always just companions of an A
+// query, so they mostly clutter the view without being actionable.
+func isLowPriorityRecordType(qtype string) bool {
+	return qtype == "AAAA" || qtype == "HTTPS"
+}
+
+// populateBlockedQueryDisplayFields fills every "computed on read" field of
+// bq that the /blocks and /allows templates need. Shared by
+// getRecentBlocksCopy and getRecentAllowedCopy so the two can never drift.
+func (ui *AdminUI) populateBlockedQueryDisplayFields(bq *BlockedQuery) {
+	bq.DomainDisplay, _ = punycodeDecodePatternForDisplay(bq.Domain)
+	bq.TimeDisplay = formatModifiedAt(bq.Time)
+	bq.IsLowPriorityType = isLowPriorityRecordType(bq.Type)
+	ui.populateQueryBlocklistRowState(bq)
+}
+
 func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	blocks := ui.recentBlocks.Snapshot(ui.buildIsUnblockedPredicate())
 	for i := range blocks {
-		blocks[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(blocks[i].Domain)
-		ui.populateQueryBlocklistRowState(&blocks[i])
+		ui.populateBlockedQueryDisplayFields(&blocks[i])
 	}
 	return blocks
 }
@@ -9711,8 +9739,7 @@ func (ui *AdminUI) getRecentAllowedCopy() []BlockedQuery {
 	}
 	allowed := ui.recentAllowed.Snapshot(func(_, _ string) bool { return false })
 	for i := range allowed {
-		allowed[i].DomainDisplay, _ = punycodeDecodePatternForDisplay(allowed[i].Domain)
-		ui.populateQueryBlocklistRowState(&allowed[i])
+		ui.populateBlockedQueryDisplayFields(&allowed[i])
 	}
 	return allowed
 }

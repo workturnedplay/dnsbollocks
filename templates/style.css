@@ -553,6 +553,30 @@ tr.edit-row td.edit-id-display {
 .block-action-feedback-success { color: var(--success); font-weight: bold; }
 .block-action-feedback-error { color: var(--danger); font-weight: bold; }
 
+/* Blocks/Allows pages: timestamp prefix, so an entry can be compared against a
+   rule's "Last Modified" (same "YYYY-MM-DD HH:MM:SS.mmm" layout). */
+.block-time {
+    font-family: Consolas, Monaco, monospace;
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-right: 10px;
+    white-space: nowrap;
+}
+
+/* AAAA/HTTPS entries: still listed (and still actionable), but grayed out
+   together with their buttons so they don't compete with the A entries. The
+   whole <li> is filtered (not individual elements) because the button colors
+   above are !important. Fully readable again on hover/focus. */
+li.block-entry-dim {
+    filter: grayscale(0.9);
+    opacity: 0.55;
+    transition: opacity 0.15s;
+}
+li.block-entry-dim:hover,
+li.block-entry-dim:focus-within {
+    opacity: 0.9;
+}
+
 [hidden] {
     display: none !important;
 }
