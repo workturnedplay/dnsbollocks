@@ -10448,17 +10448,121 @@ func (b *logRingBuffer) orderedNewestFirst() []string {
 	return filtered
 }
 
+// negativeFilterTermRE mirrors app.js's /(?:^|\s)!(\S+)/g, which extracts global
+// "!term" exclusions from a filter expression.
+var negativeFilterTermRE = regexp.MustCompile(`(?:^|\s)!(\S+)`)
+
+// logFilterExpr is the parsed form of the WebUI filter expression language,
+// a server-side mirror of app.js's matchesFilterExpression (keep the two in sync):
+//
+//	!term       global exclusion (needs whitespace/start before the '!')
+//	a | b       OR between groups
+//	a & b       AND between terms of a group
+//	a b         words of one term must appear in that order
+//
+// Everything is case-insensitive: the filter is lowercased at parse time and
+// callers must pass already-lowercased text to matches.
+type logFilterExpr struct {
+	negatives []string
+	// orGroups[i] is one OR alternative: a list of AND terms, each a list of
+	// words that must appear in order. A group with zero AND terms matches
+	// everything (mirrors the JS behaviour for e.g. a lone "&").
+	orGroups [][][]string
+}
+
+// parseLogFilterExpression parses rawFilter; an empty/whitespace filter yields
+// an expression that matches every line.
+func parseLogFilterExpression(rawFilter string) logFilterExpr {
+	var expr logFilterExpr
+	filter := strings.ToLower(strings.TrimSpace(rawFilter))
+	if filter == "" {
+		return expr
+	}
+
+	for _, m := range negativeFilterTermRE.FindAllStringSubmatch(filter, -1) {
+		if len(m) < 2 || m[1] == "" {
+			continue
+		}
+		expr.negatives = append(expr.negatives, m[1])
+	}
+	remaining := strings.TrimSpace(negativeFilterTermRE.ReplaceAllString(filter, " "))
+
+	for _, orPart := range strings.Split(remaining, "|") {
+		orPart = strings.TrimSpace(orPart)
+		if orPart == "" {
+			continue
+		}
+		var andTerms [][]string
+		for _, andPart := range strings.Split(orPart, "&") {
+			words := strings.Fields(andPart)
+			if len(words) == 0 {
+				continue
+			}
+			andTerms = append(andTerms, words)
+		}
+		expr.orGroups = append(expr.orGroups, andTerms)
+	}
+	return expr
+}
+
+// isEmpty reports whether the expression matches every line, letting callers
+// skip per-line lowercasing entirely.
+func (f logFilterExpr) isEmpty() bool {
+	return len(f.negatives) == 0 && len(f.orGroups) == 0
+}
+
+// matches reports whether textLower (already lowercased) satisfies the expression.
+func (f logFilterExpr) matches(textLower string) bool {
+	for _, neg := range f.negatives {
+		if strings.Contains(textLower, neg) {
+			return false
+		}
+	}
+	if len(f.orGroups) == 0 {
+		return true
+	}
+	for _, andTerms := range f.orGroups {
+		if matchesAllAndTerms(textLower, andTerms) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAllAndTerms(text string, andTerms [][]string) bool {
+	for _, words := range andTerms {
+		if !containsWordsInOrder(text, words) {
+			return false
+		}
+	}
+	return true
+}
+
+// containsWordsInOrder reports whether every word occurs in text, each one
+// strictly after the end of the previous match.
+func containsWordsInOrder(text string, words []string) bool {
+	pos := 0
+	for _, w := range words {
+		idx := strings.Index(text[pos:], w)
+		if idx < 0 {
+			return false
+		}
+		pos += idx + len(w)
+	}
+	return true
+}
+
 // scanLogFileInto opens path (a rotated backup or the live log file) and
 // streams its lines into buf, applying the same 20MB-lookback truncation
 // for oversized files that renderLogPage has always used. Lines are matched
-// against searchLower (already-lowercased filter text; empty means "match
-// everything") before being added to buf.
+// against filter (see logFilterExpr; an empty filter matches everything)
+// before being added to buf.
 //
 // A missing/unreadable path is silently skipped rather than treated as an
 // error: for a rotated backup that simply doesn't exist (fewer rotations
 // have happened than the requested lookback), that's the expected, normal
 // case.
-func scanLogFileInto(log *slog.Logger, path, searchLower string, buf *logRingBuffer) {
+func scanLogFileInto(log *slog.Logger, path string, filter logFilterExpr, buf *logRingBuffer) {
 	file, err := os.Open(path)
 	if err != nil {
 		return
@@ -10503,7 +10607,7 @@ func scanLogFileInto(log *slog.Logger, path, searchLower string, buf *logRingBuf
 		if line == "" {
 			continue
 		}
-		if searchLower == "" || strings.Contains(strings.ToLower(line), searchLower) {
+		if filter.isEmpty() || filter.matches(strings.ToLower(line)) {
 			buf.add(line)
 		}
 	}
@@ -10587,7 +10691,7 @@ func parseLogRotationParams(r *http.Request) (includeRotated bool, maxRotations 
 // maxRotations of its most recent rotated backups — see
 // listLogRotationFiles) into a single "last cfg.UILogMaxLines matches,
 // newest first" view, optionally filtered by filter (a case-insensitive
-// substring match). Every included file is scanned in oldest-to-newest
+// expression, see logFilterExpr). Every included file is scanned in oldest-to-newest
 // order (oldest rotation first, live file last) into one shared
 // logRingBuffer so the retained-matches cap applies across all of them
 // combined.
@@ -10598,15 +10702,15 @@ func (ui *AdminUI) renderLogPage(w http.ResponseWriter, r *http.Request, pageNam
 		panic2("BUG: called with empty pageName arg in renderLogPage!")
 	}
 
-	searchLower := strings.ToLower(filter)
+	filterExpr := parseLogFilterExpression(filter)
 	buf := newLogRingBuffer(cfg.UILogMaxLines)
 
 	if includeRotated {
 		for _, rotFile := range listLogRotationFiles(filePath, maxRotations) {
-			scanLogFileInto(log, rotFile, searchLower, buf)
+			scanLogFileInto(log, rotFile, filterExpr, buf)
 		}
 	}
-	scanLogFileInto(log, filePath, searchLower, buf)
+	scanLogFileInto(log, filePath, filterExpr, buf)
 
 	var content string
 	if buf.count == 0 {

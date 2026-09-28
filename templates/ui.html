@@ -507,7 +507,7 @@
     <tbody>
         {{range .Hosts}}
         <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}" data-host-enabled="{{.Enabled}}"
-            data-orig-pattern="{{.Pattern}}" data-orig-ips="{{.IPsDisplay}}" data-orig-enabled="{{.Enabled}}">
+            data-orig-pattern="{{.Pattern}}" data-orig-pattern-display="{{.PatternDisplay}}" data-orig-ips="{{.IPsDisplay}}" data-orig-enabled="{{.Enabled}}">
             <td data-col-id="pattern" title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
             <td data-col-id="ips" title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
             <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
@@ -564,7 +564,7 @@
 
 <form method="get" class="mb-20 add-form-row" id="logsFilterForm">
     <label class="filter-label" for="logsSearchQuery">Filter:</label>
-    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="case-insensitive substring..." class="grow-input">
+    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'error | warn !timeout')" class="grow-input table-filter-input" spellcheck="false" autocomplete="off">
     <label class="lbl-spaced">
         <input type="checkbox" id="logsIncludeRotated" name="rotated" value="1" {{if .IncludeRotated}}checked{{end}}>
         Include rotated logs

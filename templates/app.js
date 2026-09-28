@@ -492,7 +492,8 @@
     }
 
     // lastStagedEditRow is the base (non-edit-mode) row whose inline editor was
-    // most recently Staged; see reopenLastStagedEdit.
+    // most recently Staged or Discarded (a no-op Stage counts as a Discard);
+    // see reopenLastStagedEdit. Deliberately NOT required to still be 'staged'.
     let lastStagedEditRow = null;
 
     function rememberStagedEditRow(row) {
@@ -514,7 +515,6 @@
     function reopenLastStagedEdit() {
         const row = lastStagedEditRow;
         if (!row || !row.isConnected || row.hidden ||
-            !row.classList.contains('staged') ||
             row.classList.contains('staged-delete') ||
             row.classList.contains('filtered-out')) {
             return false;
@@ -665,10 +665,13 @@
     // persisted row and reverts the row's displayed values to their original
     // (pre-edit) baseline via applyDisplay. Shared by the Rules/Hosts/Blacklist
     // "Discard" button and by the no-op branch of reconcileStagedEdit.
-    function discardStagedEdit(existingIdx, row, applyDisplay) {
+        function discardStagedEdit(existingIdx, row, applyDisplay) {
         if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
         applyDisplay();
         row.classList.remove('staged');
+        // The row stays on the page (just no longer staged); remember it so
+        // Enter can reopen its editor, exactly as after a normal Stage.
+        rememberStagedEditRow(row);
     }
 
     // reconcileStagedEdit implements the shared "merge this edit into an
@@ -1241,6 +1244,13 @@
         row.appendChild(actionsTd);
         return row;
     } // end of buildHostRowElement
+
+    // origHostPatternDisplay returns the ORIGINAL (pre-any-staged-edit) pattern
+    // of a persisted hosts row in its human-readable/Unicode form. data-orig-pattern
+    // is the ASCII/punycode identity and must only be used as an identity/key.
+    function origHostPatternDisplay(row) {
+        return row.dataset.origPatternDisplay || row.dataset.origPattern || '';
+    }
 
     // applyHostRowDisplay updates a hosts-table row's dataset, visible cells, and
     // its Edit button's dataset to reflect the given pattern/ips. Shared by the
@@ -2120,9 +2130,11 @@
     // local host row and restores its displayed pattern/IPs to the original
     // baseline. Shared by the inline per-row Discard button and the Discard
     // button inside the Edit form.
-    function discardHostEdits(row, origPattern, origIps, origEnabled) {
+    function discardHostEdits(row) {
+        const origPattern = row.dataset.origPattern; // identity (punycode), used only to find the staged edit
         const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-        discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(row, origPattern, origIps, origEnabled));
+        discardStagedEdit(existingIdx, row, () => applyHostRowDisplay(
+            row, origHostPatternDisplay(row), row.dataset.origIps, row.dataset.origEnabled === 'true'));
     }
     
     function editHost(btn) {
@@ -2136,6 +2148,7 @@
         const isStagedAdd = row.classList.contains('staged-add');
         const clientId = row.dataset.stagedClientId;
         const origPattern = row.dataset.origPattern;
+        const origPatternDisplay = origHostPatternDisplay(row);
         const origIps = row.dataset.origIps;
         const origEnabled = row.dataset.origEnabled === 'true';
         row.hidden = true;
@@ -2199,14 +2212,15 @@
                 // back to the original values so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
                 
-                //const isNoOp = newPattern === origPattern && normalizeIPListString(newIPs) === normalizeIPListString(origIps);
-                
-                // FIX: Compare newPattern against the Unicode display pattern (`pat`), not the Punycode `origPattern`.
-                const isNoOp = newPattern === pat.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps) &&
+                // Compare against the ORIGINAL display pattern (never `pat`, which is
+                // the currently displayed, possibly already-staged value: comparing
+                // to it made a second Stage of an unchanged edit look like a no-op
+                // and silently revert it) and never the punycode identity origPattern.
+                const isNoOp = newPattern === origPatternDisplay.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps) &&
                     (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false');
 
                 const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, enabled: enabledChecked ? 'true' : 'false', edit: '1' };
-                const displayPattern = isNoOp ? origPattern : newPattern;
+                const displayPattern = isNoOp ? origPatternDisplay : newPattern;
                 const displayIPs = isNoOp ? origIps : newIPs;
                 const displayEnabled = isNoOp ? origEnabled : enabledChecked;
                 reconcileStagedEdit(existingIdx, isNoOp, '/hosts', fields, row, () => applyHostRowDisplay(row, displayPattern, displayIPs, displayEnabled));
@@ -2232,7 +2246,7 @@
                 editRow.remove();
             } else {
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
-                discardHostEdits(row, origPattern, origIps, origEnabled);
+                discardHostEdits(row);
                 row.classList.remove('being-edited');
                 row.hidden = false;
                 editRow.remove();
@@ -3309,7 +3323,8 @@
                 
                 if (e.key === 'Enter' && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
                     const active = document.activeElement;
-                    if (!active || active === document.body || active === document.documentElement) {
+                    if (!active || active === document.body || active === document.documentElement ||
+                        !active.isConnected || active.getClientRects().length === 0) {
                         if (reopenLastStagedEdit()) {
                             e.preventDefault();
                             return;
@@ -4006,7 +4021,7 @@
                 // instead of hiding it, so it can still be found via the filter
                 // and Undeleted.
                 stageRowDeletion('/hosts', staleEditIdx, { delete: '1', pattern: origPattern }, row,
-                    () => applyHostRowDisplay(row, origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true'));
+                    () => applyHostRowDisplay(row, origHostPatternDisplay(row), row.dataset.origIps, row.dataset.origEnabled === 'true'));
 
                 applyHostsFilter();
                 updateTableBanner();
@@ -4033,7 +4048,7 @@
                 const row = document.getElementById('hostRow_' + index);
                 if (!row || row.classList.contains('staged-add') || row.classList.contains('staged-delete')) return;
                 if (!confirm('Discard all staged changes for this local host and revert it to its original state?')) return;
-                discardHostEdits(row, row.dataset.origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true');
+                discardHostEdits(row);
                 applyHostsFilter();
                 updateTableBanner();
             });
@@ -4289,6 +4304,7 @@
                     row.dataset.listJson = row.dataset.trueListJson;
                 }
                 row.classList.remove('staged');
+                rememberStagedEditRow(row);
                 
                 applyConfigFilter();
                 updateBanner();
@@ -4514,14 +4530,14 @@
             }
 
             if (fields.delete === '1') {
-                applyHostRowDisplay(row, row.dataset.origPattern, row.dataset.origIps, row.dataset.origEnabled === 'true');
+                applyHostRowDisplay(row, origHostPatternDisplay(row), row.dataset.origIps, row.dataset.origEnabled === 'true');
                 row.classList.remove('staged-add');
                 row.classList.add('staged-delete', 'staged');
                 return;
             }
 
             // Staged edit of an existing row.
-            const pattern = fields.pattern || row.dataset.origPattern;
+            const pattern = fields.pattern || origHostPatternDisplay(row);
             const ips = fields.ips || row.dataset.origIps;
             const enabled = fields.enabled === 'true';
 
@@ -4807,7 +4823,7 @@
         setupColumnResizing('configTable', 'configTable');
 
         // --- Apply Log Highlighting on Load ---
-        // Highlight the filter as a SINGLE term (not split on whitespace),
+        // "the filter uses the same expression language as the table pages and is evaluated server-side by parseLogFilterExpression." (not split on whitespace),
         // mirroring renderLogPage's exact substring match in Go
         // (strings.Contains(strings.ToLower(line), searchLower) in
         // platform_windows.go) rather than the table pages' word/AND/OR/NOT
@@ -4865,9 +4881,9 @@
         }
 
         if (logsSearchInput && logOutputPre) {
-            const query = logsSearchInput.value.trim();
-            if (query) {
-                highlightTextNodes(logOutputPre, [query]);
+            const highlightTerms = extractHighlightTerms(logsSearchInput.value.trim().toLowerCase());
+            if (highlightTerms.length > 0) {
+                highlightTextNodes(logOutputPre, highlightTerms);
             }
         }
     }); // end of domcontentloaded
