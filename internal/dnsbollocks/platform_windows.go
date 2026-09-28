@@ -10508,7 +10508,15 @@ func parseLogFilterExpression(rawFilter string) logFilterExpr {
 // isEmpty reports whether the expression matches every line, letting callers
 // skip per-line lowercasing entirely.
 func (f logFilterExpr) isEmpty() bool {
-	return len(f.negatives) == 0 && len(f.orGroups) == 0
+	if len(f.negatives) != 0 {
+		return false
+	}
+	for _, andTerms := range f.orGroups {
+		if len(andTerms) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // matches reports whether textLower (already lowercased) satisfies the expression.
