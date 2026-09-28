@@ -1,7 +1,5 @@
 my todos for dnsbollocks:
 
-* in /rules webui page we should list the symbols (and what they do) that are allowed in a pattern, either next to the "Note:"(tho i don't want it to shift the page too much down vertically and it would if it's listing them and it's visually visible all the time, so maybe make it a toggleable hints section which is hidden by default ? or better: it is open by default but it can remember its state, just like other things we have that remember their state like the filter text, this way it's always showing first time and user can hide it once user knows the symbols thus not using screen real estate unnecessarily) or in the tooltip of the pattern edit box, or better: in both.
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -71,4 +69,6 @@ done:
 //* "Clear Shown Blocks" button in webUI's /blocks page is clearing nothing: "INFO 2026-09-07T22:25:39.1172047+02:00 WebUI: Cleared visible recent blocks pid=7356 cleared=0". It used to work, not sure why it's broken now!
 
 //* add 2 config.json settings which say how often to sync the log files: one which says sync every X seconds(or minutes) and one which says sync after Y messages were logged; and whichever happens first it syncs then resets the other one so both continue fresh, this resetting will avoid sync-ing more often than it should. These will allow sync-ing less often than on every log line (presumably what's currently happening is sync on every log line). But since there are more than 1 log files, it's unclear to me how this sync-ing of files will happen for all files so that all log files are sync-ed at once instead of each holding a state of the two lines and seconds to sync at thus each would sync whenever their state trips. So I guess then whiever files sends Y messages will trigger the sync for all of them, which is fine with me; also every X seconds all will get sync-ed is also fine with me.
+
+//* in /rules webui page we should list the symbols (and what they do) that are allowed in a pattern, either next to the "Note:"(tho i don't want it to shift the page too much down vertically and it would if it's listing them and it's visually visible all the time, so maybe make it a toggleable hints section which is hidden by default ? or better: it is open by default but it can remember its state, just like other things we have that remember their state like the filter text, this way it's always showing first time and user can hide it once user knows the symbols thus not using screen real estate unnecessarily) or in the tooltip of the pattern edit box, or better: in both.
 

@@ -2782,6 +2782,55 @@ func validateRulePattern(pattern string) error {
 	return nil
 }
 
+// PatternSyntaxEntry documents one wildcard token of the pattern language
+// understood by matchPattern (used by the whitelist rules, local hosts and the
+// query blocklist). It feeds both the /rules "Allowed pattern symbols" hints
+// section and the pattern input tooltips, so the two can never drift apart.
+// Meaning must not contain double quotes (it is also embedded in an HTML
+// title attribute).
+type PatternSyntaxEntry struct {
+	Token   string
+	Meaning string
+}
+
+// patternSyntaxHelp must stay in sync with tokenizePattern/matchPattern;
+// TestPatternSyntaxHelp_TokensBehaveAsDocumented enforces that.
+var patternSyntaxHelp = []PatternSyntaxEntry{
+	{Token: "*", Meaning: "zero or more characters, never a dot (stays inside one label)"},
+	{Token: "{*}", Meaning: "one or more characters, never a dot"},
+	{Token: "**", Meaning: "zero or more characters, dots included (can span labels)"},
+	{Token: "{**}", Meaning: "one or more characters, dots included"},
+	{Token: "?", Meaning: "exactly one character, never a dot"},
+	{Token: "!", Meaning: "exactly one character of any kind, a dot included"},
+}
+
+var patternSyntaxNotes = []string{
+	"Literal characters allowed: a-z 0-9 . - _ (matched exactly; your input is lowercased automatically).",
+	"The whole domain name must match: *.example.com matches foo.example.com but NOT example.com itself.",
+	"Unicode (IDN) labels such as café are converted to punycode automatically.",
+	fmt.Sprintf("Maximum pattern length: %d characters.", maxRulePatternLength),
+	"The same symbols work in Local Hosts and Query Blocklist patterns.",
+}
+
+func buildPatternSyntaxTooltip() string {
+	var b strings.Builder
+	b.WriteString("Allowed pattern symbols (the whole domain name must match):")
+	for _, e := range patternSyntaxHelp {
+		b.WriteString("\n")
+		b.WriteString(e.Token)
+		b.WriteString("  =  ")
+		b.WriteString(e.Meaning)
+	}
+	for _, n := range patternSyntaxNotes {
+		b.WriteString("\n- ")
+		b.WriteString(n)
+	}
+	return b.String()
+}
+
+// patternSyntaxTooltip is the ready-made text for the pattern inputs' title attribute.
+var patternSyntaxTooltip = buildPatternSyntaxTooltip()
+
 // validateDNSType returns a non-nil error if typ is not a known DNS type.
 func validateDNSType(typ string) error {
 	if _, ok := dnsTypeSet[typ]; !ok {
@@ -5355,6 +5404,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	if domain == "" || !isValidDNSName(domain) {               // Edge: Empty domain
 		return formerrResponse(reqMsg)
 	}
+	// Keep the client's original casing (root dot trimmed) for LOGGING ONLY;
+	// `domain` above stays lowercased for matching/caching. See queriedNameKey.
+	queriedName := strings.TrimSuffix(q.Name, ".")
+	if ctx != nil { // logQuery reports a nil ctx itself; don't turn that into a panic here
+		ctx = context.WithValue(ctx, queriedNameKey{}, queriedName)
+	}
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// Cache key is derived from domain+qtype alone (see stripECSOption's doc
@@ -5441,7 +5496,7 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 			displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
 			attrs := []any{
 				slog.String("client", clientAddr),
-				slog.String("domain", domain), // Always ASCII/Punycode (the true wire format)
+				slog.String("domain", queriedName), // Always ASCII/Punycode (the true wire format), cased as the client sent it
 				slog.String("exe", exeName),
 				slog.Int(rateTag, rateVal),
 				slog.Int(burstTag, burstVal),
@@ -6637,12 +6692,14 @@ func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool,
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
 	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && len(respMsg.Extra) == 0 {
-		domain := strings.ToLower(strings.TrimSuffix(q.Name, "."))
-		displayDomain, wasIDN := punycodeDecodePatternForDisplay(domain)
+		// Log the name as queried (the upstream echoes our casing); only the
+		// IDN decoding needs the lowercased form.
+		queriedName := strings.TrimSuffix(q.Name, ".")
+		displayDomain, wasIDN := punycodeDecodePatternForDisplay(strings.ToLower(queriedName))
 
 		attrs := []any{
 			slog.String("query_type", qtype),
-			slog.String("domain", domain),
+			slog.String("domain", queriedName),
 			SafeStringSlice("drop_reasons", dropReasons),
 		}
 		if wasIDN {
@@ -7004,6 +7061,34 @@ func formatSimpleQueryLogLine(ts time.Time, typ, domain, action string, ips []st
 
 const TimeStampsFormat string = "2006-01-02T15:04:05.0000000Z07:00" //old: "2006-01-02 15:04:05.000000000-07:00 MST" // older: /*time.RFC3339*/
 
+// queriedNameKey carries the query name exactly as the client cased it (root
+// dot trimmed) through the context, purely so logs can show it verbatim.
+// All matching/caching keeps using the lowercased `domain`.
+type queriedNameKey struct{}
+
+// queriedNameFromContext returns the name stored by handleDNSQuery, or
+// fallback (the lowercased name) if none is present.
+func queriedNameFromContext(ctx context.Context, fallback string) string {
+	if ctx != nil {
+		if name, ok := ctx.Value(queriedNameKey{}).(string); ok && name != "" {
+			return name
+		}
+	}
+	return fallback
+}
+
+// queryLogDomainFields decides how a query's domain is rendered in the query
+// logs. For a plain ASCII name that is simply queriedName (client casing). For
+// an IDN it is the Unicode form (decoded from lowercasedDomain, because the
+// xn-- detection is case-sensitive) plus the raw punycode name as
+// punycodeDomain.
+func queryLogDomainFields(queriedName, lowercasedDomain string) (loggedDomain, punycodeDomain string, isIDN bool) {
+	if unicodeForm, wasIDN := punycodeDecodePatternForDisplay(lowercasedDomain); wasIDN {
+		return unicodeForm, queriedName, true
+	}
+	return queriedName, "", false
+}
+
 func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, ruleID string, ips []string, respMsg *dns.Msg, upstreamState2 UpstreamState) {
 	log := s.getLogger()
 
@@ -7021,13 +7106,12 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	now := time.Now()
 	ts := now.Format(TimeStampsFormat)
 
-	// domain arrives already in wire format (ASCII/punycode for IDNs, since
-	// that's what real DNS queries always contain). Show the human-readable
-	// Unicode form as the primary "domain" log field to match what the WebUI
-	// displays, and only add "domain_punycode" when the two actually differ
-	// (i.e. this really is an IDN domain) — a plain ASCII domain has nothing
-	// extra worth logging twice.
-	displayDomain, domainIsIDN := punycodeDecodePatternForDisplay(domain)
+	// domain arrives lowercased (it's what matching/caching use), but logs
+	// should show the name exactly as the client queried it, which
+	// handleDNSQuery stashes in the context (see queriedNameKey). For an IDN
+	// the primary "domain" field is the human-readable Unicode form (matching
+	// the WebUI) and "domain_punycode" carries the raw wire-format name.
+	loggedDomain, punycodeDomain, domainIsIDN := queryLogDomainFields(queriedNameFromContext(ctx, domain), domain)
 
 	var respMsgStr string
 	if respMsg != nil { //XXX: must do it here, else it will race!
@@ -7045,7 +7129,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		// line and prints a "log was closed" warning instead.
 		log := s.getLogger()
 		var attrs []any = []any{
-			slog.String("domain", displayDomain),
+			slog.String("domain", loggedDomain),
 			slog.String("type", typ),
 			slog.String("action", action),
 		}
@@ -7053,7 +7137,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 			attrs = append(attrs, slog.Bool("cache_non_success_response", true))
 		}
 		if domainIsIDN {
-			attrs = append(attrs, slog.String("domain_punycode", domain))
+			attrs = append(attrs, slog.String("domain_punycode", punycodeDomain))
 		}
 
 		if future, ok := ctx.Value(clientInfoKey{}).(*ClientMetadataFuture); ok {
@@ -7156,7 +7240,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 		// identical timestamp in log_queries (queries.log) for exe/
 		// protocol/rule-id/timing details.
 		if simpleW := s.rt.SimpleQueriesWriter(); simpleW != nil {
-			line := formatSimpleQueryLogLine(now, typ, displayDomain, action, ips)
+			line := formatSimpleQueryLogLine(now, typ, loggedDomain, action, ips)
 			if _, werr := simpleW.Write([]byte(line)); werr != nil {
 				log.Debug("failed to write to simple queries log", wincoe.SafeErr(werr))
 			}
@@ -9196,10 +9280,13 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data := map[string]any{
-			"DNSTypes":       dnsTypes,
-			"Rules":          flatRules, // Passing the flattened slice now
-			"SuccessMessage": r.URL.Query().Get("success"),
-			"ErrorMessage":   r.URL.Query().Get("error"),
+			"DNSTypes":           dnsTypes,
+			"Rules":              flatRules, // Passing the flattened slice now
+			"PatternSyntax":      patternSyntaxHelp,
+			"PatternSyntaxNotes": patternSyntaxNotes,
+			"PatternTooltip":     patternSyntaxTooltip,
+			"SuccessMessage":     r.URL.Query().Get("success"),
+			"ErrorMessage":       r.URL.Query().Get("error"),
 		}
 
 		ui.renderTemplate(w, r, "rules", data)

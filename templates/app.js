@@ -3201,9 +3201,31 @@
         });
     }
 
+    // setupRememberedDetails makes every <details data-remember-key="..."> keep its
+    // open/closed state across page loads via uiStorage. With nothing stored yet the
+    // element keeps whatever the HTML says (the pattern hints ship with `open`).
+    // Elements sharing a key share the state. The native <details> toggling itself
+    // needs no JS, so this only adds the memory.
+    function setupRememberedDetails() {
+        document.querySelectorAll('details[data-remember-key]').forEach(details => {
+            const storageKey = 'details_open_' + details.dataset.rememberKey;
+            const saved = uiStorage.getItem(storageKey);
+            if (saved === '0') {
+                details.open = false;
+            } else if (saved === '1') {
+                details.open = true;
+            }
+            details.addEventListener('toggle', () => {
+                uiStorage.setItem(storageKey, details.open ? '1' : '0');
+            });
+        });
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function() {
         
+        setupRememberedDetails();
+
         // Consolidated Keyboard Handler ensuring typing and Escape contexts operate precisely
         document.addEventListener('keydown', function(e) {
             const activeTag = document.activeElement.tagName;

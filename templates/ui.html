@@ -100,9 +100,10 @@
 <div class="info-banner">
     <strong>Note:</strong> The <a href="/query-blocklist">Query Blocklist</a> is always checked first and takes priority over these rules — a domain blocked there stays blocked even if it matches a rule below.
 </div>
+{{template "pattern-hints" .}}
 {{template "alert-banner" .}}
 <h2>Add New Rule</h2>
-<form id="addRuleForm" method="post" action="/rules">
+<form id="addRuleForm" method="post" action="/rules" class="add-form-row">
     <label class="visually-hidden" for="addRuleType">DNS record type</label>
     <select id="addRuleType" name="type">
         {{range .DNSTypes}}
@@ -115,7 +116,11 @@
         id="addRulePattern"
         type="text"
         name="pattern"
-        placeholder="pattern"
+        class="grow-input"
+        title="{{.PatternTooltip}}"
+        placeholder="pattern, e.g. *.example.com (hover for the allowed symbols)"
+        spellcheck="false"
+        autocomplete="off"
         required
     > 
     <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
@@ -214,7 +219,7 @@
             </select>
         </td>
         <td class="edit-id-display" data-col-id="id"></td>
-        <td data-col-id="pattern"><input type="text" class="edit-pattern w-100"></td>
+        <td data-col-id="pattern"><input type="text" class="edit-pattern w-100" title="{{.PatternTooltip}}"></td>
         <td data-col-id="enabled"><label><input type="checkbox" class="edit-enabled rule-enabled-checkbox"></label></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions" data-col-id="actions">
@@ -229,6 +234,22 @@
         </td>
     </tr>
 </template>
+
+{{/* --- REUSABLE PATTERN-SYNTAX HINTS (open by default; state remembered via data-remember-key, see setupRememberedDetails in app.js) --- */}}
+{{define "pattern-hints"}}
+<details id="patternHints" class="pattern-hints" data-remember-key="patternHints" open>
+    <summary>Allowed pattern symbols (click to hide/show; your choice is remembered)</summary>
+    <dl class="pattern-hints-list">
+        {{range .PatternSyntax}}
+        <dt><code>{{.Token}}</code></dt>
+        <dd>{{.Meaning}}</dd>
+        {{end}}
+    </dl>
+    <ul class="pattern-hints-notes">
+        {{range .PatternSyntaxNotes}}<li>{{.}}</li>{{end}}
+    </ul>
+</details>
+{{end}}
 
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}

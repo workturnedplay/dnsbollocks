@@ -577,6 +577,64 @@ li.block-entry-dim:focus-within {
     opacity: 0.9;
 }
 
+/* Add-forms whose pattern box should take all remaining horizontal space
+   (reusable: add class="add-form-row" to a form and class="grow-input" to its text input). */
+.add-form-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.grow-input {
+    flex: 1 1 320px;
+    min-width: 200px;
+}
+
+/* Pattern-syntax hints (<details>, open by default, state remembered in app.js) */
+.pattern-hints {
+    margin-bottom: 15px;
+    padding: 8px 12px;
+    border-left: 4px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+    background: var(--bg-panel);
+    font-size: 0.9em;
+}
+.pattern-hints > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.pattern-hints > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.pattern-hints-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 3px 16px;
+    margin: 8px 0 4px;
+}
+.pattern-hints-list dt,
+.pattern-hints-list dd {
+    margin: 0;
+}
+.pattern-hints-list dd {
+    color: var(--text-secondary);
+}
+.pattern-hints-list code {
+    background: var(--bg-input);
+    color: var(--success-text);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: Consolas, Monaco, monospace;
+}
+.pattern-hints-notes {
+    margin: 6px 0 2px;
+    padding-left: 20px;
+    color: var(--text-secondary);
+}
+
 [hidden] {
     display: none !important;
 }
