@@ -2831,6 +2831,15 @@ func buildPatternSyntaxTooltip() string {
 // patternSyntaxTooltip is the ready-made text for the pattern inputs' title attribute.
 var patternSyntaxTooltip = buildPatternSyntaxTooltip()
 
+// addPatternSyntaxData injects the pattern-syntax help (hints section +
+// input tooltips) into a page's template data. Every page whose inputs accept
+// matchPattern patterns (Rules, Local Hosts, Query Blocklist) must call this.
+func addPatternSyntaxData(data map[string]any) {
+	data["PatternSyntax"] = patternSyntaxHelp
+	data["PatternSyntaxNotes"] = patternSyntaxNotes
+	data["PatternTooltip"] = patternSyntaxTooltip
+}
+
 // validateDNSType returns a non-nil error if typ is not a known DNS type.
 func validateDNSType(typ string) error {
 	if _, ok := dnsTypeSet[typ]; !ok {
@@ -9280,14 +9289,12 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data := map[string]any{
-			"DNSTypes":           dnsTypes,
-			"Rules":              flatRules, // Passing the flattened slice now
-			"PatternSyntax":      patternSyntaxHelp,
-			"PatternSyntaxNotes": patternSyntaxNotes,
-			"PatternTooltip":     patternSyntaxTooltip,
-			"SuccessMessage":     r.URL.Query().Get("success"),
-			"ErrorMessage":       r.URL.Query().Get("error"),
+			"DNSTypes":       dnsTypes,
+			"Rules":          flatRules, // Passing the flattened slice now
+			"SuccessMessage": r.URL.Query().Get("success"),
+			"ErrorMessage":   r.URL.Query().Get("error"),
 		}
+		addPatternSyntaxData(data)
 
 		ui.renderTemplate(w, r, "rules", data)
 		return
@@ -9571,6 +9578,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			"SuccessMessage":                   r.URL.Query().Get("success"),
 			"ErrorMessage":                     r.URL.Query().Get("error"),
 		}
+		addPatternSyntaxData(data)
 
 		ui.renderTemplate(w, r, "hosts", data)
 		return
@@ -18716,6 +18724,7 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 			"SuccessMessage":        r.URL.Query().Get("success"),
 			"ErrorMessage":          r.URL.Query().Get("error"),
 		}
+		addPatternSyntaxData(data)
 		ui.renderTemplate(w, r, "query-blocklist", data)
 		return
 	}

@@ -127,13 +127,13 @@
     <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
-<div class="filter-spacer">
-    <label class="visually-hidden" for="rulesFilter">Filter whitelist rules</label>
+<div class="filter-spacer filter-row">
+    <label class="filter-label" for="rulesFilter">Filter:</label>
     <input
     type="text"
     id="rulesFilter"
-    class="table-filter-input w-100"
-    placeholder="Filter rules... '/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'face | fbcdn !hugging')"
+    class="table-filter-input"
+    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'face | fbcdn !hugging')"
     >
 </div>
 
@@ -419,18 +419,23 @@
     The <a href="/query-blocklist">Query Blocklist</a> is still checked first and takes priority over local host overrides (set local_hosts_override_query_blocklist to change this).
     {{end}}
 </div>
+{{template "pattern-hints" .}}
 {{template "alert-banner" .}}
 
 <h2>Add New Local Host</h2>
-<form id="addHostForm" method="post" action="/hosts">
+<form id="addHostForm" method="post" action="/hosts" class="add-form-row">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    
+
     <label class="visually-hidden" for="addHostPattern">Host pattern</label>
     <input
         id="addHostPattern"
         type="text"
         name="pattern"
-        placeholder="pattern (e.g. router.local)"
+        class="grow-input"
+        title="{{.PatternTooltip}}"
+        placeholder="pattern, e.g. router.local or *.lan (hover for the allowed symbols)"
+        spellcheck="false"
+        autocomplete="off"
         required
     >
 
@@ -439,8 +444,10 @@
         id="addHostIPs"
         type="text"
         name="ips"
+        class="grow-input"
         placeholder="IPs (comma or space separated, e.g. 192.168.1.1, 192.168.1.2)"
-        class="w-280"
+        spellcheck="false"
+        autocomplete="off"
         required
     >
 
@@ -448,13 +455,13 @@
     <button type="submit">Add Host</button>
 </form>
 
-<div class="filter-spacer">
-    <label class="visually-hidden" for="hostsFilter">Filter local hosts</label>
+<div class="filter-spacer filter-row">
+    <label class="filter-label" for="hostsFilter">Filter:</label>
     <input
     type="text"
     id="hostsFilter"
-    class="table-filter-input w-100"
-    placeholder="Filter hosts... '/' to focus | space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'router | nas !192')"
+    class="table-filter-input"
+    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'router | nas !192')"
     >
 </div>
 
@@ -533,7 +540,7 @@
     <tr class="edit-host-row">
         <td data-col-id="pattern">
             <input type="hidden" name="old_pattern" class="edit-host-old-pattern" form="">
-            <input type="text" name="pattern" class="edit-host-pattern w-100" form="" required>
+            <input type="text" name="pattern" class="edit-host-pattern w-100" title="{{.PatternTooltip}}" form="" required>
         </td>
         <td data-col-id="ips"><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
         <td data-col-id="enabled"><label><input type="checkbox" name="enabled" class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
@@ -555,9 +562,9 @@
 {{define "logs"}}
 <h2>{{.Title}}</h2>
 
-<form method="get" class="mb-20 d-flex gap-10" id="logsFilterForm">
-    <label class="visually-hidden" for="logsSearchQuery">Search logs</label>
-    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="Search logs..." class="w-300">
+<form method="get" class="mb-20 add-form-row" id="logsFilterForm">
+    <label class="filter-label" for="logsSearchQuery">Filter:</label>
+    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="case-insensitive substring..." class="grow-input">
     <label class="lbl-spaced">
         <input type="checkbox" id="logsIncludeRotated" name="rotated" value="1" {{if .IncludeRotated}}checked{{end}}>
         Include rotated logs
@@ -599,13 +606,13 @@
     </form>
 </div>
 
-<div class="filter-spacer">
-    <label class="visually-hidden" for="blacklistFilter">Filter response blacklist</label>
+<div class="filter-spacer filter-row">
+    <label class="filter-label" for="blacklistFilter">Filter:</label>
     <input
     type="text"
     id="blacklistFilter"
-    class="table-filter-input w-100"
-    placeholder="Filter entries... space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. '10.0 | 192.168 !/8')"
+    class="table-filter-input"
+    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. '10.0 | 192.168 !/8')"
     >
 </div>
 
@@ -701,8 +708,10 @@
     This blocklist is checked <strong>before</strong> the whitelist Rules and Local Hosts pages, and always takes priority over them (see whitelist_mode in config.json too). "Block" patterns block a query outright. "Except" patterns only cancel a block coming from the read-only external hosts file below — they never bypass the normal whitelist/default policy on their own.
 </p>
 
+{{template "pattern-hints" .}}
+
 <h2>Add New Query-Blocklist Rule</h2>
-<form id="addQueryBlockForm" method="post" action="/query-blocklist">
+<form id="addQueryBlockForm" method="post" action="/query-blocklist" class="add-form-row">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <label class="visually-hidden" for="addQBCategory">Category</label>
     <select id="addQBCategory" name="category">
@@ -714,20 +723,24 @@
         id="addQBPattern"
         type="text"
         name="pattern"
-        placeholder="pattern (e.g. ads.example.com or *.tracker.example)"
+        class="grow-input"
+        title="{{.PatternTooltip}}"
+        placeholder="pattern, e.g. ads.example.com or *.tracker.example (hover for the allowed symbols)"
+        spellcheck="false"
+        autocomplete="off"
         required
     >
     <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
     <button type="submit" class="btn-add">Add</button>
 </form>
 
-<div class="filter-spacer">
-    <label class="visually-hidden" for="queryBlocklistFilter">Filter query-blocklist rules</label>
+<div class="filter-spacer filter-row">
+    <label class="filter-label" for="queryBlocklistFilter">Filter:</label>
     <input
     type="text"
     id="queryBlocklistFilter"
-    class="table-filter-input w-100"
-    placeholder="Filter rules... '/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'ads | tracker !safe')"
+    class="table-filter-input"
+    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'ads | tracker !safe')"
     >
 </div>
 
@@ -820,7 +833,7 @@
             </select>
         </td>
         <td class="edit-id-display" data-col-id="id"></td>
-        <td data-col-id="pattern"><input type="text" class="edit-qb-pattern w-100"></td>
+        <td data-col-id="pattern"><input type="text" class="edit-qb-pattern w-100" title="{{.PatternTooltip}}"></td>
         <td data-col-id="enabled"><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions" data-col-id="actions">
@@ -850,9 +863,9 @@
     {{end}}
 </p>
 {{if not .External.LoadError}}
-<form method="get" action="/query-blocklist" class="mb-20 d-flex gap-10" id="extHostsSearchForm">
-    <label class="visually-hidden" for="extHostsSearchQuery">Search external hosts-file source</label>
-    <input id="extHostsSearchQuery" type="text" name="extq" value="{{.ExternalSearchQuery}}" placeholder="Search this read-only file (e.g. tracker or ads.example.com)..." class="w-300">
+<form method="get" action="/query-blocklist" class="mb-20 add-form-row" id="extHostsSearchForm">
+    <label class="filter-label" for="extHostsSearchQuery">Search:</label>
+    <input id="extHostsSearchQuery" type="text" name="extq" value="{{.ExternalSearchQuery}}" placeholder="Search this read-only file (e.g. tracker or ads.example.com)..." class="grow-input">
     <label class="lbl-spaced" for="extHostsMaxResults">Max results:</label>
     <input id="extHostsMaxResults" type="number" name="extmax" min="1" max="{{.ExternalSearchHardCap}}" value="{{.ExternalSearchMax}}" class="w-280">
     <button type="submit">Search</button>
@@ -920,7 +933,7 @@
 <h2>Engine Statistics</h2>
 <div class="stats-container">
     <p>Process ID (PID): {{.PID}}</p>
-    <p>Blocks: "{{.Blocks}}"</p>
+    <p>Blocked queries: {{.BlockedQueries}}</p>
     <p>Upstream URLs: {{.UpstreamURLs}}</p>
     <p>Upstream SNIs: {{.UpstreamSNIs}}</p>
     <p>Upstream IPs: {{.UpstreamIPs}}</p>
@@ -993,10 +1006,10 @@
     </div>
 </div>
 
-<div class="mb-20">
-    <label class="visually-hidden" for="configFilter">Filter configuration settings</label>
-    <input type="text" id="configFilter" class="table-filter-input w-100"
-    placeholder="Filter settings... space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'timeout | rate !sec')"
+<div class="mb-20 filter-row">
+    <label class="filter-label" for="configFilter">Filter:</label>
+    <input type="text" id="configFilter" class="table-filter-input"
+    placeholder="space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'timeout | rate !sec')"
     >
 </div>
 <div class="config-global-notice">

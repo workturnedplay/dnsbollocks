@@ -590,6 +590,22 @@ li.block-entry-dim:focus-within {
     min-width: 200px;
 }
 
+/* Visible "Filter:" label next to a full-width filter box */
+.filter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.filter-label {
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.filter-row .table-filter-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 /* Pattern-syntax hints (<details>, open by default, state remembered in app.js) */
 .pattern-hints {
     margin-bottom: 15px;

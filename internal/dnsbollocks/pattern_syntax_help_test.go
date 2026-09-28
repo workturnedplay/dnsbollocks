@@ -114,3 +114,47 @@ func TestRulesHandler_RendersPatternHintsAndTooltips(t *testing.T) {
 		t.Error("add-form pattern input should use the grow-input class")
 	}
 }
+
+func TestPatternHints_RenderedOnEveryPatternPage(t *testing.T) {
+	pages := []struct {
+		name       string
+		path       string
+		handler    func(*AdminUI, http.ResponseWriter, *http.Request)
+		addInputID string
+	}{
+		{"rules", "/rules", (*AdminUI).rulesHandler, "addRulePattern"},
+		{"hosts", "/hosts", (*AdminUI).hostsHandler, "addHostPattern"},
+		{"query-blocklist", "/query-blocklist", (*AdminUI).queryBlocklistHandler, "addQBPattern"},
+	}
+
+	for _, pg := range pages {
+		t.Run(pg.name, func(t *testing.T) {
+			ui, rec := setupTestAdminUI(t)
+			ui.uiTemplates = uiTemplates0
+
+			req := httptest.NewRequest(http.MethodGet, pg.path, http.NoBody)
+			pg.handler(ui, rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+
+			if !regexp.MustCompile(`<details id="patternHints"[^>]*\sopen`).MatchString(body) {
+				t.Error("expected the pattern hints <details> to be rendered open by default")
+			}
+			for _, e := range patternSyntaxHelp {
+				if !strings.Contains(body, "<code>"+e.Token+"</code>") {
+					t.Errorf("hints section is missing token %q", e.Token)
+				}
+			}
+			inputRE := `<input[^>]*id="` + pg.addInputID + `"[^>]*`
+			if !regexp.MustCompile(inputRE + `title="[^"]+"`).MatchString(body) {
+				t.Errorf("add-form input %q has no tooltip", pg.addInputID)
+			}
+			if !regexp.MustCompile(inputRE + `grow-input`).MatchString(body) {
+				t.Errorf("add-form input %q should use the grow-input class", pg.addInputID)
+			}
+		})
+	}
+}

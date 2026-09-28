@@ -491,6 +491,41 @@
         location.reload();
     }
 
+    // lastStagedEditRow is the base (non-edit-mode) row whose inline editor was
+    // most recently Staged; see reopenLastStagedEdit.
+    let lastStagedEditRow = null;
+
+    function rememberStagedEditRow(row) {
+        lastStagedEditRow = row || null;
+    }
+
+    // focusAndSelectInput focuses an edit-row input and selects its text so
+    // the operator can immediately type or press Enter.
+    function focusAndSelectInput(input) {
+        if (!input) return;
+        input.focus();
+        if (typeof input.select === 'function') input.select();
+    }
+
+    // reopenLastStagedEdit re-opens the inline editor of the row that was most
+    // recently Staged, provided it is still a live, visible, staged (not
+    // deleted / discarded / filtered-out) row and no other editor is open.
+    // Returns true if it opened one.
+    function reopenLastStagedEdit() {
+        const row = lastStagedEditRow;
+        if (!row || !row.isConnected || row.hidden ||
+            !row.classList.contains('staged') ||
+            row.classList.contains('staged-delete') ||
+            row.classList.contains('filtered-out')) {
+            return false;
+        }
+        if (document.querySelector('.edit-row, .edit-host-row')) return false;
+        const editBtn = row.querySelector('.btn-edit');
+        if (!editBtn) return false;
+        editBtn.click();
+        return true;
+    }
+
     function updateTableBanner() {
         const count = stagedTableChanges.length;
         document.querySelectorAll('.staged-table-banner').forEach(banner => {
@@ -1126,6 +1161,7 @@
 
         ensureRowMatchesTableOrder(editRow, document.getElementById('queryBlocklistTable'));
         row.after(clone);
+        focusAndSelectInput(patternInput);
     }
 
     function cancelQueryBlockEdit(id) {
@@ -2208,6 +2244,7 @@
         // 6. Insert cleanly into the DOM (cells aligned to current column order)
         ensureRowMatchesTableOrder(editRow, document.getElementById('hostsTable'));
         row.after(clone);
+        focusAndSelectInput(patternInput);
     }
     
     function cancelHostEdit(index) {
@@ -2322,6 +2359,7 @@
         
         ensureRowMatchesTableOrder(editRow, document.getElementById('blacklistTable'));
         row.after(clone);
+        focusAndSelectInput(cidrInput);
     }
     
     function cancelBlacklistEdit(index) {
@@ -2563,8 +2601,33 @@
             applyConfigFilter();
         }, { once: true });
         
+        const stageBtn = clone.querySelector('.config-stage-btn');
+
+        // Enter stages (Ctrl+Enter inside the multi-line list textarea, where
+        // plain Enter must keep inserting newlines). In the password editor,
+        // Enter in the first field moves on to the confirmation field instead
+        // of staging a half-filled pair.
+        editRow.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter' || ev.isComposing || ev.repeat) return;
+            const target = ev.target;
+            if (!(target instanceof HTMLElement) || target.tagName === 'BUTTON') return;
+            if (target.tagName === 'TEXTAREA') {
+                if (!(ev.ctrlKey || ev.metaKey)) return;
+            } else if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) {
+                return;
+            }
+            const confirmInput = editRow.querySelector('.config-input-confirm');
+            if (confirmInput && target !== confirmInput) {
+                ev.preventDefault();
+                confirmInput.focus();
+                return;
+            }
+            ev.preventDefault();
+            stageBtn.click();
+        });
+
         // Handle Staging the change
-        clone.querySelector('.config-stage-btn').addEventListener('click', () => {
+        stageBtn.addEventListener('click', () => {
             
             const rawVal = editRow.querySelector('.config-input').value;
             
@@ -2662,6 +2725,7 @@
             editRow.remove();
             row.hidden = false;
             
+            rememberStagedEditRow(row);
             applyConfigFilter();
             // Pop the banner
             updateBanner();
@@ -3243,6 +3307,16 @@
                     return;
                 }
                 
+                if (e.key === 'Enter' && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+                    const active = document.activeElement;
+                    if (!active || active === document.body || active === document.documentElement) {
+                        if (reopenLastStagedEdit()) {
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                }
+
                 if (e.key === '/') {
                     const filterInput = document.querySelector('.table-filter-input');
                     if (filterInput) {
@@ -3260,6 +3334,21 @@
                 }
             }
         });
+
+        // Remember which row was just Staged (capture phase, so it runs before
+        // the per-form submit handlers remove the edit row). The base row is
+        // always the edit row's previous sibling. Covers Rules/Hosts/
+        // Blacklist/Query-Blocklist edit forms in one place.
+        document.addEventListener('submit', function(e) {
+            const form = e.target;
+            if (!(form instanceof HTMLFormElement) ||
+                !form.matches('.edit-form, .edit-host-form, .edit-blacklist-form, .edit-qb-form')) {
+                return;
+            }
+            const editRow = form.closest('tr');
+            const baseRow = editRow ? editRow.previousElementSibling : null;
+            if (baseRow) rememberStagedEditRow(baseRow);
+        }, true);
 
         // Warn before navigating away while table edits are staged
         window.addEventListener('beforeunload', function(e) {
@@ -3353,6 +3442,15 @@
                 const idInput = clone.querySelector('.edit-id-input');
                 const form = clone.querySelector('.edit-form');
                 const cancelBtn = clone.querySelector('.btn-cancel');
+
+                // The inputs live in other cells, outside the <form> element; link
+                // them via the form= attribute so Enter triggers implicit submission
+                // (Stage), exactly like the Hosts/Blacklist/Query-Blocklist editors.
+                const ruleEditFormId = 'editRuleForm_' + id;
+                form.id = ruleEditFormId;
+                for (const el of [typeSelect, patternInput, enabledCheck, idInput]) {
+                    el.setAttribute('form', ruleEditFormId);
+                }
                 
                 // 3. Populate values securely as object properties (no string escaping needed)
                 typeSelect.setAttribute('aria-label', 'DNS record type');
@@ -3432,6 +3530,7 @@
                 // 6. Insert cleanly next to the original row (cells match column order)
                 ensureRowMatchesTableOrder(editRow, document.getElementById('rulesTable'));
                 row.after(clone);
+                focusAndSelectInput(patternInput);
             } // end of 'if editBtn'
             
             // --- DELETE BUTTON INTERCEPTOR ---
