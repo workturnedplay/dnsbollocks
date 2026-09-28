@@ -67,7 +67,11 @@ func TestQueryLog_KeepsClientCasingForDomainAndReply(t *testing.T) {
 	if _, has := rec["domain_punycode"]; has {
 		t.Errorf("a plain ASCII name must not get a domain_punycode field, got %v", rec["domain_punycode"])
 	}
-	if resp, _ := rec["dns_response"].(string); !strings.Contains(resp, "ExAmPlE.CoM.") {
+	resp, ok := rec["dns_response"].(string)
+	if !ok {
+		t.Fatalf("expected rec[\"dns_response\"] to be string, got %T (%v)", rec["dns_response"], rec["dns_response"])
+	}
+	if !strings.Contains(resp, "ExAmPlE.CoM.") {
 		t.Errorf("dns_response should carry the client's casing, got: %v", rec["dns_response"])
 	}
 }
