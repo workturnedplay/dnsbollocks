@@ -2608,6 +2608,15 @@ type BlockedQuery struct {
 	QueryBlocklistLocalRuleID      string `json:"-"` // ID of that matching rule (set only if QueryBlocklistLocalBlocked)
 	QueryBlocklistExternalListed   bool   `json:"-"` // this domain is present in the read-only external hosts-file source
 	QueryBlocklistExternalExcepted bool   `json:"-"` // an enabled local "except" rule currently cancels the external-source block (only meaningful if QueryBlocklistExternalListed)
+
+	// Populated only for the /allows page (see AdminUI.populateWhitelistAllowRowState),
+	// and only when whitelist_mode is on: the enabled whitelist rule that
+	// currently allows this domain+type (exact OR wildcard; for HTTPS this may
+	// be an "A" rule via allow_https_if_a_allowed). Empty ID means no such rule
+	// (e.g. allowed via a local host override, or whitelist_mode is off).
+	WhitelistAllowingRuleID      string `json:"-"`
+	WhitelistAllowingRuleType    string `json:"-"` // DNS type bucket the rule lives in
+	WhitelistAllowingRulePattern string `json:"-"` // Unicode display form of the rule's pattern
 }
 
 // loginRecord tracks failed WebUI login attempts for a single client IP.
@@ -8407,13 +8416,41 @@ func (rs *RuleStore) Snapshot() map[string][]RuleEntry {
 	return out
 }
 
-// MatchForType returns (id, true) if an enabled rule in qtype matches domain.
-func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
+// MatchRuleForType returns the first enabled rule in qtype matching domain.
+func (rs *RuleStore) MatchRuleForType(qtype, domain string) (RuleEntry, bool) {
 	// 100% lock-free read
 	current := *rs.rules.Load()
 	for _, rule := range current[qtype] {
 		if rule.Enabled && matchPattern(rule.Pattern, domain) {
-			return rule.ID, true
+			return rule, true
+		}
+	}
+	return RuleEntry{}, false
+}
+
+// MatchForType returns (id, true) if an enabled rule in qtype matches domain.
+func (rs *RuleStore) MatchForType(qtype, domain string) (id string, ok bool) {
+	rule, ok := rs.MatchRuleForType(qtype, domain)
+	if !ok {
+		return "", false
+	}
+	return rule.ID, true
+}
+
+// FindRuleByID locates the type bucket holding the rule with the given ID
+// (IDs are unique across all buckets, see loadRuleStoreFile), regardless of
+// whether that rule is currently enabled.
+func (rs *RuleStore) FindRuleByID(id string) (typ string, ok bool) {
+	if id == "" {
+		return "", false
+	}
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	for t, rules := range current {
+		for _, r := range rules {
+			if r.ID == id {
+				return t, true
+			}
 		}
 	}
 	return "", false
@@ -9835,8 +9872,73 @@ func (ui *AdminUI) getRecentAllowedCopy() []BlockedQuery {
 	allowed := ui.recentAllowed.Snapshot(func(_, _ string) bool { return false })
 	for i := range allowed {
 		ui.populateBlockedQueryDisplayFields(&allowed[i])
+		ui.populateWhitelistAllowRowState(&allowed[i])
 	}
 	return allowed
+}
+
+// populateWhitelistAllowRowState fills bq's WhitelistAllowing* fields by
+// re-evaluating the whitelist live, mirroring exactly the lookup
+// handleDNSQuery performs (including the HTTPS-via-A fallback). It is a
+// no-op outside whitelist_mode, since rules play no role in the allow/deny
+// decision there.
+func (ui *AdminUI) populateWhitelistAllowRowState(bq *BlockedQuery) {
+	cfg := ui.getConfig()
+	if !cfg.WhitelistMode || ui.ruleStore == nil {
+		return
+	}
+	ruleType := bq.Type
+	rule, ok := ui.ruleStore.MatchRuleForType(ruleType, bq.Domain)
+	if !ok && cfg.AllowHTTPSIfAAllowed && bq.Type == "HTTPS" {
+		ruleType = "A"
+		rule, ok = ui.ruleStore.MatchRuleForType(ruleType, bq.Domain)
+	}
+	if !ok {
+		return
+	}
+	displayPattern, _ := punycodeDecodePatternForDisplay(rule.Pattern)
+	bq.WhitelistAllowingRuleID = rule.ID
+	bq.WhitelistAllowingRuleType = ruleType
+	bq.WhitelistAllowingRulePattern = displayPattern
+}
+
+// processWhitelistRulePause implements the /allows page's "Pause Rule
+// [Whitelist]" action: it disables the whitelist rule with the given ID
+// (found in whichever type bucket holds it). Callers must already hold
+// ui.tableMutationMu and have confirmed ui.ruleStore/ui.OnSaveWhitelist are
+// wired. On success the affected cache entries are already invalidated;
+// callers only persist via ui.OnSaveWhitelist and write the response.
+func (ui *AdminUI) processWhitelistRulePause(ruleID, displayDomain string) (successMessage string, status int, err error) {
+	log := ui.getLogger()
+
+	if ruleID == "" {
+		log.Warn("Failed to pause whitelist rule: missing id", slog.String("domain", displayDomain))
+		return "", http.StatusBadRequest, errors.New("missing rule id")
+	}
+	if _, modified := sanitizeDomainInput(ruleID); modified {
+		log.Warn("Failed to pause whitelist rule: id contains illegal characters", slog.String("id", ruleID))
+		return "", http.StatusBadRequest, errors.New("id contains illegal characters")
+	}
+	typ, found := ui.ruleStore.FindRuleByID(ruleID)
+	if !found {
+		log.Warn("Failed to pause whitelist rule: not found", slog.String("id", ruleID))
+		return "", http.StatusNotFound, errors.New("that whitelist rule no longer exists")
+	}
+	pattern, found, changed := ui.ruleStore.SetEnabledByID(typ, ruleID, false, log)
+	if !found {
+		// Rare TOCTOU: deleted between FindRuleByID and here.
+		log.Warn("Failed to pause whitelist rule: disappeared mid-request", slog.String("id", ruleID))
+		return "", http.StatusNotFound, errors.New("that whitelist rule no longer exists")
+	}
+	displayPattern, _ := punycodeDecodePatternForDisplay(pattern)
+	if !changed {
+		return fmt.Sprintf("Whitelist rule %s (%s) is already paused.", displayPattern, typ), http.StatusOK, nil
+	}
+	log.Info("Quick-paused whitelist rule via WebUI (allows page)",
+		slog.String("id", ruleID), slog.String("type", typ), slog.String("pattern", pattern),
+		slog.String("domain", displayDomain))
+	ui.OnInvalidatePattern(pattern)
+	return fmt.Sprintf("Paused whitelist rule %s (%s), which was allowing %s.", displayPattern, typ, displayDomain), http.StatusOK, nil
 }
 
 // populateQueryBlocklistRowState fills bq's four QueryBlocklist* fields by
@@ -10231,6 +10333,12 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
 				return
 			}
+		case "disable_whitelist_rule":
+			if ui.ruleStore == nil || ui.OnSaveWhitelist == nil {
+				log.Error("BUG: whitelist /allows POST action reached without ruleStore/OnSaveWhitelist wired", slog.String("action", action))
+				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusServiceUnavailable, "whitelist is not available in this environment", "")
+				return
+			}
 		}
 
 		// --- Handle the Clear action ---
@@ -10287,22 +10395,41 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch action {
-		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local":
-			// handled below via the shared query-blocklist quick-action helper
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local", "disable_whitelist_rule":
+			// handled below
 		default:
 			log.Warn("Failed quick block via WebUI (allows): invalid action specified", slog.String("action", action))
 			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusBadRequest, "Invalid action specified", raw)
 			return
 		}
 
-		successMessage, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
-		if qbErr != nil {
-			respondBlocksResult(log, w, r, TheAllowsPage, false, status, qbErr.Error(), raw)
+		var (
+			successMessage string
+			status         int
+			actionErr      error
+			saveErr        error
+		)
+		if action == "disable_whitelist_rule" {
+			successMessage, status, actionErr = ui.processWhitelistRulePause(r.FormValue("id"), displayDomain)
+			if actionErr == nil {
+				if err := ui.OnSaveWhitelist(); err != nil {
+					saveErr = ui.logPersistFailure("whitelist", err)
+				}
+			}
+		} else {
+			successMessage, status, actionErr = ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
+			if actionErr == nil {
+				if err := ui.OnSaveQueryBlocklist(); err != nil {
+					saveErr = ui.logPersistFailure("query blocklist", err)
+				}
+			}
+		}
+		if actionErr != nil {
+			respondBlocksResult(log, w, r, TheAllowsPage, false, status, actionErr.Error(), raw)
 			return
 		}
-
-		if err := ui.OnSaveQueryBlocklist(); err != nil {
-			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusInternalServerError, ui.logPersistFailure("query blocklist", err).Error(), "")
+		if saveErr != nil {
+			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusInternalServerError, saveErr.Error(), "")
 			return
 		}
 		respondBlocksResult(log, w, r, TheAllowsPage, true, http.StatusOK, successMessage, "")

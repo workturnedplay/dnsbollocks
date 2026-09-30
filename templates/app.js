@@ -3909,6 +3909,7 @@
                 
                 btn.disabled = true;
                 btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' :
+                    action === 'disable_whitelist_rule' ? 'Pausing…' :
                     action === 'block_qb_local' ? 'Blocking…' :
                     action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
                 btn.classList.add('btn-action-pending');
@@ -3950,7 +3951,7 @@
                         if (document.getElementById('queryBlocklistTable')) {
                             location.reload();
                         }
-                    } else if (action === 'disable_qb_local_rule') {
+                    } else if (action === 'disable_qb_local_rule' || action === 'disable_whitelist_rule') {
                         // One-directional from /blocks: re-enabling happens on
                         // /query-blocklist, so there's no "undo" toggle here —
                         // just remove the control once it's done its job.

@@ -363,6 +363,17 @@
         <span class="block-time" title="Most recent time this query was allowed (local time).">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
+        {{if .WhitelistAllowingRuleID}}
+        <form method="post" action="/allows" class="d-inline js-block-action-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="{{.WhitelistAllowingRuleID}}">
+            <input type="hidden" name="action" value="disable_whitelist_rule">
+            <button type="submit" class="btn-cancel" title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard. Re-enable it on the Rules page.">Pause Rule [Whitelist]</button>
+        </form>
+        {{end}}
+
         {{if .QueryBlocklistLocalBlocked}}
         <form method="post" action="/allows" class="d-inline js-block-action-form">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
