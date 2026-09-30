@@ -10043,6 +10043,12 @@ func isBlocksAjaxRequest(r *http.Request) bool {
 	return r.Header.Get(blocksAjaxHeader) == "1"
 }
 
+// blocksRuleIDHeader carries the ID of the local query-blocklist rule that a
+// successful "block_qb_local" AJAX action created/re-enabled, so the page can
+// flip its control to "Unblock (Pause)" in place (targeting that rule by ID)
+// instead of reloading.
+const blocksRuleIDHeader = "X-DNSBollocks-Rule-Id"
+
 // respondBlocksResult replies to a /blocks, /allows, or /query-blocklist quick-action
 // POST either with a redirect back to whichever page issued the request, carrying
 // success/error
@@ -10380,6 +10386,10 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			"ErrorMessage":   r.URL.Query().Get("error"),
 			"EnteredValue":   r.URL.Query().Get("val"),
 			"RenderTime":     fmt.Sprintf("%d", time.Now().UnixNano()),
+			// Injected so ui.html never hard-codes json tag strings (used in
+			// the HTTPS-via-A pause confirmation message).
+			"KeyAllowHTTPSIfAAllowed": getJSONTagByOffset(unsafe.Offsetof(Config{}.AllowHTTPSIfAAllowed)),
+			"KeyWhitelistMode":        getJSONTagByOffset(unsafe.Offsetof(Config{}.WhitelistMode)),
 		}
 		ui.renderTemplate(w, r, "allows", data)
 		return
@@ -10492,6 +10502,12 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 		if saveErr != nil {
 			respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusInternalServerError, saveErr.Error(), "")
 			return
+		}
+		if action == "block_qb_local" {
+			// Let the AJAX client flip its control in place (see blocksRuleIDHeader).
+			if ruleID, matched := ui.queryBlocklistStore.MatchForType(queryBlockCategoryBlock, domainLowercased); matched {
+				w.Header().Set(blocksRuleIDHeader, ruleID)
+			}
 		}
 		respondBlocksResult(log, w, r, TheAllowsPage, true, http.StatusOK, successMessage, "")
 		return

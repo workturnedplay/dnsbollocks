@@ -1735,11 +1735,79 @@
         }
         
         if (res.ok) {
-            return { ok: true, message: bodyText };
+            return { ok: true, message: bodyText, ruleId: res.headers.get('X-DNSBollocks-Rule-Id') || '' };
         }
         return { ok: false, message: bodyText || ('HTTP ' + res.status) };
     }
     
+    // Two-state controls (used on /allows, and for the whitelist pair also
+    // anywhere they appear) whose <form> flips in place after a successful
+    // background action: TOGGLE_NEXT_ACTION maps the action just performed to
+    // the action the form performs next; TOGGLE_CONTROL_UI is how the button
+    // looks while the form is set to that action.
+    const TOGGLE_NEXT_ACTION = Object.freeze({
+        block_qb_local: 'disable_qb_local_rule',
+        disable_qb_local_rule: 'block_qb_local',
+        disable_whitelist_rule: 'enable_whitelist_rule',
+        enable_whitelist_rule: 'disable_whitelist_rule',
+    });
+
+    const TOGGLE_CONTROL_UI = Object.freeze({
+        block_qb_local: {
+            label: 'Block [Query\u00A0Blocklist]', cls: 'btn-edit',
+            title: 'Adds a local Query Blocklist rule that blocks this domain outright, for every query type.',
+        },
+        disable_qb_local_rule: {
+            label: 'Unblock (Pause) [Query\u00A0Blocklist]', cls: 'btn-cancel',
+            title: 'A local Query Blocklist rule is blocking this outright.',
+        },
+        disable_whitelist_rule: {
+            label: 'Pause Rule [Whitelist]', cls: 'btn-edit',
+            title: 'Pausing the enabled whitelist rule that allows this blocks the domain again, and also every other domain that rule matches if its pattern is a wildcard.',
+        },
+        enable_whitelist_rule: {
+            label: 'Resume Rule [Whitelist]', cls: 'btn-cancel',
+            title: 'The whitelist rule is currently paused. Resume it to allow this domain again.',
+        },
+    });
+
+    // setToggleControl makes form perform `action` next and restyles its
+    // button to match; ruleId (if not undefined) becomes the form's "id" field.
+    function setToggleControl(form, action, ruleId) {
+        const controlUI = TOGGLE_CONTROL_UI[action];
+        const actionInput = form.querySelector('[name="action"]');
+        const btn = form.querySelector('button[type="submit"]');
+        if (!controlUI || !actionInput || !btn) return;
+        actionInput.value = action;
+        const idInput = form.querySelector('[name="id"]');
+        if (idInput && ruleId !== undefined) idInput.value = ruleId;
+        btn.textContent = controlUI.label;
+        btn.className = controlUI.cls;
+        btn.title = controlUI.title;
+    }
+
+    // syncToggleControls flips every OTHER two-state control on the page that
+    // shows the same underlying state as the one just toggled, so sibling
+    // rows (e.g. the HTTPS row of a domain whose A row was just unblocked, or
+    // rows sharing one whitelist rule) never go stale. Query-blocklist
+    // controls match by same domain or same rule id (the blocklist is
+    // type-agnostic); whitelist controls match by same rule id only.
+    function syncToggleControls(sourceForm, nextAction, nextRuleId, isQbLocal, domain, previousId) {
+        const family = isQbLocal
+            ? ['block_qb_local', 'disable_qb_local_rule']
+            : ['disable_whitelist_rule', 'enable_whitelist_rule'];
+        document.querySelectorAll('.js-block-action-form').forEach(other => {
+            if (other === sourceForm) return;
+            const otherAction = other.querySelector('[name="action"]')?.value;
+            if (!family.includes(otherAction)) return;
+            const otherId = other.querySelector('[name="id"]')?.value || '';
+            const sameRule = previousId !== '' && otherId === previousId;
+            const sameDomain = isQbLocal && other.querySelector('[name="domain"]')?.value === domain;
+            if (!sameRule && !sameDomain) return;
+            setToggleControl(other, nextAction, nextRuleId);
+        });
+    }
+
     // --- Filter highlight helpers ---
     // Highlights matches using the same case-insensitive, NFD/accent-insensitive
     // normalization used by matchesFilterExpression(), while preserving the
@@ -3903,6 +3971,11 @@
                 const feedback = form.parentElement.querySelector('.block-action-feedback');
                 
                 if (btn.disabled) return; // already in flight; ignore rapid double-clicks
+
+                // Only the "pause" direction needs the explanation (see the
+                // data-confirm attribute rendered in ui.html's allows template).
+                const confirmMessage = form.dataset.confirm;
+                if (action === 'disable_whitelist_rule' && confirmMessage && !confirm(confirmMessage)) return;
                 
                 const originalText = btn.textContent;
                 const originalClass = btn.className;
@@ -3952,29 +4025,32 @@
                         if (document.getElementById('queryBlocklistTable')) {
                             location.reload();
                         }
-                    } else if (action === 'disable_whitelist_rule') {
-                        // Flip to the "changed" state: red Resume control.
-                        actionInput.value = 'enable_whitelist_rule';
-                        btn.textContent = 'Resume Rule [Whitelist]';
-                        btn.className = 'btn-cancel';
-                        btn.removeAttribute('title');
-                    } else if (action === 'enable_whitelist_rule') {
-                        actionInput.value = 'disable_whitelist_rule';
-                        btn.textContent = 'Pause Rule [Whitelist]';
-                        btn.className = 'btn-edit';
-                        btn.removeAttribute('title');
-                    } else if (action === 'disable_qb_local_rule') {
-                        // One-directional from /blocks: re-enabling happens on
-                        // /query-blocklist, so there's no "undo" toggle here —
-                        // just remove the control once it's done its job.
-                        form.remove();
-                    } else if (action === 'block_qb_local') {
-                        // We don't have the newly created/enabled rule's ID
-                        // here (needed to build the corresponding "Unblock
-                        // (Pause)" toggle, which targets a rule by ID via
-                        // disable_qb_local_rule), so just reload to pick up
-                        // the fresh server-side state instead of guessing.
-                        location.reload();
+                    } else if (TOGGLE_NEXT_ACTION[action]) {
+                        if (action === 'disable_qb_local_rule' && form.getAttribute('action') !== '/allows') {
+                            // One-directional from /blocks: re-enabling happens on
+                            // /query-blocklist, so there's no "undo" toggle there —
+                            // just remove the control once it's done its job.
+                            form.remove();
+                        } else {
+                            const nextAction = TOGGLE_NEXT_ACTION[action];
+                            const isQbLocal = action === 'block_qb_local' || action === 'disable_qb_local_rule';
+                            // The rule the flipped control targets: the server
+                            // reports the created/re-enabled rule for a Block;
+                            // an Unblock has no rule to target afterward; the
+                            // whitelist pair keeps targeting the same rule.
+                            let nextRuleId = id;
+                            if (action === 'block_qb_local') nextRuleId = result.ruleId;
+                            else if (action === 'disable_qb_local_rule') nextRuleId = '';
+
+                            if (action === 'block_qb_local' && !nextRuleId) {
+                                // Defensive: server didn't tell us which rule; can't
+                                // build the Unblock control, so pick up server state.
+                                location.reload();
+                            } else {
+                                syncToggleControls(form, nextAction, nextRuleId, isQbLocal, domain, id);
+                                setToggleControl(form, nextAction, nextRuleId);
+                            }
+                        }
                     }
                     btn.disabled = false;
                     if (feedback) {

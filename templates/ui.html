@@ -364,7 +364,7 @@
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .WhitelistAllowingRuleID}}
-        <form method="post" action="/allows" class="d-inline js-block-action-form">
+        <form method="post" action="/allows" class="d-inline js-block-action-form"{{if ne .Type .WhitelistAllowingRuleType}} data-confirm="This {{.Type}} query is allowed only because {{$.KeyAllowHTTPSIfAAllowed}} is enabled (and {{$.KeyWhitelistMode}} is on): it has no {{.Type}} rule of its own, the {{.WhitelistAllowingRuleType}} rule '{{.WhitelistAllowingRulePattern}}' allows it.&#10;&#10;The only way to block it from this page is to pause that {{.WhitelistAllowingRuleType}} rule, which also blocks the {{.WhitelistAllowingRuleType}} queries it allows (and every other domain it matches, if it is a wildcard).&#10;&#10;Pause the {{.WhitelistAllowingRuleType}} rule?"{{end}}>
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
@@ -393,6 +393,7 @@
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="">
             <input type="hidden" name="action" value="block_qb_local">
             <button type="submit" class="btn-edit" title="Adds a local Query Blocklist rule that blocks this domain outright, for every query type.">Block [Query&nbsp;Blocklist]</button>
         </form>
