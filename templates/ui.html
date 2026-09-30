@@ -369,8 +369,13 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.WhitelistAllowingRuleID}}">
+            {{if .WhitelistAllowingRulePaused}}
+            <input type="hidden" name="action" value="enable_whitelist_rule">
+            <button type="submit" class="btn-cancel" title="The whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} is currently paused. Resume it to allow this domain again.">Resume Rule [Whitelist]</button>
+            {{else}}
             <input type="hidden" name="action" value="disable_whitelist_rule">
-            <button type="submit" class="btn-cancel" title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard. Re-enable it on the Rules page.">Pause Rule [Whitelist]</button>
+            <button type="submit" class="btn-edit" title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard.">Pause Rule [Whitelist]</button>
+            {{end}}
         </form>
         {{end}}
 

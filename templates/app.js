@@ -3910,6 +3910,7 @@
                 btn.disabled = true;
                 btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' :
                     action === 'disable_whitelist_rule' ? 'Pausing…' :
+                    action === 'enable_whitelist_rule' ? 'Resuming…' :
                     action === 'block_qb_local' ? 'Blocking…' :
                     action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
                 btn.classList.add('btn-action-pending');
@@ -3951,7 +3952,18 @@
                         if (document.getElementById('queryBlocklistTable')) {
                             location.reload();
                         }
-                    } else if (action === 'disable_qb_local_rule' || action === 'disable_whitelist_rule') {
+                    } else if (action === 'disable_whitelist_rule') {
+                        // Flip to the "changed" state: red Resume control.
+                        actionInput.value = 'enable_whitelist_rule';
+                        btn.textContent = 'Resume Rule [Whitelist]';
+                        btn.className = 'btn-cancel';
+                        btn.removeAttribute('title');
+                    } else if (action === 'enable_whitelist_rule') {
+                        actionInput.value = 'disable_whitelist_rule';
+                        btn.textContent = 'Pause Rule [Whitelist]';
+                        btn.className = 'btn-edit';
+                        btn.removeAttribute('title');
+                    } else if (action === 'disable_qb_local_rule') {
                         // One-directional from /blocks: re-enabling happens on
                         // /query-blocklist, so there's no "undo" toggle here —
                         // just remove the control once it's done its job.
