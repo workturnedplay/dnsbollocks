@@ -2586,10 +2586,11 @@ type BlockedQuery struct {
 	// 0.0.0.0/::, or one of its answer IPs matched the response IP
 	// blacklist) rather than by local policy (query blocklist, or lack of an
 	// enabled whitelist rule). Set via RecentBlocksTracker.RecordUpstreamBlocked.
-	// There is no local per-domain control that can affect an upstream-level
-	// block, so the WebUI shows this without any Unblock/Re-block controls —
-	// only a link to the query logs, where any IP this domain previously
-	// resolved to (before the upstream started blocking it) can still be found.
+	// No local control can change an upstream-level block, so the WebUI shows
+	// an "[Upstream Block]" marker plus a link to the query logs (where any IP
+	// this domain previously resolved to can still be found) IN ADDITION to
+	// the normal local whitelist/query-blocklist controls, which stay visible
+	// so an earlier local unblock can still be reverted.
 	UpstreamBlocked bool `json:"-"`
 
 	// The following are also dynamically computed for the UI (see

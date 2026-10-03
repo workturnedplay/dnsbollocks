@@ -254,7 +254,7 @@
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
 <div class="info-banner">
-    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, by not matching any enabled whitelist rule,{{end}} or because the upstream DNS provider's own response was entirely blocked/filtered (e.g. it returned 0.0.0.0/::, or every returned IP matched the Response Blacklist) &mdash; the latter are shown for visibility only, with no local unblock/re-block control since there's nothing local to toggle for them. See <a href="/allows">Recent Allows</a> for domains that were resolved.
+    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, by not matching any enabled whitelist rule,{{end}} or because the upstream DNS provider's own response was entirely blocked/filtered (e.g. it returned 0.0.0.0/::, or every returned IP matched the Response Blacklist). Upstream-blocked entries carry an <code>[Upstream Block]</code> marker; the local whitelist/query-blocklist controls still appear on them so you can undo a local unblock, but they cannot change the upstream block itself. See <a href="/allows">Recent Allows</a> for domains that were resolved.
 </div>
 {{template "alert-banner" .}}
 <div class="section-header-row">
@@ -276,9 +276,10 @@
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .UpstreamBlocked}}
-        <span class="tag-disabled" title="Blocked by the upstream DNS provider's own response (e.g. it returned 0.0.0.0/::, or a returned IP matched the Response Blacklist), not by local policy here - there is nothing local to unblock or re-block for this.">[Upstream Block]</span>
+        <span class="tag-disabled" title="The upstream DNS provider's own response was blocked/filtered (e.g. it returned 0.0.0.0/::, or a returned IP matched the Response Blacklist). The local controls on this row only affect local policy (whitelist / query blocklist) and cannot change that.">[Upstream Block]</span>
         <a href="/logs_queries_simple?q={{.DomainDisplay}}" class="btn-edit" target="_blank" rel="noopener noreferrer" title="Look up this domain in the Simple Query Log, e.g. to find an IP address it previously resolved to.">View in Simple Query Log ↗</a>
-        {{else}}
+        {{end}}
+
         {{if $.WhitelistMode}}
         {{if .IsUnblocked}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -327,7 +328,6 @@
             <input type="hidden" name="action" value="unblock_qb">
             <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
-        {{end}}
         {{end}}
         {{end}}
 
