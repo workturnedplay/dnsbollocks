@@ -1,6 +1,6 @@
 (() => {
     "use strict";
-    
+
     // --- UI State Storage Config ---
     // Change this to `localStorage` to persist UI states (like table sorting 
     // and textarea heights) across new tabs and browser restarts.
@@ -49,7 +49,7 @@
                 setItem() {
                     return false;
                 },
-                removeItem() {},
+                removeItem() { },
             };
         }
     }
@@ -62,18 +62,18 @@
     console.log(
         "%cⓘ [DNSbollocks Info]: The media block error directly above(FIXME: if it even appears anymore!) is harmless. " +
         "It occurs because extensions like NoScript inject layout placeholders into the page, " +
-        "which our strict security policy safely rejects. No action is needed! Though if you want to change the source "+
+        "which our strict security policy safely rejects. No action is needed! Though if you want to change the source " +
         "replace \"media-src 'none'; \"+ with \"media-src 'self' data:; \"+ in the platform_windows.go file in function securityHeadersMiddleware.",
         "color: #0078d4; font-weight: bold; font-family: sans-serif; font-size: 11px;"
     );
-    
+
     let csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     if (!csrfToken) {
         console.error('BUG: csrf-token meta tag missing or empty — all POST actions will be rejected server-side.');
     }
 
 
-    
+
     // Config field key names are injected by Go into data-* attributes on #configKeysData
     // (only present on the /config page). Falls back to empty strings on other pages so
     // CONFIG_KEYS is always safe to reference — editConfig is only called on /config anyway.
@@ -91,18 +91,18 @@
     const CONFIG_KEYS = _cfgKeysEl ? {
         // JSON tag key names — used to identify which config row is being edited.
         upstreamSelectionMode: _cfgKeysEl.dataset.keyUpstreamSelectionMode || '',
-        consoleLogLevel:       _cfgKeysEl.dataset.keyConsoleLogLevel       || '',
-        blockMode:             _cfgKeysEl.dataset.keyBlockMode             || '',
-        webuiPasswordHash:     _cfgKeysEl.dataset.keyWebuiPasswordHash     || '',
-        webuiAuthSessionMode:  _cfgKeysEl.dataset.keyWebuiAuthSessionMode  || '',
+        consoleLogLevel: _cfgKeysEl.dataset.keyConsoleLogLevel || '',
+        blockMode: _cfgKeysEl.dataset.keyBlockMode || '',
+        webuiPasswordHash: _cfgKeysEl.dataset.keyWebuiPasswordHash || '',
+        webuiAuthSessionMode: _cfgKeysEl.dataset.keyWebuiAuthSessionMode || '',
         // Valid option arrays for select-type fields.
         // Comma-separated from Go (all values are plain lowercase ASCII, no commas),
         // split here. An empty attribute produces [] → buildSelectElement falls back to
         // a plain text input so the field remains editable even if data is missing.
         optsUpstreamSelectionMode: (_cfgKeysEl.dataset.optsUpstreamSelectionMode || '').split(',').filter(Boolean),
-        optsConsoleLogLevel:       (_cfgKeysEl.dataset.optsConsoleLogLevel       || '').split(',').filter(Boolean),
-        optsBlockMode:             (_cfgKeysEl.dataset.optsBlockMode             || '').split(',').filter(Boolean),
-        optsWebUIAuthSessionMode:  (_cfgKeysEl.dataset.optsWebuiAuthSessionMode  || '').split(',').filter(Boolean),
+        optsConsoleLogLevel: (_cfgKeysEl.dataset.optsConsoleLogLevel || '').split(',').filter(Boolean),
+        optsBlockMode: (_cfgKeysEl.dataset.optsBlockMode || '').split(',').filter(Boolean),
+        optsWebUIAuthSessionMode: (_cfgKeysEl.dataset.optsWebuiAuthSessionMode || '').split(',').filter(Boolean),
     } : {
         //XXX: the following(or any) fallbacks to empty aren't needed because all are only used in /config
         // optsUpstreamSelectionMode: [],
@@ -465,7 +465,7 @@
             timeout.cancel();
         }
     }
-    
+
     // --- Table-edit staging queue (rules / hosts / blacklist) ---
     // Works identically to the /config page staging system: Add, Edit, and Delete
     // actions are all queued locally and applied in a single Apply run, never
@@ -530,10 +530,10 @@
         const count = stagedTableChanges.length;
         document.querySelectorAll('.staged-table-banner').forEach(banner => {
             banner.hidden = count === 0;
-            
+
             const countEl = banner.querySelector('.staged-table-count');
             if (countEl) countEl.textContent = count;
-            
+
             const applyButton = banner.querySelector('.js-apply-table-btn');
             if (applyButton) applyButton.disabled = count === 0;
         });
@@ -665,7 +665,7 @@
     // persisted row and reverts the row's displayed values to their original
     // (pre-edit) baseline via applyDisplay. Shared by the Rules/Hosts/Blacklist
     // "Discard" button and by the no-op branch of reconcileStagedEdit.
-        function discardStagedEdit(existingIdx, row, applyDisplay) {
+    function discardStagedEdit(existingIdx, row, applyDisplay) {
         if (existingIdx !== -1) stagedTableChanges.splice(existingIdx, 1);
         applyDisplay();
         row.classList.remove('staged');
@@ -1122,7 +1122,7 @@
 
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelQueryBlockEdit(id), { once: true });
 
-        form.addEventListener('submit', async function(eSubmit) {
+        form.addEventListener('submit', async function (eSubmit) {
             eSubmit.preventDefault();
 
             const newPattern = patternInput.value.trim();
@@ -1273,7 +1273,7 @@
     }
 
     // buildBlacklistRowElement mirrors buildHostRowElement for the response-blacklist page.
-        function buildBlacklistRowElement(clientId, cidr, enabled, comment) {
+    function buildBlacklistRowElement(clientId, cidr, enabled, comment) {
         const row = document.createElement('tr');
         row.id = 'blacklistRow_' + clientId;
         row.dataset.cidr = cidr;
@@ -1604,7 +1604,7 @@
         }
         return success;
     }
-    
+
     // postBlocksAction performs a background (AJAX) POST to /blocks for a
     // single Unblock/Re-block action, without navigating or reloading the
     // page. Unlike postAdminForm, failures are reported back to the caller
@@ -1621,7 +1621,7 @@
         if (id) {
             formData.append('id', id);
         }
-        
+
         let res;
         try {
             res = await fetchWithTimeout(targetUrl, {
@@ -1632,7 +1632,7 @@
         } catch (err) {
             return { ok: false, message: 'Network error: ' + err };
         }
-        
+
         const bodyText = await res.text();
 
         // --- CSRF Auto-Recovery ---
@@ -1645,13 +1645,13 @@
                 return await postBlocksAction(targetUrl, domain, type, action, id, true);
             }
         }
-        
+
         if (res.ok) {
             return { ok: true, message: bodyText, ruleId: res.headers.get('X-DNSBollocks-Rule-Id') || '' };
         }
         return { ok: false, message: bodyText || ('HTTP ' + res.status) };
     }
-    
+
     // Two-state controls (used on /allows, and for the whitelist pair also
     // anywhere they appear) whose <form> flips in place after a successful
     // background action: TOGGLE_NEXT_ACTION maps the action just performed to
@@ -1720,7 +1720,7 @@
         });
     }
 
-        const WHITELIST_RULE_ACTIONS = Object.freeze([
+    const WHITELIST_RULE_ACTIONS = Object.freeze([
         'disable_whitelist_rule',
         'enable_whitelist_rule',
         'delete_whitelist_rule',
@@ -1890,7 +1890,7 @@
             textNode.parentNode.replaceChild(frag, textNode);
         });
     }
-    
+
     // Applies highlights to the three text targets in a config table row.
     // Pass terms=[] to clear all highlights on that row.
     function applyConfigRowHighlight(row, terms) {
@@ -1898,7 +1898,7 @@
         highlightTextNodes(row.querySelector('.display-value'), terms);
         highlightTextNodes(row.querySelector('.config-field-desc'), terms);
     }
-    
+
     // --- Filter Expression Parser ---
     // Grammar: clause | clause | ...  where clause = term & term & ...
     //          and term = word word ... (ordered substring match)
@@ -1906,7 +1906,7 @@
     // Examples: "foo | bar !baz" → (foo OR bar) AND NOT baz
     function matchesFilterExpression(text, rawFilter) {
         if (!rawFilter || rawFilter.length === 0) return true;
-        
+
         const negativeTerms = [];
         let remainingFilter = rawFilter;
 
@@ -1977,19 +1977,19 @@
     function applyTableFilter(opts) {
         const filterInput = document.getElementById(opts.filterInputId);
         if (!filterInput) return;
-        
+
         const raw = filterInput.value.trim().toLowerCase();
         const rawNorm = normalizeStr(raw);
         uiStorage.setItem(opts.storageKey, raw);
-        
+
         const tbody = document.querySelector(opts.tbodySelector);
         if (!tbody) return;
-        
+
         const terms = (opts.highlightTerms && raw.length > 0) ? extractHighlightTerms(raw) : [];
-        
+
         Array.from(tbody.rows).forEach(row => {
             if (opts.editRowClasses.some(c => row.classList.contains(c)) || row.classList.contains('being-edited')) return;
-            
+
             // Any row with a pending staged change (Add/Edit/Delete) must always
             // stay visible regardless of the current filter text, so the user
             // never loses track of what they've queued up.
@@ -2011,17 +2011,17 @@
                 row.classList.remove('filtered-out');
                 return;
             }
-            
+
             const searchTargetText = normalizeStr(opts.getSearchText(row).toLowerCase());
             const isMatch = rawNorm.length === 0 || matchesFilterExpression(searchTargetText, rawNorm);
             row.classList.toggle('filtered-out', !isMatch);
-            
+
             if (opts.highlightTerms) {
                 opts.highlightTerms(row, isMatch ? terms : []);
             }
         });
     }
-    
+
     // --- Client-Side Table Ordered-Substring Filter Logic ---
     function applyRulesFilter() {
         applyTableFilter({
@@ -2091,7 +2091,7 @@
             }
         });
     }
-    
+
     // --- Client-side Config Filter Logic (with persistent storage and highlight) ---
     function applyConfigFilter() {
         applyTableFilter({
@@ -2113,9 +2113,9 @@
             highlightTerms: (row, terms) => applyConfigRowHighlight(row, terms),
         });
     }
-    
+
     // --- Inline Cancel & Editing Clones ---
-    
+
     // cancelInlineRowEdit removes the inline-edit <tr> (identified by editRowId)
     // and restores the original row (identified by rowId) to its normal,
     // non-edit-mode appearance, then re-applies the page's active filter.
@@ -2125,7 +2125,7 @@
     function cancelInlineRowEdit(editRowId, rowId, resetRowId, filterFn) {
         const editRow = document.getElementById(editRowId);
         if (editRow) editRow.remove();
-        
+
         const row = document.getElementById(rowId);
         if (row) {
             row.hidden = false;
@@ -2136,18 +2136,18 @@
         // is only shown if it still matches the current filter text.
         filterFn();
     }
-    
+
     function cancelEdit(id) {
         cancelInlineRowEdit('editFormRow_' + id, 'rule-row-' + id, true, applyRulesFilter);
     }
-    
+
     function editHost(btn) {
         // 0. Extract variables from the button itself
         const index = btn.dataset.index;
         const pat = btn.dataset.pattern;
         const ips = btn.dataset.ips;
         const enabled = btn.dataset.enabled === 'true';
-        
+
         const row = document.getElementById('hostRow_' + index);
         const isStagedAdd = row.classList.contains('staged-add');
         const clientId = row.dataset.stagedClientId;
@@ -2157,22 +2157,22 @@
         const origEnabled = row.dataset.origEnabled === 'true';
         row.hidden = true;
         row.classList.add('being-edited');
-        
+
         // 1. Clone the template
         const comment = btn.dataset.comment || '';
         const origComment = row.dataset.origComment || '';
 
         const tmpl = document.getElementById('editHostTemplate');
         const clone = tmpl.content.cloneNode(true);
-        
+
         // 2. Track the row and form uniquely
         const editRow = clone.querySelector('tr');
         editRow.id = 'editHostRow_' + index;
-        
+
         const form = clone.querySelector('.edit-host-form');
         const formId = 'editHostForm_' + index;
         form.id = formId;
-        
+
         // 3. Populate inputs and link them to the form using the HTML5 'form' attribute
         // (Required because the inputs are inside table cells, not inside the <form> tag)
         // old_pattern must always be the TRUE original pattern (never mutated across
@@ -2181,12 +2181,12 @@
         const oldPatternInput = clone.querySelector('.edit-host-old-pattern');
         oldPatternInput.value = isStagedAdd ? pat : origPattern;
         oldPatternInput.setAttribute('form', formId);
-        
+
         const patternInput = clone.querySelector('.edit-host-pattern');
         patternInput.value = pat;
         patternInput.setAttribute('form', formId);
         patternInput.setAttribute('aria-label', 'Host pattern');
-        
+
         const ipsInput = clone.querySelector('.edit-host-ips');
         ipsInput.value = ips;
         ipsInput.setAttribute('form', formId);
@@ -2201,16 +2201,16 @@
         enabledCheck.setAttribute('form', formId);
         enabledCheck.setAttribute('aria-label', 'Enabled');
         enabledCheck.checked = enabled;
-        
+
         // 4. Save the new pattern and submit via AJAX
-        form.addEventListener('submit', async function(eSubmit) {
+        form.addEventListener('submit', async function (eSubmit) {
             eSubmit.preventDefault();
-            
+
             const newPattern = patternInput.value.trim().toLowerCase();
             const newIPs = ipsInput.value.trim();
             const newComment = commentInput.value.trim();
             const enabledChecked = enabledCheck.checked;
-            
+
             if (isStagedAdd) {
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
@@ -2224,7 +2224,7 @@
                 // staged entry per Edit+Stage cycle, and detect a full round-trip
                 // back to the original values so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/hosts', f => f.edit === '1' && f.old_pattern === origPattern);
-                
+
                 // Compare against the ORIGINAL display pattern (never `pat`, which is
                 // the currently displayed, possibly already-staged value: comparing
                 // to it made a second Stage of an unchanged edit look like a no-op
@@ -2251,7 +2251,7 @@
 
         // 5. Setup cancel button
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelHostEdit(index), { once: true });
-        
+
         // Discard: throw away every staged change for this row (however many
         // Edit+Stage cycles happened) and revert it to its original state.
         clone.querySelector('.btn-discard-row').addEventListener('click', () => {
@@ -2269,23 +2269,23 @@
             applyHostsFilter();
             updateTableBanner();
         }, { once: true });
-        
+
         // 6. Insert cleanly into the DOM (cells aligned to current column order)
         ensureRowMatchesTableOrder(editRow, document.getElementById('hostsTable'));
         row.after(clone);
         focusAndSelectInput(patternInput);
     }
-    
+
     function cancelHostEdit(index) {
         cancelInlineRowEdit('editHostRow_' + index, 'hostRow_' + index, false, applyHostsFilter);
     }
-    
+
     // --- Edit / Cancel for inline row editing ---
     function editBlacklist(btn) {
         const index = btn.dataset.index;
         const cidr = btn.dataset.cidr;
         const enabled = btn.dataset.enabled === 'true';
-        
+
         const row = document.getElementById('blacklistRow_' + index);
         if (!row) return;
         const isStagedAdd = row.classList.contains('staged-add');
@@ -2294,27 +2294,27 @@
         const origEnabled = row.dataset.origEnabled === 'true';
         row.hidden = true;
         row.classList.add('being-edited');
-        
+
         const comment = btn.dataset.comment || '';
         const origComment = row.dataset.origComment || '';
 
         const tmpl = document.getElementById('editBlacklistTemplate');
         const clone = tmpl.content.cloneNode(true);
-        
+
         const editRow = clone.querySelector('tr');
         editRow.id = 'editBlacklistRow_' + index;
-        
+
         const form = clone.querySelector('.edit-blacklist-form');
         const formId = 'editBlacklistForm_' + index;
         form.id = formId;
-        
+
         // old_cidr must always be the TRUE original CIDR (never mutated across
         // repeated Edit+Stage cycles), since that's the identity the live
         // server-side store still knows this entry by until Apply actually runs.
         const oldCidrInput = clone.querySelector('.edit-blacklist-old-cidr');
         oldCidrInput.value = isStagedAdd ? cidr : origCidr;
         oldCidrInput.setAttribute('form', formId);
-        
+
         const cidrInput = clone.querySelector('.edit-blacklist-cidr');
         cidrInput.value = cidr;
         cidrInput.setAttribute('form', formId);
@@ -2329,15 +2329,15 @@
         enabledCheck.setAttribute('form', formId);
         enabledCheck.setAttribute('aria-label', 'Enabled');
         enabledCheck.checked = enabled;
-        
+
         // Save target CIDR signature and submit via AJAX
-        form.addEventListener('submit', async function(eSubmit) {
+        form.addEventListener('submit', async function (eSubmit) {
             eSubmit.preventDefault();
-            
+
             const newCidr = cidrInput.value.trim().toLowerCase();
             const newComment = commentInput.value.trim();
             const enabledChecked = enabledCheck.checked;
-            
+
             if (isStagedAdd) {
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
@@ -2367,9 +2367,9 @@
             applyBlacklistFilter();
             updateTableBanner();
         });
-        
+
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelBlacklistEdit(index), { once: true });
-        
+
         // Discard: throw away every staged change for this row (however many
         // Edit+Stage cycles happened) and revert it to its original state.
         clone.querySelector('.btn-discard-row').addEventListener('click', () => {
@@ -2387,18 +2387,18 @@
             applyBlacklistFilter();
             updateTableBanner();
         }, { once: true });
-        
+
         ensureRowMatchesTableOrder(editRow, document.getElementById('blacklistTable'));
         row.after(clone);
         focusAndSelectInput(cidrInput);
     }
-    
+
     function cancelBlacklistEdit(index) {
         cancelInlineRowEdit('editBlacklistRow_' + index, 'blacklistRow_' + index, false, applyBlacklistFilter);
     }
-    
+
     const stagedChanges = {};
-    
+
     // buildSelectElement creates a <select> DOM element for enum-type config fields.
     // options: string array from CONFIG_KEYS.opts* (injected by Go).
     // currentValue: the value currently stored in the config row (may not be in options
@@ -2442,12 +2442,12 @@
         }
         return select;
     }
-    
+
     function editConfig(key) {
         // Find existing items
         const row = document.getElementById('configRow_' + key);
         if (!row) return;
-        
+
         // Only cancel THIS row's own edit if one is somehow already open (guards
         // against duplicate row injection from a stale re-click); other rows'
         // in-progress edits are left alone, so multiple config fields can be
@@ -2456,32 +2456,32 @@
         if (existingEditRow) {
             existingEditRow.querySelector('.config-cancel-btn')?.click();
         }
-        
+
         const type = row.dataset.type;
         const currentDisplay = row.querySelector('.display-value').innerText;
         const isPwd = row.dataset.isPwd === 'true';
         //const options = row.dataset.options;
-        
+
         // Capture the row's rendered height before hiding it so we can prevent
         // the edit row from being shorter (which causes a layout jump).
         // In HTML tables, setting `height` on a <tr> acts as min-height.
         // Fall back to 64px (the standard row height from CSS) if the row is
         // somehow unmeasurable (e.g., hidden by an active filter).
         const rowHeight = Math.max(64, row.getBoundingClientRect().height);
-        
+
         row.hidden = true;
         row.classList.add('being-edited');
-        
+
         // Setup Template
         const tmpl = document.getElementById('editConfigTemplate');
         const clone = tmpl.content.cloneNode(true);
         const editRow = clone.querySelector('tr');
         editRow.id = 'editConfigRow_' + key;
-        
+
         // Lock the edit row so it cannot be shorter than the original row,
         // preventing any upward layout jump. It can still expand for textareas.
         editRow.style.height = rowHeight + 'px';
-        
+
         // Populate key and safely carry over its description block
         const keyDisplay = editRow.querySelector('.edit-key-display');
         // Clone the inner span element to preserve existing filter highlight nodes
@@ -2491,19 +2491,19 @@
         } else {
             keyDisplay.textContent = key;
         }
-        
+
         const origDesc = row.querySelector('.config-field-desc');
         if (origDesc) {
             keyDisplay.appendChild(document.createElement('br'));
             keyDisplay.appendChild(origDesc.cloneNode(true));
         }
-        
+
         const container = editRow.querySelector('.edit-input-container');
         const hint = editRow.querySelector('.edit-type-hint');
-        
+
         // Remove strict row height lock temporarily so textareas can expand
         editRow.style.height = 'auto';// Safe CSSOM assignment
-        
+
         // Dynamically type the input control cleanly without inline string styles
         // All branches use createElement + .value/.textContent — no innerHTML, no string escaping.
         if (key === CONFIG_KEYS.upstreamSelectionMode) {
@@ -2609,21 +2609,21 @@
             textInput.setAttribute('aria-label', key + ' value');
             textInput.value = currentDisplay;
             container.appendChild(textInput);
-            hint.innerText = "BUG: FIXME: unhandled type '"+type+"', fallback to:String value";
+            hint.innerText = "BUG: FIXME: unhandled type '" + type + "', fallback to:String value";
             //hint.innerText = "String value";
-            
+
             // This branch should be unreachable: Go's getConfigFields() panics on unknown types.
             // If it is ever reached it means a new Config field type was added without updating
             // getConfigFields() — the console warning below will make that obvious.
             console.warn('BUG: editConfig: unexpected type for key', key, '(type:', type, ') — falling back to plain text input. Update getConfigFields() in Go and editConfig() in app.js.');
         }
-        
+
         // Re-apply the height lock now that we know whether it is a textarea or not.
         // For non-textarea types the edit row should match the original row height exactly
         // (neither shrink nor expand). For textarea types we allow expansion but still
         // enforce the original row height as the minimum.
         editRow.style.height = rowHeight + 'px';
-        
+
         // Handle Cancel
         clone.querySelector('.config-cancel-btn').addEventListener('click', () => {
             editRow.remove();
@@ -2631,7 +2631,7 @@
             row.classList.remove('being-edited');
             applyConfigFilter();
         }, { once: true });
-        
+
         const stageBtn = clone.querySelector('.config-stage-btn');
 
         // Enter stages (Ctrl+Enter inside the multi-line list textarea, where
@@ -2659,9 +2659,9 @@
 
         // Handle Staging the change
         stageBtn.addEventListener('click', () => {
-            
+
             const rawVal = editRow.querySelector('.config-input').value;
-            
+
             // Password confirmation logic! Compared directly against a second
             // masked (type="password") input rather than a native prompt()
             // dialog, so the confirmation text is never shown in plaintext.
@@ -2673,10 +2673,10 @@
                     return; // Abort, doneFIXME: have to re-add listener for this Stage button! ok i set once:false below
                 }
             }
-            
+
             let parsedVal = rawVal;
             let displayVal = rawVal;
-            
+
             if (type === 'int') {
                 const integerText = rawVal.trim();
 
@@ -2717,7 +2717,7 @@
 
                 displayVal = parsedVal.join(', ');
             }
-            
+
             // For the password field, an empty input means "keep existing hash" (the Go backend
             // substitutes the current hash when it receives an empty string). Keep the display
             // showing "********" so it's clear to the user that the password is unchanged,
@@ -2739,7 +2739,7 @@
                     displayVal = currentDisplay;
                 }
             }
-            
+
             // Save to object, modify UI, flag it
             stagedChanges[key] = parsedVal;
             row.querySelector('.display-value').innerText = displayVal;
@@ -2751,11 +2751,11 @@
                 row.dataset.listJson = JSON.stringify(parsedVal);
             }
             row.classList.add('staged');
-            row.classList.remove('being-edited'); 
-            
+            row.classList.remove('being-edited');
+
             editRow.remove();
             row.hidden = false;
-            
+
             rememberStagedEditRow(row);
             applyConfigFilter();
             // Pop the banner
@@ -2769,12 +2769,12 @@
         // • No accumulation across Edit presses: editConfig() starts by clicking all
         //   .config-cancel-btn elements, removing any existing edit row before the new
         //   clone is inserted, so listeners are always on a fresh, short-lived element.
-        
+
         // Align cells to current visual column order, then insert before any
         // post-insertion measurements (textarea auto-size needs a live row).
         ensureRowMatchesTableOrder(editRow, document.getElementById('configTable'));
         row.after(clone);
-        
+
         // Post-insertion: auto-size the textarea now that it is in the DOM and
         // scrollHeight is measurable. This must happen after row.after(clone).
         if (type === '[]string') {
@@ -2783,28 +2783,28 @@
                 // Collapse to measure true content height, then expand to fit.
                 ta.style.height = 'auto';
                 const contentH = ta.scrollHeight;
-                
+
                 // Per-field storage key: each []string config field remembers its
                 // own custom textarea height independently, so resizing one field
                 // (e.g. upstream_urls) doesn't clobber or get clobbered by another
                 // (e.g. upstream_sni_hostnames) sharing a single global key.
                 const textareaHeightKey = 'config_textarea_height_' + key;
-                
+
                 // The user may have previously resized a textarea on this page.
                 // Apply the saved height if it is larger than the content height,
                 // so the preference is honoured without hiding any content.
                 const savedH = parseInt(uiStorage.getItem(textareaHeightKey) || '0', 10);
                 const finalH = Math.max(contentH, savedH, 85); // 85px is the CSS minimum
                 ta.style.height = finalH + 'px';
-                
+
                 // Prevent the user from dragging the textarea smaller than its
                 // content; they can still make it bigger.
                 ta.style.minHeight = Math.max(contentH, 85) + 'px';
-                
+
                 // Also update the edit row's height floor so the row matches the
                 // (now potentially taller) textarea.
                 editRow.style.height = Math.max(rowHeight, finalH + 12) + 'px'; // +12 for cell padding
-                
+
                 // Persist the height whenever the user finishes a resize drag.
                 // offsetHeight reflects the actual rendered height including padding.
                 ta.addEventListener('mouseup', () => {
@@ -2813,24 +2813,24 @@
                         uiStorage.setItem(textareaHeightKey, String(h));
                     }
                 });
-                
+
                 // Double left-click on the resize handle clears the saved user preference
                 ta.addEventListener('dblclick', (e) => {
                     const rect = ta.getBoundingClientRect();
                     const clickX = e.clientX - rect.left;
                     const clickY = e.clientY - rect.top;
-                    
+
                     // Check if the click happened inside a 20px square at the bottom-right corner
                     if (clickX >= rect.width - 20 && clickY >= rect.height - 20) {
                         if (confirm('Reset and stop remembering the custom textarea size?')) {
                             // Remove the preference completely
                             uiStorage.removeItem(textareaHeightKey);
-                            
+
                             // Recalculate and snap layout back to natural content boundaries instantly
                             ta.style.height = 'auto';
                             const freshContentH = ta.scrollHeight;
                             const defaultH = Math.max(freshContentH, 85); // 85px is the CSS minimum
-                            
+
                             ta.style.height = defaultH + 'px';
                             ta.style.minHeight = defaultH + 'px';
                             editRow.style.height = Math.max(rowHeight, defaultH + 12) + 'px'; // +12 for cell padding
@@ -2839,10 +2839,10 @@
                 });
             }
         }
-        
+
         editRow.querySelector('.config-input')?.focus();
     }
-    
+
     function updateBanner() {
         const count = Object.keys(stagedChanges).length;
         const banner = document.getElementById('stagedChangesBanner');
@@ -2858,19 +2858,19 @@
         const applyBtn = document.getElementById('js-apply-config-btn');
         if (applyBtn) applyBtn.disabled = count === 0;
     }
-    
+
     async function applyConfigChanges(e) {
         if (Object.keys(stagedChanges).length === 0) return;
         if (!confirm('Applying changes will overwrite ' + configFileName + ' and gracefully restart listeners.\n\n' +
             'The existing ' + configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.\n\nProceed?')) return;
 
         const success = await withApplyButtonBusy(e.currentTarget, 'Applying\u2026', () => postAdminForm(
-          '/config', {
+            '/config', {
             'action': 'apply',
             'payload': JSON.stringify(stagedChanges),
             'config_version': configVersion
         }, 'Failed to apply configuration'));
-        
+
         if (success) {
             // Clear the object to disarm the beforeunload listener before reloading!
             for (const key in stagedChanges) { delete stagedChanges[key]; }
@@ -2878,7 +2878,7 @@
             reloadPageBypassingUnsavedWarning();
         }
     }
-    
+
     // --- Column resize (drag) + double-click auto-fit, applied generically to
     // every sortable data table (Rules/Hosts/Blacklist/Query-Blocklist/Config).
     // Hybrid percentage resizing keeps every row summing to 100% width
@@ -3317,19 +3317,19 @@
     }
 
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
-    document.addEventListener('DOMContentLoaded', function() {
-        
+    document.addEventListener('DOMContentLoaded', function () {
+
         setupRememberedDetails();
 
         // Consolidated Keyboard Handler ensuring typing and Escape contexts operate precisely
-        document.addEventListener('keydown', function(e) {
+        document.addEventListener('keydown', function (e) {
             const activeTag = document.activeElement.tagName;
             const isTyping = activeTag === 'INPUT' || activeTag === 'SELECT' || activeTag === 'TEXTAREA';
-            
+
             if (!isTyping) {
                 const isF5 = e.key === 'F5';
                 const isCtrlR = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r';
-                
+
                 if (isF5 || isCtrlR) {
                     e.preventDefault(); // Stop Firefox from doing a POST-reload
                     //window.location.href = '/blocks'; // Perform a clean GET-reload instead
@@ -3337,7 +3337,7 @@
                     window.location.reload(); // tells the browser's engine: "This is a refresh of the exact same context," which allows it to fire up its native scroll restoration feature and keep your position locked exactly where you left it!
                     return;
                 }
-                
+
                 if (e.key === 'Enter' && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
                     const active = document.activeElement;
                     if (!active || active === document.body || active === document.documentElement ||
@@ -3371,7 +3371,7 @@
         // the per-form submit handlers remove the edit row). The base row is
         // always the edit row's previous sibling. Covers Rules/Hosts/
         // Blacklist/Query-Blocklist edit forms in one place.
-        document.addEventListener('submit', function(e) {
+        document.addEventListener('submit', function (e) {
             const form = e.target;
             if (!(form instanceof HTMLFormElement) ||
                 !form.matches('.edit-form, .edit-host-form, .edit-blacklist-form, .edit-qb-form')) {
@@ -3383,7 +3383,7 @@
         }, true);
 
         // Warn before navigating away while table edits are staged
-        window.addEventListener('beforeunload', function(e) {
+        window.addEventListener('beforeunload', function (e) {
             // Programmatic reloads triggered via reloadPageBypassingUnsavedWarning()
             // (after we've already persisted/communicated the outcome to the
             // user, e.g. post-apply or post-discard) must never re-trigger this
@@ -3396,16 +3396,16 @@
             if (hasTableChanges || hasConfigChanges) {
                 // Modern standard way to trigger the confirmation dialog
                 e.preventDefault();
-                
+
                 e.returnValue = '' // says deprecated
                 // Returning a string triggers the prompt in almost all browsers 
                 // and completely bypasses the VS Code deprecation warning.
-                return ''; 
+                return '';
             }
         });
-        
+
         // Global Rules Table Event Delegation (Interceptors for Edit and Delete Actions)
-        document.addEventListener('click', function(e) {
+        document.addEventListener('click', function (e) {
             // Table-staging Apply / Discard buttons
             if (e.target.closest('.js-discard-table-btn')) {
                 if (!confirm('Discard all staged changes?')) return;
@@ -3436,12 +3436,12 @@
             if (editBtn) {
                 // 2. Safely grab the closest table row relative to the button
                 const row = editBtn.closest('tr');
-                
+
                 // FIX: Stop if it's not a row, OR if it's not a Rules table row
                 if (!row || !row.hasAttribute('data-rule-id')) return;
-                
+
                 e.preventDefault();
-                
+
                 // 3. Grab the data cleanly from the row dataset
                 const id = row.dataset.ruleId;
                 const typ = row.dataset.ruleType;
@@ -3454,20 +3454,20 @@
                 const origType = row.dataset.origType;
                 const origPattern = row.dataset.origPattern;
                 const origEnabled = row.dataset.origEnabled === 'true';
-                
+
                 // 4. Tag the original row with a unique layout ID so Cancel/Save can find it
                 row.id = 'rule-row-' + id;
                 row.hidden = true;
                 row.classList.add('being-edited');
-                
+
                 // 1. Clone the template natively
                 const tmpl = document.getElementById('editRuleTemplate');
                 const clone = tmpl.content.cloneNode(true);
-                
+
                 // Add an ID to the <tr> to make cleanup easy
                 const editRow = clone.querySelector('tr');
                 editRow.id = 'editFormRow_' + id;
-                
+
                 // 2. Grab references to the inputs in our clone
                 const typeSelect = clone.querySelector('.edit-type');
                 const idDisplay = clone.querySelector('.edit-id-display');
@@ -3485,7 +3485,7 @@
                 for (const el of [typeSelect, patternInput, enabledCheck, idInput]) {
                     el.setAttribute('form', ruleEditFormId);
                 }
-                
+
                 // 3. Populate values securely as object properties (no string escaping needed)
                 typeSelect.setAttribute('aria-label', 'DNS record type');
                 typeSelect.value = typ;
@@ -3500,22 +3500,22 @@
                 enabledCheck.setAttribute('aria-label', 'Enabled');
                 enabledCheck.checked = enabled;
                 idInput.value = id;
-                
+
                 // 4. Setup Cancel action
-                
+
                 cancelBtn.addEventListener('click', () => cancelEdit(id), { once: true });
 
                 // 5. Handle form submission
-                form.addEventListener('submit', async function(eSubmit) {
+                form.addEventListener('submit', async function (eSubmit) {
                     eSubmit.preventDefault();
-                    
+
                     const newPattern = patternInput.value.trim();
                     const enabledChecked = enabledCheck.checked; //uses the captured one from outside this is bugfix btw(says Gemini)
                     const newType = typeSelect.value;
                     const newComment = commentInput.value.trim();
-                    
+
                     if (newPattern === '') { alert('newPattern cannot be empty'); return; }
-                    
+
                     if (isStagedAdd) {
                         // This row hasn't been sent to the server yet: merge the edit
                         // into the still-pending Add entry instead of staging a second,
@@ -3548,7 +3548,7 @@
                     applyRulesFilter();
                     updateTableBanner();
                 });
-                
+
                 // Discard: throw away every staged change (however many Edit+Stage
                 // cycles happened) for this row and revert it to its original state.
                 clone.querySelector('.btn-discard-row').addEventListener('click', () => {
@@ -3567,22 +3567,22 @@
                     applyRulesFilter();
                     updateTableBanner();
                 }, { once: true });
-                
+
                 // 6. Insert cleanly next to the original row (cells match column order)
                 ensureRowMatchesTableOrder(editRow, document.getElementById('rulesTable'));
                 row.after(clone);
                 focusAndSelectInput(patternInput);
             } // end of 'if editBtn'
-            
+
             // --- DELETE BUTTON INTERCEPTOR ---
             const delBtn = e.target.closest('.btn-del');
             if (delBtn) {
                 const row = delBtn.closest('tr');
                 // FIX: Stop if it's not a row, OR if it's not a Rules table row
                 if (!row || !row.hasAttribute('data-rule-id')) return;
-                
+
                 e.preventDefault(); // Stop native link/button submission
-                
+
                 const id = row.dataset.ruleId;
                 const typ = row.dataset.ruleType;
                 const pattern = row.dataset.rulePattern;
@@ -3595,10 +3595,10 @@
                     updateTableBanner();
                     return;
                 }
-                
+
                 // No confirm: this only STAGES the delete (struck through, reversible
                 // via Undelete until Apply & Reload is pressed).
-                
+
                 // A pending Delete supersedes any queued Edit for the same rule;
                 // drop it so we don't try to apply a stale edit right before
                 // deleting. The delete itself must always reference the rule's
@@ -3617,7 +3617,7 @@
                 applyRulesFilter();
                 updateTableBanner();
             } // end of 'if delBtn'
-            
+
             // --- UNDELETE BUTTON INTERCEPTOR ---
             const undelBtn = e.target.closest('.btn-undelete');
             if (undelBtn) {
@@ -3631,7 +3631,7 @@
                     updateTableBanner();
                 }//if
             } // end of 'if delBtn'
-            
+
             // --- INLINE DISCARD BUTTON INTERCEPTOR (rules only; hosts/blacklist
             // wire their own '.js-host-discard'/'.js-blacklist-discard' listeners) ---
             const inlineDiscardBtn = e.target.closest('.inline-discard-btn');
@@ -3654,7 +3654,7 @@
                 }
             } // end of 'if inlineDiscardBtn'
         }); // end of 'click' listener
-        
+
         // Bind Rules filters on boot safely inside DOMContentLoaded
         const filterInput = document.getElementById('rulesFilter');
         if (filterInput) {
@@ -3668,7 +3668,7 @@
         // --- ADD RULE INTERCEPTOR ---
         const addForm = document.getElementById('addRuleForm');
         if (addForm) {
-            addForm.addEventListener('submit', function(e) {
+            addForm.addEventListener('submit', function (e) {
                 e.preventDefault(); // Stop native browser submission
 
                 const patternInput = addForm.querySelector('[name="pattern"]');
@@ -3706,14 +3706,14 @@
                 updateTableBanner();
             });
         }
-        
+
         // ── Query Blocklist page ────
         document.querySelectorAll('.js-qb-edit').forEach(btn => {
             btn.addEventListener('click', () => editQueryBlock(btn));
         });
 
         document.querySelectorAll('.js-qb-delete-form').forEach(form => {
-            form.addEventListener('submit', function(e) {
+            form.addEventListener('submit', function (e) {
                 e.preventDefault();
 
                 const idInput = form.querySelector('[name="id"]');
@@ -3773,7 +3773,7 @@
         // --- ADD QUERY-BLOCKLIST RULE: stage instead of posting immediately ---
         const addQueryBlockForm = document.getElementById('addQueryBlockForm');
         if (addQueryBlockForm) {
-            addQueryBlockForm.addEventListener('submit', function(e) {
+            addQueryBlockForm.addEventListener('submit', function (e) {
                 e.preventDefault();
 
                 const patternInput = addQueryBlockForm.querySelector('[name="pattern"]');
@@ -3822,7 +3822,7 @@
             }, 120));
             applyQueryBlocklistFilter();
         }
-        
+
         // ── Query Blocklist page: External Hosts-File Source search ──
         // Search itself is a plain server-rendered GET (see
         // parseExternalHostsSearchParams/buildExternalHostMatches in Go);
@@ -3861,7 +3861,7 @@
 
             const extHostsClearBtn = document.querySelector('.js-ext-hosts-clear-btn');
             if (extHostsClearBtn) {
-                extHostsClearBtn.addEventListener('click', function() {
+                extHostsClearBtn.addEventListener('click', function () {
                     extHostsSearchInput.value = '';
                     uiStorage.removeItem('extHostsSearch_query');
                     const form = extHostsClearBtn.closest('form');
@@ -3869,7 +3869,7 @@
                 });
             }
         }
-        
+
         // ── Blocks page ─────────────
         // Refresh button(s) navigate to /blocks via GET, bypassing any cached POST
         // state. There can be up to two of these now (one per section — Recent
@@ -3879,7 +3879,7 @@
                 location.reload();
             });
         });
-        
+
         // Clear Shown Blocks/Allows: grey the button while the request is in
         // flight (matching withApplyButtonBusy's pattern used elsewhere) so a
         // slow or temporarily-firewalled backend can't be double-submitted by a
@@ -3887,7 +3887,7 @@
         // There can be up to two of these forms now — see the refresh-button
         // comment above — each with its own "action" (clear / clear_allowed).
         document.querySelectorAll('.js-blocks-clear-form').forEach(blocksClearForm => {
-            blocksClearForm.addEventListener('submit', function(e) {
+            blocksClearForm.addEventListener('submit', function (e) {
                 e.preventDefault();
                 const actionValue = blocksClearForm.querySelector('[name="action"]').value;
                 const targetUrl = blocksClearForm.getAttribute('action'); // '/blocks' or '/allows'
@@ -3913,16 +3913,16 @@
                 })();
             });
         });
-        
+
         // Unblock/Re-block buttons: submit in the background via fetchWithTimeout() instead
         // of a full page POST+redirect+reload, so several clicks in quick
         // succession each resolve independently without blocking on a full page
         // re-render. Falls back to a normal form submission (full page reload)
         // if JavaScript is disabled, since the underlying <form> is still real.
         document.querySelectorAll('.js-block-action-form').forEach(form => {
-            form.addEventListener('submit', async function(e) {
+            form.addEventListener('submit', async function (e) {
                 e.preventDefault();
-                
+
                 const domain = form.querySelector('[name="domain"]').value;
                 const type = form.querySelector('[name="type"]').value;
                 const actionInput = form.querySelector('[name="action"]');
@@ -3931,32 +3931,32 @@
                 const id = idInput ? idInput.value : '';
                 const btn = form.querySelector('button[type="submit"]');
                 const feedback = form.parentElement.querySelector('.block-action-feedback');
-                
+
                 if (btn.disabled) return; // already in flight; ignore rapid double-clicks
 
                 // Only the "pause" direction needs the explanation (see the
                 // data-confirm attribute rendered in ui.html's allows template).
                 const confirmMessage = form.dataset.confirm;
                 if ((action === 'disable_whitelist_rule' || action === 'delete_whitelist_rule') && confirmMessage && !confirm(confirmMessage)) return;
-                
+
                 const originalText = btn.textContent;
                 const originalClass = btn.className;
-                
+
                 btn.disabled = true;
                 btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' :
                     action === 'disable_whitelist_rule' ? 'Pausing…' :
-                    action === 'delete_whitelist_rule' ? 'Removing…' :
-                    action === 'enable_whitelist_rule' ? 'Resuming…' :
-                    action === 'block_qb_local' ? 'Blocking…' :
-                    action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
+                        action === 'delete_whitelist_rule' ? 'Removing…' :
+                            action === 'enable_whitelist_rule' ? 'Resuming…' :
+                                action === 'block_qb_local' ? 'Blocking…' :
+                                    action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
                 btn.classList.add('btn-action-pending');
                 if (feedback) {
                     feedback.textContent = '';
                     feedback.className = 'block-action-feedback';
                 }
-                
+
                 const result = await postBlocksAction(form.getAttribute('action'), domain, type, action, id);
-                
+
                 if (result.ok) {
                     // Flip the form to perform the opposite action next time, and
                     // relabel the button to match — mirrors exactly what a full
@@ -4034,7 +4034,7 @@
                 }
             });
         });
-        
+
         // ── Hosts page ──────────────
         // Edit buttons: pass the button element to editHost() exactly as onclick="editHost(this)" did.
         // Direct binding is safe here because rows are server-rendered; none are added dynamically
@@ -4042,12 +4042,12 @@
         document.querySelectorAll('.js-host-edit').forEach(btn => {
             btn.addEventListener('click', () => editHost(btn));
         });
-        
+
         // Delete forms: confirm, then conditionally clean the free-pass uiStorage key.
         // Reading pattern from the hidden <input name="pattern"> already inside the form
         // avoids adding any new data attributes to the HTML.
         document.querySelectorAll('.js-host-delete-form').forEach(form => {
-            form.addEventListener('submit', function(e) {
+            form.addEventListener('submit', function (e) {
                 e.preventDefault();
 
                 const patternInput = form.querySelector('[name="pattern"]');
@@ -4078,7 +4078,7 @@
                 updateTableBanner();
             });
         });
-        
+
         document.querySelectorAll('.js-host-undelete').forEach(btn => {
             btn.addEventListener('click', () => {
                 const index = btn.dataset.index;
@@ -4090,7 +4090,7 @@
                 updateTableBanner();
             });
         });
-        
+
         // Inline Discard: revert a staged plain-edit row to its original
         // pattern/IPs directly, without first opening the Edit form.
         document.querySelectorAll('.js-host-discard').forEach(btn => {
@@ -4104,9 +4104,9 @@
                 updateTableBanner();
             });
         });
-        
+
         // --- ADD HOST: stage instead of posting immediately ---
-        document.getElementById('addHostForm')?.addEventListener('submit', function(e) {
+        document.getElementById('addHostForm')?.addEventListener('submit', function (e) {
             e.preventDefault();
 
             const patternInput = this.querySelector('[name="pattern"]');
@@ -4153,7 +4153,7 @@
             applyHostsFilter();
             updateTableBanner();
         });
-        
+
         // Load filter value from persistent uiStorage on page load
         const hostsFilterInput = document.getElementById('hostsFilter');
         if (hostsFilterInput) {
@@ -4163,14 +4163,14 @@
             }, 120));
             applyHostsFilter();
         }
-        
+
         // ── Response-blacklist page ─
         document.querySelectorAll('.js-blacklist-edit').forEach(btn => {
             btn.addEventListener('click', () => editBlacklist(btn));
         });
-        
+
         document.querySelectorAll('.js-blacklist-delete-form').forEach(form => {
-            form.addEventListener('submit', function(e) {
+            form.addEventListener('submit', function (e) {
                 e.preventDefault();
 
                 const cidrInput = form.querySelector('[name="cidr"]');
@@ -4199,7 +4199,7 @@
                 updateTableBanner();
             });
         });
-        
+
         document.querySelectorAll('.js-blacklist-undelete').forEach(btn => {
             btn.addEventListener('click', () => {
                 const index = btn.dataset.index;
@@ -4211,7 +4211,7 @@
                 updateTableBanner();
             });
         });
-        
+
         // Inline Discard: revert a staged plain-edit row to its original
         // CIDR directly, without first opening the Edit form.
         document.querySelectorAll('.js-blacklist-discard').forEach(btn => {
@@ -4225,7 +4225,7 @@
                 updateTableBanner();
             });
         });
-        
+
         // Load filter values from persistent uiStorage on load tracking configuration
         const blacklistFilterInput = document.getElementById('blacklistFilter');
         if (blacklistFilterInput) {
@@ -4235,9 +4235,9 @@
             }, 120));
             applyBlacklistFilter();
         }
-        
+
         // --- Existing "check for overlapping filters before add" validation ---
-        document.getElementById('add-blacklist-form')?.addEventListener('submit', async function(e) {
+        document.getElementById('add-blacklist-form')?.addEventListener('submit', async function (e) {
             e.preventDefault(); // Stop form from auto-posting immediately
             const form = this;
             const cidrInput = form.querySelector('input[name="cidr"]');
@@ -4246,7 +4246,7 @@
             const comment = commentInput ? commentInput.value.trim() : '';
             const cidrValue = cidrInput.value.trim().toLowerCase();
             const enabled = enabledCheckbox ? enabledCheckbox.checked : true;
-            
+
             if (!cidrValue) return;
 
             const alreadyStaged = findStagedEntryIndex('/response-blacklist', f => f.action === 'add' && f.cidr === cidrValue) !== -1;
@@ -4254,7 +4254,7 @@
                 alert('A staged (not yet applied) blacklist entry with this CIDR already exists.');
                 return;
             }
-            
+
             try {
                 const response = await fetchWithTimeout(
                     `/response-blacklist/check?cidr=${encodeURIComponent(cidrValue)}`,
@@ -4280,9 +4280,9 @@
                 if (data && data.matches && data.matches.length > 0) {
                     // Double-ask user confirmation showing exact matching filters
                     const message = `This target is already covered or matched by these existing filters:\n• ` +
-                    data.matches.join('\n• ') +
-                    `\n\nDo you still want to add it as a separate redundant entry?`;
-                    
+                        data.matches.join('\n• ') +
+                        `\n\nDo you still want to add it as a separate redundant entry?`;
+
                     if (!confirm(message)) {
                         return; // User clicked "Cancel" -> abort
                     }
@@ -4303,7 +4303,7 @@
                 );
                 return;
             }
-            
+
             const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue, enabled: enabled ? 'true' : 'false', comment: comment });
             if (commentInput) commentInput.value = '';
 
@@ -4321,7 +4321,7 @@
             applyBlacklistFilter();
             updateTableBanner();
         });
-        
+
         // ── Config page ─────────────
         // Edit buttons: key lives on the row's data-key, not repeated on the button.
         document.querySelectorAll('.js-config-edit').forEach(btn => {
@@ -4335,7 +4335,7 @@
                 editConfig(row.dataset.key);
             });
         });
-        
+
         // Inline Discard: revert a single staged config field back to its
         // true pristine (server-rendered) value directly, without opening
         // the Edit form and without touching any other staged field.
@@ -4349,7 +4349,7 @@
                 const key = row.dataset.key;
                 if (stagedChanges[key] === undefined) return; // nothing staged; shouldn't be visible anyway
                 if (!confirm('Discard the staged change for "' + key + '" and revert it to its original value?')) return;
-                
+
                 delete stagedChanges[key];
                 const trueOriginal = row.dataset.trueOriginal;
                 row.querySelector('.display-value').innerText = trueOriginal;
@@ -4359,19 +4359,19 @@
                 }
                 row.classList.remove('staged');
                 rememberStagedEditRow(row);
-                
+
                 applyConfigFilter();
                 updateBanner();
             });
         });
-        
+
         const applyConfigBtn = document.getElementById('js-apply-config-btn');
         if (applyConfigBtn) {
             applyConfigBtn.addEventListener('click', applyConfigChanges);
         }
-        
+
         const discardConfigBtn = document.getElementById('js-discard-config-btn');
-        if (discardConfigBtn){
+        if (discardConfigBtn) {
             discardConfigBtn.addEventListener('click', () => {
                 if (confirm('Discard all staged config changes?')) {
                     // Empty the staged changes object safely, else beforeunload will prevent reload!
@@ -4388,11 +4388,11 @@
             // Run immediately on page boot to apply the active filter
             applyConfigFilter();
         }
-        
+
         // ── Stats page: Shutdown ───
         const shutdownForm = document.querySelector('.js-shutdown-form');
         if (shutdownForm) {
-            shutdownForm.addEventListener('submit', function(e) {
+            shutdownForm.addEventListener('submit', function (e) {
                 e.preventDefault();
                 if (!confirm('Really shut down the dnsbollocks server now? All DNS resolution will stop until it is manually restarted.')) {
                     return;
@@ -4425,7 +4425,7 @@
         // ── Control page: Reload Config / Clear DNS Cache ──
         const controlReloadForm = document.querySelector('.js-control-reload-form');
         if (controlReloadForm) {
-            controlReloadForm.addEventListener('submit', function(e) {
+            controlReloadForm.addEventListener('submit', function (e) {
                 if (!confirm('Reload configuration now? This re-reads config.json and the dependent rule/host/blocklist files, and may briefly rebind listeners if their settings changed.')) {
                     e.preventDefault();
                 }
@@ -4434,7 +4434,7 @@
 
         const controlClearCacheForm = document.querySelector('.js-control-clear-cache-form');
         if (controlClearCacheForm) {
-            controlClearCacheForm.addEventListener('submit', function(e) {
+            controlClearCacheForm.addEventListener('submit', function (e) {
                 if (!confirm('Clear the DNS cache now? All cached responses will be dropped immediately.')) {
                     e.preventDefault();
                 }
@@ -4449,19 +4449,19 @@
         // object with no effect on the browser's own auth cache.
         const controlLogoutForm = document.querySelector('.js-control-logout-form');
         if (controlLogoutForm) {
-            controlLogoutForm.addEventListener('submit', function(e) {
+            controlLogoutForm.addEventListener('submit', function (e) {
                 if (!confirm('Log out now? Your browser will likely prompt for credentials again immediately afterward \u2014 cancel that prompt to remain logged out.')) {
                     e.preventDefault();
                 }
             });
         }
-        
+
         // ── Logs page ───────────────
         // Clear button resets the q field and submits, matching the original
         // onclick="this.form.q.value=''; this.form.submit();" behavior exactly.
         const logsClearBtn = document.querySelector('.js-logs-clear-btn');
         if (logsClearBtn) {
-            logsClearBtn.addEventListener('click', function() {
+            logsClearBtn.addEventListener('click', function () {
                 const form = logsClearBtn.closest('form');
                 if (!form) {
                     console.error('js-logs-clear-btn: not inside a <form>');
@@ -4473,15 +4473,15 @@
                 form.submit();
             });
         }
-        
+
         // Clean up visual status notifications on browser refresh triggers
         //Because the messages are now in the URL (e.g., /blocks?success=Successfully...), if the user hits F5 a minute later, the URL will still contain that query string, and the success message will pop up again.
         // Clean URL query parameters so F5 doesn't re-trigger visual messages
-        
+
         if (window.location.search.includes('success=') || window.location.search.includes('error=')) {
             window.history.replaceState({}, document.title, window.location.pathname);
         }
-        
+
         function cssEscapeAttrValue(value) {
             const s = String(value ?? '');
             if (window.CSS && typeof CSS.escape === 'function') {
@@ -4670,7 +4670,7 @@
             );
             row.classList.add('staged');
         }
-        
+
         function renderStoredStagedChange(change) {
             switch (change.url) {
                 case '/rules':
@@ -4723,15 +4723,15 @@
         function setupTableSorting(tableId, storageKeyPrefix, postSortCallback) {
             const table = document.getElementById(tableId);
             if (!table) return;
-            
+
             const tbody = table.querySelector('tbody');
             const headers = table.querySelectorAll('th.sortable');
             if (!tbody) return;
-            
+
             // Store original row order to revert back to 'none'
             const originalRows = Array.from(tbody.rows);
             originalRows.forEach((row, i) => row.dataset.origIndex = i);
-            
+
             function applySort(th, newDir) {
                 // Prefer stable col-id; fall back to legacy numeric data-col for
                 // any header that has not yet been annotated.
@@ -4760,8 +4760,8 @@
                 th.setAttribute(
                     'aria-sort',
                     newDir === 'asc' ? 'ascending' :
-                    newDir === 'desc' ? 'descending' :
-                    'none'
+                        newDir === 'desc' ? 'descending' :
+                            'none'
                 );
                 const icon = th.querySelector('.sort-icon');
                 if (icon) {

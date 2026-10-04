@@ -31,32 +31,75 @@
 }
 
 /* 1. LAYOUT & TEXT */
-body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg-page); color: #e0e0e0; padding: 40px; line-height: 1.6; }
-
-/* UPDATE: Expand horizontally but protect against squishing */
-.container { 
-    width: 95%; 
-    max-width: 2000px; /* Optional cap for ultrawide monitors */
-    min-width: 800px;  /* Enforce a sensible minimum width */
-    margin: auto; 
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--bg-page);
+    color: #e0e0e0;
+    padding: 40px;
+    line-height: 1.6;
 }
 
-h1 { color: var(--accent); margin-bottom: 20px; }
-.version-badge { font-size: 0.4em; color: var(--text-muted); font-weight: normal; vertical-align: middle; margin-left: 10px; }
-h2 { color: var(--accent); border-bottom: 2px solid var(--border-subtle); padding-bottom: 10px; margin-top: 40px; }
+/* UPDATE: Expand horizontally but protect against squishing */
+.container {
+    width: 95%;
+    max-width: 2000px;
+    /* Optional cap for ultrawide monitors */
+    min-width: 800px;
+    /* Enforce a sensible minimum width */
+    margin: auto;
+}
 
-nav { margin-bottom: 30px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
-nav a { color: var(--accent); text-decoration: none; margin-right: 15px; font-weight: bold; }
-nav a:hover { text-decoration: underline; }
+h1 {
+    color: var(--accent);
+    margin-bottom: 20px;
+}
+
+.version-badge {
+    font-size: 0.4em;
+    color: var(--text-muted);
+    font-weight: normal;
+    vertical-align: middle;
+    margin-left: 10px;
+}
+
+h2 {
+    color: var(--accent);
+    border-bottom: 2px solid var(--border-subtle);
+    padding-bottom: 10px;
+    margin-top: 40px;
+}
+
+nav {
+    margin-bottom: 30px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+nav a {
+    color: var(--accent);
+    text-decoration: none;
+    margin-right: 15px;
+    font-weight: bold;
+}
+
+nav a:hover {
+    text-decoration: underline;
+}
 
 /* 2. GLOBAL FORM STYLES (The "Dark Fix" Merge) */
-input[type="text"], input[type="number"], input[type="password"], select, button { 
-    background-color: var(--bg-input) !important; /* Forced Dark */
-    color: #ffffff !important;           /* Forced White Text */
-    border: 1px solid #444 !important; 
-    padding: 8px 12px; 
-    border-radius: 4px; 
-    
+input[type="text"],
+input[type="number"],
+input[type="password"],
+select,
+button {
+    background-color: var(--bg-input) !important;
+    /* Forced Dark */
+    color: #ffffff !important;
+    /* Forced White Text */
+    border: 1px solid #444 !important;
+    padding: 8px 12px;
+    border-radius: 4px;
+
     font-size: 0.9em;
     vertical-align: middle;
     box-sizing: border-box;
@@ -64,7 +107,7 @@ input[type="text"], input[type="number"], input[type="password"], select, button
 
 /* Specialized Select/Dropdown logic - Now CSP Compliant */
 select {
-    appearance: none; 
+    appearance: none;
     -webkit-appearance: none;
     background-image: url('/static/arrow-down.svg') !important;
     background-repeat: no-repeat !important;
@@ -75,14 +118,37 @@ select {
 
 /* --- DRY CSP Utility & Component Tokens --- */
 /* Strict CSP Alignment & Layout Utilities */
-.w-100 { width: 100% !important; }
-.v-align-middle { vertical-align: middle !important; }
-.d-inline { display: inline !important; }
+.w-100 {
+    width: 100% !important;
+}
+
+.v-align-middle {
+    vertical-align: middle !important;
+}
+
+.d-inline {
+    display: inline !important;
+}
+
 /* Config Table Stylings */
-.monospace-code2  { font-family: monospace !important; width: 100% !important; }
-.config-key-code { font-family: monospace; color: var(--success-text); }
-.config-edit-row { background: #1a1a1a; }
-.edit-row-bg     { background: #1a1a1a !important; }
+.monospace-code2 {
+    font-family: monospace !important;
+    width: 100% !important;
+}
+
+.config-key-code {
+    font-family: monospace;
+    color: var(--success-text);
+}
+
+.config-edit-row {
+    background: #1a1a1a;
+}
+
+.edit-row-bg {
+    background: #1a1a1a !important;
+}
+
 .config-type-hint {
     display: block;
     margin-top: 4px;
@@ -90,28 +156,88 @@ select {
 }
 
 /* Common Spacers */
-.lbl-spaced { margin: 0 10px; }
-.filter-spacer { margin-top: 25px; }
-.form-inline-action { display: inline; margin-left: 0px; }
-.form-inline-action2 { display: inline; margin-left: 0px; }
+.lbl-spaced {
+    margin: 0 10px;
+}
+
+.filter-spacer {
+    margin-top: 25px;
+}
+
+.form-inline-action {
+    display: inline;
+    margin-left: 0px;
+}
+
+.form-inline-action2 {
+    display: inline;
+    margin-left: 0px;
+}
 
 /* Reusable column tokens */
-.col-8 { width: 8%; }
-.col-10 { width: 10%; }
-.col-12 { width: 12%; }
-.col-14 { width: 14%; }
-.col-15 { width: 15%; }
-.col-18 { width: 18%; }
-.col-20 { width: 20%; }
-.col-22 { width: 22%; }
-.col-25 { width: 25%; }
-.col-26 { width: 26%; }
-.col-30 { width: 30%; }
-.col-35 { width: 35%; }
-.col-43 { width: 43%; }
-.col-45 { width: 45%; }
-.col-50 { width: 50%; }
-.col-70 { width: 70%; }
+.col-8 {
+    width: 8%;
+}
+
+.col-10 {
+    width: 10%;
+}
+
+.col-12 {
+    width: 12%;
+}
+
+.col-14 {
+    width: 14%;
+}
+
+.col-15 {
+    width: 15%;
+}
+
+.col-18 {
+    width: 18%;
+}
+
+.col-20 {
+    width: 20%;
+}
+
+.col-22 {
+    width: 22%;
+}
+
+.col-25 {
+    width: 25%;
+}
+
+.col-26 {
+    width: 26%;
+}
+
+.col-30 {
+    width: 30%;
+}
+
+.col-35 {
+    width: 35%;
+}
+
+.col-43 {
+    width: 43%;
+}
+
+.col-45 {
+    width: 45%;
+}
+
+.col-50 {
+    width: 50%;
+}
+
+.col-70 {
+    width: 70%;
+}
 
 /* --- Strict CSP UI Elements --- */
 .info-banner {
@@ -144,7 +270,8 @@ select {
 /* Configuration Textarea Control - Strict CSP Compliant */
 textarea.config-textarea {
     width: 100% !important;
-    min-height: 85px; /* Ensures it never squishes smaller than default */
+    min-height: 85px;
+    /* Ensures it never squishes smaller than default */
     padding: 6px !important;
     box-sizing: border-box !important;
     resize: vertical !important;
@@ -161,17 +288,42 @@ mark.filter-highlight {
 
 
 /* Layout & Spacing Utilities */
-.mb-20 { margin-bottom: 20px; }
-.w-280 { width: 280px; }
-.w-300 { width: 300px; }
-.maxw-600 { max-width: 600px; }
-.text-center { text-align: center; }
-.text-muted { color: var(--text-muted); }
+.mb-20 {
+    margin-bottom: 20px;
+}
+
+.w-280 {
+    width: 280px;
+}
+
+.w-300 {
+    width: 300px;
+}
+
+.maxw-600 {
+    max-width: 600px;
+}
+
+.text-center {
+    text-align: center;
+}
+
+.text-muted {
+    color: var(--text-muted);
+}
 
 /* Flexbox Utilities */
-.d-flex { display: flex; }
-.gap-10 { gap: 10px; }
-.flex-1 { flex: 1; }
+.d-flex {
+    display: flex;
+}
+
+.gap-10 {
+    gap: 10px;
+}
+
+.flex-1 {
+    flex: 1;
+}
 
 /* Section Sub-header Descriptions */
 .section-desc {
@@ -190,6 +342,7 @@ mark.filter-highlight {
     border-radius: 4px;
     border: 1px solid var(--border-subtle);
 }
+
 .log-output-pre {
     max-height: 600px;
     overflow: auto;
@@ -221,16 +374,20 @@ mark.filter-highlight {
     min-width: 800px;
     box-sizing: border-box;
     z-index: 1000;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
+
 .config-banner-actions {
     float: right;
     margin-top: -6px;
 }
+
 .btn-padded {
     padding: 8px 16px;
 }
-.btn-discard-all, .btn-discard-row {
+
+.btn-discard-all,
+.btn-discard-row {
     padding: 8px 16px;
     background: #666 !important;
     color: white !important;
@@ -251,7 +408,10 @@ mark.filter-highlight {
 }
 
 /* Ensure dropdown options are also dark */
-select option { background: var(--bg-input); color: white; }
+select option {
+    background: var(--bg-input);
+    color: white;
+}
 
 input[type="text"]:focus-visible,
 input[type="number"]:focus-visible,
@@ -272,17 +432,56 @@ textarea:focus-visible {
     border-color: var(--accent) !important;
 }
 
-button { cursor: pointer; font-weight: 600; transition: background 0.2s; }
-button:hover { background: var(--bg-input-hover) !important; }
+button {
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+button:hover {
+    background: var(--bg-input-hover) !important;
+}
 
 /* 3. TABLES (Anti-Jump Fixes) */
-table { width: 100%; table-layout: fixed; border-collapse: collapse; background: var(--bg-panel); border-radius: 8px; margin-top: 20px; overflow: hidden;}
-tr { height: 64px; } /* Locks row height to prevent vertical jumping */
-th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-th { background: var(--bg-panel-alt); color: var(--text-secondary); font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    background: var(--bg-panel);
+    border-radius: 8px;
+    margin-top: 20px;
+    overflow: hidden;
+}
+
+tr {
+    height: 64px;
+}
+
+/* Locks row height to prevent vertical jumping */
+th,
+td {
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+th {
+    background: var(--bg-panel-alt);
+    color: var(--text-secondary);
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
 
 /* 4. BUTTON VARIANTS */
-.btn-edit, .btn-add, .btn-del, .btn-save, .btn-cancel {
+.btn-edit,
+.btn-add,
+.btn-del,
+.btn-save,
+.btn-cancel {
     color: white !important;
     border: none !important;
 }
@@ -292,7 +491,11 @@ th { background: var(--bg-panel-alt); color: var(--text-secondary); font-size: 0
    border-radius/no-underline treatment that <button>/<input> already get
    for free from the generic form-control rule near the top of this file,
    since that rule doesn't target <a>. */
-a.btn-edit, a.btn-add, a.btn-del, a.btn-save, a.btn-cancel {
+a.btn-edit,
+a.btn-add,
+a.btn-del,
+a.btn-save,
+a.btn-cancel {
     display: inline-block;
     text-decoration: none;
     padding: 8px 12px;
@@ -300,21 +503,51 @@ a.btn-edit, a.btn-add, a.btn-del, a.btn-save, a.btn-cancel {
     font-weight: 600;
 }
 
-.btn-edit, .btn-add { background-color: var(--accent) !important; }
-.btn-edit:hover, .btn-add:hover { background-color: var(--accent-hover) !important; }
+.btn-edit,
+.btn-add {
+    background-color: var(--accent) !important;
+}
 
-.btn-del { background-color: var(--danger) !important; }
-.btn-del:hover { background-color: var(--danger-hover) !important; }
+.btn-edit:hover,
+.btn-add:hover {
+    background-color: var(--accent-hover) !important;
+}
 
-.btn-save { background-color: var(--success) !important; }
-.btn-save:hover { background-color: var(--success-hover) !important; }
+.btn-del {
+    background-color: var(--danger) !important;
+}
 
-.btn-cancel { background-color: var(--cancel) !important; }
-.btn-cancel:hover { background-color: var(--cancel-hover) !important; }
+.btn-del:hover {
+    background-color: var(--danger-hover) !important;
+}
+
+.btn-save {
+    background-color: var(--success) !important;
+}
+
+.btn-save:hover {
+    background-color: var(--success-hover) !important;
+}
+
+.btn-cancel {
+    background-color: var(--cancel) !important;
+}
+
+.btn-cancel:hover {
+    background-color: var(--cancel-hover) !important;
+}
 
 /* 5. UTILITIES */
-.actions { white-space: nowrap; font-size: 0; } /* Font size 0 prevents gap artifacts between inline-block elements */
-.actions button { font-size: 0.9rem; }
+.actions {
+    white-space: nowrap;
+    font-size: 0;
+}
+
+/* Font size 0 prevents gap artifacts between inline-block elements */
+.actions button {
+    font-size: 0.9rem;
+}
+
 /* Bigger, easier-to-hit checkbox for toggling a rule's Enabled state (both
    the "Add New Rule" form and the inline Edit-row form) — the browser
    default checkbox size was small enough to be "target practice". */
@@ -324,12 +557,25 @@ a.btn-edit, a.btn-add, a.btn-del, a.btn-save, a.btn-cancel {
     vertical-align: middle;
     cursor: pointer;
 }
-.tag-enabled { color: var(--success-text); font-weight: bold; }
+
+.tag-enabled {
+    color: var(--success-text);
+    font-weight: bold;
+}
+
 .tag-disabled {
     color: var(--danger-text);
     font-weight: bold;
 }
-pre { background: var(--bg-panel); padding: 15px; border-radius: 4px; border: 1px solid var(--border-subtle); white-space: pre-wrap; word-break: break-all; }
+
+pre {
+    background: var(--bg-panel);
+    padding: 15px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
 
 /* 6. ERROR ALERTS */
 .alert-error {
@@ -342,6 +588,7 @@ pre { background: var(--bg-panel); padding: 15px; border-radius: 4px; border: 1p
     border-radius: 4px;
     box-sizing: border-box;
 }
+
 .alert-error code {
     background-color: #1a1111;
     color: #ffffff;
@@ -350,6 +597,7 @@ pre { background: var(--bg-panel); padding: 15px; border-radius: 4px; border: 1p
     font-family: Consolas, Monaco, monospace;
     font-size: 0.95em;
 }
+
 .alert-error small {
     color: #aaaaaa;
     display: block;
@@ -397,7 +645,13 @@ th.sortable:focus-within {
     background: var(--border-subtle);
     color: var(--text-strong);
 }
-.sort-icon { font-size: 0.8em; margin-left: 4px; display: inline-block; width: 12px; }
+
+.sort-icon {
+    font-size: 0.8em;
+    margin-left: 4px;
+    display: inline-block;
+    width: 12px;
+}
 
 nav a.active {
     color: #ffffff;
@@ -406,27 +660,54 @@ nav a.active {
 }
 
 /* Subtle highlight for modified rows before saving */
-tr.staged td { border-bottom: 2px solid var(--warning); background-color: #2a2515; }
+tr.staged td {
+    border-bottom: 2px solid var(--warning);
+    background-color: #2a2515;
+}
 
 /* Distinguish a staged-but-not-yet-applied "Add" row from a staged Edit */
-tr.staged-add td { border-bottom: 2px solid var(--success); background-color: #16241c; }
+tr.staged-add td {
+    border-bottom: 2px solid var(--success);
+    background-color: #16241c;
+}
 
 /* Staged-for-deletion rows stay visible (no longer display:none) with a
    strike-through, so the user can still find them via the filter and Undelete them. */
-tr.staged-delete td { border-bottom: 2px solid var(--danger); background-color: #241616; text-decoration: line-through; opacity: 0.7; }
+tr.staged-delete td {
+    border-bottom: 2px solid var(--danger);
+    background-color: #241616;
+    text-decoration: line-through;
+    opacity: 0.7;
+}
 
 /* Marks a row that was just committed by the most recent Apply (see
    restoreJustAppliedRows in app.js), pinned to the top of its table so it
    stays easy to spot even though it is no longer a pending/staged change. */
-tr.just-applied td { border-bottom: 2px solid var(--accent); }
+tr.just-applied td {
+    border-bottom: 2px solid var(--accent);
+}
 
 /* Undelete only makes sense (and is only shown) once a row is staged for deletion. */
-.btn-undelete { display: none; background-color: var(--cancel) !important; color: white !important; border: none !important; }
-.btn-undelete:hover { background-color: var(--cancel-hover) !important; }
+.btn-undelete {
+    display: none;
+    background-color: var(--cancel) !important;
+    color: white !important;
+    border: none !important;
+}
+
+.btn-undelete:hover {
+    background-color: var(--cancel-hover) !important;
+}
+
 tr.staged-delete .btn-edit,
 tr.staged-delete .btn-del,
-tr.staged-delete .form-inline-action { display: none; }
-tr.staged-delete .btn-undelete { display: inline-block; }
+tr.staged-delete .form-inline-action {
+    display: none;
+}
+
+tr.staged-delete .btn-undelete {
+    display: inline-block;
+}
 
 /* Inline Discard button on the base (non-edit-mode) row — shown only once a
    row has a staged PLAIN EDIT (not a staged Add or staged Delete, which
@@ -435,7 +716,10 @@ tr.staged-delete .btn-undelete { display: inline-block; }
    edit back to its original values in a single click, without first opening
    Edit. Also used, unconditionally scoped to #configTable, for per-field
    config Discard since every config row is always a "plain edit" target. */
-.inline-discard-btn { display: none; }
+.inline-discard-btn {
+    display: none;
+}
+
 #rulesTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
 #hostsTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
 #blacklistTable tr.staged:not(.staged-add):not(.staged-delete) .inline-discard-btn,
@@ -445,14 +729,16 @@ tr.staged-delete .btn-undelete { display: inline-block; }
 }
 
 /* Strict row-height lock to match active table rows perfectly */
-tr.edit-row, tr.edit-host-row {
+tr.edit-row,
+tr.edit-host-row {
     height: 64px;
 }
 
 /* Shave off vertical padding so the inner elements never force an expansion */
-tr.edit-row td, tr.edit-host-row td {
-    overflow: visible !important; 
-    padding-top: 3px !important;  
+tr.edit-row td,
+tr.edit-host-row td {
+    overflow: visible !important;
+    padding-top: 3px !important;
     padding-bottom: 3px !important;
     vertical-align: middle;
 }
@@ -494,25 +780,29 @@ tr.edit-row td.edit-id-display {
     line-height: 1.3;
     margin-top: 2px;
 }
+
 /*because descriptions add height, relax the fixed row height for config rows only*/
 #configTable tr {
     height: auto;
     min-height: 64px;
 }
+
 #configTable td {
     white-space: normal;
-    vertical-align: middle !important; /* Fixes the left column alignment */
+    vertical-align: middle !important;
+    /* Fixes the left column alignment */
     padding-top: 8px;
     padding-bottom: 8px;
 }
 
 /* Add a clean horizontal separation between inline action buttons */
-#configTable td.actions button + button {
+#configTable td.actions button+button {
     margin-left: 6px;
 }
 
 .config-global-notice {
-    background-color: #1e293b; /* Dark slate blue */
+    background-color: #1e293b;
+    /* Dark slate blue */
     border-left: 4px solid var(--accent);
     padding: 12px 16px;
     margin-bottom: 20px;
@@ -543,19 +833,35 @@ tr.edit-row td.edit-id-display {
     padding: 2px 6px;
     border-radius: 3px;
     font-family: monospace;
-    color: #f43f5e; /* Subtle pink/red tint for highlights */
+    color: #f43f5e;
+    /* Subtle pink/red tint for highlights */
 }
 
 /* Blocks page: inline pending/success/failure feedback for the background
    fetch()-based Unblock/Re-block actions (see app.js .js-block-action-form). */
-.btn-action-pending { opacity: 0.6; cursor: wait; }
+.btn-action-pending {
+    opacity: 0.6;
+    cursor: wait;
+}
+
 .js-blocks-clear-form {
     margin-left: 15px;
 }
 
-.block-action-feedback { margin-left: 8px; font-size: 0.85em; }
-.block-action-feedback-success { color: var(--success); font-weight: bold; }
-.block-action-feedback-error { color: var(--danger); font-weight: bold; }
+.block-action-feedback {
+    margin-left: 8px;
+    font-size: 0.85em;
+}
+
+.block-action-feedback-success {
+    color: var(--success);
+    font-weight: bold;
+}
+
+.block-action-feedback-error {
+    color: var(--danger);
+    font-weight: bold;
+}
 
 /* Blocks/Allows pages: timestamp prefix, so an entry can be compared against a
    rule's "Last Modified" (same "YYYY-MM-DD HH:MM:SS.mmm" layout). */
@@ -576,6 +882,7 @@ li.block-entry-dim {
     opacity: 0.55;
     transition: opacity 0.15s;
 }
+
 li.block-entry-dim:hover,
 li.block-entry-dim:focus-within {
     opacity: 0.9;
@@ -589,6 +896,7 @@ li.block-entry-dim:focus-within {
     flex-wrap: wrap;
     gap: 10px;
 }
+
 .grow-input {
     flex: 1 1 320px;
     min-width: 200px;
@@ -600,11 +908,13 @@ li.block-entry-dim:focus-within {
     align-items: center;
     gap: 10px;
 }
+
 .filter-label {
     font-weight: 600;
     color: var(--text-secondary);
     white-space: nowrap;
 }
+
 .filter-row .table-filter-input {
     flex: 1 1 auto;
     min-width: 0;
@@ -619,29 +929,35 @@ li.block-entry-dim:focus-within {
     background: var(--bg-panel);
     font-size: 0.9em;
 }
-.pattern-hints > summary {
+
+.pattern-hints>summary {
     cursor: pointer;
     font-weight: 600;
     color: var(--text-secondary);
     user-select: none;
 }
-.pattern-hints > summary:focus-visible {
+
+.pattern-hints>summary:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
+
 .pattern-hints-list {
     display: grid;
     grid-template-columns: max-content 1fr;
     gap: 3px 16px;
     margin: 8px 0 4px;
 }
+
 .pattern-hints-list dt,
 .pattern-hints-list dd {
     margin: 0;
 }
+
 .pattern-hints-list dd {
     color: var(--text-secondary);
 }
+
 .pattern-hints-list code {
     background: var(--bg-input);
     color: var(--success-text);
@@ -649,6 +965,7 @@ li.block-entry-dim:focus-within {
     border-radius: 3px;
     font-family: Consolas, Monaco, monospace;
 }
+
 .pattern-hints-notes {
     margin: 6px 0 2px;
     padding-left: 20px;
@@ -667,6 +984,7 @@ li.block-entry-dim:focus-within {
 th.resizable-col {
     position: relative;
 }
+
 .col-resize-handle {
     position: absolute;
     top: 0;
@@ -678,14 +996,17 @@ th.resizable-col {
     touch-action: none;
     z-index: 5;
 }
+
 .col-resize-handle:hover,
 body.col-resizing .col-resize-handle {
     background: var(--accent);
     opacity: 0.6;
 }
+
 body.col-resizing {
     cursor: col-resize;
 }
+
 body.col-resizing * {
     user-select: none;
 }
@@ -694,23 +1015,28 @@ body.col-resizing * {
 th.col-draggable {
     cursor: grab;
 }
+
 th.col-draggable.col-dragging {
     opacity: 0.45;
     cursor: grabbing;
 }
+
 th.col-drop-target {
     box-shadow: inset 3px 0 0 0 var(--accent);
 }
+
 th.col-draggable .sort-button {
     /* Keep sort button clicks working; grab applies to the th chrome around it. */
     cursor: pointer;
 }
+
 /* Native drag must not start from the resize handle. */
 th.col-draggable .col-resize-handle {
     cursor: col-resize;
 }
 
 @media (prefers-reduced-motion: reduce) {
+
     *,
     *::before,
     *::after {

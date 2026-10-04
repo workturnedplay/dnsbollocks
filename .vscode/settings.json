@@ -5,6 +5,10 @@
   "extensions.autoUpdate": false,
   "extensions.autoCheckUpdates": false,
   "update.mode": "none",
+  "editor.formatOnSave": true,
+  "html.format.wrapAttributes": "auto",
+  "javascript.format.semicolons": "insert",
+  "javascript.format.insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces": false,
   "editor.codeActionsOnSave": {
     "source.organizeImports": "explicit"
   },

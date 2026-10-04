@@ -1,49 +1,53 @@
-<!DOCTYPE html><html><head><title>DNSbollocks UI</title>
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>DNSbollocks UI</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="csrf-token" content="{{.CSRFToken}}">
     <link rel="stylesheet" href="/static/style.css?v={{.Version}}">
-</head><body>
-<!-- WARNING: no style= are allowed in this html due to tight CSP rules! all must live in style.css and referred to via class= here ; otherwise you get this:
+</head>
+
+<body>
+    <!-- WARNING: no style= are allowed in this html due to tight CSP rules! all must live in style.css and referred to via class= here ; otherwise you get this:
  Content-Security-Policy: The page’s settings blocked an inline style (style-src-attr) from being applied because it violates the following directive: “style-src 'self'”. Consider using a hash
  -->
     <noscript>
         <div class="noscript-banner">
             JavaScript is disabled.
             <br>
-            which means that input validation and character filtering will be enforced only after submission. (ie. is the hostname within allowable chars or byte limits?)
+            which means that input validation and character filtering will be enforced only after submission. (ie. is
+            the hostname within allowable chars or byte limits?)
             <br>
             also the Edit button won't work!
         </div>
     </noscript>
     <div class="container">
         <h1>DNSbollocks <span class="version-badge" title="Build version">{{.Version}}</span></h1>
-        <div
-            id="tableVersionData"
-            hidden
-            data-rules-version="{{.RulesVersion}}"
-            data-hosts-version="{{.HostsVersion}}"
-            data-blacklist-version="{{.BlacklistVersion}}"
-            data-query-blocklist-version="{{.QueryBlocklistVersion}}"
-        ></div>
+        <div id="tableVersionData" hidden data-rules-version="{{.RulesVersion}}" data-hosts-version="{{.HostsVersion}}"
+            data-blacklist-version="{{.BlacklistVersion}}" data-query-blocklist-version="{{.QueryBlocklistVersion}}">
+        </div>
         <nav>
             <a href="/query-blocklist" {{if eq .Page "query-blocklist" }} class="active" {{end}}>Query Blocklist</a>
             <a href="/rules" {{if eq .Page "rules" }} class="active" {{end}}>Rules</a>
             <a href="/hosts" {{if eq .Page "hosts" }} class="active" {{end}}>Local Hosts</a>
-            <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Blacklisted IPs(in responses)</a>
+            <a href="/response-blacklist" {{if eq .Page "response-blacklist" }} class="active" {{end}}>Blacklisted
+                IPs(in responses)</a>
             <a href="/blocks" {{if eq .Page "blocks" }} class="active" {{end}}>Recent Blocks</a>
             <a href="/allows" {{if eq .Page "allows" }} class="active" {{end}}>Recent Allows</a>
             <a href="/logs" {{if eq .Page "logs" }} class="active" {{end}}>System Log(incl.queries)</a>
             <a href="/logs_queries" {{if eq .Page "logs_queries" }} class="active" {{end}}>Query(only) Log</a>
-            <a href="/logs_queries_simple" {{if eq .Page "logs_queries_simple" }} class="active" {{end}}>Simple-Query Log</a>
+            <a href="/logs_queries_simple" {{if eq .Page "logs_queries_simple" }} class="active" {{end}}>Simple-Query
+                Log</a>
             <a href="/stats" {{if eq .Page "stats" }} class="active" {{end}}>Stats</a>
             <a href="/control" {{if eq .Page "control" }} class="active" {{end}}>Control</a>
             <a href="/config" {{if eq .Page "config" }} class="active" {{end}}>config.json</a>
             <a href="/debug/vars" target="_blank" rel="noopener noreferrer">Debug Vars ↗</a>
         </nav>
         <hr>
-        
+
         {{/* This acts as a router inside the template */}}
         {{if eq .Page "query-blocklist"}}
         {{template "query-blocklist" .}}
@@ -66,11 +70,13 @@
         {{else if eq .Page "config" }}
         {{template "config" .}}
         {{end}}
-        
+
     </div>
-    
+
     <script src="/static/app.js?v={{.Version}}" defer></script>
-</body></html>
+</body>
+
+</html>
 
 {{define "staged-table-banner"}}
 <div class="staged-table-banner staged-changes-banner" hidden>
@@ -98,7 +104,8 @@
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <div class="info-banner">
-    <strong>Note:</strong> The <a href="/query-blocklist">Query Blocklist</a> is always checked first and takes priority over these rules — a domain blocked there stays blocked even if it matches a rule below.
+    <strong>Note:</strong> The <a href="/query-blocklist">Query Blocklist</a> is always checked first and takes priority
+    over these rules — a domain blocked there stays blocked even if it matches a rule below.
 </div>
 {{template "pattern-hints" .}}
 {{template "alert-banner" .}}
@@ -112,31 +119,21 @@
     </select>
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <label class="visually-hidden" for="addRulePattern">Rule pattern</label>
-    <input
-        id="addRulePattern"
-        type="text"
-        name="pattern"
-        class="grow-input"
-        title="{{.PatternTooltip}}"
-        placeholder="pattern, e.g. *.example.com (hover for the allowed symbols)"
-        spellcheck="false"
-        autocomplete="off"
-        required
-    > 
+    <input id="addRulePattern" type="text" name="pattern" class="grow-input" title="{{.PatternTooltip}}"
+        placeholder="pattern, e.g. *.example.com (hover for the allowed symbols)" spellcheck="false" autocomplete="off"
+        required>
     <label class="visually-hidden" for="addRuleComment">Comment</label>
-    <input id="addRuleComment" type="text" name="comment" class="grow-input" maxlength="1024" placeholder="comment (optional)" spellcheck="false" autocomplete="off">
-    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
+    <input id="addRuleComment" type="text" name="comment" class="grow-input" maxlength="1024"
+        placeholder="comment (optional)" spellcheck="false" autocomplete="off">
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked>
+        Enabled</label>
     <button type="submit" class="btn-add">Add Rule</button>
 </form>
 
 <div class="filter-spacer filter-row">
     <label class="filter-label" for="rulesFilter">Filter:</label>
-    <input
-    type="text"
-    id="rulesFilter"
-    class="table-filter-input"
-    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'face | fbcdn !hugging')"
-    >
+    <input type="text" id="rulesFilter" class="table-filter-input"
+        placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'face | fbcdn !hugging')">
 </div>
 
 <h2>Whitelist Rules</h2>
@@ -154,38 +151,48 @@
     <thead>
         <tr>
             <th class="sortable" data-col="0" data-col-id="type" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Type</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Type</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="1" data-col-id="id" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>ID</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>ID</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="2" data-col-id="pattern" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="3" data-col-id="enabled" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="4" data-col-id="comment" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="5" data-col-id="modified" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Rules}}
-        <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}" data-rule-enabled="{{.Enabled}}" data-rule-comment="{{.Comment}}"
-            data-orig-type="{{.Type}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
+        <tr data-rule-id="{{.ID}}" data-rule-type="{{.Type}}" data-rule-pattern="{{.Pattern}}"
+            data-rule-enabled="{{.Enabled}}" data-rule-comment="{{.Comment}}" data-orig-type="{{.Type}}"
+            data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
             <td data-col-id="type">{{.Type}}</td>
             <td data-col-id="id" title="{{.ID}}">{{.ID}}</td>
             <td data-col-id="pattern" title="{{.Pattern}}">{{.Pattern}}</td>
-            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td data-col-id="comment"><div class="comment-text" title="{{.Comment}}">{{.Comment}}</div></td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span
+                    class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="comment">
+                <div class="comment-text" title="{{.Comment}}">{{.Comment}}</div>
+            </td>
             <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
             <td class="actions" data-col-id="actions">
-                <button class="btn-edit">Edit</button> 
+                <button class="btn-edit">Edit</button>
                 <form method="post" action="/rules" class="form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <input type="hidden" name="delete" value="1">
@@ -213,7 +220,8 @@
         <td class="edit-id-display" data-col-id="id"></td>
         <td data-col-id="pattern"><input type="text" class="edit-pattern w-100" title="{{.PatternTooltip}}"></td>
         <td data-col-id="enabled"><label><input type="checkbox" class="edit-enabled rule-enabled-checkbox"></label></td>
-        <td data-col-id="comment"><input type="text" class="edit-comment w-100" maxlength="1024" placeholder="comment (optional)"></td>
+        <td data-col-id="comment"><input type="text" class="edit-comment w-100" maxlength="1024"
+                placeholder="comment (optional)"></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions" data-col-id="actions">
             <form method="post" action="/rules" class="edit-form form-inline-action2">
@@ -228,7 +236,8 @@
     </tr>
 </template>
 
-{{/* --- REUSABLE PATTERN-SYNTAX HINTS (open by default; state remembered via data-remember-key, see setupRememberedDetails in app.js) --- */}}
+{{/* --- REUSABLE PATTERN-SYNTAX HINTS (open by default; state remembered via data-remember-key, see
+setupRememberedDetails in app.js) --- */}}
 {{define "pattern-hints"}}
 <details id="patternHints" class="pattern-hints" data-remember-key="patternHints" open>
     <summary>Allowed pattern symbols (click to hide/show; your choice is remembered)</summary>
@@ -247,12 +256,18 @@
 {{/* --- SUB-TEMPLATE FOR BLOCKS --- */}}
 {{define "blocks"}}
 <div class="info-banner">
-    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if .WhitelistMode}}, by not matching any enabled whitelist rule,{{end}} or because the upstream DNS provider's own response was entirely blocked/filtered (e.g. it returned 0.0.0.0/::, or every returned IP matched the Response Blacklist). Upstream-blocked entries carry an <code>[Upstream Block]</code> marker; the local whitelist/query-blocklist controls still appear on them so you can undo a local unblock, but they cannot change the upstream block itself. See <a href="/allows">Recent Allows</a> for domains that were resolved.
+    <strong>Note:</strong> This shows domains blocked by the <a href="/query-blocklist">Query Blocklist</a>{{if
+    .WhitelistMode}}, by not matching any enabled whitelist rule,{{end}} or because the upstream DNS provider's own
+    response was entirely blocked/filtered (e.g. it returned 0.0.0.0/::, or every returned IP matched the Response
+    Blacklist). Upstream-blocked entries carry an <code>[Upstream Block]</code> marker; the local
+    whitelist/query-blocklist controls still appear on them so you can undo a local unblock, but they cannot change the
+    upstream block itself. See <a href="/allows">Recent Allows</a> for domains that were resolved.
 </div>
 {{template "alert-banner" .}}
 <div class="section-header-row">
     <h2 class="header-inline">Recent Blocks</h2>
-    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
+    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or
+        F5)</button>
 
     <form method="post" action="/blocks" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -261,23 +276,31 @@
         <button type="submit" class="btn-del">Clear Shown Blocks</button>
     </form>
 
-    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form" data-confirm="Clear ALL currently shown blocks, INCLUDING entries that still have a Re-block (Pause) / Unblock control?&#10;&#10;Only this list is cleared; no rule is touched. You just lose the quick undo buttons for those entries (revert them later on the Rules / Query Blocklist pages).&#10;&#10;(New blocks that occurred since you loaded the page will be kept safely.)">
+    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form"
+        data-confirm="Clear ALL currently shown blocks, INCLUDING entries that still have a Re-block (Pause) / Unblock control?&#10;&#10;Only this list is cleared; no rule is touched. You just lose the quick undo buttons for those entries (revert them later on the Rules / Query Blocklist pages).&#10;&#10;(New blocks that occurred since you loaded the page will be kept safely.)">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="clear_all">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
-        <button type="submit" class="btn-del" title="Also clears entries that were unblocked (the ones that still show a Re-block (Pause) button).">Clear All Shown Blocks (incl. unblocked)</button>
+        <button type="submit" class="btn-del"
+            title="Also clears entries that were unblocked (the ones that still show a Re-block (Pause) button).">Clear
+            All Shown Blocks (incl. unblocked)</button>
     </form>
 </div>
 
 <ul>
     {{range .Blocks}}
-    <li {{if .IsLowPriorityType}}class="block-entry-dim"{{end}}>
-        <span class="block-time" title="Most recent time this query was blocked (local time). Repeat blocks answered from the DNS cache do not refresh it.">{{.TimeDisplay}}</span>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
+        <span class="block-time"
+            title="Most recent time this query was blocked (local time). Repeat blocks answered from the DNS cache do not refresh it.">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .UpstreamBlocked}}
-        <span class="tag-disabled" title="The upstream DNS provider's own response was blocked/filtered (e.g. it returned 0.0.0.0/::, or a returned IP matched the Response Blacklist). The local controls on this row only affect local policy (whitelist / query blocklist) and cannot change that.">[Upstream Block]</span>
-        <a href="/logs_queries_simple?q={{.DomainDisplay}}" class="btn-edit" target="_blank" rel="noopener noreferrer" title="Look up this domain in the Simple Query Log, e.g. to find an IP address it previously resolved to.">View in Simple Query Log ↗</a>
+        <span class="tag-disabled"
+            title="The upstream DNS provider's own response was blocked/filtered (e.g. it returned 0.0.0.0/::, or a returned IP matched the Response Blacklist). The local controls on this row only affect local policy (whitelist / query blocklist) and cannot change that.">[Upstream
+            Block]</span>
+        <a href="/logs_queries_simple?q={{.DomainDisplay}}" class="btn-edit" target="_blank" rel="noopener noreferrer"
+            title="Look up this domain in the Simple Query Log, e.g. to find an IP address it previously resolved to.">View
+            in Simple Query Log ↗</a>
         {{end}}
 
         {{if $.WhitelistMode}}
@@ -302,13 +325,16 @@
 
         {{if $.WhitelistMode}}
         {{if .WhitelistExactRuleID}}
-        <form method="post" action="/blocks" class="d-inline js-block-action-form" data-confirm="Permanently remove the {{.Type}} whitelist rule for {{.DomainDisplay}} from the Rules page?&#10;&#10;Unlike Re-block (Pause) this deletes the rule entirely; it cannot be resumed afterwards.">
+        <form method="post" action="/blocks" class="d-inline js-block-action-form"
+            data-confirm="Permanently remove the {{.Type}} whitelist rule for {{.DomainDisplay}} from the Rules page?&#10;&#10;Unlike Re-block (Pause) this deletes the rule entirely; it cannot be resumed afterwards.">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.WhitelistExactRuleID}}">
             <input type="hidden" name="action" value="delete_whitelist_rule">
-            <button type="submit" class="btn-del" title="Deletes the exact {{.Type}} whitelist rule for this domain from the Rules page (paused or active).">Remove Rule [Whitelist]</button>
+            <button type="submit" class="btn-del"
+                title="Deletes the exact {{.Type}} whitelist rule for this domain from the Rules page (paused or active).">Remove
+                Rule [Whitelist]</button>
         </form>
         {{end}}
         {{end}}
@@ -320,7 +346,9 @@
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.QueryBlocklistLocalRuleID}}">
             <input type="hidden" name="action" value="disable_qb_local_rule">
-            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright{{if $.WhitelistMode}}, regardless of the whitelist above{{end}}.">{{if $.WhitelistMode}}Disable Blocking Rule{{else}}Unblock (Pause){{end}} [Query&nbsp;Blocklist]</button>
+            <button type="submit" class="btn-cancel"
+                title="A local Query Blocklist rule is blocking this outright{{if $.WhitelistMode}}, regardless of the whitelist above{{end}}.">{{if
+                $.WhitelistMode}}Disable Blocking Rule{{else}}Unblock (Pause){{end}} [Query&nbsp;Blocklist]</button>
         </form>
         {{end}}
 
@@ -331,7 +359,9 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="reblock_qb">
-            <button type="submit" class="btn-cancel" title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+            <button type="submit" class="btn-cancel"
+                title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause)
+                [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
         {{else}}
         <form method="post" action="/blocks" class="d-inline js-block-action-form">
@@ -339,7 +369,9 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock_qb">
-            <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+            <button type="submit" class="btn-edit"
+                title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock
+                [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
         {{end}}
         {{end}}
@@ -355,12 +387,16 @@
 {{/* --- SUB-TEMPLATE FOR ALLOWS --- */}}
 {{define "allows"}}
 <div class="info-banner">
-    <strong>Note:</strong> This shows recently resolved (allowed) domains{{if .WhitelistMode}} — allowed via a whitelist rule or local host override{{else}} — allowed because whitelist_mode is off{{end}}, with a quick way to add a local <a href="/query-blocklist">Query Blocklist</a> "block" rule for one (which always takes priority, regardless of whitelist_mode). See <a href="/blocks">Recent Blocks</a> for domains that were blocked.
+    <strong>Note:</strong> This shows recently resolved (allowed) domains{{if .WhitelistMode}} — allowed via a whitelist
+    rule or local host override{{else}} — allowed because whitelist_mode is off{{end}}, with a quick way to add a local
+    <a href="/query-blocklist">Query Blocklist</a> "block" rule for one (which always takes priority, regardless of
+    whitelist_mode). See <a href="/blocks">Recent Blocks</a> for domains that were blocked.
 </div>
 {{template "alert-banner" .}}
 <div class="section-header-row">
     <h2 class="header-inline">Recent Allows (Quick Block)</h2>
-    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or F5)</button>
+    <button type="button" class="btn-edit js-blocks-refresh-btn btn-inline-refresh">🔄 Refresh Page (Ctrl+R or
+        F5)</button>
 
     <form method="post" action="/allows" class="d-inline js-blocks-clear-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -369,41 +405,54 @@
         <button type="submit" class="btn-del">Clear Shown Allows</button>
     </form>
 
-    <form method="post" action="/allows" class="d-inline js-blocks-clear-form" data-confirm="Clear ALL currently shown allows, INCLUDING entries that were changed (blocked via a local Query Blocklist rule, or whose whitelist rule is paused) and still have a revert control?&#10;&#10;Only this list is cleared; no rule is touched.&#10;&#10;(New allows that occurred since you loaded the page will be kept safely.)">
+    <form method="post" action="/allows" class="d-inline js-blocks-clear-form"
+        data-confirm="Clear ALL currently shown allows, INCLUDING entries that were changed (blocked via a local Query Blocklist rule, or whose whitelist rule is paused) and still have a revert control?&#10;&#10;Only this list is cleared; no rule is touched.&#10;&#10;(New allows that occurred since you loaded the page will be kept safely.)">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="clear_all">
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
-        <button type="submit" class="btn-del" title="Also clears entries you already changed away from allowed (those still showing an Unblock/Resume button).">Clear All Shown Allows (incl. changed)</button>
+        <button type="submit" class="btn-del"
+            title="Also clears entries you already changed away from allowed (those still showing an Unblock/Resume button).">Clear
+            All Shown Allows (incl. changed)</button>
     </form>
 </div>
 
 <ul>
     {{range .Allowed}}
-    <li {{if .IsLowPriorityType}}class="block-entry-dim"{{end}}>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
         <span class="block-time" title="Most recent time this query was allowed (local time).">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
 
         {{if .WhitelistAllowingRuleID}}
-        <form method="post" action="/allows" class="d-inline js-block-action-form"{{if ne .Type .WhitelistAllowingRuleType}} data-confirm="This {{.Type}} query is allowed only because {{$.KeyAllowHTTPSIfAAllowed}} is enabled (and {{$.KeyWhitelistMode}} is on): it has no {{.Type}} rule of its own, the {{.WhitelistAllowingRuleType}} rule '{{.WhitelistAllowingRulePattern}}' allows it.&#10;&#10;The only way to block it from this page is to pause that {{.WhitelistAllowingRuleType}} rule, which also blocks the {{.WhitelistAllowingRuleType}} queries it allows (and every other domain it matches, if it is a wildcard).&#10;&#10;Pause the {{.WhitelistAllowingRuleType}} rule?"{{end}}>
+        <form method="post" action="/allows" class="d-inline js-block-action-form" {{if ne .Type
+            .WhitelistAllowingRuleType}}
+            data-confirm="This {{.Type}} query is allowed only because {{$.KeyAllowHTTPSIfAAllowed}} is enabled (and {{$.KeyWhitelistMode}} is on): it has no {{.Type}} rule of its own, the {{.WhitelistAllowingRuleType}} rule '{{.WhitelistAllowingRulePattern}}' allows it.&#10;&#10;The only way to block it from this page is to pause that {{.WhitelistAllowingRuleType}} rule, which also blocks the {{.WhitelistAllowingRuleType}} queries it allows (and every other domain it matches, if it is a wildcard).&#10;&#10;Pause the {{.WhitelistAllowingRuleType}} rule?"
+            {{end}}>
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.WhitelistAllowingRuleID}}">
             {{if .WhitelistAllowingRulePaused}}
             <input type="hidden" name="action" value="enable_whitelist_rule">
-            <button type="submit" class="btn-cancel" title="The whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} is currently paused. Resume it to allow this domain again.">Resume Rule [Whitelist]</button>
+            <button type="submit" class="btn-cancel"
+                title="The whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} is currently paused. Resume it to allow this domain again.">Resume
+                Rule [Whitelist]</button>
             {{else}}
             <input type="hidden" name="action" value="disable_whitelist_rule">
-            <button type="submit" class="btn-edit" title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard.">Pause Rule [Whitelist]</button>
+            <button type="submit" class="btn-edit"
+                title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard.">Pause
+                Rule [Whitelist]</button>
             {{end}}
         </form>
-        <form method="post" action="/allows" class="d-inline js-block-action-form" data-confirm="Permanently remove the {{.WhitelistAllowingRuleType}} whitelist rule '{{.WhitelistAllowingRulePattern}}' from the Rules page?&#10;&#10;This deletes the rule entirely (unlike Pause it cannot be resumed), and it also stops allowing every other domain that rule matches if its pattern is a wildcard.&#10;&#10;Remove the rule?">
+        <form method="post" action="/allows" class="d-inline js-block-action-form"
+            data-confirm="Permanently remove the {{.WhitelistAllowingRuleType}} whitelist rule '{{.WhitelistAllowingRulePattern}}' from the Rules page?&#10;&#10;This deletes the rule entirely (unlike Pause it cannot be resumed), and it also stops allowing every other domain that rule matches if its pattern is a wildcard.&#10;&#10;Remove the rule?">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.WhitelistAllowingRuleID}}">
             <input type="hidden" name="action" value="delete_whitelist_rule">
-            <button type="submit" class="btn-del" title="Deletes the whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} from the Rules page (paused or active).">Remove Rule [Whitelist]</button>
+            <button type="submit" class="btn-del"
+                title="Deletes the whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} from the Rules page (paused or active).">Remove
+                Rule [Whitelist]</button>
         </form>
         {{end}}
 
@@ -414,7 +463,9 @@
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="{{.QueryBlocklistLocalRuleID}}">
             <input type="hidden" name="action" value="disable_qb_local_rule">
-            <button type="submit" class="btn-cancel" title="A local Query Blocklist rule is blocking this outright.">Unblock (Pause) [Query&nbsp;Blocklist]</button>
+            <button type="submit" class="btn-cancel"
+                title="A local Query Blocklist rule is blocking this outright.">Unblock (Pause)
+                [Query&nbsp;Blocklist]</button>
         </form>
         {{else}}
         <form method="post" action="/allows" class="d-inline js-block-action-form">
@@ -423,7 +474,9 @@
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="id" value="">
             <input type="hidden" name="action" value="block_qb_local">
-            <button type="submit" class="btn-edit" title="Adds a local Query Blocklist rule that blocks this domain outright, for every query type.">Block [Query&nbsp;Blocklist]</button>
+            <button type="submit" class="btn-edit"
+                title="Adds a local Query Blocklist rule that blocks this domain outright, for every query type.">Block
+                [Query&nbsp;Blocklist]</button>
         </form>
         {{end}}
 
@@ -434,7 +487,9 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="reblock_qb">
-            <button type="submit" class="btn-cancel" title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+            <button type="submit" class="btn-cancel"
+                title="This domain is in the external hosts-file blocklist; currently excepted.">Re-block (Pause)
+                [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
         {{else}}
         <form method="post" action="/allows" class="d-inline js-block-action-form">
@@ -442,7 +497,9 @@
             <input type="hidden" name="domain" value="{{.Domain}}">
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock_qb">
-            <button type="submit" class="btn-edit" title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+            <button type="submit" class="btn-edit"
+                title="This domain is blocked by the external hosts-file source; unblocking adds an Except rule for it.">Unblock
+                [Query&nbsp;Blocklist,&nbsp;External]</button>
         </form>
         {{end}}
         {{end}}
@@ -457,11 +514,14 @@
 
 {{define "hosts"}}
 <div class="info-banner">
-    <strong>Note:</strong> A DNS query that matches a pattern/host from this list is resolved locally to the specified IP without needing to match the whitelist rules first.
+    <strong>Note:</strong> A DNS query that matches a pattern/host from this list is resolved locally to the specified
+    IP without needing to match the whitelist rules first.
     {{if .LocalHostsOverrideQueryBlocklist}}
-    This currently OVERRIDES the <a href="/query-blocklist">Query Blocklist</a> (local_hosts_override_query_blocklist is enabled): a host override always wins even for an otherwise-blocklisted domain.
+    This currently OVERRIDES the <a href="/query-blocklist">Query Blocklist</a> (local_hosts_override_query_blocklist is
+    enabled): a host override always wins even for an otherwise-blocklisted domain.
     {{else}}
-    The <a href="/query-blocklist">Query Blocklist</a> is still checked first and takes priority over local host overrides (set local_hosts_override_query_blocklist to change this).
+    The <a href="/query-blocklist">Query Blocklist</a> is still checked first and takes priority over local host
+    overrides (set local_hosts_override_query_blocklist to change this).
     {{end}}
 </div>
 {{template "pattern-hints" .}}
@@ -472,44 +532,27 @@
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
     <label class="visually-hidden" for="addHostPattern">Host pattern</label>
-    <input
-        id="addHostPattern"
-        type="text"
-        name="pattern"
-        class="grow-input"
-        title="{{.PatternTooltip}}"
-        placeholder="pattern, e.g. router.local or *.lan (hover for the allowed symbols)"
-        spellcheck="false"
-        autocomplete="off"
-        required
-    >
+    <input id="addHostPattern" type="text" name="pattern" class="grow-input" title="{{.PatternTooltip}}"
+        placeholder="pattern, e.g. router.local or *.lan (hover for the allowed symbols)" spellcheck="false"
+        autocomplete="off" required>
 
     <label class="visually-hidden" for="addHostIPs">Host IP addresses</label>
-    <input
-        id="addHostIPs"
-        type="text"
-        name="ips"
-        class="grow-input"
-        placeholder="IPs (comma or space separated, e.g. 192.168.1.1, 192.168.1.2)"
-        spellcheck="false"
-        autocomplete="off"
-        required
-    >
+    <input id="addHostIPs" type="text" name="ips" class="grow-input"
+        placeholder="IPs (comma or space separated, e.g. 192.168.1.1, 192.168.1.2)" spellcheck="false"
+        autocomplete="off" required>
 
     <label class="visually-hidden" for="addHostComment">Comment</label>
-    <input id="addHostComment" type="text" name="comment" class="grow-input" maxlength="1024" placeholder="comment (optional)" spellcheck="false" autocomplete="off">
-    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
+    <input id="addHostComment" type="text" name="comment" class="grow-input" maxlength="1024"
+        placeholder="comment (optional)" spellcheck="false" autocomplete="off">
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked>
+        Enabled</label>
     <button type="submit">Add Host</button>
 </form>
 
 <div class="filter-spacer filter-row">
     <label class="filter-label" for="hostsFilter">Filter:</label>
-    <input
-    type="text"
-    id="hostsFilter"
-    class="table-filter-input"
-    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'router | nas !192')"
-    >
+    <input type="text" id="hostsFilter" class="table-filter-input"
+        placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'router | nas !192')">
 </div>
 
 <h2>Local Hosts</h2>
@@ -526,40 +569,46 @@
     <thead>
         <tr>
             <th class="sortable" data-col="0" data-col-id="pattern" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="1" data-col-id="ips" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>IPs</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>IPs</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="2" data-col-id="enabled" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="3" data-col-id="comment" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="4" data-col-id="modified" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .Hosts}}
-        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}" data-host-enabled="{{.Enabled}}" data-host-comment="{{.Comment}}"
-            data-orig-pattern="{{.Pattern}}" data-orig-pattern-display="{{.PatternDisplay}}" data-orig-ips="{{.IPsDisplay}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
+        <tr id="hostRow_{{.Index}}" data-host-pattern="{{.PatternDisplay}}" data-host-ips="{{.IPsDisplay}}"
+            data-host-enabled="{{.Enabled}}" data-host-comment="{{.Comment}}" data-orig-pattern="{{.Pattern}}"
+            data-orig-pattern-display="{{.PatternDisplay}}" data-orig-ips="{{.IPsDisplay}}"
+            data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
             <td data-col-id="pattern" title="{{.PatternDisplay}}">{{.PatternDisplay}}</td>
             <td data-col-id="ips" title="{{.IPsDisplay}}">{{.IPsDisplay}}</td>
-            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td data-col-id="comment"><div class="comment-text" title="{{.Comment}}">{{.Comment}}</div></td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span
+                    class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="comment">
+                <div class="comment-text" title="{{.Comment}}">{{.Comment}}</div>
+            </td>
             <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
             <td class="actions" data-col-id="actions">
-                <button class="btn-edit js-host-edit" 
-                data-index="{{.Index}}" 
-                data-pattern="{{.PatternDisplay}}" 
-                data-ips="{{.IPsDisplay}}"
-                data-enabled="{{.Enabled}}"
-                data-comment="{{.Comment}}">
-                Edit
+                <button class="btn-edit js-host-edit" data-index="{{.Index}}" data-pattern="{{.PatternDisplay}}"
+                    data-ips="{{.IPsDisplay}}" data-enabled="{{.Enabled}}" data-comment="{{.Comment}}">
+                    Edit
                 </button>
                 <form method="post" action="/hosts" class="js-host-delete-form form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -568,11 +617,14 @@
                     <button class="btn-del" type="submit">Delete</button>
                 </form>
                 <button type="button" class="btn-undelete js-host-undelete" data-index="{{.Index}}">Undelete</button>
-                <button type="button" class="btn-discard-row inline-discard-btn js-host-discard" data-index="{{.Index}}">Discard</button>
+                <button type="button" class="btn-discard-row inline-discard-btn js-host-discard"
+                    data-index="{{.Index}}">Discard</button>
             </td>
         </tr>
         {{else}}
-        <tr><td colspan="6">No local hosts defined.</td></tr>
+        <tr>
+            <td colspan="6">No local hosts defined.</td>
+        </tr>
         {{end}}
     </tbody>
 </table>
@@ -581,11 +633,14 @@
     <tr class="edit-host-row">
         <td data-col-id="pattern">
             <input type="hidden" name="old_pattern" class="edit-host-old-pattern" form="">
-            <input type="text" name="pattern" class="edit-host-pattern w-100" title="{{.PatternTooltip}}" form="" required>
+            <input type="text" name="pattern" class="edit-host-pattern w-100" title="{{.PatternTooltip}}" form=""
+                required>
         </td>
         <td data-col-id="ips"><input type="text" name="ips" class="edit-host-ips w-100" form="" required></td>
-        <td data-col-id="enabled"><label><input type="checkbox" name="enabled" class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
-        <td data-col-id="comment"><input type="text" name="comment" class="edit-comment w-100" maxlength="1024" placeholder="comment (optional)" form=""></td>
+        <td data-col-id="enabled"><label><input type="checkbox" name="enabled"
+                    class="edit-host-enabled rule-enabled-checkbox" form=""></label></td>
+        <td data-col-id="comment"><input type="text" name="comment" class="edit-comment w-100" maxlength="1024"
+                placeholder="comment (optional)" form=""></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions" data-col-id="actions">
             <form method="post" action="/hosts" class="edit-host-form form-inline-action2">
@@ -606,7 +661,9 @@
 
 <form method="get" class="mb-20 add-form-row" id="logsFilterForm">
     <label class="filter-label" for="logsSearchQuery">Filter:</label>
-    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}" placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'error | warn !timeout')" class="grow-input table-filter-input" spellcheck="false" autocomplete="off">
+    <input id="logsSearchQuery" type="text" name="q" value="{{.Filter}}"
+        placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'error | warn !timeout')"
+        class="grow-input table-filter-input" spellcheck="false" autocomplete="off">
     <label class="lbl-spaced">
         <input type="checkbox" id="logsIncludeRotated" name="rotated" value="1" {{if .IncludeRotated}}checked{{end}}>
         Include rotated logs
@@ -626,7 +683,8 @@
 <h2>Response Blacklist IPs</h2>
 {{template "alert-banner" .}}
 <p class="section-desc maxw-600">
-    The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well, reply) is blocked.
+    The IPs returned in DNS query replies are filtered against this list and if matched, the whole DNS request(well,
+    reply) is blocked.
 </p>
 
 <h2>Add New Blacklisted IP or CIDR</h2>
@@ -635,35 +693,27 @@
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="action" value="add">
         <label class="visually-hidden" for="addBlacklistCIDR">Blacklisted IP or CIDR</label>
-        <input
-            id="addBlacklistCIDR"
-            type="text"
-            name="cidr"
-            placeholder="e.g. 192.168.1.5 or 10.0.0.0/8"
-            class="flex-1 w-300"
-            required
-        >
+        <input id="addBlacklistCIDR" type="text" name="cidr" placeholder="e.g. 192.168.1.5 or 10.0.0.0/8"
+            class="flex-1 w-300" required>
         <label class="visually-hidden" for="addBlacklistComment">Comment</label>
-        <input id="addBlacklistComment" type="text" name="comment" class="flex-1 w-300" maxlength="1024" placeholder="comment (optional)" spellcheck="false" autocomplete="off">
-        <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
+        <input id="addBlacklistComment" type="text" name="comment" class="flex-1 w-300" maxlength="1024"
+            placeholder="comment (optional)" spellcheck="false" autocomplete="off">
+        <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked>
+            Enabled</label>
         <button type="submit">Add IP / CIDR</button>
     </form>
 </div>
 
 <div class="filter-spacer filter-row">
     <label class="filter-label" for="blacklistFilter">Filter:</label>
-    <input
-    type="text"
-    id="blacklistFilter"
-    class="table-filter-input"
-    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. '10.0 | 192.168 !/8')"
-    >
+    <input type="text" id="blacklistFilter" class="table-filter-input"
+        placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. '10.0 | 192.168 !/8')">
 </div>
 
 <h2>Blacklisted IPs/CIDRs (in DNS replies)</h2>
 {{template "staged-table-banner" .}}
 <table id="blacklistTable">
-        <colgroup>
+    <colgroup>
         <col class="col-30" data-col-id="cidr">
         <col class="col-10" data-col-id="enabled">
         <col class="col-25" data-col-id="comment">
@@ -673,43 +723,50 @@
     <thead>
         <tr>
             <th class="sortable" data-col="0" data-col-id="cidr" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>IP / CIDR Block</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>IP / CIDR Block</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="1" data-col-id="enabled" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="2" data-col-id="comment" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="3" data-col-id="modified" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="text-center" scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
     <tbody>
         {{range .ResponseBlacklist}}
-        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-enabled="{{.Enabled}}" data-comment="{{.Comment}}" data-orig-cidr="{{.CIDR}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
+        <tr id="blacklistRow_{{.Index}}" data-cidr="{{.CIDR}}" data-enabled="{{.Enabled}}" data-comment="{{.Comment}}"
+            data-orig-cidr="{{.CIDR}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
             <td data-col-id="cidr" title="{{.CIDR}}">{{.CIDR}}</td>
-            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td data-col-id="comment"><div class="comment-text" title="{{.Comment}}">{{.Comment}}</div></td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span
+                    class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="comment">
+                <div class="comment-text" title="{{.Comment}}">{{.Comment}}</div>
+            </td>
             <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
             <td class="actions text-center" data-col-id="actions">
-                <button type="button" class="btn-edit js-blacklist-edit"
-                data-index="{{.Index}}"
-                data-cidr="{{.CIDR}}"
-                data-enabled="{{.Enabled}}"
-                data-comment="{{.Comment}}">
-                Edit
-            </button>
-            <form method="post" action="/response-blacklist" class="js-blacklist-delete-form form-inline-action">
-                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                <input type="hidden" name="action" value="delete">
-                <input type="hidden" name="cidr" value="{{.CIDR}}">
-                <button type="submit" class="btn-del">Delete</button>
-            </form>
-            <button type="button" class="btn-undelete js-blacklist-undelete" data-index="{{.Index}}">Undelete</button>
-            <button type="button" class="btn-discard-row inline-discard-btn js-blacklist-discard" data-index="{{.Index}}">Discard</button>
+                <button type="button" class="btn-edit js-blacklist-edit" data-index="{{.Index}}" data-cidr="{{.CIDR}}"
+                    data-enabled="{{.Enabled}}" data-comment="{{.Comment}}">
+                    Edit
+                </button>
+                <form method="post" action="/response-blacklist" class="js-blacklist-delete-form form-inline-action">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="cidr" value="{{.CIDR}}">
+                    <button type="submit" class="btn-del">Delete</button>
+                </form>
+                <button type="button" class="btn-undelete js-blacklist-undelete"
+                    data-index="{{.Index}}">Undelete</button>
+                <button type="button" class="btn-discard-row inline-discard-btn js-blacklist-discard"
+                    data-index="{{.Index}}">Discard</button>
             </td>
         </tr>
         {{else}}
@@ -726,8 +783,10 @@
             <input type="hidden" name="old_cidr" class="edit-blacklist-old-cidr" form="">
             <input type="text" name="cidr" class="edit-blacklist-cidr w-100" form="" required>
         </td>
-        <td data-col-id="enabled"><label><input type="checkbox" name="enabled" class="edit-blacklist-enabled rule-enabled-checkbox" form=""></label></td>
-        <td data-col-id="comment"><input type="text" name="comment" class="edit-comment w-100" maxlength="1024" placeholder="comment (optional)" form=""></td>
+        <td data-col-id="enabled"><label><input type="checkbox" name="enabled"
+                    class="edit-blacklist-enabled rule-enabled-checkbox" form=""></label></td>
+        <td data-col-id="comment"><input type="text" name="comment" class="edit-comment w-100" maxlength="1024"
+                placeholder="comment (optional)" form=""></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions text-center" data-col-id="actions">
             <form method="POST" action="/response-blacklist" class="edit-blacklist-form form-inline-action2">
@@ -747,7 +806,10 @@
 <h2>Query Blocklist</h2>
 {{template "alert-banner" .}}
 <p class="section-desc maxw-600">
-    This blocklist is checked <strong>before</strong> the whitelist Rules and Local Hosts pages, and always takes priority over them (see whitelist_mode in config.json too). "Block" patterns block a query outright. "Except" patterns only cancel a block coming from the read-only external hosts file below — they never bypass the normal whitelist/default policy on their own.
+    This blocklist is checked <strong>before</strong> the whitelist Rules and Local Hosts pages, and always takes
+    priority over them (see whitelist_mode in config.json too). "Block" patterns block a query outright. "Except"
+    patterns only cancel a block coming from the read-only external hosts file below — they never bypass the normal
+    whitelist/default policy on their own.
 </p>
 
 {{template "pattern-hints" .}}
@@ -761,37 +823,27 @@
         <option value="except">Except (cancels an external-source block)</option>
     </select>
     <label class="visually-hidden" for="addQBPattern">Pattern</label>
-    <input
-        id="addQBPattern"
-        type="text"
-        name="pattern"
-        class="grow-input"
-        title="{{.PatternTooltip}}"
+    <input id="addQBPattern" type="text" name="pattern" class="grow-input" title="{{.PatternTooltip}}"
         placeholder="pattern, e.g. ads.example.com or *.tracker.example (hover for the allowed symbols)"
-        spellcheck="false"
-        autocomplete="off"
-        required
-    >
+        spellcheck="false" autocomplete="off" required>
     <label class="visually-hidden" for="addQBComment">Comment</label>
-    <input id="addQBComment" type="text" name="comment" class="grow-input" maxlength="1024" placeholder="comment (optional)" spellcheck="false" autocomplete="off">
-    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked> Enabled</label>
+    <input id="addQBComment" type="text" name="comment" class="grow-input" maxlength="1024"
+        placeholder="comment (optional)" spellcheck="false" autocomplete="off">
+    <label class="lbl-spaced"><input type="checkbox" name="enabled" class="rule-enabled-checkbox" checked>
+        Enabled</label>
     <button type="submit" class="btn-add">Add</button>
 </form>
 
 <div class="filter-spacer filter-row">
     <label class="filter-label" for="queryBlocklistFilter">Filter:</label>
-    <input
-    type="text"
-    id="queryBlocklistFilter"
-    class="table-filter-input"
-    placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'ads | tracker !safe')"
-    >
+    <input type="text" id="queryBlocklistFilter" class="table-filter-input"
+        placeholder="'/' to focus, space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'ads | tracker !safe')">
 </div>
 
 <h2>Local Query-Blocklist Rules</h2>
 {{template "staged-table-banner" .}}
 <table id="queryBlocklistTable">
-        <colgroup>
+    <colgroup>
         <col class="col-8" data-col-id="category">
         <col class="col-10" data-col-id="id">
         <col class="col-22" data-col-id="pattern">
@@ -803,44 +855,50 @@
     <thead>
         <tr>
             <th class="sortable" data-col="0" data-col-id="category" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Category</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Category</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="1" data-col-id="id" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>ID</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>ID</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="2" data-col-id="pattern" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Pattern</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="3" data-col-id="enabled" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Enabled</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="4" data-col-id="comment" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Comment</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th class="sortable" data-col="5" data-col-id="modified" scope="col" aria-sort="none">
-                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon" aria-hidden="true"></span></button>
+                <button type="button" class="sort-button"><span>Last Modified</span><span class="sort-icon"
+                        aria-hidden="true"></span></button>
             </th>
             <th scope="col" data-col-id="actions">Actions</th>
         </tr>
     </thead>
-        <tbody>
+    <tbody>
         {{range .QueryBlockRules}}
-        <tr id="qbRow_{{.ID}}" data-qb-id="{{.ID}}" data-qb-category="{{.Category}}" data-qb-pattern="{{.Pattern}}" data-qb-enabled="{{.Enabled}}" data-qb-comment="{{.Comment}}"
-            data-orig-category="{{.Category}}" data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
+        <tr id="qbRow_{{.ID}}" data-qb-id="{{.ID}}" data-qb-category="{{.Category}}" data-qb-pattern="{{.Pattern}}"
+            data-qb-enabled="{{.Enabled}}" data-qb-comment="{{.Comment}}" data-orig-category="{{.Category}}"
+            data-orig-pattern="{{.Pattern}}" data-orig-enabled="{{.Enabled}}" data-orig-comment="{{.Comment}}">
             <td data-col-id="category">{{.Category}}</td>
             <td data-col-id="id" title="{{.ID}}">{{.ID}}</td>
             <td data-col-id="pattern" title="{{.Pattern}}">{{.Pattern}}</td>
-            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span class="tag-disabled">Paused</span>{{end}}</td>
-            <td data-col-id="comment"><div class="comment-text" title="{{.Comment}}">{{.Comment}}</div></td>
+            <td data-col-id="enabled">{{if .Enabled}}<span class="tag-enabled">Active</span>{{else}}<span
+                    class="tag-disabled">Paused</span>{{end}}</td>
+            <td data-col-id="comment">
+                <div class="comment-text" title="{{.Comment}}">{{.Comment}}</div>
+            </td>
             <td data-col-id="modified">{{.ModifiedAtDisplay}}</td>
             <td class="actions" data-col-id="actions">
-                <button type="button" class="btn-edit js-qb-edit"
-                    data-id="{{.ID}}"
-                    data-category="{{.Category}}"
-                    data-pattern="{{.Pattern}}"
-                    data-enabled="{{.Enabled}}"
-                    data-comment="{{.Comment}}">
-                Edit
+                <button type="button" class="btn-edit js-qb-edit" data-id="{{.ID}}" data-category="{{.Category}}"
+                    data-pattern="{{.Pattern}}" data-enabled="{{.Enabled}}" data-comment="{{.Comment}}">
+                    Edit
                 </button>
                 <form method="post" action="/query-blocklist" class="js-qb-delete-form form-inline-action">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -850,11 +908,14 @@
                     <button type="submit" class="btn-del">Delete</button>
                 </form>
                 <button type="button" class="btn-undelete js-qb-undelete" data-id="{{.ID}}">Undelete</button>
-                <button type="button" class="btn-discard-row inline-discard-btn js-qb-discard" data-id="{{.ID}}">Discard</button>
+                <button type="button" class="btn-discard-row inline-discard-btn js-qb-discard"
+                    data-id="{{.ID}}">Discard</button>
             </td>
         </tr>
         {{else}}
-        <tr><td colspan="7">No local query-blocklist rules defined.</td></tr>
+        <tr>
+            <td colspan="7">No local query-blocklist rules defined.</td>
+        </tr>
         {{end}}
     </tbody>
 </table>
@@ -869,8 +930,10 @@
         </td>
         <td class="edit-id-display" data-col-id="id"></td>
         <td data-col-id="pattern"><input type="text" class="edit-qb-pattern w-100" title="{{.PatternTooltip}}"></td>
-        <td data-col-id="enabled"><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label></td>
-        <td data-col-id="comment"><input type="text" class="edit-comment w-100" maxlength="1024" placeholder="comment (optional)"></td>
+        <td data-col-id="enabled"><label><input type="checkbox" class="edit-qb-enabled rule-enabled-checkbox"></label>
+        </td>
+        <td data-col-id="comment"><input type="text" class="edit-comment w-100" maxlength="1024"
+                placeholder="comment (optional)"></td>
         <td class="text-muted" data-col-id="modified">(updates on Apply)</td>
         <td class="actions" data-col-id="actions">
             <form method="post" action="/query-blocklist" class="edit-qb-form form-inline-action2">
@@ -894,23 +957,29 @@
     {{else}}
     Loaded: {{.External.LoadedAt}} &middot; {{.External.HostCount}} host(s) blocked
     {{if .External.FileModTimeDisplay}} &middot; File last updated: {{.External.FileModTimeDisplay}}{{end}}
-    {{if .External.MalformedLines}} &middot; {{.External.MalformedLines}} malformed line(s) skipped (see system log){{end}}
-    {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s) ignored for blocking (see system log){{end}}
+    {{if .External.MalformedLines}} &middot; {{.External.MalformedLines}} malformed line(s) skipped (see system
+    log){{end}}
+    {{if .External.NonStandardIPWarnings}} &middot; {{.External.NonStandardIPWarnings}} non-standard mapping IP line(s)
+    ignored for blocking (see system log){{end}}
     {{end}}
 </p>
 {{if not .External.LoadError}}
 <form method="get" action="/query-blocklist" class="mb-20 add-form-row" id="extHostsSearchForm">
     <label class="filter-label" for="extHostsSearchQuery">Search:</label>
-    <input id="extHostsSearchQuery" type="text" name="extq" value="{{.ExternalSearchQuery}}" placeholder="Search this read-only file (e.g. tracker or ads.example.com)..." class="grow-input">
+    <input id="extHostsSearchQuery" type="text" name="extq" value="{{.ExternalSearchQuery}}"
+        placeholder="Search this read-only file (e.g. tracker or ads.example.com)..." class="grow-input">
     <label class="lbl-spaced" for="extHostsMaxResults">Max results:</label>
-    <input id="extHostsMaxResults" type="number" name="extmax" min="1" max="{{.ExternalSearchHardCap}}" value="{{.ExternalSearchMax}}" class="w-280">
+    <input id="extHostsMaxResults" type="number" name="extmax" min="1" max="{{.ExternalSearchHardCap}}"
+        value="{{.ExternalSearchMax}}" class="w-280">
     <button type="submit">Search</button>
     <button type="button" class="btn-cancel js-ext-hosts-clear-btn">Clear</button>
 </form>
 
 {{if .ExternalSearchQuery}}
 <p class="section-desc">
-    Showing {{len .ExternalMatches}} of {{.ExternalSearchTotal}} match(es) for "<code>{{.ExternalSearchQuery}}</code>". Toggling a host below only adds/pauses a local "except" rule in the table above; it never modifies this read-only file.
+    Showing {{len .ExternalMatches}} of {{.ExternalSearchTotal}} match(es) for "<code>{{.ExternalSearchQuery}}</code>".
+    Toggling a host below only adds/pauses a local "except" rule in the table above; it never modifies this read-only
+    file.
 </p>
 <table id="externalHostsTable">
     <colgroup>
@@ -928,7 +997,8 @@
         <tr>
             <td title="{{.HostDisplay}}">
                 {{.HostDisplay}}
-                {{if .LocallyBlocked}}<br><small class="tag-disabled">Also matched by an enabled local "block" rule above; stays blocked even if excepted here.</small>{{end}}
+                {{if .LocallyBlocked}}<br><small class="tag-disabled">Also matched by an enabled local "block" rule
+                    above; stays blocked even if excepted here.</small>{{end}}
             </td>
             <td class="actions">
                 {{if .Excepted}}
@@ -937,7 +1007,9 @@
                     <input type="hidden" name="domain" value="{{.Host}}">
                     <input type="hidden" name="type" value="">
                     <input type="hidden" name="action" value="reblock_qb">
-                    <button type="submit" class="btn-cancel" title="This host is in the external hosts-file blocklist; currently excepted.">Re-block (Pause) [Query&nbsp;Blocklist,&nbsp;External]</button>
+                    <button type="submit" class="btn-cancel"
+                        title="This host is in the external hosts-file blocklist; currently excepted.">Re-block (Pause)
+                        [Query&nbsp;Blocklist,&nbsp;External]</button>
                 </form>
                 {{else}}
                 <form method="post" action="/query-blocklist" class="d-inline js-block-action-form">
@@ -945,23 +1017,29 @@
                     <input type="hidden" name="domain" value="{{.Host}}">
                     <input type="hidden" name="type" value="">
                     <input type="hidden" name="action" value="unblock_qb">
-                    <button type="submit" class="btn-edit" title="This host is blocked by the external hosts-file source; excepting it adds an Except rule for it above.">Unblock [Query&nbsp;Blocklist,&nbsp;External]</button>
+                    <button type="submit" class="btn-edit"
+                        title="This host is blocked by the external hosts-file source; excepting it adds an Except rule for it above.">Unblock
+                        [Query&nbsp;Blocklist,&nbsp;External]</button>
                 </form>
                 {{end}}
                 <span class="block-action-feedback" aria-live="polite" aria-atomic="true"></span>
             </td>
         </tr>
         {{else}}
-        <tr><td colspan="2" class="text-center text-muted">No matching hosts found.</td></tr>
+        <tr>
+            <td colspan="2" class="text-center text-muted">No matching hosts found.</td>
+        </tr>
         {{end}}
     </tbody>
 </table>
 {{else}}
-<p class="section-desc">Type a search term above to look up entries in this read-only file (currently {{.External.HostCount}} host(s) loaded).</p>
+<p class="section-desc">Type a search term above to look up entries in this read-only file (currently
+    {{.External.HostCount}} host(s) loaded).</p>
 {{end}}
 {{end}}
 {{else}}
-<p class="section-desc maxw-600">Not configured (query_blocklist_external_hosts_file is empty). This is a read-only source; dnsbollocks never modifies it — set it in <a href="/config">config.json</a> to enable.</p>
+<p class="section-desc maxw-600">Not configured (query_blocklist_external_hosts_file is empty). This is a read-only
+    source; dnsbollocks never modifies it — set it in <a href="/config">config.json</a> to enable.</p>
 {{end}}
 {{end}}
 
@@ -978,11 +1056,14 @@
 
 {{define "control"}}
 <h2>Server Control</h2>
-<p class="section-desc">Actions that affect the entire running dnsbollocks process. See the Stats page for read-only engine statistics.</p>
+<p class="section-desc">Actions that affect the entire running dnsbollocks process. See the Stats page for read-only
+    engine statistics.</p>
 {{template "alert-banner" .}}
 
 <h2>Reload Configuration</h2>
-<p class="section-desc">Re-reads config.json and the dependent rule/host/blocklist files from disk and applies them, without restarting the process — the WebUI equivalent of pressing Ctrl+R at the console. Listener settings that changed will be rebound.</p>
+<p class="section-desc">Re-reads config.json and the dependent rule/host/blocklist files from disk and applies them,
+    without restarting the process — the WebUI equivalent of pressing Ctrl+R at the console. Listener settings that
+    changed will be rebound.</p>
 <form method="post" action="/control" class="js-control-reload-form">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="action" value="reload">
@@ -990,7 +1071,8 @@
 </form>
 
 <h2>Clear DNS Cache</h2>
-<p class="section-desc">Empties the internal DNS response cache immediately. Rules, hosts, and blocklists are left untouched.</p>
+<p class="section-desc">Empties the internal DNS response cache immediately. Rules, hosts, and blocklists are left
+    untouched.</p>
 <form method="post" action="/control" class="js-control-clear-cache-form">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="action" value="clear_cache">
@@ -998,14 +1080,20 @@
 </form>
 
 <h2>Logout</h2>
-<p class="section-desc">Forces this browser to discard its cached WebUI login credentials by responding to this request with an HTTP 401 challenge. Your browser will very likely prompt for credentials again immediately afterward &mdash; cancel that prompt to actually remain logged out (entering the same password again simply logs back in). This is a limitation of HTTP Basic Auth, which has no server-side session to invalidate directly; see webui_auth_session_mode in config.json for related behavior.</p>
+<p class="section-desc">Forces this browser to discard its cached WebUI login credentials by responding to this request
+    with an HTTP 401 challenge. Your browser will very likely prompt for credentials again immediately afterward &mdash;
+    cancel that prompt to actually remain logged out (entering the same password again simply logs back in). This is a
+    limitation of HTTP Basic Auth, which has no server-side session to invalidate directly; see webui_auth_session_mode
+    in config.json for related behavior.</p>
 <form method="post" action="/logout" class="js-control-logout-form">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <button type="submit" class="btn-cancel">Logout</button>
 </form>
 
 <h2>Shutdown</h2>
-<p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits). This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.</p>
+<p class="section-desc">Gracefully stops the running dnsbollocks process (all listeners close and the process exits).
+    This is the only way to stop it when running headless (hide_console), where there's no console to press Ctrl+X in.
+</p>
 <form method="post" action="/shutdown" class="js-shutdown-form">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="confirm" value="yes">
@@ -1015,23 +1103,18 @@
 
 {{define "config"}}
 {{/* Config field key names injected by Go so app.js never hard-codes json tag strings. */}}
-<div id="configKeysData"
-    data-config-version="{{.ConfigVersion}}"
-    data-config-filename="{{.ConfigFileName}}"
-    data-config-backup-ext="{{.ConfigBackupExt}}"
-    data-key-upstream-selection-mode="{{.KeyUpstreamSelectionMode}}"
-    data-key-console-log-level="{{.KeyConsoleLogLevel}}"
-    data-key-block-mode="{{.KeyBlockMode}}"
+<div id="configKeysData" data-config-version="{{.ConfigVersion}}" data-config-filename="{{.ConfigFileName}}"
+    data-config-backup-ext="{{.ConfigBackupExt}}" data-key-upstream-selection-mode="{{.KeyUpstreamSelectionMode}}"
+    data-key-console-log-level="{{.KeyConsoleLogLevel}}" data-key-block-mode="{{.KeyBlockMode}}"
     data-key-webui-password-hash="{{.KeyWebUIPasswordHash}}"
     data-key-webui-auth-session-mode="{{.KeyWebUIAuthSessionMode}}"
     data-opts-upstream-selection-mode="{{.OptsUpstreamSelectionMode}}"
-    data-opts-console-log-level="{{.OptsConsoleLogLevel}}"
-    data-opts-block-mode="{{.OptsBlockMode}}"
-    data-opts-webui-auth-session-mode="{{.OptsWebUIAuthSessionMode}}"
-    hidden></div>
+    data-opts-console-log-level="{{.OptsConsoleLogLevel}}" data-opts-block-mode="{{.OptsBlockMode}}"
+    data-opts-webui-auth-session-mode="{{.OptsWebUIAuthSessionMode}}" hidden></div>
 <h2>Engine Configuration</h2>
 <p class="section-desc">
-    Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload" button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
+    Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload"
+    button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
 </p>
 
 <div id="stagedChangesBanner" class="staged-changes-banner" hidden>
@@ -1045,19 +1128,23 @@
 <div class="mb-20 filter-row">
     <label class="filter-label" for="configFilter">Filter:</label>
     <input type="text" id="configFilter" class="table-filter-input"
-    placeholder="space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'timeout | rate !sec')"
-    >
+        placeholder="space=ordered-AND, &amp;=AND, |=OR, !=NOT (e.g. 'timeout | rate !sec')">
 </div>
 <div class="config-global-notice">
     <strong>💡 Advanced Tip: Dynamic Config Templates Available</strong>
     <p>
-        Any text or list setting below supports template strings that are dynamically evaluated at runtime. 
-        You can securely read sensitive parameters (like passwords, custom keys, or tokens) directly from the environment or external paths instead of exposing them raw in the configuration file:
+        Any text or list setting below supports template strings that are dynamically evaluated at runtime.
+        You can securely read sensitive parameters (like passwords, custom keys, or tokens) directly from the
+        environment or external paths instead of exposing them raw in the configuration file:
     </p>
     <ul>
-        <li><code>{env:VARIABLE_NAME}</code> – Pulls the value from a system environment variable named "VARIABLE_NAME".</li>
-        <li><code>{file:FILENAME}</code> – Reads the content of an external text file named "FILENAME" that's next to the config.json file.</li>
-        <li><code>{builtin:clientexe}</code> – Specific to "{{.UpstreamURLsKey}}" setting(key) only: Dynamically evaluates to the querying executable's name (useful for passing client attribution to services like NextDNS).</li>
+        <li><code>{env:VARIABLE_NAME}</code> – Pulls the value from a system environment variable named "VARIABLE_NAME".
+        </li>
+        <li><code>{file:FILENAME}</code> – Reads the content of an external text file named "FILENAME" that's next to
+            the config.json file.</li>
+        <li><code>{builtin:clientexe}</code> – Specific to "{{.UpstreamURLsKey}}" setting(key) only: Dynamically
+            evaluates to the querying executable's name (useful for passing client attribution to services like
+            NextDNS).</li>
     </ul>
 </div>
 <table id="configTable">
@@ -1092,7 +1179,9 @@
     </thead>
     <tbody>
         {{range .Fields}}
-        <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}" data-true-original="{{.Value}}" data-list-json="{{.ValueJSON}}" data-true-list-json="{{.ValueJSON}}" data-is-pwd="{{.IsPassword}}">
+        <tr id="configRow_{{.Key}}" data-key="{{.Key}}" data-type="{{.Type}}" data-original="{{.Value}}"
+            data-true-original="{{.Value}}" data-list-json="{{.ValueJSON}}" data-true-list-json="{{.ValueJSON}}"
+            data-is-pwd="{{.IsPassword}}">
             <td class="config-key-code" data-col-id="key" title="{{.Desc}}">
                 <span class="config-key-text">{{.Key}}</span>
                 {{if .Desc}}<br><small class="config-field-desc">{{.Desc}}</small>{{end}}
