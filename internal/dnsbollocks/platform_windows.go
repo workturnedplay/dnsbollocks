@@ -2622,6 +2622,12 @@ type BlockedQuery struct {
 	// PAUSED (no enabled rule allows this domain any more), so the page shows
 	// a "Resume" control instead of "Pause".
 	WhitelistAllowingRulePaused bool `json:"-"`
+
+	// Populated only for the /blocks page (see AdminUI.populateWhitelistExactRuleState),
+	// and only when whitelist_mode is on: the ID of the whitelist rule (enabled OR
+	// paused) whose pattern is EXACTLY this domain in this record type's bucket.
+	// Empty means no such rule exists, so there is nothing to remove from /rules.
+	WhitelistExactRuleID string `json:"-"`
 }
 
 // loginRecord tracks failed WebUI login attempts for a single client IP.
@@ -8499,6 +8505,21 @@ func (rs *RuleStore) HasExactEnabledPattern(typ, pattern string) bool {
 	return false
 }
 
+// FindExactRule returns the first rule in typ whose pattern is EXACTLY equal
+// to pattern (no wildcard expansion), whether it is enabled or paused. Unlike
+// HasExactEnabledPattern this also reports paused rules, which is what a
+// "remove this rule entirely" control needs: a paused rule can be deleted too.
+func (rs *RuleStore) FindExactRule(typ, pattern string) (RuleEntry, bool) {
+	// 100% lock-free read
+	current := *rs.rules.Load()
+	for _, rule := range current[typ] {
+		if rule.Pattern == pattern {
+			return rule, true
+		}
+	}
+	return RuleEntry{}, false
+}
+
 // CountAll returns the total rule count across all types.
 func (rs *RuleStore) CountAll() uint64 {
 	// 100% lock-free read
@@ -9804,8 +9825,21 @@ func (ui *AdminUI) getRecentBlocksCopy() []BlockedQuery {
 	blocks := ui.recentBlocks.Snapshot(ui.buildIsUnblockedPredicate())
 	for i := range blocks {
 		ui.populateBlockedQueryDisplayFields(&blocks[i])
+		ui.populateWhitelistExactRuleState(&blocks[i])
 	}
 	return blocks
+}
+
+// populateWhitelistExactRuleState fills bq.WhitelistExactRuleID (see its doc
+// comment). No-op outside whitelist_mode, where rules play no role in the
+// allow/deny decision, or if the rule store isn't wired up.
+func (ui *AdminUI) populateWhitelistExactRuleState(bq *BlockedQuery) {
+	if ui.ruleStore == nil || !ui.getConfig().WhitelistMode {
+		return
+	}
+	if rule, ok := ui.ruleStore.FindExactRule(bq.Type, bq.Domain); ok {
+		bq.WhitelistExactRuleID = rule.ID
+	}
 }
 
 // buildIsAllowEntryChangedPredicate is the /allows counterpart of
@@ -9834,7 +9868,12 @@ func (ui *AdminUI) buildIsAllowEntryChangedPredicate() func(domain, qtype string
 	}
 }
 
-// buildIsRecentBlockUnblockedPredicate returns the isUnblocked predicate used
+// preserveNothing is the RecentBlocksTracker.ClearBefore predicate used by the
+// "clear ALL shown" actions on /blocks and /allows: unlike the ordinary clear
+// predicates it never preserves any entry, including ones that still carry a
+// Re-block/Pause/Unblock control.
+func preserveNothing(_, _ string) bool { return false }
+
 // by "Clear Shown Blocks" (see recentBlocks.ClearBefore) for the /blocks
 // page's "Recent Blocks" list.
 //
@@ -9967,18 +10006,9 @@ func (ui *AdminUI) processWhitelistRuleSetEnabled(ruleID, displayDomain string, 
 		verb = "resume"
 	}
 
-	if ruleID == "" {
-		log.Warn("Failed to "+verb+" whitelist rule: missing id", slog.String("domain", displayDomain))
-		return "", http.StatusBadRequest, errors.New("missing rule id")
-	}
-	if _, modified := sanitizeDomainInput(ruleID); modified {
-		log.Warn("Failed to "+verb+" whitelist rule: id contains illegal characters", slog.String("id", ruleID))
-		return "", http.StatusBadRequest, errors.New("id contains illegal characters")
-	}
-	typ, found := ui.ruleStore.FindRuleByID(ruleID)
-	if !found {
-		log.Warn("Failed to "+verb+" whitelist rule: not found", slog.String("id", ruleID))
-		return "", http.StatusNotFound, errors.New("that whitelist rule no longer exists")
+	typ, status, err := ui.resolveWhitelistRuleType(ruleID, verb, displayDomain)
+	if err != nil {
+		return "", status, err
 	}
 	pattern, found, changed := ui.ruleStore.SetEnabledByID(typ, ruleID, enabled, log)
 	if !found {
@@ -10002,6 +10032,55 @@ func (ui *AdminUI) processWhitelistRuleSetEnabled(ruleID, displayDomain string, 
 		return fmt.Sprintf("Resumed whitelist rule %s (%s); it allows %s again.", displayPattern, typ, displayDomain), http.StatusOK, nil
 	}
 	return fmt.Sprintf("Paused whitelist rule %s (%s), which was allowing %s.", displayPattern, typ, displayDomain), http.StatusOK, nil
+}
+
+// resolveWhitelistRuleType validates ruleID and finds the DNS-type bucket
+// holding it. Shared by every /allows and /blocks quick action that targets a
+// whitelist rule by ID (pause/resume/delete). verb is only used in log text.
+func (ui *AdminUI) resolveWhitelistRuleType(ruleID, verb, displayDomain string) (typ string, status int, err error) {
+	log := ui.getLogger()
+	if ruleID == "" {
+		log.Warn("Failed to "+verb+" whitelist rule: missing id", slog.String("domain", displayDomain))
+		return "", http.StatusBadRequest, errors.New("missing rule id")
+	}
+	if _, modified := sanitizeDomainInput(ruleID); modified {
+		log.Warn("Failed to "+verb+" whitelist rule: id contains illegal characters", slog.String("id", ruleID))
+		return "", http.StatusBadRequest, errors.New("id contains illegal characters")
+	}
+	typ, found := ui.ruleStore.FindRuleByID(ruleID)
+	if !found {
+		log.Warn("Failed to "+verb+" whitelist rule: not found", slog.String("id", ruleID))
+		return "", http.StatusNotFound, errors.New("that whitelist rule no longer exists")
+	}
+	return typ, http.StatusOK, nil
+}
+
+// processWhitelistRuleDelete implements the "Remove Rule [Whitelist]" action
+// of the /blocks and /allows pages: it deletes the whitelist rule with the
+// given ID entirely (the same effect as Delete on /rules, but applied
+// immediately rather than staged). Callers must already hold
+// ui.tableMutationMu and have confirmed ui.ruleStore/ui.OnSaveWhitelist are
+// wired. On success the affected cache entries are already invalidated;
+// callers only persist via ui.OnSaveWhitelist and write the response.
+func (ui *AdminUI) processWhitelistRuleDelete(ruleID, displayDomain string) (successMessage string, status int, err error) {
+	log := ui.getLogger()
+
+	typ, status, err := ui.resolveWhitelistRuleType(ruleID, "delete", displayDomain)
+	if err != nil {
+		return "", status, err
+	}
+	pattern, delErr := ui.ruleStore.DeleteRule(typ, ruleID, log)
+	if delErr != nil {
+		// Rare TOCTOU: deleted between FindRuleByID and here.
+		log.Warn("Failed to delete whitelist rule: disappeared mid-request", slog.String("id", ruleID), wincoe.SafeErr(delErr))
+		return "", http.StatusNotFound, fmt.Errorf("that whitelist rule no longer exists: %w", delErr)
+	}
+	displayPattern, _ := punycodeDecodePatternForDisplay(pattern)
+	log.Info("Deleted whitelist rule via WebUI (blocks/allows page)",
+		slog.String("id", ruleID), slog.String("type", typ), slog.String("pattern", pattern),
+		slog.String("domain", displayDomain))
+	ui.OnInvalidatePattern(pattern)
+	return fmt.Sprintf("Removed whitelist rule %s (%s) from the Rules list entirely.", displayPattern, typ), http.StatusOK, nil
 }
 
 // populateQueryBlocklistRowState fills bq's four QueryBlocklist* fields by
@@ -10134,10 +10213,16 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 				respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
 				return
 			}
+		case "delete_whitelist_rule":
+			if ui.ruleStore == nil || ui.OnSaveWhitelist == nil {
+				log.Error("BUG: whitelist /blocks POST action reached without ruleStore/OnSaveWhitelist wired", slog.String("action", action))
+				respondBlocksResult(log, w, r, TheBlocksPage, false, http.StatusServiceUnavailable, "whitelist is not available in this environment", "")
+				return
+			}
 		}
 
-		// --- Handle the Clear action ---
-		if action == "clear" {
+		// --- Handle the Clear actions ("clear" keeps entries that still have a revert control; "clear_all" drops everything shown) ---
+		if action == "clear" || action == "clear_all" {
 			cutoffStr := r.FormValue("cutoff")
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
@@ -10151,9 +10236,16 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			// (still actively blocked by whichever layer caused them).
 			// Rows still showing a Re-block/Unblock control are preserved
 			// — see buildIsRecentBlockUnblockedPredicate's doc comment.
-			cleared := ui.recentBlocks.ClearBefore(cutoff, ui.buildIsRecentBlockUnblockedPredicate())
+			isPreserved := ui.buildIsRecentBlockUnblockedPredicate()
+			if action == "clear_all" {
+				// Explicit operator request: drop every shown entry, including
+				// ones with a live Re-block/Unblock control. The rules
+				// themselves are untouched; only this list is cleared.
+				isPreserved = preserveNothing
+			}
+			cleared := ui.recentBlocks.ClearBefore(cutoff, isPreserved)
 			msg := fmt.Sprintf("Cleared %d recent block(s) from the list.", cleared)
-			log.Info("WebUI: Cleared visible recent blocks", slog.Int("cleared", cleared))
+			log.Info("WebUI: Cleared visible recent blocks", slog.String("action", action), slog.Int("cleared", cleared))
 
 			respondBlocksResult(log, w, r, TheBlocksPage, true, http.StatusOK, msg, "")
 			return
@@ -10205,6 +10297,14 @@ func (ui *AdminUI) blocksHandler(w http.ResponseWriter, r *http.Request) {
 			log.Info("Quick "+action+" via WebUI (whitelist)",
 				slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain), slog.String("DNSType", typ))
 			ui.OnInvalidatePattern(domainLowercased)
+
+		case "delete_whitelist_rule":
+			delMsg, delStatus, delErr := ui.processWhitelistRuleDelete(r.FormValue("id"), displayDomain)
+			if delErr != nil {
+				respondBlocksResult(log, w, r, TheBlocksPage, false, delStatus, delErr.Error(), raw)
+				return
+			}
+			successMessage = delMsg
 
 		case "reblock_qb", "unblock_qb", "disable_qb_local_rule":
 			msg, status, qbErr := ui.processQueryBlocklistQuickAction(action, domainLowercased, displayDomain, r.FormValue("id"))
@@ -10406,7 +10506,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusServiceUnavailable, "query blocklist is not available in this environment", "")
 				return
 			}
-		case "disable_whitelist_rule", "enable_whitelist_rule":
+		case "disable_whitelist_rule", "enable_whitelist_rule", "delete_whitelist_rule":
 			if ui.ruleStore == nil || ui.OnSaveWhitelist == nil {
 				log.Error("BUG: whitelist /allows POST action reached without ruleStore/OnSaveWhitelist wired", slog.String("action", action))
 				respondBlocksResult(log, w, r, TheAllowsPage, false, http.StatusServiceUnavailable, "whitelist is not available in this environment", "")
@@ -10414,8 +10514,8 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// --- Handle the Clear action ---
-		if action == "clear" {
+		// --- Handle the Clear actions ("clear" keeps entries the operator changed away from allowed; "clear_all" drops everything shown) ---
+		if action == "clear" || action == "clear_all" {
 			cutoffStr := r.FormValue("cutoff")
 			cutoffNano, err := strconv.ParseInt(cutoffStr, 10, 64)
 			if err != nil {
@@ -10429,7 +10529,11 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			if ui.recentAllowed != nil {
 				// Preserve rows the operator has changed away from "allowed"
 				// — see buildIsAllowEntryChangedPredicate's doc comment.
-				cleared = ui.recentAllowed.ClearBefore(cutoff, ui.buildIsAllowEntryChangedPredicate())
+				isPreserved := ui.buildIsAllowEntryChangedPredicate()
+				if action == "clear_all" {
+					isPreserved = preserveNothing
+				}
+				cleared = ui.recentAllowed.ClearBefore(cutoff, isPreserved)
 			}
 			msg := fmt.Sprintf("Cleared %d recent allow(s) from the list.", cleared)
 			log.Info("WebUI: Cleared visible recent allows", slog.Int("cleared", cleared))
@@ -10467,7 +10571,7 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch action {
-		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local", "disable_whitelist_rule", "enable_whitelist_rule":
+		case "reblock_qb", "unblock_qb", "disable_qb_local_rule", "block_qb_local", "disable_whitelist_rule", "enable_whitelist_rule", "delete_whitelist_rule":
 			// handled below
 		default:
 			log.Warn("Failed quick block via WebUI (allows): invalid action specified", slog.String("action", action))
@@ -10481,8 +10585,12 @@ func (ui *AdminUI) allowsHandler(w http.ResponseWriter, r *http.Request) {
 			actionErr      error
 			saveErr        error
 		)
-		if action == "disable_whitelist_rule" || action == "enable_whitelist_rule" {
-			successMessage, status, actionErr = ui.processWhitelistRuleSetEnabled(r.FormValue("id"), displayDomain, action == "enable_whitelist_rule")
+		if action == "disable_whitelist_rule" || action == "enable_whitelist_rule" || action == "delete_whitelist_rule" {
+			if action == "delete_whitelist_rule" {
+				successMessage, status, actionErr = ui.processWhitelistRuleDelete(r.FormValue("id"), displayDomain)
+			} else {
+				successMessage, status, actionErr = ui.processWhitelistRuleSetEnabled(r.FormValue("id"), displayDomain, action == "enable_whitelist_rule")
+			}
 			if actionErr == nil {
 				if err := ui.OnSaveWhitelist(); err != nil {
 					saveErr = ui.logPersistFailure("whitelist", err)

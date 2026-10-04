@@ -267,6 +267,13 @@
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
         <button type="submit" class="btn-del">Clear Shown Blocks</button>
     </form>
+
+    <form method="post" action="/blocks" class="d-inline js-blocks-clear-form" data-confirm="Clear ALL currently shown blocks, INCLUDING entries that still have a Re-block (Pause) / Unblock control?&#10;&#10;Only this list is cleared; no rule is touched. You just lose the quick undo buttons for those entries (revert them later on the Rules / Query Blocklist pages).&#10;&#10;(New blocks that occurred since you loaded the page will be kept safely.)">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="action" value="clear_all">
+        <input type="hidden" name="cutoff" value="{{.RenderTime}}">
+        <button type="submit" class="btn-del" title="Also clears entries that were unblocked (the ones that still show a Re-block (Pause) button).">Clear All Shown Blocks (incl. unblocked)</button>
+    </form>
 </div>
 
 <ul>
@@ -296,6 +303,19 @@
             <input type="hidden" name="type" value="{{.Type}}">
             <input type="hidden" name="action" value="unblock">
             <button type="submit" class="btn-edit">Unblock {{.Type}} [Whitelist]</button>
+        </form>
+        {{end}}
+        {{end}}
+
+        {{if $.WhitelistMode}}
+        {{if .WhitelistExactRuleID}}
+        <form method="post" action="/blocks" class="d-inline js-block-action-form" data-confirm="Permanently remove the {{.Type}} whitelist rule for {{.DomainDisplay}} from the Rules page?&#10;&#10;Unlike Re-block (Pause) this deletes the rule entirely; it cannot be resumed afterwards.">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="{{.WhitelistExactRuleID}}">
+            <input type="hidden" name="action" value="delete_whitelist_rule">
+            <button type="submit" class="btn-del" title="Deletes the exact {{.Type}} whitelist rule for this domain from the Rules page (paused or active).">Remove Rule [Whitelist]</button>
         </form>
         {{end}}
         {{end}}
@@ -355,6 +375,13 @@
         <input type="hidden" name="cutoff" value="{{.RenderTime}}">
         <button type="submit" class="btn-del">Clear Shown Allows</button>
     </form>
+
+    <form method="post" action="/allows" class="d-inline js-blocks-clear-form" data-confirm="Clear ALL currently shown allows, INCLUDING entries that were changed (blocked via a local Query Blocklist rule, or whose whitelist rule is paused) and still have a revert control?&#10;&#10;Only this list is cleared; no rule is touched.&#10;&#10;(New allows that occurred since you loaded the page will be kept safely.)">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="action" value="clear_all">
+        <input type="hidden" name="cutoff" value="{{.RenderTime}}">
+        <button type="submit" class="btn-del" title="Also clears entries you already changed away from allowed (those still showing an Unblock/Resume button).">Clear All Shown Allows (incl. changed)</button>
+    </form>
 </div>
 
 <ul>
@@ -376,6 +403,14 @@
             <input type="hidden" name="action" value="disable_whitelist_rule">
             <button type="submit" class="btn-edit" title="Currently allowed by the enabled whitelist rule: {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}}. Pausing it blocks this domain again, and also every other domain that rule matches if its pattern is a wildcard.">Pause Rule [Whitelist]</button>
             {{end}}
+        </form>
+        <form method="post" action="/allows" class="d-inline js-block-action-form" data-confirm="Permanently remove the {{.WhitelistAllowingRuleType}} whitelist rule '{{.WhitelistAllowingRulePattern}}' from the Rules page?&#10;&#10;This deletes the rule entirely (unlike Pause it cannot be resumed), and it also stops allowing every other domain that rule matches if its pattern is a wildcard.&#10;&#10;Remove the rule?">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="domain" value="{{.Domain}}">
+            <input type="hidden" name="type" value="{{.Type}}">
+            <input type="hidden" name="id" value="{{.WhitelistAllowingRuleID}}">
+            <input type="hidden" name="action" value="delete_whitelist_rule">
+            <button type="submit" class="btn-del" title="Deletes the whitelist rule {{.WhitelistAllowingRuleType}} {{.WhitelistAllowingRulePattern}} from the Rules page (paused or active).">Remove Rule [Whitelist]</button>
         </form>
         {{end}}
 

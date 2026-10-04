@@ -1808,6 +1808,45 @@
         });
     }
 
+        const WHITELIST_RULE_ACTIONS = Object.freeze([
+        'disable_whitelist_rule',
+        'enable_whitelist_rule',
+        'delete_whitelist_rule',
+    ]);
+
+    // removeDeletedWhitelistRuleControls runs after a successful "Remove Rule
+    // [Whitelist]": it drops every control on the page that still targets the
+    // now-deleted rule (/allows rows may share one wildcard rule), and, on
+    // /blocks, flips the same row's "Re-block (Pause)" control back to "Unblock"
+    // since no exact rule exists any more.
+    function removeDeletedWhitelistRuleControls(sourceForm, ruleId) {
+        // Captured first: sourceForm itself is removed below.
+        const row = sourceForm.parentElement;
+
+        if (ruleId !== '') {
+            document.querySelectorAll('.js-block-action-form').forEach(other => {
+                const otherAction = other.querySelector('[name="action"]')?.value;
+                const otherId = other.querySelector('[name="id"]')?.value || '';
+                if (WHITELIST_RULE_ACTIONS.includes(otherAction) && otherId === ruleId) {
+                    other.remove();
+                }
+            });
+        }
+
+        if (!row) return;
+        row.querySelectorAll('.js-block-action-form').forEach(other => {
+            const otherActionInput = other.querySelector('[name="action"]');
+            if (!otherActionInput || otherActionInput.value !== 'reblock') return;
+            const otherType = other.querySelector('[name="type"]')?.value || '';
+            const otherBtn = other.querySelector('button[type="submit"]');
+            otherActionInput.value = 'unblock';
+            if (otherBtn) {
+                otherBtn.textContent = 'Unblock ' + otherType + ' [Whitelist]';
+                otherBtn.className = 'btn-edit';
+            }
+        });
+    }
+
     // --- Filter highlight helpers ---
     // Highlights matches using the same case-insensitive, NFD/accent-insensitive
     // normalization used by matchesFilterExpression(), while preserving the
@@ -3638,8 +3677,8 @@
                     return;
                 }
                 
-                // Native confirmation dialog
-                if (!confirm('Delete rule: ' + pattern + '?')) return;
+                // No confirm: this only STAGES the delete (struck through, reversible
+                // via Undelete until Apply & Reload is pressed).
                 
                 // A pending Delete supersedes any queued Edit for the same rule;
                 // drop it so we don't try to apply a stale edit right before
@@ -3764,12 +3803,8 @@
                 const id = idInput.value;
                 const origCategory = categoryInput.value;
 
+                // No confirm: this only STAGES the delete (reversible via Undelete until Apply).
                 const row = form.closest('tr');
-                const pattern = row ? row.dataset.origPattern : '';
-
-                if (!confirm('Delete query-blocklist rule: ' + (pattern || id) + '?')) {
-                    return;
-                }
 
                 // A pending Delete supersedes any queued Edit for the same rule;
                 // drop it so we don't try to apply a stale edit right before deleting.
@@ -3932,7 +3967,9 @@
                 const actionValue = blocksClearForm.querySelector('[name="action"]').value;
                 const targetUrl = blocksClearForm.getAttribute('action'); // '/blocks' or '/allows'
                 const noun = targetUrl === '/allows' ? 'allows' : 'blocks';
-                if (!confirm('Clear all currently shown ' + noun + '?\n\n(New ' + noun + ' that occurred since you loaded the page will be kept safely.)')) {
+                const confirmMessage = blocksClearForm.dataset.confirm ||
+                    ('Clear all currently shown ' + noun + '?\n\n(New ' + noun + ' that occurred since you loaded the page will be kept safely.)');
+                if (!confirm(confirmMessage)) {
                     return;
                 }
                 const btn = blocksClearForm.querySelector('button[type="submit"]');
@@ -3975,7 +4012,7 @@
                 // Only the "pause" direction needs the explanation (see the
                 // data-confirm attribute rendered in ui.html's allows template).
                 const confirmMessage = form.dataset.confirm;
-                if (action === 'disable_whitelist_rule' && confirmMessage && !confirm(confirmMessage)) return;
+                if ((action === 'disable_whitelist_rule' || action === 'delete_whitelist_rule') && confirmMessage && !confirm(confirmMessage)) return;
                 
                 const originalText = btn.textContent;
                 const originalClass = btn.className;
@@ -3983,6 +4020,7 @@
                 btn.disabled = true;
                 btn.textContent = action === 'disable_qb_local_rule' ? 'Disabling…' :
                     action === 'disable_whitelist_rule' ? 'Pausing…' :
+                    action === 'delete_whitelist_rule' ? 'Removing…' :
                     action === 'enable_whitelist_rule' ? 'Resuming…' :
                     action === 'block_qb_local' ? 'Blocking…' :
                     action === 'reblock' ? 'Re-blocking…' : 'Unblocking…';
@@ -4025,6 +4063,8 @@
                         if (document.getElementById('queryBlocklistTable')) {
                             location.reload();
                         }
+                    } else if (action === 'delete_whitelist_rule') {
+                        removeDeletedWhitelistRuleControls(form, id);
                     } else if (TOGGLE_NEXT_ACTION[action]) {
                         if (action === 'disable_qb_local_rule' && form.getAttribute('action') !== '/allows') {
                             // One-directional from /blocks: re-enabling happens on
@@ -4095,10 +4135,7 @@
                 // exactly what the live server-side store still knows this entry by.
                 const origPattern = patternInput.value.toLowerCase();
 
-                if (!confirm('Delete local host override: ' + origPattern + '?')) {
-                    return;
-                }
-
+                // No confirm: this only STAGES the delete (reversible via Undelete until Apply).
                 const row = form.closest('tr');
 
                 // A pending Delete supersedes any queued Edit for the same host;
@@ -4216,10 +4253,7 @@
                 // This hidden field is server-rendered from the original CIDR and is
                 // never mutated by JS, so it's always the TRUE original identity.
                 const origCidr = cidrInput.value;
-                if (!confirm('Remove ' + origCidr + ' from blacklist?')) {
-                    return;
-                }
-
+                // No confirm: this only STAGES the delete (reversible via Undelete until Apply).
                 const row = form.closest('tr');
 
                 // A pending Delete supersedes any queued Edit for the same entry;
