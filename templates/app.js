@@ -140,6 +140,78 @@
     const MAX_STORED_STAGED_CHANGES = 10_000;
     const stagedStorageKey = `dnsbollocks:staged:${tablePageKey}`;
 
+    // boolStr renders a boolean the way the staged-change payloads and
+    // data-* attributes carry it.
+    const boolStr = b => (b ? 'true' : 'false');
+
+    // bindEditControl looks up a control inside the cloned inline-edit
+    // template, associates it with the edit <form> via the HTML5 `form`
+    // attribute (required because the controls live in other <td>s, outside
+    // the <form> element) and, if given, sets its aria-label. Returns the
+    // element. Throws if the template lacks the control, since silently
+    // continuing would leave a dead edit row.
+    function bindEditControl(root, selector, formId, ariaLabel) {
+        const el = root.querySelector(selector);
+        if (!el) {
+            throw new Error('bindEditControl: edit template has no element matching ' + selector);
+        }
+        el.setAttribute('form', formId);
+        if (ariaLabel) el.setAttribute('aria-label', ariaLabel);
+        return el;
+    }
+
+    // highlightColumns returns a highlightTerms callback for applyTableFilter
+    // that highlights the cells with the given stable col-ids (order-independent).
+    function highlightColumns(colIds) {
+        return (row, terms) => {
+            colIds.forEach(id => {
+                const cell = cellByColId(row, id);
+                if (cell) highlightTextNodes(cell, terms);
+            });
+        };
+    }
+
+    // setupTableFilterInput restores a table filter's persisted text, wires
+    // its debounced input handler, and applies it immediately so the table
+    // is already filtered on load. No-op on pages lacking the input.
+    function setupTableFilterInput(inputId, storageKey, applyFn) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        input.value = uiStorage.getItem(storageKey) || '';
+        input.addEventListener('input', debounce(applyFn, 120));
+        applyFn();
+    }
+
+    // buildStagedAddActionsCell builds the "Actions" <td> shared by every
+    // staged (not yet applied) Add row whose Edit/Delete buttons are wired
+    // directly (query-blocklist, hosts, blacklist) rather than through the
+    // rules table's document-level delegation.
+    function buildStagedAddActionsCell({ extraClass = '', editClass, editData, onEdit, removeConfirmMessage, onRemove }) {
+        const td = document.createElement('td');
+        td.dataset.colId = 'actions';
+        td.className = ('actions ' + extraClass).trim();
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn-edit ' + editClass;
+        editBtn.textContent = 'Edit';
+        Object.assign(editBtn.dataset, editData);
+        editBtn.addEventListener('click', () => onEdit(editBtn));
+        td.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-del';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+            if (!confirm(removeConfirmMessage)) return;
+            onRemove();
+        });
+        td.appendChild(delBtn);
+
+        return td;
+    }
+
     function isPlainObject(value) {
         return value !== null &&
             typeof value === 'object' &&
@@ -924,7 +996,7 @@
         row.dataset.ruleId = clientId;
         row.dataset.ruleType = type;
         row.dataset.rulePattern = pattern;
-        row.dataset.ruleEnabled = enabled ? 'true' : 'false';
+        row.dataset.ruleEnabled = boolStr(enabled);
         row.dataset.ruleComment = comment;
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
@@ -963,7 +1035,7 @@
     function applyRuleRowDisplay(row, type, pattern, enabled, comment) {
         row.dataset.ruleType = type;
         row.dataset.rulePattern = pattern;
-        row.dataset.ruleEnabled = enabled ? 'true' : 'false';
+        row.dataset.ruleEnabled = boolStr(enabled);
         row.dataset.ruleComment = comment;
         setTextCell(row, 'type', type);
         // id cell is left unchanged
@@ -984,7 +1056,7 @@
         row.dataset.qbId = clientId;
         row.dataset.qbCategory = category;
         row.dataset.qbPattern = pattern;
-        row.dataset.qbEnabled = enabled ? 'true' : 'false';
+        row.dataset.qbEnabled = boolStr(enabled);
         row.dataset.qbComment = comment;
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
@@ -999,35 +1071,17 @@
         row.appendChild(buildCommentCell(comment));
         row.appendChild(buildPendingModifiedCell());
 
-        const actionsTd = document.createElement('td');
-        actionsTd.dataset.colId = 'actions';
-        actionsTd.className = 'actions';
-
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'btn-edit js-qb-edit';
-        editBtn.textContent = 'Edit';
-        editBtn.dataset.id = clientId;
-        editBtn.dataset.category = category;
-        editBtn.dataset.pattern = pattern;
-        editBtn.dataset.enabled = enabled ? 'true' : 'false';
-        editBtn.dataset.comment = comment;
-        editBtn.addEventListener('click', () => editQueryBlock(editBtn));
-        actionsTd.appendChild(editBtn);
-
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'btn-del';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => {
-            if (!confirm('Remove this not-yet-applied query-blocklist rule: ' + pattern + '?')) return;
-            removeStagedAddRow(clientId, row);
-            applyQueryBlocklistFilter();
-            updateTableBanner();
-        });
-        actionsTd.appendChild(delBtn);
-
-        row.appendChild(actionsTd);
+        row.appendChild(buildStagedAddActionsCell({
+            editClass: 'js-qb-edit',
+            editData: { id: clientId, category, pattern, enabled: boolStr(enabled), comment },
+            onEdit: editQueryBlock,
+            removeConfirmMessage: 'Remove this not-yet-applied query-blocklist rule: ' + pattern + '?',
+            onRemove: () => {
+                removeStagedAddRow(clientId, row);
+                applyQueryBlocklistFilter();
+                updateTableBanner();
+            },
+        }));
         return row;
     } // end of buildQueryBlockRowElement
 
@@ -1036,7 +1090,7 @@
     function applyQueryBlockRowDisplay(row, category, pattern, enabled, comment) {
         row.dataset.qbCategory = category;
         row.dataset.qbPattern = pattern;
-        row.dataset.qbEnabled = enabled ? 'true' : 'false';
+        row.dataset.qbEnabled = boolStr(enabled);
         row.dataset.qbComment = comment;
         setTextCell(row, 'category', category);
         // id cell is left unchanged
@@ -1048,7 +1102,7 @@
         if (editBtnEl) {
             editBtnEl.dataset.category = category;
             editBtnEl.dataset.pattern = pattern;
-            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
+            editBtnEl.dataset.enabled = boolStr(enabled);
             editBtnEl.dataset.comment = comment;
         }
     }
@@ -1092,33 +1146,24 @@
         const formId = 'editQBForm_' + id;
         form.id = formId;
 
-        const categorySelect = clone.querySelector('.edit-qb-category');
-        categorySelect.setAttribute('form', formId);
-        categorySelect.setAttribute('aria-label', 'Query-blocklist category');
+        const categorySelect = bindEditControl(clone, '.edit-qb-category', formId, 'Query-blocklist category');
         categorySelect.value = category;
 
         const idDisplay = clone.querySelector('.edit-id-display');
         idDisplay.textContent = isStagedAdd ? '(pending)' : id;
         idDisplay.title = isStagedAdd ? '(pending \u2014 assigned on Apply)' : id;
 
-        const patternInput = clone.querySelector('.edit-qb-pattern');
-        patternInput.setAttribute('form', formId);
-        patternInput.setAttribute('aria-label', 'Query-blocklist pattern');
-
-        const commentInput = clone.querySelector('.edit-comment');
-        commentInput.setAttribute('form', formId);
-        commentInput.setAttribute('aria-label', 'Comment');
-        commentInput.value = comment;
+        const patternInput = bindEditControl(clone, '.edit-qb-pattern', formId, 'Query-blocklist pattern');
         patternInput.value = pattern;
 
-        const enabledCheck = clone.querySelector('.edit-qb-enabled');
-        enabledCheck.setAttribute('form', formId);
-        enabledCheck.setAttribute('aria-label', 'Enabled');
+        const commentInput = bindEditControl(clone, '.edit-comment', formId, 'Comment');
+        commentInput.value = comment;
+
+        const enabledCheck = bindEditControl(clone, '.edit-qb-enabled', formId, 'Enabled');
         enabledCheck.checked = enabled;
 
-        const idInput = clone.querySelector('.edit-qb-id-input');
+        const idInput = bindEditControl(clone, '.edit-qb-id-input', formId);
         idInput.value = id;
-        idInput.setAttribute('form', formId);
 
         clone.querySelector('.btn-cancel').addEventListener('click', () => cancelQueryBlockEdit(id), { once: true });
 
@@ -1133,15 +1178,15 @@
             if (newPattern === '') { alert('pattern cannot be empty'); return; }
 
             if (isStagedAdd) {
-                mergeStagedAddFields(clientId, { pattern: newPattern, category: newCategory, enabled: enabledChecked ? 'true' : 'false', comment: newComment });
+                mergeStagedAddFields(clientId, { pattern: newPattern, category: newCategory, enabled: boolStr(enabledChecked), comment: newComment });
                 applyQueryBlockRowDisplay(row, newCategory, newPattern, enabledChecked, newComment);
                 row.classList.add('staged');
             } else {
                 const existingIdx = findStagedEntryIndex('/query-blocklist', f => f.edit === '1' && f.id === id);
                 const isNoOp = newCategory === origCategory && newPattern === origPattern &&
-                    (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false') &&
+                    (boolStr(enabledChecked)) === (boolStr(origEnabled)) &&
                     newComment === origComment;
-                const fields = { edit: '1', id: id, category: newCategory, pattern: newPattern, enabled: enabledChecked ? 'true' : 'false', comment: newComment };
+                const fields = { edit: '1', id: id, category: newCategory, pattern: newPattern, enabled: boolStr(enabledChecked), comment: newComment };
                 const displayCategory = isNoOp ? origCategory : newCategory;
                 const displayPattern = isNoOp ? origPattern : newPattern;
                 const displayEnabled = isNoOp ? origEnabled : enabledChecked;
@@ -1191,7 +1236,7 @@
         row.id = 'hostRow_' + clientId;
         row.dataset.hostPattern = pattern;
         row.dataset.hostIps = ipsDisplay;
-        row.dataset.hostEnabled = enabled ? 'true' : 'false';
+        row.dataset.hostEnabled = boolStr(enabled);
         row.dataset.hostComment = comment;
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
@@ -1203,35 +1248,17 @@
         row.appendChild(buildCommentCell(comment));
         row.appendChild(buildPendingModifiedCell());
 
-        const actionsTd = document.createElement('td');
-        actionsTd.dataset.colId = 'actions';
-        actionsTd.className = 'actions';
-
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'btn-edit js-host-edit';
-        editBtn.textContent = 'Edit';
-        editBtn.dataset.index = clientId;
-        editBtn.dataset.pattern = pattern;
-        editBtn.dataset.ips = ipsDisplay;
-        editBtn.dataset.enabled = enabled ? 'true' : 'false';
-        editBtn.dataset.comment = comment;
-        editBtn.addEventListener('click', () => editHost(editBtn));
-        actionsTd.appendChild(editBtn);
-
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'btn-del';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => {
-            if (!confirm('Remove this not-yet-applied local host: ' + pattern + '?')) return;
-            removeStagedAddRow(clientId, row);
-            applyHostsFilter();
-            updateTableBanner();
-        });
-        actionsTd.appendChild(delBtn);
-
-        row.appendChild(actionsTd);
+        row.appendChild(buildStagedAddActionsCell({
+            editClass: 'js-host-edit',
+            editData: { index: clientId, pattern, ips: ipsDisplay, enabled: boolStr(enabled), comment },
+            onEdit: editHost,
+            removeConfirmMessage: 'Remove this not-yet-applied local host: ' + pattern + '?',
+            onRemove: () => {
+                removeStagedAddRow(clientId, row);
+                applyHostsFilter();
+                updateTableBanner();
+            },
+        }));
         return row;
     } // end of buildHostRowElement
 
@@ -1247,7 +1274,7 @@
     function applyHostRowDisplay(row, pattern, ips, enabled, comment) {
         row.dataset.hostPattern = pattern;
         row.dataset.hostIps = ips;
-        row.dataset.hostEnabled = enabled ? 'true' : 'false';
+        row.dataset.hostEnabled = boolStr(enabled);
         row.dataset.hostComment = comment;
         setTextCell(row, 'pattern', pattern);
         setTextCell(row, 'ips', ips);
@@ -1258,7 +1285,7 @@
         if (editBtnEl) {
             editBtnEl.dataset.pattern = pattern;
             editBtnEl.dataset.ips = ips;
-            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
+            editBtnEl.dataset.enabled = boolStr(enabled);
             editBtnEl.dataset.comment = comment;
         }
     }
@@ -1277,7 +1304,7 @@
         const row = document.createElement('tr');
         row.id = 'blacklistRow_' + clientId;
         row.dataset.cidr = cidr;
-        row.dataset.enabled = enabled ? 'true' : 'false';
+        row.dataset.enabled = boolStr(enabled);
         row.dataset.comment = comment;
         row.dataset.stagedClientId = clientId;
         row.classList.add('staged-add', 'staged');
@@ -1288,34 +1315,18 @@
         row.appendChild(buildCommentCell(comment));
         row.appendChild(buildPendingModifiedCell());
 
-        const actionsTd = document.createElement('td');
-        actionsTd.dataset.colId = 'actions';
-        actionsTd.className = 'actions text-center';
-
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'btn-edit js-blacklist-edit';
-        editBtn.textContent = 'Edit';
-        editBtn.dataset.index = clientId;
-        editBtn.dataset.cidr = cidr;
-        editBtn.dataset.enabled = enabled ? 'true' : 'false';
-        editBtn.dataset.comment = comment;
-        editBtn.addEventListener('click', () => editBlacklist(editBtn));
-        actionsTd.appendChild(editBtn);
-
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'btn-del';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => {
-            if (!confirm('Remove this not-yet-applied entry: ' + cidr + '?')) return;
-            removeStagedAddRow(clientId, row);
-            applyBlacklistFilter();
-            updateTableBanner();
-        });
-        actionsTd.appendChild(delBtn);
-
-        row.appendChild(actionsTd);
+        row.appendChild(buildStagedAddActionsCell({
+            extraClass: 'text-center',
+            editClass: 'js-blacklist-edit',
+            editData: { index: clientId, cidr, enabled: boolStr(enabled), comment },
+            onEdit: editBlacklist,
+            removeConfirmMessage: 'Remove this not-yet-applied entry: ' + cidr + '?',
+            onRemove: () => {
+                removeStagedAddRow(clientId, row);
+                applyBlacklistFilter();
+                updateTableBanner();
+            },
+        }));
         return row;
     } //end of buildBlacklistRowElement
 
@@ -1323,7 +1334,7 @@
     // cells, and its Edit button's dataset to reflect the given values.
     function applyBlacklistRowDisplay(row, cidrVal, enabled, comment) {
         row.dataset.cidr = cidrVal;
-        row.dataset.enabled = enabled ? 'true' : 'false';
+        row.dataset.enabled = boolStr(enabled);
         row.dataset.comment = comment;
         setTextCell(row, 'cidr', cidrVal);
         setEnabledCell(row, enabled);
@@ -1332,7 +1343,7 @@
         const editBtnEl = row.querySelector('.js-blacklist-edit');
         if (editBtnEl) {
             editBtnEl.dataset.cidr = cidrVal;
-            editBtnEl.dataset.enabled = enabled ? 'true' : 'false';
+            editBtnEl.dataset.enabled = boolStr(enabled);
             editBtnEl.dataset.comment = comment;
         }
     }
@@ -2031,13 +2042,7 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.ruleId || "", row.dataset.ruleType || "", row.dataset.rulePattern || "", row.dataset.ruleComment || ""].join(" "),
-            // Highlight by stable col-id (order-independent).
-            highlightTerms: (row, terms) => {
-                ['type', 'id', 'pattern', 'comment'].forEach(id => {
-                    const cell = cellByColId(row, id);
-                    if (cell) highlightTextNodes(cell, terms);
-                });
-            }
+            highlightTerms: highlightColumns(['type', 'id', 'pattern', 'comment'])
         });
     }
 
@@ -2049,12 +2054,7 @@
             editRowClasses: ['edit-host-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.hostPattern || "", row.dataset.hostIps || "", row.dataset.hostComment || ""].join(" "),
-            highlightTerms: (row, terms) => {
-                ['pattern', 'ips', 'comment'].forEach(id => {
-                    const cell = cellByColId(row, id);
-                    if (cell) highlightTextNodes(cell, terms);
-                });
-            }
+            highlightTerms: highlightColumns(['pattern', 'ips', 'comment'])
         });
     }
 
@@ -2066,12 +2066,7 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.cidr || "", row.dataset.comment || ""].join(" "),
-            highlightTerms: (row, terms) => {
-                ['cidr', 'comment'].forEach(id => {
-                    const cell = cellByColId(row, id);
-                    if (cell) highlightTextNodes(cell, terms);
-                });
-            }
+            highlightTerms: highlightColumns(['cidr', 'comment'])
         });
     }
 
@@ -2083,12 +2078,7 @@
             editRowClasses: ['edit-row'],
             alwaysShowStaged: true,
             getSearchText: row => [row.dataset.qbId || "", row.dataset.qbCategory || "", row.dataset.qbPattern || "", row.dataset.qbComment || ""].join(" "),
-            highlightTerms: (row, terms) => {
-                ['category', 'id', 'pattern', 'comment'].forEach(id => {
-                    const cell = cellByColId(row, id);
-                    if (cell) highlightTextNodes(cell, terms);
-                });
-            }
+            highlightTerms: highlightColumns(['category', 'id', 'pattern', 'comment'])
         });
     }
 
@@ -2178,28 +2168,19 @@
         // old_pattern must always be the TRUE original pattern (never mutated across
         // repeated Edit+Stage cycles), since that's the identity the live
         // server-side store still knows this entry by until Apply actually runs.
-        const oldPatternInput = clone.querySelector('.edit-host-old-pattern');
+        const oldPatternInput = bindEditControl(clone, '.edit-host-old-pattern', formId);
         oldPatternInput.value = isStagedAdd ? pat : origPattern;
-        oldPatternInput.setAttribute('form', formId);
 
-        const patternInput = clone.querySelector('.edit-host-pattern');
+        const patternInput = bindEditControl(clone, '.edit-host-pattern', formId, 'Host pattern');
         patternInput.value = pat;
-        patternInput.setAttribute('form', formId);
-        patternInput.setAttribute('aria-label', 'Host pattern');
 
-        const ipsInput = clone.querySelector('.edit-host-ips');
+        const ipsInput = bindEditControl(clone, '.edit-host-ips', formId, 'Host IP addresses');
         ipsInput.value = ips;
-        ipsInput.setAttribute('form', formId);
-        ipsInput.setAttribute('aria-label', 'Host IP addresses');
 
-        const commentInput = clone.querySelector('.edit-comment');
-        commentInput.setAttribute('form', formId);
-        commentInput.setAttribute('aria-label', 'Comment');
+        const commentInput = bindEditControl(clone, '.edit-comment', formId, 'Comment');
         commentInput.value = comment;
 
-        const enabledCheck = clone.querySelector('.edit-host-enabled');
-        enabledCheck.setAttribute('form', formId);
-        enabledCheck.setAttribute('aria-label', 'Enabled');
+        const enabledCheck = bindEditControl(clone, '.edit-host-enabled', formId, 'Enabled');
         enabledCheck.checked = enabled;
 
         // 4. Save the new pattern and submit via AJAX
@@ -2215,7 +2196,7 @@
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a pattern the server doesn't know about yet.
-                mergeStagedAddFields(clientId, { pattern: newPattern, ips: newIPs, enabled: enabledChecked ? 'true' : 'false', comment: newComment });
+                mergeStagedAddFields(clientId, { pattern: newPattern, ips: newIPs, enabled: boolStr(enabledChecked), comment: newComment });
                 applyHostRowDisplay(row, newPattern, newIPs, enabledChecked, newComment);
                 row.classList.add('staged');
             } else {
@@ -2230,10 +2211,10 @@
                 // to it made a second Stage of an unchanged edit look like a no-op
                 // and silently revert it) and never the punycode identity origPattern.
                 const isNoOp = newPattern === origPatternDisplay.toLowerCase() && normalizeIPListString(newIPs) === normalizeIPListString(origIps) &&
-                    (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false') &&
+                    (boolStr(enabledChecked)) === (boolStr(origEnabled)) &&
                     newComment === origComment;
 
-                const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, enabled: enabledChecked ? 'true' : 'false', edit: '1', comment: newComment };
+                const fields = { old_pattern: origPattern, pattern: newPattern, ips: newIPs, enabled: boolStr(enabledChecked), edit: '1', comment: newComment };
                 const displayPattern = isNoOp ? origPatternDisplay : newPattern;
                 const displayIPs = isNoOp ? origIps : newIPs;
                 const displayEnabled = isNoOp ? origEnabled : enabledChecked;
@@ -2311,23 +2292,16 @@
         // old_cidr must always be the TRUE original CIDR (never mutated across
         // repeated Edit+Stage cycles), since that's the identity the live
         // server-side store still knows this entry by until Apply actually runs.
-        const oldCidrInput = clone.querySelector('.edit-blacklist-old-cidr');
+        const oldCidrInput = bindEditControl(clone, '.edit-blacklist-old-cidr', formId);
         oldCidrInput.value = isStagedAdd ? cidr : origCidr;
-        oldCidrInput.setAttribute('form', formId);
 
-        const cidrInput = clone.querySelector('.edit-blacklist-cidr');
+        const cidrInput = bindEditControl(clone, '.edit-blacklist-cidr', formId, 'Blacklisted IP or CIDR');
         cidrInput.value = cidr;
-        cidrInput.setAttribute('form', formId);
-        cidrInput.setAttribute('aria-label', 'Blacklisted IP or CIDR');
 
-        const commentInput = clone.querySelector('.edit-comment');
-        commentInput.setAttribute('form', formId);
-        commentInput.setAttribute('aria-label', 'Comment');
+        const commentInput = bindEditControl(clone, '.edit-comment', formId, 'Comment');
         commentInput.value = comment;
 
-        const enabledCheck = clone.querySelector('.edit-blacklist-enabled');
-        enabledCheck.setAttribute('form', formId);
-        enabledCheck.setAttribute('aria-label', 'Enabled');
+        const enabledCheck = bindEditControl(clone, '.edit-blacklist-enabled', formId, 'Enabled');
         enabledCheck.checked = enabled;
 
         // Save target CIDR signature and submit via AJAX
@@ -2342,7 +2316,7 @@
                 // This row hasn't been sent to the server yet: merge the edit into
                 // the still-pending Add entry instead of staging a separate Edit
                 // that would reference a CIDR the server doesn't know about yet.
-                mergeStagedAddFields(clientId, { cidr: newCidr, enabled: enabledChecked ? 'true' : 'false', comment: newComment });
+                mergeStagedAddFields(clientId, { cidr: newCidr, enabled: boolStr(enabledChecked), comment: newComment });
                 applyBlacklistRowDisplay(row, newCidr, enabledChecked, newComment);
                 row.classList.add('staged');
             } else {
@@ -2351,9 +2325,9 @@
                 // staged entry per Edit+Stage cycle, and detect a full round-trip
                 // back to the original value so we can drop the staged change.
                 const existingIdx = findStagedEntryIndex('/response-blacklist', f => f.action === 'edit' && f.old_cidr === origCidr);
-                const isNoOp = newCidr === origCidr && (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false') &&
+                const isNoOp = newCidr === origCidr && (boolStr(enabledChecked)) === (boolStr(origEnabled)) &&
                     newComment === origComment;
-                const fields = { old_cidr: origCidr, cidr: newCidr, enabled: enabledChecked ? 'true' : 'false', action: 'edit', comment: newComment };
+                const fields = { old_cidr: origCidr, cidr: newCidr, enabled: boolStr(enabledChecked), action: 'edit', comment: newComment };
                 const displayCidr = isNoOp ? origCidr : newCidr;
                 const displayEnabled = isNoOp ? origEnabled : enabledChecked;
                 const displayComment = isNoOp ? origComment : newComment;
@@ -3520,7 +3494,7 @@
                         // This row hasn't been sent to the server yet: merge the edit
                         // into the still-pending Add entry instead of staging a second,
                         // separate Edit that would reference a nonexistent rule ID.
-                        mergeStagedAddFields(clientId, { pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false', comment: newComment });
+                        mergeStagedAddFields(clientId, { pattern: newPattern, type: newType, enabled: boolStr(enabledChecked), comment: newComment });
                         applyRuleRowDisplay(row, newType, newPattern, enabledChecked, newComment);
                         row.classList.add('staged');
                     } else {
@@ -3531,9 +3505,9 @@
                         // staged change (and its banner-count contribution) entirely.
                         const existingIdx = findStagedEntryIndex('/rules', f => f.id === id && !f.delete);
                         const isNoOp = newType === origType && newPattern === origPattern &&
-                            (enabledChecked ? 'true' : 'false') === (origEnabled ? 'true' : 'false') &&
+                            (boolStr(enabledChecked)) === (boolStr(origEnabled)) &&
                             newComment === origComment;
-                        const fields = { id: id, pattern: newPattern, type: newType, enabled: enabledChecked ? 'true' : 'false', edit: '1', comment: newComment };
+                        const fields = { id: id, pattern: newPattern, type: newType, enabled: boolStr(enabledChecked), edit: '1', comment: newComment };
                         const displayType = isNoOp ? origType : newType;
                         const displayPattern = isNoOp ? origPattern : newPattern;
                         const displayEnabled = isNoOp ? origEnabled : enabledChecked;
@@ -3656,15 +3630,7 @@
         }); // end of 'click' listener
 
         // Bind Rules filters on boot safely inside DOMContentLoaded
-        const filterInput = document.getElementById('rulesFilter');
-        if (filterInput) {
-            filterInput.value = uiStorage.getItem('rulesTable_filter') || '';
-            filterInput.addEventListener('input', debounce(() => {
-                applyRulesFilter();
-            }, 120));
-            // Run IMMEDIATELY on boot load so the table stays filtered!
-            applyRulesFilter();
-        }
+        setupTableFilterInput('rulesFilter', 'rulesTable_filter', applyRulesFilter);
         // --- ADD RULE INTERCEPTOR ---
         const addForm = document.getElementById('addRuleForm');
         if (addForm) {
@@ -3689,7 +3655,7 @@
                     return;
                 }
 
-                const clientId = stageNewEntry('/rules', { pattern: pattern, type: type, enabled: enabled ? 'true' : 'false', comment: comment });
+                const clientId = stageNewEntry('/rules', { pattern: pattern, type: type, enabled: boolStr(enabled), comment: comment });
                 if (commentInput) commentInput.value = '';
 
                 const row = buildRuleRowElement(clientId, type, pattern, enabled, comment);
@@ -3794,7 +3760,7 @@
                     return;
                 }
 
-                const clientId = stageNewEntry('/query-blocklist', { pattern: pattern, category: category, enabled: enabled ? 'true' : 'false', comment: comment });
+                const clientId = stageNewEntry('/query-blocklist', { pattern: pattern, category: category, enabled: boolStr(enabled), comment: comment });
                 if (commentInput) commentInput.value = '';
 
                 const tbody = document.querySelector('#queryBlocklistTable tbody');
@@ -3813,15 +3779,7 @@
             });
         }
 
-        // Load filter value from persistent uiStorage on page load
-        const queryBlocklistFilterInput = document.getElementById('queryBlocklistFilter');
-        if (queryBlocklistFilterInput) {
-            queryBlocklistFilterInput.value = uiStorage.getItem('queryBlocklistTable_filter') || '';
-            queryBlocklistFilterInput.addEventListener('input', debounce(() => {
-                applyQueryBlocklistFilter();
-            }, 120));
-            applyQueryBlocklistFilter();
-        }
+        setupTableFilterInput('queryBlocklistFilter', 'queryBlocklistTable_filter', applyQueryBlocklistFilter);
 
         // ── Query Blocklist page: External Hosts-File Source search ──
         // Search itself is a plain server-rendered GET (see
@@ -4127,7 +4085,7 @@
                 return;
             }
 
-            const clientId = stageNewEntry('/hosts', { pattern: pattern, ips: ips, enabled: enabled ? 'true' : 'false', comment: comment });
+            const clientId = stageNewEntry('/hosts', { pattern: pattern, ips: ips, enabled: boolStr(enabled), comment: comment });
             if (commentInput) commentInput.value = '';
 
             const tbody = document.querySelector('#hostsTable tbody');
@@ -4154,15 +4112,7 @@
             updateTableBanner();
         });
 
-        // Load filter value from persistent uiStorage on page load
-        const hostsFilterInput = document.getElementById('hostsFilter');
-        if (hostsFilterInput) {
-            hostsFilterInput.value = uiStorage.getItem('hostsTable_filter') || '';
-            hostsFilterInput.addEventListener('input', debounce(() => {
-                applyHostsFilter();
-            }, 120));
-            applyHostsFilter();
-        }
+        setupTableFilterInput('hostsFilter', 'hostsTable_filter', applyHostsFilter);
 
         // ── Response-blacklist page ─
         document.querySelectorAll('.js-blacklist-edit').forEach(btn => {
@@ -4226,15 +4176,7 @@
             });
         });
 
-        // Load filter values from persistent uiStorage on load tracking configuration
-        const blacklistFilterInput = document.getElementById('blacklistFilter');
-        if (blacklistFilterInput) {
-            blacklistFilterInput.value = uiStorage.getItem('blacklistTable_filter') || '';
-            blacklistFilterInput.addEventListener('input', debounce(() => {
-                applyBlacklistFilter();
-            }, 120));
-            applyBlacklistFilter();
-        }
+        setupTableFilterInput('blacklistFilter', 'blacklistTable_filter', applyBlacklistFilter);
 
         // --- Existing "check for overlapping filters before add" validation ---
         document.getElementById('add-blacklist-form')?.addEventListener('submit', async function (e) {
@@ -4304,7 +4246,7 @@
                 return;
             }
 
-            const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue, enabled: enabled ? 'true' : 'false', comment: comment });
+            const clientId = stageNewEntry('/response-blacklist', { action: 'add', cidr: cidrValue, enabled: boolStr(enabled), comment: comment });
             if (commentInput) commentInput.value = '';
 
             const tbody = document.querySelector('#blacklistTable tbody');
@@ -4380,14 +4322,8 @@
                 }
             });
         }
-        // Bind event listener and restore saved state on page load
-        const configFilterInput = document.getElementById('configFilter');
-        if (configFilterInput) {
-            configFilterInput.value = uiStorage.getItem('configTable_filter') || '';
-            configFilterInput.addEventListener('input', debounce(applyConfigFilter, 120));
-            // Run immediately on page boot to apply the active filter
-            applyConfigFilter();
-        }
+
+        setupTableFilterInput('configFilter', 'configTable_filter', applyConfigFilter);
 
         // ── Stats page: Shutdown ───
         const shutdownForm = document.querySelector('.js-shutdown-form');
