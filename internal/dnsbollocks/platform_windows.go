@@ -990,12 +990,16 @@ type RuleEntry struct {
 // When you pass RuleEntry to slog.Any, slog runs this function instead of reflecting.
 // alternatively use SafeRuleAttr() helper
 func (r RuleEntry) LogValue() slog.Value {
-	return slog.GroupValue(
+	attrs := []slog.Attr{
 		slog.String("id", r.ID),
 		slog.String("pattern", r.Pattern),
 		slog.Bool("enabled", r.Enabled),
 		slog.Time("modified_at", r.ModifiedAt),
-	)
+	}
+	if r.Comment != "" {
+		attrs = append(attrs, slog.String("comment", r.Comment))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // BlacklistRecord pairs a parsed CIDR/IP network with whether it is
@@ -2899,6 +2903,32 @@ func optionalCommentField(fields map[string]string) (comment string, present boo
 		return "", true, normErr
 	}
 	return normalized, true, nil
+}
+
+// commentLogAttrs builds the slog attrs describing a rule/host/blacklist
+// comment for the success log lines of the add/edit paths.
+//
+//   - present: the request actually carried a "comment" value (see
+//     optionalCommentField); comment is then the new, already-validated value.
+//   - isEdit: the operation is an edit rather than an add.
+//
+// An add with an empty comment logs nothing (that's the overwhelmingly common
+// case and would just be noise). An edit that carried a comment logs it, even
+// if empty (meaning "cleared"). An edit that carried none logs
+// comment_unchanged=true, since the existing comment is preserved and isn't
+// known at that point.
+func commentLogAttrs(comment string, present, isEdit bool) []any {
+	switch {
+	case present:
+		if comment == "" && !isEdit {
+			return nil
+		}
+		return []any{slog.String("comment", comment)}
+	case isEdit:
+		return []any{slog.Bool("comment_unchanged", true)}
+	default:
+		return nil
+	}
 }
 
 // addOptionalCommentField copies the POSTed "comment" form value into fields
@@ -8676,6 +8706,7 @@ func (rs *RuleStore) AddRuleWithComment(typ, pattern string, enabled bool, comme
 	if wasIDN {
 		attrs = append(attrs, slog.String("pattern_idn", displayPattern))
 	}
+	attrs = append(attrs, commentLogAttrs(comment, true, false)...)
 	logger.Debug("Rule added", attrs...)
 	return id, nil
 }
@@ -8782,6 +8813,11 @@ func (rs *RuleStore) updateRule(id, newType, newPattern string, enabled bool, co
 	if oldIsIDN {
 		attrs = append(attrs, slog.String("old_pattern_idn", displayOld))
 	}
+	var loggedComment string
+	if comment != nil {
+		loggedComment = *comment
+	}
+	attrs = append(attrs, commentLogAttrs(loggedComment, comment != nil, true)...)
 
 	logger.Info("Rule updated", attrs...)
 	return oldType, oldPattern, nil
@@ -9624,12 +9660,7 @@ func withRuleRemovedAt(entries []RuleEntry, index int, logger *slog.Logger) []Ru
 
 // SafeRuleAttr explicitly maps a RuleEntry struct to a safe slog.Attr group.
 func SafeRuleAttr(key string, r RuleEntry) slog.Attr {
-	return slog.Group(key,
-		slog.String("id", r.ID),
-		slog.String("pattern", r.Pattern),
-		slog.Bool("enabled", r.Enabled),
-		slog.Time("modified_at", r.ModifiedAt),
-	)
+	return slog.Attr{Key: key, Value: r.LogValue()}
 }
 
 // generateUniqueRuleID generates a UUID not already present in an arbitrary rule map.
@@ -18043,13 +18074,16 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 		if oldPattern != patternNormalized {
 			invalidate(patternNormalized)
 		}
-		log.Info("Rule edited via WebUI/Batch",
+		editedAttrs := []any{
 			slog.String("id", id),
 			slog.String("type", typ),
 			slog.String("new_pattern", patternNormalized),
 			slog.String("new_displayPattern", displayPattern),
 			slog.Bool("enabled", enabledBool),
-			slog.String("old_pattern", oldPattern))
+			slog.String("old_pattern", oldPattern),
+		}
+		editedAttrs = append(editedAttrs, commentLogAttrs(comment, commentPresent, true)...)
+		log.Info("Rule edited via WebUI/Batch", editedAttrs...)
 	} else {
 		// --- ADD MODE ---
 		if id != "" {
@@ -18072,12 +18106,15 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 		}
 
 		invalidate(patternNormalized)
-		log.Info("Rule added via WebUI/Batch",
+		addedAttrs := []any{
 			slog.String("patternLowercased", patternNormalized),
 			slog.String("pattern_idn", displayPattern),
 			slog.String("type", typ),
 			slog.String("newID", newID),
-			slog.Bool("enabled", enabledBool))
+			slog.Bool("enabled", enabledBool),
+		}
+		addedAttrs = append(addedAttrs, commentLogAttrs(comment, commentPresent, false)...)
+		log.Info("Rule added via WebUI/Batch", addedAttrs...)
 	}
 	return http.StatusOK, nil
 }
@@ -18249,11 +18286,14 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 	// Always purge the new pattern so the local override takes immediate effect
 	// (e.g., clearing out previous NXDOMAINs or external IPs)
 	invalidate(patternLowercased) //doneFIXME: pattern here could be same as oldPattern, avoid purging twice?
-	log.Info("Successfully added/edited local host override via WebUI/Batch",
+	successAttrs := []any{
 		slog.String("pattern", patternLowercased),
 		slog.String("pattern_idn", displayPattern),
 		slog.Int("ip_count", len(netIPs)),
-		slog.Bool("enabled", enabledBool))
+		slog.Bool("enabled", enabledBool),
+	}
+	successAttrs = append(successAttrs, commentLogAttrs(comment, commentPresent, isEdit)...)
+	log.Info("Successfully added/edited local host override via WebUI/Batch", successAttrs...)
 	return http.StatusOK, nil
 }
 
@@ -18303,7 +18343,9 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 				if ui.blacklist.TryAddWithComment(n, enabledBool, comment) {
 					// Instantly evict cached entries that contain the newly blacklisted IP
 					invalidateBlacklist()
-					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()), slog.Bool("enabled", enabledBool))
+					addedAttrs := []any{slog.String("cidr", n.String()), slog.Bool("enabled", enabledBool)}
+					addedAttrs = append(addedAttrs, commentLogAttrs(comment, commentPresent, false)...)
+					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", addedAttrs...)
 					return http.StatusOK, nil
 				}
 				log.Warn("Failed to add IP/CIDR to blacklist: already exists", slog.String("cidr", n.String()))
@@ -18356,7 +18398,9 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 			return http.StatusConflict, editErr
 		}
 		invalidateBlacklist()
-		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()), slog.Bool("enabled", enabledBool))
+		editedAttrs := []any{slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()), slog.Bool("enabled", enabledBool)}
+		editedAttrs = append(editedAttrs, commentLogAttrs(comment, commentPresent, true)...)
+		log.Info("Successfully edited response blacklist entry via WebUI/Batch", editedAttrs...)
 		return http.StatusOK, nil
 	default:
 		log.Warn("Response blacklist handler received unknown action", slog.String("action", action))
@@ -19591,10 +19635,13 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate 
 		if oldPattern != patternNormalized {
 			invalidate(patternNormalized)
 		}
-		log.Info("Edited query-blocklist rule via WebUI/Batch",
+		editedAttrs := []any{
 			slog.String("id", id), slog.String("category", category),
 			slog.String("new_pattern", patternNormalized), slog.String("new_pattern_idn", displayPattern),
-			slog.String("old_pattern", oldPattern), slog.Bool("enabled", enabledBool))
+			slog.String("old_pattern", oldPattern), slog.Bool("enabled", enabledBool),
+		}
+		editedAttrs = append(editedAttrs, commentLogAttrs(comment, commentPresent, true)...)
+		log.Info("Edited query-blocklist rule via WebUI/Batch", editedAttrs...)
 		return http.StatusOK, nil
 	}
 
@@ -19613,9 +19660,12 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate 
 		return http.StatusConflict, err
 	}
 	invalidate(patternNormalized)
-	log.Info("Added query-blocklist rule via WebUI/Batch",
+	addedAttrs := []any{
 		slog.String("category", category), slog.String("pattern", patternNormalized),
-		slog.String("pattern_idn", displayPattern), slog.String("id", newID), slog.Bool("enabled", enabledBool))
+		slog.String("pattern_idn", displayPattern), slog.String("id", newID), slog.Bool("enabled", enabledBool),
+	}
+	addedAttrs = append(addedAttrs, commentLogAttrs(comment, commentPresent, false)...)
+	log.Info("Added query-blocklist rule via WebUI/Batch", addedAttrs...)
 	return http.StatusOK, nil
 }
 
