@@ -96,11 +96,15 @@ select {
 .form-inline-action2 { display: inline; margin-left: 0px; }
 
 /* Reusable column tokens */
+.col-8 { width: 8%; }
+.col-10 { width: 10%; }
 .col-12 { width: 12%; }
 .col-14 { width: 14%; }
 .col-15 { width: 15%; }
 .col-18 { width: 18%; }
 .col-20 { width: 20%; }
+.col-22 { width: 22%; }
+.col-25 { width: 25%; }
 .col-26 { width: 26%; }
 .col-30 { width: 30%; }
 .col-35 { width: 35%; }
@@ -727,4 +731,19 @@ th.col-draggable .col-resize-handle {
     clip: rect(0, 0, 0, 0) !important;
     white-space: nowrap !important;
     border: 0 !important;
+}
+
+/* Comment column: word-wraps inside a fixed-height box (40px content + 2x12px
+   cell padding = the locked 64px row height), scrolling instead of growing so
+   rows never change size (and an inline edit row never makes the table jump). */
+.comment-text {
+    max-height: 40px;
+    overflow-y: auto;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    font-size: 0.85em;
+    line-height: 1.25;
+    color: var(--text-secondary);
+    scrollbar-width: thin;
 }

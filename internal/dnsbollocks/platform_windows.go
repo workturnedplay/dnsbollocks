@@ -46,6 +46,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"fmt"
@@ -905,6 +906,8 @@ type LocalHostRule struct {
 	// add/edit, populating the WebUI's sortable "Last Modified" column. See
 	// HostFileEntry for its on-disk (hosts2ip.json) counterpart.
 	ModifiedAt time.Time
+	// Comment is an optional single-line operator note (see maxRuleCommentLength).
+	Comment string
 }
 
 // HostFileEntry is the on-disk representation of a single local host-override
@@ -916,6 +919,7 @@ type HostFileEntry struct {
 	IPs        []string  `json:"ips"`
 	Enabled    bool      `json:"enabled"`
 	ModifiedAt time.Time `json:"modified_at"`
+	Comment    string    `json:"comment,omitempty"`
 }
 
 // parseHostFileEntry decodes a single hosts2ip.json value in either the
@@ -950,6 +954,7 @@ func parseHostFileEntry(raw json.RawMessage) (entry HostFileEntry, migrated bool
 			IPs        []string  `json:"ips"`
 			Enabled    *bool     `json:"enabled"`
 			ModifiedAt time.Time `json:"modified_at"`
+			Comment    string    `json:"comment"`
 		}
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
@@ -961,7 +966,7 @@ func parseHostFileEntry(raw json.RawMessage) (entry HostFileEntry, migrated bool
 		if !enabledWasMissing {
 			enabled = *decoded.Enabled
 		}
-		return HostFileEntry{IPs: decoded.IPs, Enabled: enabled, ModifiedAt: decoded.ModifiedAt}, enabledWasMissing, nil
+		return HostFileEntry{IPs: decoded.IPs, Enabled: enabled, ModifiedAt: decoded.ModifiedAt, Comment: decoded.Comment}, enabledWasMissing, nil
 	default:
 		return HostFileEntry{}, false, fmt.Errorf("unrecognized JSON value shape (expected array or object), starts with %q", trimmed[0])
 	}
@@ -976,6 +981,9 @@ type RuleEntry struct {
 	// (including an enable/disable toggle via the /blocks quick-unblock
 	// flow), populating the WebUI's sortable "Last Modified" column.
 	ModifiedAt time.Time `json:"modified_at"`
+	// Comment is an optional, operator-supplied (or quick-action generated)
+	// single-line note, see maxRuleCommentLength.
+	Comment string `json:"comment,omitempty"`
 }
 
 // LogValue makes RuleEntry 100% immune to dangerous reflection data races.
@@ -1000,6 +1008,7 @@ type BlacklistRecord struct {
 	Net        *net.IPNet
 	Enabled    bool
 	ModifiedAt time.Time
+	Comment    string // optional single-line operator note (see maxRuleCommentLength)
 }
 
 // BlacklistFileEntry is the on-disk representation of a single response-IP
@@ -1008,6 +1017,7 @@ type BlacklistFileEntry struct {
 	CIDR       string    `json:"cidr"`
 	Enabled    bool      `json:"enabled"`
 	ModifiedAt time.Time `json:"modified_at"`
+	Comment    string    `json:"comment,omitempty"`
 }
 
 // BlacklistFileFormat represents the strict on-disk structure of response_blacklist.json
@@ -1044,6 +1054,7 @@ func parseBlacklistFileEntry(raw json.RawMessage) (entry BlacklistFileEntry, mig
 			CIDR       string    `json:"cidr"`
 			Enabled    *bool     `json:"enabled"`
 			ModifiedAt time.Time `json:"modified_at"`
+			Comment    string    `json:"comment"`
 		}
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.DisallowUnknownFields()
@@ -1055,7 +1066,7 @@ func parseBlacklistFileEntry(raw json.RawMessage) (entry BlacklistFileEntry, mig
 		if !enabledWasMissing {
 			enabled = *decoded.Enabled
 		}
-		return BlacklistFileEntry{CIDR: decoded.CIDR, Enabled: enabled, ModifiedAt: decoded.ModifiedAt}, enabledWasMissing, nil
+		return BlacklistFileEntry{CIDR: decoded.CIDR, Enabled: enabled, ModifiedAt: decoded.ModifiedAt, Comment: decoded.Comment}, enabledWasMissing, nil
 	default:
 		return BlacklistFileEntry{}, false, fmt.Errorf("unrecognized JSON value shape (expected string or object), starts with %q", trimmed[0])
 	}
@@ -1161,7 +1172,12 @@ func (s *Server) loadResponseBlacklist() error {
 			modifiedAt = time.Now()
 			shouldSave = true
 		}
-		parsed = append(parsed, BlacklistRecord{Net: n, Enabled: entry.Enabled, ModifiedAt: modifiedAt})
+		comment := repairRuleCommentForLoad(entry.Comment)
+		if comment != entry.Comment {
+			log.Warn("Repaired invalid comment of a response-blacklist entry", slog.String("cidr", entry.CIDR), slog.String("file", blacklistFileName))
+			shouldSave = true
+		}
+		parsed = append(parsed, BlacklistRecord{Net: n, Enabled: entry.Enabled, ModifiedAt: modifiedAt, Comment: comment})
 	}
 
 	// Optional: after parsing, clean up duplicates (just in case)
@@ -1219,7 +1235,7 @@ func (s *Server) saveResponseBlacklist() error {
 	records := s.blacklist.Snapshot()
 	entries := make([]BlacklistFileEntry, len(records))
 	for i, rec := range records {
-		entries[i] = BlacklistFileEntry{CIDR: rec.Net.String(), Enabled: rec.Enabled, ModifiedAt: rec.ModifiedAt}
+		entries[i] = BlacklistFileEntry{CIDR: rec.Net.String(), Enabled: rec.Enabled, ModifiedAt: rec.ModifiedAt, Comment: rec.Comment}
 	}
 	jsonFileContents := BlacklistFileFormat{
 		ResponseBlacklist: entries,
@@ -1476,7 +1492,15 @@ func (s *Server) loadLocalHosts() error {
 			continue
 		}
 
-		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs, Enabled: hostEntry.Enabled, ModifiedAt: modifiedAt})
+		comment := repairRuleCommentForLoad(hostEntry.Comment)
+		if comment != hostEntry.Comment {
+			log.Warn("Repaired invalid comment of a host override",
+				slog.String("pattern", normalizedPat),
+				slog.String("pattern_idn", idnEncoded))
+			changed++
+		}
+
+		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs, Enabled: hostEntry.Enabled, ModifiedAt: modifiedAt, Comment: comment})
 	}
 
 	if cfg.ExtraSafety && removed > 0 {
@@ -1707,6 +1731,11 @@ func (s *Server) loadRuleStoreFile(store *RuleStore, fileName, humanName string)
 				// format, mirroring the identical migration in
 				// loadLocalHosts/loadResponseBlacklist.
 				r.ModifiedAt = time.Now()
+				changed++
+			}
+			if repaired := repairRuleCommentForLoad(r.Comment); repaired != r.Comment {
+				log.Warn("Repaired invalid comment of a "+humanName+" rule", slog.String("id", r.ID))
+				r.Comment = repaired
 				changed++
 			}
 			//checks against all categories/types not just in 'typ'
@@ -2800,6 +2829,93 @@ func validateRulePattern(pattern string) error {
 		return errors.New("pattern contains illegal characters")
 	}
 	return nil
+}
+
+// maxRuleCommentLength bounds the free-text comment attached to a
+// whitelist/query-blocklist rule, local host override or response-blacklist
+// entry (counted in characters, not bytes).
+const maxRuleCommentLength = 1024
+
+// validateRuleComment returns a non-nil error if comment (already trimmed)
+// can't be stored: invalid UTF-8, too long, or containing control characters
+// (newlines included; comments are deliberately single-line so they can't
+// break the one-line-per-row WebUI tables or the log output).
+func validateRuleComment(comment string) error {
+	if !utf8.ValidString(comment) {
+		return errors.New("comment is not valid UTF-8")
+	}
+	if n := utf8.RuneCountInString(comment); n > maxRuleCommentLength {
+		return fmt.Errorf("comment is %d characters long, exceeding the maximum of %d", n, maxRuleCommentLength)
+	}
+	for _, r := range comment {
+		if unicode.IsControl(r) {
+			return errors.New("comment must not contain control characters (such as newlines)")
+		}
+	}
+	return nil
+}
+
+// normalizeRuleComment trims raw and strictly validates it; used for
+// operator input arriving via the WebUI.
+func normalizeRuleComment(raw string) (string, error) {
+	comment := strings.TrimSpace(raw)
+	if err := validateRuleComment(comment); err != nil {
+		return "", err
+	}
+	return comment, nil
+}
+
+// repairRuleCommentForLoad leniently fixes a comment read from a hand-edited
+// JSON file instead of rejecting the whole file: invalid UTF-8 is dropped,
+// control characters become spaces, and the result is trimmed and truncated
+// to maxRuleCommentLength characters. Callers compare the result with the
+// input to learn whether anything was repaired (and thus needs re-saving).
+func repairRuleCommentForLoad(raw string) string {
+	comment := strings.ToValidUTF8(raw, "")
+	comment = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, comment)
+	comment = strings.TrimSpace(comment)
+	if utf8.RuneCountInString(comment) > maxRuleCommentLength {
+		comment = strings.TrimSpace(string([]rune(comment)[:maxRuleCommentLength]))
+	}
+	return comment
+}
+
+// optionalCommentField extracts and validates the "comment" entry of a
+// WebUI/batch fields map. present=false means the key was absent, which for
+// an edit means "keep the existing comment"; present=true (even with an
+// empty value, which clears it) means "set it to comment".
+func optionalCommentField(fields map[string]string) (comment string, present bool, err error) {
+	raw, ok := fields["comment"]
+	if !ok {
+		return "", false, nil
+	}
+	normalized, normErr := normalizeRuleComment(raw)
+	if normErr != nil {
+		return "", true, normErr
+	}
+	return normalized, true, nil
+}
+
+// addOptionalCommentField copies the POSTed "comment" form value into fields
+// only if the form actually carried one, so a client that omits it (rather
+// than sending an empty value) never wipes an existing comment. Must be
+// called after the handler's r.FormValue calls (which parse the form).
+func addOptionalCommentField(r *http.Request, fields map[string]string) {
+	if _, ok := r.PostForm["comment"]; ok {
+		fields["comment"] = r.PostForm.Get("comment")
+	}
+}
+
+// quickActionComment builds the automatic comment stamped on a rule created
+// by one of the WebUI quick actions (/blocks, /allows), so hand-made rules
+// can later be told apart from click-made ones.
+func quickActionComment(verb, via string) string {
+	return fmt.Sprintf("%s via WebUI (%s) on %s", verb, via, time.Now().Format("2006-01-02 15:04:05"))
 }
 
 // PatternSyntaxEntry documents one wildcard token of the pattern language
@@ -7309,7 +7425,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 		records := ui.blacklist.Snapshot()
 		views := make([]BlacklistView, len(records))
 		for i, rec := range records {
-			views[i] = BlacklistView{Index: i, CIDR: rec.Net.String(), Enabled: rec.Enabled, ModifiedAtDisplay: formatModifiedAt(rec.ModifiedAt)}
+			views[i] = BlacklistView{Index: i, CIDR: rec.Net.String(), Enabled: rec.Enabled, Comment: rec.Comment, ModifiedAtDisplay: formatModifiedAt(rec.ModifiedAt)}
 		}
 		data := map[string]any{
 			"ResponseBlacklist": views,
@@ -7333,6 +7449,7 @@ func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Reque
 			"enabled":  r.FormValue("enabled"),
 		}
 
+		addOptionalCommentField(r, fields)
 		status, err := ui.processBlacklistChange(fields, ui.OnInvalidateBlacklist)
 		if err != nil {
 			//log.X lines are inside processBlacklistChange()
@@ -8527,9 +8644,16 @@ func (rs *RuleStore) CountAll() uint64 {
 	return countRules(current)
 }
 
-// AddRule adds a new rule and returns its generated ID.
-// Returns an error if a rule with the same pattern already exists for that type.
+// AddRule adds a new rule without a comment and returns its generated ID.
+// See AddRuleWithComment.
 func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Logger) (id string, err error) {
+	return rs.AddRuleWithComment(typ, pattern, enabled, "", logger)
+}
+
+// AddRuleWithComment adds a new rule carrying comment (already validated by
+// the caller, see normalizeRuleComment) and returns its generated ID.
+// Returns an error if a rule with the same pattern already exists for that type.
+func (rs *RuleStore) AddRuleWithComment(typ, pattern string, enabled bool, comment string, logger *slog.Logger) (id string, err error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -8540,15 +8664,13 @@ func (rs *RuleStore) AddRule(typ, pattern string, enabled bool, logger *slog.Log
 		}
 	}
 	id = generateUniqueRuleID(current, logger)
-	newRule := RuleEntry{ID: id, Pattern: pattern, Enabled: enabled, ModifiedAt: time.Now()}
+	newRule := RuleEntry{ID: id, Pattern: pattern, Enabled: enabled, Comment: comment, ModifiedAt: time.Now()}
 
 	next := cloneRuleMap(current)
 	next[typ] = withRulePrepended(next[typ], newRule, logger)
 	rs.rules.Store(&next)
 	rs.generation.Add(1)
 
-	//logger.Info("Rule added", slog.String("pattern", pattern), slog.String("type", typ),
-	//slog.String("id", id), slog.Bool("enabled", enabled))
 	displayPattern, wasIDN := punycodeDecodePatternForDisplay(pattern)
 	attrs := []any{slog.String("pattern", pattern), slog.String("type", typ), slog.String("id", id), slog.Bool("enabled", enabled)}
 	if wasIDN {
@@ -8582,9 +8704,22 @@ func (rs *RuleStore) DeleteRule(typ, id string, logger *slog.Logger) (pattern st
 	return "", fmt.Errorf("rule not found: id=%s type=%s", id, typ)
 }
 
-// UpdateRule finds the rule by ID anywhere in the store, updates it (possibly
-// changing its type), and returns the old type and old pattern for cache invalidation.
+// UpdateRule updates a rule like UpdateRuleWithComment but PRESERVES its
+// existing comment.
 func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, logger *slog.Logger) (oldType, oldPattern string, err error) {
+	return rs.updateRule(id, newType, newPattern, enabled, nil, logger)
+}
+
+// UpdateRuleWithComment updates a rule and sets its comment to comment (an
+// empty string clears it), atomically with the rest of the edit.
+func (rs *RuleStore) UpdateRuleWithComment(id, newType, newPattern string, enabled bool, comment string, logger *slog.Logger) (oldType, oldPattern string, err error) {
+	return rs.updateRule(id, newType, newPattern, enabled, &comment, logger)
+}
+
+// updateRule finds the rule by ID anywhere in the store, updates it (possibly
+// changing its type), and returns the old type and old pattern for cache
+// invalidation. A nil comment keeps the rule's existing comment.
+func (rs *RuleStore) updateRule(id, newType, newPattern string, enabled bool, comment *string, logger *slog.Logger) (oldType, oldPattern string, err error) {
 	if id == "" {
 		panic2(fmt.Sprintf("BUG: attempted to update a rule with empty id passed-in, rule with newType %q and newPattern %q", newType, newPattern))
 	}
@@ -8593,13 +8728,13 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 
 	current := *rs.rules.Load()
 
-	var foundType string
+	var foundType, oldComment string
 	var foundIndex int
 	found := false
 	for t, rules := range current {
 		for i, r := range rules {
 			if r.ID == id {
-				foundType, foundIndex, oldPattern, found = t, i, r.Pattern, true
+				foundType, foundIndex, oldPattern, oldComment, found = t, i, r.Pattern, r.Comment, true
 				break
 			}
 		}
@@ -8619,7 +8754,10 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	}
 
 	oldType = foundType
-	newRule := RuleEntry{ID: id, Pattern: newPattern, Enabled: enabled, ModifiedAt: time.Now()}
+	newRule := RuleEntry{ID: id, Pattern: newPattern, Enabled: enabled, Comment: oldComment, ModifiedAt: time.Now()}
+	if comment != nil {
+		newRule.Comment = *comment
+	}
 
 	next := cloneRuleMap(current)
 
@@ -8634,9 +8772,6 @@ func (rs *RuleStore) UpdateRule(id, newType, newPattern string, enabled bool, lo
 	rs.rules.Store(&next)
 	rs.generation.Add(1)
 
-	// logger.Info("Rule updated", slog.String("id", id),
-	// 	slog.String("new_pattern", newPattern), slog.Bool("enabled", enabled),
-	// 	slog.String("old_pattern", oldPattern))
 	displayNew, newIsIDN := punycodeDecodePatternForDisplay(newPattern)
 	displayOld, oldIsIDN := punycodeDecodePatternForDisplay(oldPattern)
 
@@ -8760,6 +8895,7 @@ func (hs *HostStore) Snapshot() []HostView {
 			PatternDisplay:    displayPattern,
 			IPsDisplay:        strings.Join(ips, ", "),
 			Enabled:           h.Enabled,
+			Comment:           h.Comment,
 			ModifiedAtDisplay: formatModifiedAt(h.ModifiedAt),
 			// ModifiedAtSort:    modifiedAtSortValue(h.ModifiedAt),
 		}
@@ -8781,7 +8917,7 @@ func (hs *HostStore) ToRawMap() map[string]HostFileEntry {
 		for _, ip := range rule.IPs {
 			ips = append(ips, ip.String())
 		}
-		raw[rule.Pattern] = HostFileEntry{IPs: ips, Enabled: rule.Enabled, ModifiedAt: rule.ModifiedAt}
+		raw[rule.Pattern] = HostFileEntry{IPs: ips, Enabled: rule.Enabled, ModifiedAt: rule.ModifiedAt, Comment: rule.Comment}
 	}
 	return raw
 }
@@ -8792,10 +8928,15 @@ func (hs *HostStore) AddHost(pattern string, ips []net.IP) error {
 }
 
 // AddHostWithEnabled mirrors AddHost but lets the caller specify the
-// enabled state explicitly (used by the WebUI's Add form, which lets the
-// operator add a host override already paused via the "Enabled" checkbox).
-// Returns an error if the pattern already exists.
+// enabled state explicitly. The new host gets no comment.
 func (hs *HostStore) AddHostWithEnabled(pattern string, ips []net.IP, enabled bool) error {
+	return hs.AddHostWithComment(pattern, ips, enabled, "")
+}
+
+// AddHostWithComment appends a new rule with the given enabled state and
+// comment (already validated by the caller). Returns an error if the
+// pattern already exists.
+func (hs *HostStore) AddHostWithComment(pattern string, ips []net.IP, enabled bool, comment string) error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 	for _, rule := range hs.hosts {
@@ -8803,21 +8944,27 @@ func (hs *HostStore) AddHostWithEnabled(pattern string, ips []net.IP, enabled bo
 			return fmt.Errorf("local host with pattern %q already exists", pattern)
 		}
 	}
-	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips, Enabled: enabled, ModifiedAt: time.Now()})
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: pattern, IPs: ips, Enabled: enabled, Comment: comment, ModifiedAt: time.Now()})
 	hs.generation.Add(1)
 	return nil
 }
 
-// EditHost replaces (old→new) with Enabled=true. Returns an error if the new
-// pattern already exists and is different from the old pattern.
-func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error {
-	return hs.EditHostWithEnabled(oldPattern, newPattern, ips, true)
+// EditHostWithEnabled replaces (old→new) like EditHostWithComment but
+// PRESERVES the entry's existing comment.
+func (hs *HostStore) EditHostWithEnabled(oldPattern, newPattern string, ips []net.IP, enabled bool) error {
+	return hs.editHost(oldPattern, newPattern, ips, enabled, nil)
 }
 
-// EditHostWithEnabled mirrors EditHost but lets the caller specify the
-// enabled state explicitly (used by the WebUI's Edit form, which preserves
-// or toggles the row's "Enabled" checkbox).
-func (hs *HostStore) EditHostWithEnabled(oldPattern, newPattern string, ips []net.IP, enabled bool) error {
+// EditHostWithComment replaces (old→new) and sets the comment to comment (an
+// empty string clears it), atomically with the rest of the edit.
+func (hs *HostStore) EditHostWithComment(oldPattern, newPattern string, ips []net.IP, enabled bool, comment string) error {
+	return hs.editHost(oldPattern, newPattern, ips, enabled, &comment)
+}
+
+// editHost implements the host edit. A nil comment keeps the old entry's
+// comment. Returns an error if the new pattern already exists and is
+// different from the old pattern.
+func (hs *HostStore) editHost(oldPattern, newPattern string, ips []net.IP, enabled bool, comment *string) error {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -8830,11 +8977,28 @@ func (hs *HostStore) EditHostWithEnabled(oldPattern, newPattern string, ips []ne
 		}
 	}
 
+	var newComment string
+	for _, rule := range hs.hosts {
+		if rule.Pattern == oldPattern {
+			newComment = rule.Comment
+			break
+		}
+	}
+	if comment != nil {
+		newComment = *comment
+	}
+
 	hs.hosts = deleteHostEntry(hs.hosts, oldPattern)
 	hs.hosts = deleteHostEntry(hs.hosts, newPattern) // safe eviction
-	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips, Enabled: enabled, ModifiedAt: time.Now()})
+	hs.hosts = append(hs.hosts, LocalHostRule{Pattern: newPattern, IPs: ips, Enabled: enabled, Comment: newComment, ModifiedAt: time.Now()})
 	hs.generation.Add(1)
 	return nil
+}
+
+// EditHost replaces (old→new) with Enabled=true. Returns an error if the new
+// pattern already exists and is different from the old pattern.
+func (hs *HostStore) EditHost(oldPattern, newPattern string, ips []net.IP) error {
+	return hs.EditHostWithEnabled(oldPattern, newPattern, ips, true)
 }
 
 // DeleteHost removes the rule with the given pattern. Returns true if found.
@@ -8924,22 +9088,6 @@ func (bs *BlacklistStore) TryAdd(n *net.IPNet) bool {
 	return bs.TryAddWithEnabled(n, true)
 }
 
-// TryAddWithEnabled mirrors TryAdd but lets the caller specify the enabled
-// state explicitly (used by the WebUI's Add form).
-func (bs *BlacklistStore) TryAddWithEnabled(n *net.IPNet, enabled bool) bool {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	for _, existing := range bs.records {
-		if existing.Net.String() == n.String() {
-			return false // Already exists
-		}
-	}
-	// Prepend so newly added entries show up first, mirroring RuleStore.AddRule's behavior.
-	bs.records = append([]BlacklistRecord{{Net: n, Enabled: enabled, ModifiedAt: time.Now()}}, bs.records...)
-	bs.generation.Add(1)
-	return true // Added successfully
-}
-
 // TryEdit replaces an existing CIDR entry (matched by its exact string form) with a new,
 // enabled one, moving the edited entry to the front of the list and refreshing its
 // ModifiedAt timestamp. Returns an error if oldCIDR isn't found, or if newNet's string
@@ -8948,9 +9096,43 @@ func (bs *BlacklistStore) TryEdit(oldCIDR string, newNet *net.IPNet) error {
 	return bs.TryEditWithEnabled(oldCIDR, newNet, true)
 }
 
-// TryEditWithEnabled mirrors TryEdit but lets the caller specify the enabled
-// state explicitly (used by the WebUI's Edit form).
+// TryAddWithEnabled mirrors TryAdd but lets the caller specify the enabled
+// state explicitly. The new entry gets no comment.
+func (bs *BlacklistStore) TryAddWithEnabled(n *net.IPNet, enabled bool) bool {
+	return bs.TryAddWithComment(n, enabled, "")
+}
+
+// TryAddWithComment adds the CIDR with the given enabled state and comment
+// (already validated by the caller) if not already present. Returns true if added.
+func (bs *BlacklistStore) TryAddWithComment(n *net.IPNet, enabled bool, comment string) bool {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	for _, existing := range bs.records {
+		if existing.Net.String() == n.String() {
+			return false // Already exists
+		}
+	}
+	// Prepend so newly added entries show up first, mirroring RuleStore.AddRule's behavior.
+	bs.records = append([]BlacklistRecord{{Net: n, Enabled: enabled, Comment: comment, ModifiedAt: time.Now()}}, bs.records...)
+	bs.generation.Add(1)
+	return true // Added successfully
+}
+
+// TryEditWithEnabled edits like TryEditWithComment but PRESERVES the
+// entry's existing comment.
 func (bs *BlacklistStore) TryEditWithEnabled(oldCIDR string, newNet *net.IPNet, enabled bool) error {
+	return bs.tryEdit(oldCIDR, newNet, enabled, nil)
+}
+
+// TryEditWithComment edits the entry and sets its comment to comment (an
+// empty string clears it), atomically with the rest of the edit.
+func (bs *BlacklistStore) TryEditWithComment(oldCIDR string, newNet *net.IPNet, enabled bool, comment string) error {
+	return bs.tryEdit(oldCIDR, newNet, enabled, &comment)
+}
+
+// tryEdit implements the blacklist edit. A nil comment keeps the old
+// entry's comment.
+func (bs *BlacklistStore) tryEdit(oldCIDR string, newNet *net.IPNet, enabled bool, comment *string) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -8974,8 +9156,13 @@ func (bs *BlacklistStore) TryEditWithEnabled(oldCIDR string, newNet *net.IPNet, 
 		}
 	}
 
+	newComment := bs.records[idx].Comment
+	if comment != nil {
+		newComment = *comment
+	}
+
 	bs.records = append(bs.records[:idx:idx], bs.records[idx+1:]...)
-	bs.records = append([]BlacklistRecord{{Net: newNet, Enabled: enabled, ModifiedAt: time.Now()}}, bs.records...)
+	bs.records = append([]BlacklistRecord{{Net: newNet, Enabled: enabled, Comment: newComment, ModifiedAt: time.Now()}}, bs.records...)
 	bs.generation.Add(1)
 	return nil
 }
@@ -9300,6 +9487,7 @@ type RuleView struct {
 	ID                string
 	Pattern           string
 	Enabled           bool
+	Comment           string
 	ModifiedAtDisplay string
 }
 
@@ -9356,6 +9544,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 				displayPattern, _ := punycodeDecodePatternForDisplay(rule.Pattern)
 				flatRules = append(flatRules, RuleView{
 					Type:              typ,
+					Comment:           rule.Comment,
 					ID:                rule.ID,
 					Pattern:           displayPattern,
 					Enabled:           rule.Enabled,
@@ -9394,6 +9583,7 @@ func (ui *AdminUI) rulesHandler(w http.ResponseWriter, r *http.Request) {
 			"enabled": r.FormValue("enabled"),
 		}
 
+		addOptionalCommentField(r, fields)
 		status, err := ui.processRuleChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			//log.X happens inside the process*Change() above
@@ -9523,6 +9713,7 @@ type BlacklistView struct {
 	Index             int
 	CIDR              string
 	Enabled           bool
+	Comment           string
 	ModifiedAtDisplay string
 }
 
@@ -9532,6 +9723,7 @@ type HostView struct {
 	PatternDisplay    string // Unicode form for display/editing (same as Pattern when not an IDN)
 	IPsDisplay        string // Pre-joined "1.1.1.1, 2.2.2.2"
 	Enabled           bool   // whether this override is currently active (see LocalHostRule.Enabled)
+	Comment           string // optional single-line operator note
 	ModifiedAtDisplay string // Human-readable last-modified timestamp (see formatModifiedAt)
 	// ModifiedAtSort    string // Unix-nanoseconds sort key for the "Last Modified" column (see modifiedAtSortValue)
 }
@@ -9675,6 +9867,7 @@ func (ui *AdminUI) hostsHandler(w http.ResponseWriter, r *http.Request) {
 			"enabled":     r.FormValue("enabled"),
 		}
 
+		addOptionalCommentField(r, fields)
 		status, err := ui.processHostChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			http.Error(w, err.Error(), status)
@@ -10445,7 +10638,7 @@ func (ui *AdminUI) processQueryBlocklistQuickAction(action, domainLowercased, di
 		case found:
 			msg = fmt.Sprintf("%s is already blocked by an existing local query-blocklist rule.", displayDomain)
 		default:
-			if _, addErr := ui.queryBlocklistStore.AddRule(queryBlockCategoryBlock, domainLowercased, true, log); addErr != nil {
+			if _, addErr := ui.queryBlocklistStore.AddRuleWithComment(queryBlockCategoryBlock, domainLowercased, true, quickActionComment("quick-blocked", "Recent Allows page"), log); addErr != nil {
 				log.Warn("Failed quick block via WebUI (query-blocklist local block)",
 					wincoe.SafeErr(addErr),
 					slog.String("domainLowercased", domainLowercased), slog.String("displayDomain", displayDomain))
@@ -17799,6 +17992,12 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 		return http.StatusBadRequest, errors.New("Invalid pattern: " + err.Error())
 	}
 
+	comment, commentPresent, commentErr := optionalCommentField(fields)
+	if commentErr != nil {
+		log.Warn("Failed to add/edit rule: invalid comment", wincoe.SafeErr(commentErr))
+		return http.StatusBadRequest, commentErr
+	}
+
 	if isEdit {
 		// --- EDIT MODE ---
 		if id == "" {
@@ -17810,7 +18009,13 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 			log.Warn("Failed to add/edit rule: id contains illegal characters", slog.String("id", id))
 			return http.StatusBadRequest, errors.New("id contains illegal characters")
 		}
-		_, oldPattern, err := ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
+		var oldPattern string
+		var err error
+		if commentPresent {
+			_, oldPattern, err = ui.ruleStore.UpdateRuleWithComment(id, typ, patternNormalized, enabledBool, comment, log)
+		} else {
+			_, oldPattern, err = ui.ruleStore.UpdateRule(id, typ, patternNormalized, enabledBool, log)
+		}
 		if err != nil {
 			displayOldPattern, oldWasIDN := punycodeDecodePatternForDisplay(oldPattern)
 			attrs := []any{
@@ -17851,7 +18056,7 @@ func (ui *AdminUI) processRuleChange(fields map[string]string, invalidate func(p
 			log.Warn("Failed to add rule: id was unexpectedly present without the edit flag", slog.String("id", id))
 			return http.StatusBadRequest, errors.New("id must not be set when adding a new rule")
 		}
-		newID, err := ui.ruleStore.AddRule(typ, patternNormalized, enabledBool, log)
+		newID, err := ui.ruleStore.AddRuleWithComment(typ, patternNormalized, enabledBool, comment, log)
 		if err != nil {
 			log.Warn("Failed to add rule",
 				wincoe.SafeErr(err),
@@ -18006,13 +18211,22 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 		return http.StatusBadRequest, errors.New("at least one valid IP required")
 	}
 
+	comment, commentPresent, commentErr := optionalCommentField(fields)
+	if commentErr != nil {
+		log.Warn("Failed to add/edit local host: invalid comment", slog.String("pattern", patternLowercased), wincoe.SafeErr(commentErr))
+		return http.StatusBadRequest, commentErr
+	}
+
 	var err error
 	if isEdit {
-		// NOW CATCHING THE ERROR:
-		err = ui.hostStore.EditHostWithEnabled(oldPatternLowercased, patternLowercased, netIPs, enabledBool)
+		if commentPresent {
+			err = ui.hostStore.EditHostWithComment(oldPatternLowercased, patternLowercased, netIPs, enabledBool, comment)
+		} else {
+			err = ui.hostStore.EditHostWithEnabled(oldPatternLowercased, patternLowercased, netIPs, enabledBool)
+		}
 	} else {
 		//it's Add (Delete was handled above)
-		err = ui.hostStore.AddHostWithEnabled(patternLowercased, netIPs, enabledBool)
+		err = ui.hostStore.AddHostWithComment(patternLowercased, netIPs, enabledBool, comment)
 	}
 
 	if err != nil {
@@ -18049,6 +18263,12 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 	enabledStr := fields["enabled"]
 	enabledBool := enabledStr == "on" || enabledStr == "true" || enabledStr == "1"
 
+	comment, commentPresent, commentErr := optionalCommentField(fields)
+	if commentErr != nil {
+		log.Warn("Failed to process blacklist change: invalid comment", slog.String("action", action), wincoe.SafeErr(commentErr))
+		return http.StatusBadRequest, commentErr
+	}
+
 	switch action { //doneFIXME: could use tagged switch on action QF1003 default
 	case "delete":
 		cidrStr := strings.TrimSpace(fields["cidr"])
@@ -18080,7 +18300,7 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 			}
 			if n != nil {
 				// Using the clean add helper method with natural defer unlock
-				if ui.blacklist.TryAddWithEnabled(n, enabledBool) {
+				if ui.blacklist.TryAddWithComment(n, enabledBool, comment) {
 					// Instantly evict cached entries that contain the newly blacklisted IP
 					invalidateBlacklist()
 					log.Info("Successfully added IP/CIDR to response blacklist via WebUI/Batch", slog.String("cidr", n.String()), slog.Bool("enabled", enabledBool))
@@ -18123,11 +18343,17 @@ func (ui *AdminUI) processBlacklistChange(fields map[string]string, invalidateBl
 		}
 		// 1. Attempt to update the rule list (Source of Truth) first
 
-		if err := ui.blacklist.TryEditWithEnabled(oldCIDR, n, enabledBool); err != nil {
-			log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(err),
+		var editErr error
+		if commentPresent {
+			editErr = ui.blacklist.TryEditWithComment(oldCIDR, n, enabledBool, comment)
+		} else {
+			editErr = ui.blacklist.TryEditWithEnabled(oldCIDR, n, enabledBool)
+		}
+		if editErr != nil {
+			log.Warn("Failed to edit blacklist entry", wincoe.SafeErr(editErr),
 				slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()))
 
-			return http.StatusConflict, err
+			return http.StatusConflict, editErr
 		}
 		invalidateBlacklist()
 		log.Info("Successfully edited response blacklist entry via WebUI/Batch", slog.String("old_cidr", oldCIDR), slog.String("new_cidr", n.String()), slog.Bool("enabled", enabledBool))
@@ -18990,6 +19216,7 @@ type QueryBlockRuleView struct {
 	ID                string
 	Pattern           string
 	Enabled           bool
+	Comment           string
 	ModifiedAtDisplay string
 }
 
@@ -19127,6 +19354,7 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 				displayPattern, _ := punycodeDecodePatternForDisplay(rule.Pattern)
 				views = append(views, QueryBlockRuleView{
 					Category:          category,
+					Comment:           rule.Comment,
 					ID:                rule.ID,
 					Pattern:           displayPattern,
 					Enabled:           rule.Enabled,
@@ -19205,6 +19433,7 @@ func (ui *AdminUI) queryBlocklistHandler(w http.ResponseWriter, r *http.Request)
 			"enabled":  r.FormValue("enabled"),
 		}
 
+		addOptionalCommentField(r, fields)
 		status, err := ui.processQueryBlockChange(fields, ui.OnInvalidatePattern)
 		if err != nil {
 			http.Error(w, err.Error(), status)
@@ -19327,6 +19556,12 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate 
 		return http.StatusBadRequest, fmt.Errorf("invalid pattern: %w", err)
 	}
 
+	comment, commentPresent, commentErr := optionalCommentField(fields)
+	if commentErr != nil {
+		log.Warn("Failed to add/edit query-blocklist rule: invalid comment", wincoe.SafeErr(commentErr))
+		return http.StatusBadRequest, commentErr
+	}
+
 	if isEdit {
 		if id == "" {
 			log.Warn("Failed to edit query-blocklist rule: edit flag set but id is empty")
@@ -19336,7 +19571,13 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate 
 			log.Warn("Failed to edit query-blocklist rule: id contains illegal characters", slog.String("id", id))
 			return http.StatusBadRequest, errors.New("id contains illegal characters")
 		}
-		_, oldPattern, err := ui.queryBlocklistStore.UpdateRule(id, category, patternNormalized, enabledBool, log)
+		var oldPattern string
+		var err error
+		if commentPresent {
+			_, oldPattern, err = ui.queryBlocklistStore.UpdateRuleWithComment(id, category, patternNormalized, enabledBool, comment, log)
+		} else {
+			_, oldPattern, err = ui.queryBlocklistStore.UpdateRule(id, category, patternNormalized, enabledBool, log)
+		}
 		if err != nil {
 			log.Warn("Failed to edit query-blocklist rule", wincoe.SafeErr(err),
 				slog.String("id", id), slog.String("category", category),
@@ -19362,7 +19603,7 @@ func (ui *AdminUI) processQueryBlockChange(fields map[string]string, invalidate 
 		log.Warn("Failed to add query-blocklist rule: id was unexpectedly present without the edit flag", slog.String("id", id))
 		return http.StatusBadRequest, errors.New("id must not be set when adding a new rule")
 	}
-	newID, err := ui.queryBlocklistStore.AddRule(category, patternNormalized, enabledBool, log)
+	newID, err := ui.queryBlocklistStore.AddRuleWithComment(category, patternNormalized, enabledBool, comment, log)
 	if err != nil {
 		log.Warn("Failed to add query-blocklist rule", wincoe.SafeErr(err),
 			slog.String("category", category), slog.String("pattern", patternNormalized), slog.String("pattern_idn", displayPattern))
@@ -19473,7 +19714,7 @@ func quickToggleExactRule(store *RuleStore, typ, pattern, displayPattern string,
 		case found:
 			return fmt.Sprintf("Rule for %s (%s) is already active (%s).", displayPattern, typ, thingLabel), nil
 		}
-		newID, addErr := store.AddRule(typ, pattern, true, log)
+		newID, addErr := store.AddRuleWithComment(typ, pattern, true, quickActionComment("quick-unblocked", thingLabel), log)
 		if addErr != nil {
 			return "", fmt.Errorf("quickToggleExactRule: AddRule unexpectedly failed for a pattern just confirmed absent (type=%q pattern=%q thing=%q): %w", typ, pattern, thingLabel, addErr)
 		}
