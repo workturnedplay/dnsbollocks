@@ -11605,6 +11605,7 @@ func (s *Server) watchKeys(reloadFn func() error, exitFn func(code int)) {
 						slog.String("description", desc),
 					)
 				}
+				log2.Info("Alt+V → done dumped (above)", slog.String("version", GetVersion())) // version is here once again to avoid having to scroll up just to see which version it is running!
 			} //switch
 		} //alt+
 
