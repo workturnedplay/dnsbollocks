@@ -1005,3 +1005,29 @@ func TestRecoverAndFlushLogs_NoPanicIsNoOp(t *testing.T) {
 		t.Error("flushLogs should not be called when there is no panic")
 	}
 }
+
+func TestEffectClass(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"rule active allows", RuleView{Enabled: true}.EffectClass(), effectClassAllow},
+		{"rule paused blocks", RuleView{Enabled: false}.EffectClass(), effectClassBlock},
+		{"host active allows", HostView{Enabled: true}.EffectClass(), effectClassAllow},
+		{"host paused blocks", HostView{Enabled: false}.EffectClass(), effectClassBlock},
+		{"blacklist active blocks", BlacklistView{Enabled: true}.EffectClass(), effectClassBlock},
+		{"blacklist paused allows", BlacklistView{Enabled: false}.EffectClass(), effectClassAllow},
+		{"qb block active blocks", QueryBlockRuleView{Category: queryBlockCategoryBlock, Enabled: true}.EffectClass(), effectClassBlock},
+		{"qb block paused allows", QueryBlockRuleView{Category: queryBlockCategoryBlock, Enabled: false}.EffectClass(), effectClassAllow},
+		{"qb except active allows", QueryBlockRuleView{Category: queryBlockCategoryExcept, Enabled: true}.EffectClass(), effectClassAllow},
+		{"qb except paused blocks", QueryBlockRuleView{Category: queryBlockCategoryExcept, Enabled: false}.EffectClass(), effectClassBlock},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}

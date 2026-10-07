@@ -9521,6 +9521,42 @@ func formatModifiedAt(t time.Time) string {
 	// return t.UTC().Format("2006-01-02 15:04:05.000000000") //timezone independent but also off by hours!
 }
 
+// CSS classes (see style.css, and effectClassFor in app.js which must stay in
+// sync) used to colour a table row's cells by what the entry currently DOES to
+// matching queries/IPs: green = lets through, red = blocks.
+const (
+	effectClassAllow = "effect-allow"
+	effectClassBlock = "effect-block"
+)
+
+// effectClass returns the CSS class describing an entry's current effect.
+// blocksWhileActive is the entry's polarity (true: blocks while enabled, e.g.
+// a query-blocklist "block" rule or a response-blacklist entry; false: allows
+// while enabled, e.g. a whitelist rule, local host override, or "except"
+// rule). Pausing an entry inverts its effect: a paused allow-entry no longer
+// allows (so effectively blocks) and a paused block-entry no longer blocks.
+func effectClass(blocksWhileActive, enabled bool) string {
+	if blocksWhileActive == enabled {
+		return effectClassBlock
+	}
+	return effectClassAllow
+}
+
+// EffectClass is the CSS class for this whitelist rule's colour-coded cells.
+func (v RuleView) EffectClass() string { return effectClass(false, v.Enabled) }
+
+// EffectClass is the CSS class for this local host override's colour-coded cells.
+func (v HostView) EffectClass() string { return effectClass(false, v.Enabled) }
+
+// EffectClass is the CSS class for this response-blacklist entry's colour-coded cells.
+func (v BlacklistView) EffectClass() string { return effectClass(true, v.Enabled) }
+
+// EffectClass is the CSS class for this query-blocklist rule's colour-coded
+// cells: "block" rules block while active, "except" rules allow while active.
+func (v QueryBlockRuleView) EffectClass() string {
+	return effectClass(v.Category == queryBlockCategoryBlock, v.Enabled)
+}
+
 type RuleView struct {
 	Type              string
 	ID                string

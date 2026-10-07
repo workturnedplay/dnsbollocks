@@ -558,8 +558,19 @@ a.btn-cancel {
     cursor: pointer;
 }
 
-.tag-enabled {
+/* Colour-coding by what an entry currently DOES (see effectClass in Go and
+   effectClassFor in app.js, which must stay in sync): green = lets through,
+   red = blocks. Applied to the <td> of the type/category, pattern and
+   Enabled cells of the Rules/Hosts/Response-blacklist/Query-blocklist tables. */
+.effect-allow {
     color: var(--success-text);
+}
+
+.effect-block {
+    color: var(--danger-text);
+}
+
+.tag-state {
     font-weight: bold;
 }
 

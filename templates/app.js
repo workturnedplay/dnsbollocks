@@ -144,6 +144,46 @@
     // data-* attributes carry it.
     const boolStr = b => (b ? 'true' : 'false');
 
+    // --- Effect colouring (must stay in sync with effectClass in Go) ---
+    // polarity is what an entry does while ENABLED: 'allow' (whitelist rule,
+    // local host, query-blocklist "except") or 'block' (response blacklist,
+    // query-blocklist "block"). Pausing an entry inverts its effect.
+    const EFFECT_ALLOW = 'effect-allow';
+    const EFFECT_BLOCK = 'effect-block';
+
+    function effectClassFor(polarity, enabled) {
+        const allowing = (polarity === 'allow') === enabled;
+        return allowing ? EFFECT_ALLOW : EFFECT_BLOCK;
+    }
+
+    // applyRowEffect (re)colours the given columns of a row (looked up by stable
+    // col-id, so it survives column reordering) for the given polarity/state.
+    function applyRowEffect(row, colIds, polarity, enabled) {
+        const cls = effectClassFor(polarity, enabled);
+        colIds.forEach(colId => {
+            const cell = cellByColId(row, colId);
+            if (!cell) return;
+            cell.classList.remove(EFFECT_ALLOW, EFFECT_BLOCK);
+            cell.classList.add(cls);
+        });
+    }
+
+    function applyRuleRowEffect(row, enabled) {
+        applyRowEffect(row, ['type', 'pattern', 'enabled'], 'allow', enabled);
+    }
+
+    function applyHostRowEffect(row, enabled) {
+        applyRowEffect(row, ['pattern', 'enabled'], 'allow', enabled);
+    }
+
+    function applyBlacklistRowEffect(row, enabled) {
+        applyRowEffect(row, ['cidr', 'enabled'], 'block', enabled);
+    }
+
+    function applyQueryBlockRowEffect(row, category, enabled) {
+        applyRowEffect(row, ['category', 'pattern', 'enabled'], category === 'block' ? 'block' : 'allow', enabled);
+    }
+
     // bindEditControl looks up a control inside the cloned inline-edit
     // template, associates it with the edit <form> via the HTML5 `form`
     // attribute (required because the controls live in other <td>s, outside
@@ -845,7 +885,7 @@
     function fillEnabledCell(cell, enabled) {
         cell.textContent = '';
         const span = document.createElement('span');
-        span.className = enabled ? 'tag-enabled' : 'tag-disabled';
+        span.className = 'tag-state'; // colour comes from the cell's effect class
         span.textContent = enabled ? 'Active' : 'Paused';
         cell.appendChild(span);
     }
@@ -1026,6 +1066,7 @@
         actionsTd.appendChild(delBtn);
         row.appendChild(actionsTd);
 
+        applyRuleRowEffect(row, enabled);
         return row;
     } // end of buildRuleRowElement
 
@@ -1042,6 +1083,7 @@
         setTextCell(row, 'pattern', pattern);
         setEnabledCell(row, enabled);
         setCommentCell(row, comment);
+        applyRuleRowEffect(row, enabled);
     }
 
     // buildQueryBlockRowElement creates a <tr> for a staged (not yet applied) new
@@ -1082,6 +1124,7 @@
                 updateTableBanner();
             },
         }));
+        applyQueryBlockRowEffect(row, category, enabled);
         return row;
     } // end of buildQueryBlockRowElement
 
@@ -1097,6 +1140,7 @@
         setTextCell(row, 'pattern', pattern);
         setEnabledCell(row, enabled);
         setCommentCell(row, comment);
+        applyQueryBlockRowEffect(row, category, enabled);
 
         const editBtnEl = row.querySelector('.js-qb-edit');
         if (editBtnEl) {
@@ -1259,6 +1303,7 @@
                 updateTableBanner();
             },
         }));
+        applyHostRowEffect(row, enabled);
         return row;
     } // end of buildHostRowElement
 
@@ -1280,6 +1325,7 @@
         setTextCell(row, 'ips', ips);
         setEnabledCell(row, enabled);
         setCommentCell(row, comment);
+        applyHostRowEffect(row, enabled);
 
         const editBtnEl = row.querySelector('.js-host-edit');
         if (editBtnEl) {
@@ -1327,6 +1373,7 @@
                 updateTableBanner();
             },
         }));
+        applyBlacklistRowEffect(row, enabled);
         return row;
     } //end of buildBlacklistRowElement
 
@@ -1339,6 +1386,7 @@
         setTextCell(row, 'cidr', cidrVal);
         setEnabledCell(row, enabled);
         setCommentCell(row, comment);
+        applyBlacklistRowEffect(row, enabled);
 
         const editBtnEl = row.querySelector('.js-blacklist-edit');
         if (editBtnEl) {
