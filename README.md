@@ -143,6 +143,8 @@ put it in `c:\winlibs\` and make sure its in `PATH` like `c:\winlibs\mingw64\bin
 
 (`mingwvars.bat` doesn't need to be ran at all)
 
+After making any changes run `testwrace.bat` to see that none of the tests fail. Only then `buildwrace.bat` after!  
+
 ## License
 
 Apache License 2.0
