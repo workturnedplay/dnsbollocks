@@ -3338,10 +3338,103 @@
         });
     }
 
+    // --- Copy-to-clipboard buttons (.js-copy-btn, text taken from data-copy-text) ---
+    const COPY_FEEDBACK_MS = 1500;
+    const copyFeedbackTimers = new WeakMap();
+
+    // legacyCopyTextToClipboard is the fallback for contexts where the async
+    // Clipboard API is unavailable (e.g. plain HTTP on a non-loopback address).
+    // It never throws; returns whether the copy command reported success.
+    function legacyCopyTextToClipboard(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.className = 'visually-hidden'; // no inline styles allowed (strict CSP)
+        ta.setAttribute('readonly', '');
+        ta.setAttribute('aria-hidden', 'true');
+        const previouslyFocused = document.activeElement;
+        document.body.appendChild(ta);
+        let ok = false;
+        try {
+            ta.select();
+            ta.setSelectionRange(0, text.length);
+            ok = document.execCommand('copy');
+        } catch (err) {
+            console.warn('Legacy clipboard copy failed:', err);
+        } finally {
+            ta.remove();
+            if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+        }
+        return ok;
+    }
+
+    // copyTextToClipboard tries the async Clipboard API first, then the legacy
+    // path. Never rejects; resolves to whether the text was copied.
+    async function copyTextToClipboard(text) {
+        if (window.isSecureContext && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch (err) {
+                console.warn('navigator.clipboard.writeText failed; trying the legacy fallback:', err);
+            }
+        }
+        return legacyCopyTextToClipboard(text);
+    }
+
+    function showCopyFeedback(btn, ok) {
+        if (btn.dataset.copyOrigLabel === undefined) {
+            btn.dataset.copyOrigLabel = btn.textContent;
+        }
+        const pending = copyFeedbackTimers.get(btn);
+        if (pending !== undefined) window.clearTimeout(pending);
+
+        btn.textContent = ok ? '\u2713 Copied' : '\u2717 Copy failed';
+        btn.classList.toggle('btn-copy-ok', ok);
+        btn.classList.toggle('btn-copy-failed', !ok);
+
+        copyFeedbackTimers.set(btn, window.setTimeout(() => {
+            btn.textContent = btn.dataset.copyOrigLabel;
+            btn.classList.remove('btn-copy-ok', 'btn-copy-failed');
+            copyFeedbackTimers.delete(btn);
+        }, COPY_FEEDBACK_MS));
+    }
+
+    // setupCopyButtons wires ONE delegated handler for every .js-copy-btn on the
+    // page (/blocks, /allows, and the external hosts-file search results), so
+    // buttons need no per-element binding. Deliberately uses its own class, not
+    // .btn-edit/.btn-del, so the table-staging click delegation never sees it.
+    function setupCopyButtons() {
+        document.addEventListener('click', function (e) {
+            const target = e.target instanceof Element ? e.target : null;
+            const btn = target ? target.closest('.js-copy-btn') : null;
+            if (!btn) return;
+            e.preventDefault();
+
+            const text = btn.dataset.copyText || '';
+            if (text === '') {
+                console.error('js-copy-btn: missing/empty data-copy-text');
+                showCopyFeedback(btn, false);
+                return;
+            }
+
+            copyTextToClipboard(text).then(ok => {
+                showCopyFeedback(btn, ok);
+                if (!ok) {
+                    // Last resort: show the text preselected so Ctrl+C works.
+                    window.prompt('Automatic copy failed. Press Ctrl+C to copy:', text);
+                }
+            }).catch(err => {
+                console.error('Unexpected error while copying to the clipboard:', err);
+                showCopyFeedback(btn, false);
+            });
+        });
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function () {
 
         setupRememberedDetails();
+        setupCopyButtons();
 
         // Consolidated Keyboard Handler ensuring typing and Escape contexts operate precisely
         document.addEventListener('keydown', function (e) {

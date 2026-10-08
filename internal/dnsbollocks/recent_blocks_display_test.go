@@ -222,3 +222,45 @@ func TestBlocksHandler_RendersTimestampAndDimClass(t *testing.T) {
 		t.Errorf("want exactly 1 dimmed entry (the AAAA one), got %d", n)
 	}
 }
+
+// assertCopyButtonsRendered checks that exactly len(wantTexts) copy buttons
+// were rendered and that each one carries its host in data-copy-text.
+func assertCopyButtonsRendered(t *testing.T, body string, wantTexts ...string) {
+	t.Helper()
+	if n := strings.Count(body, `class="btn-copy js-copy-btn"`); n != len(wantTexts) {
+		t.Errorf("want %d copy buttons, got %d", len(wantTexts), n)
+	}
+	for _, text := range wantTexts {
+		if !strings.Contains(body, `data-copy-text="`+text+`"`) {
+			t.Errorf("missing copy button carrying data-copy-text=%q", text)
+		}
+	}
+}
+
+func TestBlocksHandler_RendersCopyButtonPerEntry(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	ui.uiTemplates = uiTemplates0
+	ui.recentBlocks.Record("plain.example.com", "A", 10)
+	ui.recentBlocks.Record("xn--caf-dma.com", "A", 10) // IDN: the Unicode display form is what gets copied
+
+	ui.blocksHandler(rec, httptest.NewRequest(http.MethodGet, "/blocks", http.NoBody))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertCopyButtonsRendered(t, rec.Body.String(), "plain.example.com", "café.com")
+}
+
+func TestAllowsHandler_RendersCopyButtonPerEntry(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	ui.uiTemplates = uiTemplates0
+	ui.recentAllowed = newRecentBlocksTracker()
+	ui.recentAllowed.Record("allowed.example.com", "A", 10)
+
+	ui.allowsHandler(rec, httptest.NewRequest(http.MethodGet, "/allows", http.NoBody))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertCopyButtonsRendered(t, rec.Body.String(), "allowed.example.com")
+}

@@ -884,6 +884,23 @@ tr.edit-row td.edit-id-display {
     white-space: nowrap;
 }
 
+/* Small inline "copy host to clipboard" button (see setupCopyButtons in app.js).
+   The feedback variants use the doubled-class selector so they beat the global
+   button:hover background (the mouse is still over the button right after the click). */
+.btn-copy {
+    padding: 2px 8px;
+    margin: 0 6px;
+    font-size: 0.8em;
+}
+
+button.btn-copy.btn-copy-ok {
+    background-color: var(--success) !important;
+}
+
+button.btn-copy.btn-copy-failed {
+    background-color: var(--danger) !important;
+}
+
 /* AAAA/HTTPS entries: still listed (and still actionable), but grayed out
    together with their buttons so they don't compete with the A entries. The
    whole <li> is filtered (not individual elements) because the button colors

@@ -103,6 +103,9 @@
 
 {{define "state-tag"}}<span class="tag-state">{{if .}}Active{{else}}Paused{{end}}</span>{{end}}
 
+{{/* Small "copy to clipboard" button; the dot argument is the text to copy. Wired generically via .js-copy-btn in app.js (setupCopyButtons). */}}
+{{define "copy-btn"}}<button type="button" class="btn-copy js-copy-btn" data-copy-text="{{.}}" title="Copy this host to the clipboard">📋 Copy</button>{{end}}
+
 {{/* --- SUB-TEMPLATE FOR RULES --- */}}
 {{define "rules"}}
 <div class="info-banner">
@@ -293,7 +296,7 @@ setupRememberedDetails in app.js) --- */}}
     <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
         <span class="block-time"
             title="Most recent time this query was blocked (local time). Repeat blocks answered from the DNS cache do not refresh it.">{{.TimeDisplay}}</span>
-        <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
+        <code>{{.DomainDisplay}}</code> {{template "copy-btn" .DomainDisplay}} <span class="tag-disabled">({{.Type}})</span>
 
         {{if .UpstreamBlocked}}
         <span class="tag-disabled"
@@ -421,7 +424,7 @@ setupRememberedDetails in app.js) --- */}}
     {{range .Allowed}}
     <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
         <span class="block-time" title="Most recent time this query was allowed (local time).">{{.TimeDisplay}}</span>
-        <code>{{.DomainDisplay}}</code> <span class="tag-disabled">({{.Type}})</span>
+        <code>{{.DomainDisplay}}</code> {{template "copy-btn" .DomainDisplay}} <span class="tag-disabled">({{.Type}})</span>
 
         {{if .WhitelistAllowingRuleID}}
         <form method="post" action="/allows" class="d-inline js-block-action-form" {{if ne .Type
@@ -994,7 +997,7 @@ setupRememberedDetails in app.js) --- */}}
         {{range .ExternalMatches}}
         <tr>
             <td title="{{.HostDisplay}}">
-                {{.HostDisplay}}
+                {{.HostDisplay}} {{template "copy-btn" .HostDisplay}}
                 {{if .LocallyBlocked}}<br><small class="tag-disabled">Also matched by an enabled local "block" rule
                     above; stays blocked even if excepted here.</small>{{end}}
             </td>
