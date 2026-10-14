@@ -77,6 +77,16 @@
 
     </div>
 
+    {{/* Filled/shown by app.js (setupScrollButtons); hidden unless the page is taller than the window. */}}
+    <div id="scrollButtons" class="scroll-buttons" role="group" aria-label="Page scroll shortcuts" hidden>
+        <button type="button" class="scroll-btn" data-scroll-target="top" title="Scroll to top"
+            aria-label="Scroll to top">&#9650;</button>
+        <button type="button" class="scroll-btn" data-scroll-target="middle" title="Scroll to the middle of the page"
+            aria-label="Scroll to the middle of the page">&#8597;</button>
+        <button type="button" class="scroll-btn" data-scroll-target="bottom" title="Scroll to bottom"
+            aria-label="Scroll to bottom">&#9660;</button>
+    </div>
+
     <script src="/static/app.js?v={{.Version}}" defer></script>
 </body>
 

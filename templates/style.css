@@ -355,23 +355,13 @@ mark.filter-highlight {
 }
 
 /* Stack of "unsaved changes" items, one per WebUI page with staged changes
-   (see renderStagedStack in app.js). position: fixed removes it from normal
-   flow, so items appearing/disappearing never shifts other page content. */
+   (see renderStagedStack in app.js). Deliberately in normal page flow (not
+   floating), so it can never cover the navigation links. */
 .staged-stack {
-    position: fixed;
-    top: 10px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 95%;
-    max-width: 2000px;
-    min-width: 800px;
-    max-height: 60vh;
-    overflow-y: auto;
-    box-sizing: border-box;
-    z-index: 1000;
     display: flex;
     flex-direction: column;
     gap: 6px;
+    margin-bottom: 15px;
 }
 
 .staged-stack-item {
@@ -471,14 +461,43 @@ button:hover {
 }
 
 /* 3. TABLES (Anti-Jump Fixes) */
+/* NOTE: no `overflow: hidden` on the table (or any ancestor) and no
+   border-collapse: collapse: the former makes the sticky column headers below
+   unable to stick to the viewport, the latter prevents rounded corner cells. */
 table {
     width: 100%;
     table-layout: fixed;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     background: var(--bg-panel);
-    border-radius: 8px;
     margin-top: 20px;
-    overflow: hidden;
+}
+
+/* Column headers stay in their table normally, but once scrolled out of view
+   (past the table's top edge) they float at the top of the viewport until the
+   table itself ends. position: sticky also keeps them the containing block of
+   the absolutely positioned .col-resize-handle. */
+thead th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+}
+
+/* Rounded table corners (done per corner cell, since the table can't clip). */
+thead tr:first-child th:first-child {
+    border-top-left-radius: 8px;
+}
+
+thead tr:first-child th:last-child {
+    border-top-right-radius: 8px;
+}
+
+tbody tr:last-child td:first-child {
+    border-bottom-left-radius: 8px;
+}
+
+tbody tr:last-child td:last-child {
+    border-bottom-right-radius: 8px;
 }
 
 tr {
@@ -1037,10 +1056,6 @@ li.block-entry-dim:focus-within {
 }
 
 /* Column resize handles (Rules/Hosts/Blacklist/QueryBlocklist/Config tables) */
-th.resizable-col {
-    position: relative;
-}
-
 .col-resize-handle {
     position: absolute;
     top: 0;
@@ -1128,4 +1143,40 @@ th.col-draggable .col-resize-handle {
     line-height: 1.25;
     color: var(--text-secondary);
     scrollbar-width: thin;
+}
+
+/* Floating scroll shortcuts (top / middle / bottom), see setupScrollButtons in app.js.
+   Only shown when the page is taller than the window. */
+.scroll-buttons {
+    position: fixed;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+button.scroll-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    line-height: 1;
+    font-size: 1em;
+    background-color: var(--accent) !important;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+}
+
+button.scroll-btn:hover,
+button.scroll-btn:focus-visible {
+    background-color: var(--accent-hover) !important;
+    opacity: 1;
+}
+
+button.scroll-btn:disabled {
+    cursor: default;
+    opacity: 0.2;
 }

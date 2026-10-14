@@ -3880,11 +3880,93 @@
         });
     }
 
+    // --- Floating scroll shortcuts (top / middle / bottom) ---
+    // Shown only while the page is taller than the window. A button is
+    // disabled (dimmed) when already at its destination.
+    const SCROLL_BUTTONS_MIN_OVERFLOW_PX = 48;
+    const SCROLL_BUTTONS_EDGE_TOLERANCE_PX = 2;
+
+    // maxPageScroll returns how far the page can scroll vertically (0 if it fits).
+    function maxPageScroll() {
+        const scroller = document.scrollingElement || document.documentElement;
+        return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    }
+
+    function setupScrollButtons() {
+        const group = document.getElementById('scrollButtons');
+        if (!group) return;
+
+        const topBtn = group.querySelector('[data-scroll-target="top"]');
+        const middleBtn = group.querySelector('[data-scroll-target="middle"]');
+        const bottomBtn = group.querySelector('[data-scroll-target="bottom"]');
+        if (!topBtn || !middleBtn || !bottomBtn) {
+            console.error('setupScrollButtons: #scrollButtons is missing one of its top/middle/bottom buttons');
+            return;
+        }
+
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+        function update() {
+            const max = maxPageScroll();
+            const scrollable = max > SCROLL_BUTTONS_MIN_OVERFLOW_PX;
+            group.hidden = !scrollable;
+            if (!scrollable) return;
+
+            const y = window.scrollY;
+            topBtn.disabled = y <= SCROLL_BUTTONS_EDGE_TOLERANCE_PX;
+            bottomBtn.disabled = y >= max - SCROLL_BUTTONS_EDGE_TOLERANCE_PX;
+            middleBtn.disabled = Math.abs(y - max / 2) <= SCROLL_BUTTONS_EDGE_TOLERANCE_PX;
+        }
+
+        let framePending = false;
+        function scheduleUpdate() {
+            if (framePending) return;
+            framePending = true;
+            window.requestAnimationFrame(() => {
+                framePending = false;
+                update();
+            });
+        }
+
+        group.addEventListener('click', function (e) {
+            const btn = e.target instanceof Element ? e.target.closest('[data-scroll-target]') : null;
+            if (!btn || btn.disabled) return;
+
+            const max = maxPageScroll();
+            let top;
+            switch (btn.dataset.scrollTarget) {
+                case 'top':
+                    top = 0;
+                    break;
+                case 'middle':
+                    top = max / 2; // puts the middle of the page in the middle of the window
+                    break;
+                case 'bottom':
+                    top = max;
+                    break;
+                default:
+                    console.warn('setupScrollButtons: unknown scroll target', btn.dataset.scrollTarget);
+                    return;
+            }
+            window.scrollTo({ top, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+        });
+
+        window.addEventListener('scroll', scheduleUpdate, { passive: true });
+        window.addEventListener('resize', scheduleUpdate);
+        // The page height also changes without a window resize: rows staged/
+        // filtered, edit rows opening, the staged stack appearing, etc.
+        if (typeof ResizeObserver === 'function') {
+            new ResizeObserver(scheduleUpdate).observe(document.body);
+        }
+        update();
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function () {
 
         setupRememberedDetails();
         setupCopyButtons();
+        setupScrollButtons();
 
         // Consolidated Keyboard Handler ensuring typing and Escape contexts operate precisely
         document.addEventListener('keydown', function (e) {
