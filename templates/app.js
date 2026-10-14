@@ -81,9 +81,10 @@
     // app.js never hard-codes json tag strings.
     const _cfgKeysEl = document.getElementById('configKeysData');
     // Optimistic-concurrency token: the mod-time of config.json at page-load
-    // time. Sent back on Apply so the server can detect a stale page.
-    // Falls back to '0' on pages that predate this feature or on non-config pages.
-    const configVersion = _cfgKeysEl ? (_cfgKeysEl.dataset.configVersion || '0') : '0';
+    // time. Sent back on Apply so the server can detect a stale page. Rendered
+    // on EVERY page (tableVersionData), because staged config changes can now
+    // be validated/applied from any page. Falls back to '0'.
+    const configVersion = document.getElementById('tableVersionData')?.dataset.configVersion || '0';
     // Mirrors the Go configFileName constant / wincoe.BackupFileExtension so this
     // confirmation dialog never goes stale if either changes.
     const configFileName = _cfgKeysEl ? (_cfgKeysEl.dataset.configFilename || 'config.json') : 'config.json';
@@ -138,7 +139,37 @@
 
     const STAGED_STORAGE_VERSION = 1;
     const MAX_STORED_STAGED_CHANGES = 10_000;
-    const stagedStorageKey = `dnsbollocks:staged:${tablePageKey}`;
+    const MAX_STORED_STAGED_CONFIG_KEYS = 1_000;
+
+    // Every WebUI page that can stage changes. For table pages, path is also
+    // the url every staged change of that page is sent to via /apply-tables,
+    // and versionKey names that table's entry in tableVersions.
+    const STAGING_PAGES = Object.freeze([
+        Object.freeze({ path: '/query-blocklist', label: 'Query Blocklist', kind: 'tables', versionKey: 'query_blocklist' }),
+        Object.freeze({ path: '/rules', label: 'Rules', kind: 'tables', versionKey: 'rules' }),
+        Object.freeze({ path: '/hosts', label: 'Local Hosts', kind: 'tables', versionKey: 'hosts' }),
+        Object.freeze({ path: '/response-blacklist', label: 'Blacklisted IPs (in responses)', kind: 'tables', versionKey: 'blacklist' }),
+        Object.freeze({ path: '/config', label: 'config.json', kind: 'config', versionKey: '' }),
+    ]);
+    const STAGING_PAGE_BY_PATH = new Map(STAGING_PAGES.map(page => [page.path, page]));
+    const currentStagingPage = STAGING_PAGE_BY_PATH.get(tablePageKey) || null;
+    const isTablePagePath = path => STAGING_PAGE_BY_PATH.get(path)?.kind === 'tables';
+    const stagingLabel = path => STAGING_PAGE_BY_PATH.get(path)?.label || path;
+    const stagedRecordKey = path => `dnsbollocks:staged:${path}`;
+    const stagedStorageKey = stagedRecordKey(tablePageKey);
+
+    // Staged changes of every OTHER staging page, as found (and validated) in
+    // sessionStorage at page load: path -> { count, firstStagedAt }.
+    const otherStagedSummaries = new Map();
+    // One-line explanations of staged sets that were discarded as stale/invalid
+    // at load time; shown (dismissibly) in the staged stack.
+    const stagingNotices = [];
+    // When the CURRENT page first got something staged (orders the stack).
+    let currentPageFirstStagedAt = null;
+    // True once persisting the current page's staged changes failed.
+    let storagePersistenceFailed = false;
+    // Guards against a second Apply while one is in flight.
+    let stagedApplyInFlight = false;
 
     // boolStr renders a boolean the way the staged-change payloads and
     // data-* attributes carry it.
@@ -289,7 +320,8 @@
     // like any other pre-existing row: possibly hidden by a leftover filter,
     // and wherever a persisted column sort happens to place it — easy to lose
     // track of right after deliberately adding it.
-    const justAppliedStorageKey = `dnsbollocks:justApplied:${tablePageKey}`;
+    const justAppliedStorageKeyFor = path => `dnsbollocks:justApplied:${path}`;
+    const justAppliedStorageKey = justAppliedStorageKeyFor(tablePageKey);
 
     // extractAddIdentity returns a small, JSON-serializable descriptor
     // identifying the persisted row a staged "Add" change (never Edit/Delete)
@@ -320,18 +352,22 @@
     // exactly once by restoreJustAppliedRows after the reload that follows a
     // successful Apply. Call this BEFORE stagedTableChanges is cleared/
     // filtered, passing only the subset of changes that actually applied.
-    function persistJustAppliedIdentities(appliedChanges) {
+    // path is the page the changes belong to (they can now be applied from a
+    // different page than the one they were staged on); that page consumes the
+    // record on its next load via restoreJustAppliedRows.
+    function persistJustAppliedIdentities(path, appliedChanges) {
+        const key = justAppliedStorageKeyFor(path);
         const identities = [];
         for (const change of appliedChanges) {
             const identity = extractAddIdentity(change.url, change.fields);
             if (identity) identities.push(identity);
         }
         if (identities.length === 0) {
-            stagedStorage.removeItem(justAppliedStorageKey);
+            stagedStorage.removeItem(key);
             return;
         }
         try {
-            stagedStorage.setItem(justAppliedStorageKey, JSON.stringify({ schema: 1, identities }));
+            stagedStorage.setItem(key, JSON.stringify({ schema: 1, identities }));
         } catch (err) {
             console.warn('Failed to persist just-applied row identities for post-reload highlighting:', err);
         }
@@ -465,83 +501,187 @@
         ensureStoragePersistenceWarningEl().hidden = !visible;
     }
 
+    function noteStoragePersistence(persisted) {
+        storagePersistenceFailed = !persisted;
+        setStoragePersistenceWarningVisible(!persisted);
+    }
+
+    // writeStagedRecord serializes and stores record for path; returns whether
+    // it was actually stored.
+    function writeStagedRecord(path, record) {
+        try {
+            return stagedStorage.setItem(stagedRecordKey(path), JSON.stringify(record));
+        } catch (err) {
+            console.error('Failed to serialize staged changes for storage:', err);
+            return false;
+        }
+    }
+
+    function existingFirstStagedAt(path) {
+        const raw = stagedStorage.getItem(stagedRecordKey(path));
+        if (!raw) return null;
+        try {
+            const record = JSON.parse(raw);
+            return isPlainObject(record) && Number.isFinite(record.firstStagedAt) ? record.firstStagedAt : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function trackCurrentPageFirstStagedAt(count) {
+        if (count === 0) {
+            currentPageFirstStagedAt = null;
+            return;
+        }
+        if (currentPageFirstStagedAt === null) {
+            currentPageFirstStagedAt = existingFirstStagedAt(tablePageKey) ?? Date.now();
+        }
+    }
+
     function persistStagedTableChanges() {
         if (stagedTableChanges.length === 0) {
             stagedStorage.removeItem(stagedStorageKey);
-            setStoragePersistenceWarningVisible(false);
+            noteStoragePersistence(true);
             return;
         }
-
-        const record = {
+        noteStoragePersistence(writeStagedRecord(tablePageKey, {
             schema: STAGED_STORAGE_VERSION,
             pathname: tablePageKey,
             versions: tableVersions,
             changes: stagedTableChanges,
-        };
-
-        let persisted = false;
-        try {
-            persisted = stagedStorage.setItem(stagedStorageKey, JSON.stringify(record));
-        } catch (err) {
-            // Defensive: stagedTableChanges entries are always plain
-            // string-keyed/valued objects (see isValidStoredChange), so
-            // JSON.stringify should never throw here in practice, but treat
-            // it exactly like a storage-write failure if it somehow does.
-            console.error('Failed to serialize staged changes for storage:', err);
-            persisted = false;
-        }
-        setStoragePersistenceWarningVisible(!persisted);
+            firstStagedAt: currentPageFirstStagedAt ?? Date.now(),
+        }));
     }
 
-    function loadStoredStagedTableChanges() {
-        const raw = stagedStorage.getItem(stagedStorageKey);
-        if (!raw) return null;
+    function persistStagedConfigChanges() {
+        // The WebUI password (plaintext or hash) is deliberately NEVER written
+        // to storage; it only lives in memory (see hasUnpersistedStagedChanges).
+        const persistable = {};
+        for (const [key, value] of Object.entries(stagedChanges)) {
+            if (key === CONFIG_KEYS.webuiPasswordHash) continue;
+            persistable[key] = value;
+        }
+        if (Object.keys(persistable).length === 0) {
+            stagedStorage.removeItem(stagedRecordKey('/config'));
+            noteStoragePersistence(true);
+            return;
+        }
+        noteStoragePersistence(writeStagedRecord('/config', {
+            schema: STAGED_STORAGE_VERSION,
+            pathname: '/config',
+            configVersion: configVersion,
+            changes: persistable,
+            firstStagedAt: currentPageFirstStagedAt ?? Date.now(),
+        }));
+    }
 
-        let record;
+    // hasUnpersistedStagedChanges reports whether leaving the page would lose
+    // staged changes: only true for a staged WebUI password (never persisted)
+    // or when writing the staged changes to storage failed.
+    function hasUnpersistedStagedChanges() {
+        if (storagePersistenceFailed && currentPageStagedCount() > 0) return true;
+        const pwdKey = CONFIG_KEYS.webuiPasswordHash;
+        return Boolean(pwdKey) && stagedChanges[pwdKey] !== undefined;
+    }
+
+    function discardStoredStagedRecord(path, reason) {
+        stagedStorage.removeItem(stagedRecordKey(path));
+        stagingNotices.push(`Staged changes for "${stagingLabel(path)}" were discarded because ${reason}.`);
+    }
+
+    function parseStoredRecord(path) {
+        const raw = stagedStorage.getItem(stagedRecordKey(path));
+        if (!raw) return null;
         try {
-            record = JSON.parse(raw);
+            return { record: JSON.parse(raw) };
         } catch {
-            stagedStorage.removeItem(stagedStorageKey);
+            discardStoredStagedRecord(path, 'the stored data was unreadable');
             return null;
         }
+    }
+
+    // readStoredTableRecord returns {changes, firstStagedAt} for a table page's
+    // persisted staged changes if they are structurally valid AND still match
+    // the table version this page was rendered with; otherwise discards them
+    // (recording a notice) and returns null.
+    function readStoredTableRecord(path) {
+        const parsed = parseStoredRecord(path);
+        if (!parsed) return null;
+        const record = parsed.record;
 
         if (
             !isPlainObject(record) ||
             record.schema !== STAGED_STORAGE_VERSION ||
-            record.pathname !== tablePageKey ||
+            record.pathname !== path ||
             !isPlainObject(record.versions) ||
             !Array.isArray(record.changes) ||
             record.changes.length === 0 ||
             record.changes.length > MAX_STORED_STAGED_CHANGES ||
-            !record.changes.every(isValidStoredChange)
+            !record.changes.every(change => isValidStoredChange(change) && change.url === path)
         ) {
-            stagedStorage.removeItem(stagedStorageKey);
+            discardStoredStagedRecord(path, 'the stored data was invalid');
             return null;
         }
 
-        // Only the version(s) of the table(s) actually touched by these
-        // staged changes need to still match — an unrelated table changing
-        // in another tab (e.g. rules edited while this page only ever staged
-        // host changes) must not discard an otherwise still-valid restore.
-        const versionKeyForUrl = {
-            '/rules': 'rules',
-            '/hosts': 'hosts',
-            '/response-blacklist': 'blacklist',
-            '/query-blocklist': 'query_blocklist',
+        const versionKey = STAGING_PAGE_BY_PATH.get(path)?.versionKey;
+        if (!versionKey || record.versions[versionKey] !== tableVersions[versionKey]) {
+            discardStoredStagedRecord(path, 'the table changed (e.g. a reload, another tab or another quick action) since they were staged');
+            return null;
+        }
+
+        return {
+            changes: record.changes,
+            firstStagedAt: Number.isFinite(record.firstStagedAt) ? record.firstStagedAt : Date.now(),
         };
-        const touchedVersionKeys = new Set(
-            record.changes.map(change => versionKeyForUrl[change.url])
-        );
-        const versionsMatch = [...touchedVersionKeys].every(
-            key => record.versions[key] === tableVersions[key]
-        );
+    }
 
-        if (!versionsMatch) {
-            stagedStorage.removeItem(stagedStorageKey);
+    function isValidStoredConfigValue(value) {
+        switch (typeof value) {
+            case 'string':
+                return value.length <= 65_536;
+            case 'boolean':
+                return true;
+            case 'number':
+                return Number.isSafeInteger(value);
+            case 'object':
+                return Array.isArray(value) && value.length <= 1_000 &&
+                    value.every(item => typeof item === 'string' && item.length <= 65_536);
+            default:
+                return false;
+        }
+    }
+
+    // readStoredConfigRecord is readStoredTableRecord's counterpart for the
+    // /config page: returns {changes, firstStagedAt} (changes is a
+    // key -> value object) or null.
+    function readStoredConfigRecord() {
+        const parsed = parseStoredRecord('/config');
+        if (!parsed) return null;
+        const record = parsed.record;
+
+        const keys = isPlainObject(record) && isPlainObject(record.changes) ? Object.keys(record.changes) : [];
+        if (
+            !isPlainObject(record) ||
+            record.schema !== STAGED_STORAGE_VERSION ||
+            record.pathname !== '/config' ||
+            typeof record.configVersion !== 'string' ||
+            keys.length === 0 ||
+            keys.length > MAX_STORED_STAGED_CONFIG_KEYS ||
+            !keys.every(key => key.length > 0 && key.length <= 64 && isValidStoredConfigValue(record.changes[key]))
+        ) {
+            discardStoredStagedRecord('/config', 'the stored data was invalid');
             return null;
         }
 
-        return record.changes;
+        if (record.configVersion !== configVersion) {
+            discardStoredStagedRecord('/config', configFileName + ' changed on disk (or was reloaded) since they were staged');
+            return null;
+        }
+
+        return {
+            changes: record.changes,
+            firstStagedAt: Number.isFinite(record.firstStagedAt) ? record.firstStagedAt : Date.now(),
+        };
     }
 
     function createTimeoutSignal(timeoutMs) {
@@ -638,19 +778,12 @@
         return true;
     }
 
+    // (Name kept for its many call sites: it persists the current table
+    // page's staged changes and re-renders the page-spanning staged stack.)
     function updateTableBanner() {
-        const count = stagedTableChanges.length;
-        document.querySelectorAll('.staged-table-banner').forEach(banner => {
-            banner.hidden = count === 0;
-
-            const countEl = banner.querySelector('.staged-table-count');
-            if (countEl) countEl.textContent = count;
-
-            const applyButton = banner.querySelector('.js-apply-table-btn');
-            if (applyButton) applyButton.disabled = count === 0;
-        });
-
+        trackCurrentPageFirstStagedAt(stagedTableChanges.length);
         persistStagedTableChanges();
+        renderStagedStack();
     }
 
     // --- Filter Expression Parser ---
@@ -1539,10 +1672,267 @@
         if (typeof serverVersions.query_blocklist === 'string') tableVersions.query_blocklist = serverVersions.query_blocklist;
     }
 
-    async function applyStagedTableChanges() {
+    // ── Staged stack: one item per page with staged changes (+ Apply All) ──
+
+    function currentPageStagedCount() {
+        if (!currentStagingPage) return 0;
+        return currentStagingPage.kind === 'config' ? Object.keys(stagedChanges).length : stagedTableChanges.length;
+    }
+
+    // stagedPagesNow lists every page with staged changes, in the order they
+    // first got something staged (so newly staged pages are appended).
+    function stagedPagesNow() {
+        const pages = [];
+        const currentCount = currentPageStagedCount();
+        if (currentStagingPage && currentCount > 0) {
+            pages.push({
+                path: currentStagingPage.path,
+                label: currentStagingPage.label,
+                count: currentCount,
+                firstStagedAt: currentPageFirstStagedAt ?? 0,
+                isCurrent: true,
+            });
+        }
+        for (const [path, summary] of otherStagedSummaries) {
+            pages.push({
+                path,
+                label: stagingLabel(path),
+                count: summary.count,
+                firstStagedAt: summary.firstStagedAt,
+                isCurrent: false,
+            });
+        }
+        pages.sort((a, b) => a.firstStagedAt - b.firstStagedAt);
+        return pages;
+    }
+
+    function buildStagedItem({ strongText, text, itemClass = '', href = '', buttons = [] }) {
+        const item = document.createElement('div');
+        item.className = ('staged-stack-item ' + itemClass).trim();
+
+        const message = document.createElement('span');
+        const strong = document.createElement('strong');
+        strong.textContent = strongText;
+        message.appendChild(strong);
+        message.appendChild(document.createTextNode(' ' + text));
+        if (href) {
+            const link = document.createElement('a');
+            link.className = 'staged-stack-link';
+            link.href = href;
+            link.textContent = 'Open page';
+            message.appendChild(link);
+        }
+        item.appendChild(message);
+
+        const actions = document.createElement('div');
+        actions.className = 'staged-stack-actions';
+        for (const spec of buttons) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = spec.className;
+            button.textContent = spec.label;
+            button.dataset.stagedAction = spec.action;
+            if (spec.path) button.dataset.stagedPath = spec.path;
+            if (spec.noticeIndex !== undefined) button.dataset.stagedNoticeIndex = String(spec.noticeIndex);
+            actions.appendChild(button);
+        }
+        item.appendChild(actions);
+        return item;
+    }
+
+    function renderStagedStack() {
+        const stack = document.getElementById('stagedStack');
+        if (!stack) return;
+
+        const pages = stagedPagesNow();
+        stack.textContent = '';
+        stack.hidden = pages.length === 0 && stagingNotices.length === 0;
+
+        if (pages.length > 1) {
+            const total = pages.reduce((sum, page) => sum + page.count, 0);
+            stack.appendChild(buildStagedItem({
+                strongText: 'Unsaved changes on ' + pages.length + ' pages!',
+                text: total + ' staged modification(s) in total.',
+                itemClass: 'staged-stack-item-all',
+                buttons: [
+                    { className: 'btn-save btn-padded', label: 'Apply All & Reload', action: 'apply-all' },
+                    { className: 'btn-discard-all', label: 'Discard All', action: 'discard-all' },
+                ],
+            }));
+        }
+
+        for (const page of pages) {
+            stack.appendChild(buildStagedItem({
+                strongText: page.label + ':',
+                text: page.count + ' staged modification(s), not applied yet.',
+                href: page.isCurrent ? '' : page.path,
+                buttons: [
+                    { className: 'btn-save btn-padded', label: 'Apply & Reload', action: 'apply', path: page.path },
+                    { className: 'btn-discard-all', label: 'Discard', action: 'discard', path: page.path },
+                ],
+            }));
+        }
+
+        stagingNotices.forEach((notice, index) => {
+            stack.appendChild(buildStagedItem({
+                strongText: 'Notice:',
+                text: notice,
+                itemClass: 'staged-stack-item-notice',
+                buttons: [{ className: 'btn-discard-all', label: 'Dismiss', action: 'dismiss-notice', noticeIndex: index }],
+            }));
+        });
+    }
+
+    function initOtherStagedSummaries() {
+        for (const page of STAGING_PAGES) {
+            if (page.path === tablePageKey) continue;
+            const record = page.kind === 'config' ? readStoredConfigRecord() : readStoredTableRecord(page.path);
+            if (!record) continue;
+            otherStagedSummaries.set(page.path, {
+                count: page.kind === 'config' ? Object.keys(record.changes).length : record.changes.length,
+                firstStagedAt: record.firstStagedAt,
+            });
+        }
+    }
+
+    function initStagedStack() {
+        const stack = document.getElementById('stagedStack');
+        if (!stack) return;
+        stack.addEventListener('click', onStagedStackClick);
+        renderStagedStack();
+    }
+
+    async function onStagedStackClick(e) {
+        const target = e.target instanceof Element ? e.target : null;
+        const button = target ? target.closest('[data-staged-action]') : null;
+        if (!button) return;
+        e.preventDefault();
+
+        const path = button.dataset.stagedPath || '';
+        switch (button.dataset.stagedAction) {
+            case 'apply':
+                await runStagedApply([path], button);
+                break;
+            case 'apply-all':
+                await runStagedApply(stagedPagesNow().map(page => page.path), button);
+                break;
+            case 'discard':
+                if (confirm('Discard the staged changes for ' + stagingLabel(path) + '?')) {
+                    discardStagedPages([path]);
+                }
+                break;
+            case 'discard-all': {
+                const pages = stagedPagesNow();
+                if (confirm('Discard ALL staged changes on every page (' + pages.map(page => page.label).join(', ') + ')?')) {
+                    discardStagedPages(pages.map(page => page.path));
+                }
+                break;
+            }
+            case 'dismiss-notice': {
+                const index = Number.parseInt(button.dataset.stagedNoticeIndex || '', 10);
+                if (Number.isInteger(index) && index >= 0 && index < stagingNotices.length) {
+                    stagingNotices.splice(index, 1);
+                    renderStagedStack();
+                }
+                break;
+            }
+            default:
+                console.warn('Unknown staged-stack action:', button.dataset.stagedAction);
+        }
+    }
+
+    // discardStagedPages drops the staged changes of the given pages. The
+    // current page is reloaded (its rows carry staged styling); other pages
+    // only need their storage cleared and the stack re-rendered.
+    function discardStagedPages(paths) {
+        let currentAffected = false;
+        for (const path of paths) {
+            stagedStorage.removeItem(stagedRecordKey(path));
+            if (currentStagingPage && path === tablePageKey) {
+                currentAffected = true;
+                stagedTableChanges = [];
+                for (const key of Object.keys(stagedChanges)) delete stagedChanges[key];
+            } else {
+                otherStagedSummaries.delete(path);
+            }
+        }
+        if (currentAffected) {
+            currentPageFirstStagedAt = null;
+            reloadPageBypassingUnsavedWarning();
+            return;
+        }
+        renderStagedStack();
+    }
+
+    // ── Applying staged changes (from any page) ──
+
+    function getTableChangesForPage(path) {
+        if (path === tablePageKey) return stagedTableChanges.slice();
+        const record = readStoredTableRecord(path);
+        return record ? record.changes : [];
+    }
+
+    // The /config page's in-memory set is authoritative there (it may include
+    // a staged password, which is never persisted); elsewhere use storage.
+    function getConfigChangesForApply() {
+        if (tablePageKey === '/config') return { ...stagedChanges };
+        const record = readStoredConfigRecord();
+        return record ? record.changes : {};
+    }
+
+    function storeRemainingTableChanges(path, changes) {
+        if (changes.length === 0) {
+            stagedStorage.removeItem(stagedRecordKey(path));
+            otherStagedSummaries.delete(path);
+            return;
+        }
+        const firstStagedAt = existingFirstStagedAt(path) ?? Date.now();
+        const stored = writeStagedRecord(path, {
+            schema: STAGED_STORAGE_VERSION,
+            pathname: path,
+            versions: tableVersions,
+            changes,
+            firstStagedAt,
+        });
+        if (!stored) {
+            console.error('Could not persist the remaining staged changes of', path, '; they may be lost on reload.');
+        }
+        otherStagedSummaries.set(path, { count: changes.length, firstStagedAt });
+    }
+
+    // commitAppliedTableChanges removes the applied changes of every page in
+    // perPage from memory/storage, keeps the rest staged against the server's
+    // authoritative post-mutation versions, and stashes the applied "Add"
+    // identities for post-reload row highlighting.
+    function commitAppliedTableChanges(perPage, appliedIds, serverVersions) {
+        updateTableVersions(serverVersions);
+        for (const { path, changes } of perPage) {
+            persistJustAppliedIdentities(path, changes.filter(change => appliedIds.has(change.clientId)));
+            const remaining = changes.filter(change => !appliedIds.has(change.clientId));
+            if (path === tablePageKey) {
+                stagedTableChanges = remaining;
+                updateTableBanner();
+            } else {
+                storeRemainingTableChanges(path, remaining);
+            }
+        }
+    }
+
+    // applyTablePages sends every staged change of the given table pages as ONE
+    // /apply-tables batch. Returns {ok, applied}: ok=false means the caller must
+    // stop (this function already told the user why, and reloaded the page if
+    // anything had actually been applied); applied=true means at least one
+    // change reached the server.
+    async function applyTablePages(tablePaths) {
+        const perPage = tablePaths
+            .map(path => ({ path, changes: getTableChangesForPage(path) }))
+            .filter(entry => entry.changes.length > 0);
+        if (perPage.length === 0) return { ok: true, applied: false };
+
+        const allChanges = perPage.flatMap(entry => entry.changes);
         const payload = JSON.stringify({
             versions: tableVersions,
-            changes: stagedTableChanges.map(change => ({
+            changes: allChanges.map(change => ({
                 url: change.url,
                 fields: change.fields,
                 client_id: change.clientId,
@@ -1555,18 +1945,21 @@
         } catch (err) {
             console.error('Failed to save staged changes:', err);
             alert('Failed to save staged changes:\n' + (err instanceof Error ? err.message : String(err)));
-            return false;
+            return { ok: false, applied: false };
         }
 
         const { response: res } = result;
         const contentType = res.headers.get('Content-Type') || '';
-        // Read the body exactly once as text, then attempt JSON.parse on it.
-        // Calling res.json() and later (conditionally) res.text() on the same
-        // Response throws "body stream already read" on the second call —
-        // that was reachable here whenever a JSON response's `error` field
-        // was falsy/missing and execution fell through to the text fallback,
-        // silently swallowing the real failure reason.
-        const rawBody = await res.text();
+        // Read the body exactly once as text, then attempt JSON.parse on it
+        // (calling res.json() and later res.text() throws "body stream already read").
+        let rawBody;
+        try {
+            rawBody = await res.text();
+        } catch (err) {
+            console.error('Failed to read the /apply-tables response body:', err);
+            alert('Failed to read the server response while saving staged changes:\n' + (err instanceof Error ? err.message : String(err)));
+            return { ok: false, applied: false };
+        }
         let body = null;
         if (contentType.includes('application/json')) {
             try {
@@ -1577,68 +1970,163 @@
         }
 
         if (res.status === 409) {
-            alert(body?.error || rawBody || 'The table changed since this page was loaded. Reload before applying again.');
-            return false;
+            alert(body?.error || rawBody || 'A table changed since this page was loaded. Reload before applying again.');
+            return { ok: false, applied: false };
         }
 
         if (res.status === 422) {
             const appliedIds = new Set(body?.applied_client_ids || []);
-            persistJustAppliedIdentities(stagedTableChanges.filter(change => appliedIds.has(change.clientId)));
-            stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
-            // Adopt the server's authoritative post-mutation versions before
-            // persisting, so the reload below's restore-matching succeeds for
-            // the remaining, still-staged changes instead of discarding them.
-            updateTableVersions(body?.versions);
-            updateTableBanner(); // also persists the trimmed staged list
-
+            commitAppliedTableChanges(perPage, appliedIds, body?.versions);
             alert(
                 `Applied ${appliedIds.size} staged change(s), but some entries failed.\n` +
-                `The failed entries remain staged. Reloading to refresh the table...`
+                `The failed entries remain staged. Reloading to refresh the tables...`
             );
-
             reloadPageBypassingUnsavedWarning();
-            return false;
+            return { ok: false, applied: true };
         }
 
         if (!res.ok) {
             if (body?.persistence_failed) {
-                // Every change in the batch was applied to the server's live,
-                // in-memory state (appliedIds reflects exactly that), but
-                // saving it to disk failed. Treat this like a 422: drop the
-                // applied entries from the staged queue, adopt the server's
-                // now-bumped versions, and reload — otherwise the client would
-                // keep showing these changes as "unsaved" even though they're
-                // already live, and any retry would be rejected as a stale
-                // version conflict.
+                // Applied to the running server's memory, but saving to disk
+                // failed: drop them from the staged queue (they are live),
+                // adopt the new versions, and reload.
                 const appliedIds = new Set(body?.applied_client_ids || []);
-                persistJustAppliedIdentities(stagedTableChanges.filter(change => appliedIds.has(change.clientId)));
-                stagedTableChanges = stagedTableChanges.filter(change => !appliedIds.has(change.clientId));
-                updateTableVersions(body?.versions);
-                updateTableBanner();
-
+                commitAppliedTableChanges(perPage, appliedIds, body?.versions);
                 alert(
                     `${appliedIds.size} staged change(s) were applied on the running server, but could ` +
                     `NOT be saved to disk, so they may be lost if the server restarts before the next ` +
                     `successful save.\nServer error: ${body?.error || rawBody || ('HTTP ' + res.status)}\n` +
-                    `Reloading to refresh the table...`
+                    `Reloading to refresh the tables...`
                 );
-
                 reloadPageBypassingUnsavedWarning();
-                return false;
+                return { ok: false, applied: true };
             }
-
             alert(body?.error || rawBody || `HTTP ${res.status}`);
+            return { ok: false, applied: false };
+        }
+
+        commitAppliedTableChanges(perPage, new Set(allChanges.map(change => change.clientId)), body?.versions);
+        return { ok: true, applied: true };
+    }
+
+    async function applyConfigPage() {
+        const changes = getConfigChangesForApply();
+        if (Object.keys(changes).length === 0) return true;
+
+        const success = await postAdminForm('/config', {
+            'action': 'apply',
+            'payload': JSON.stringify(changes),
+            'config_version': configVersion,
+        }, 'Failed to apply configuration');
+        if (!success) return false;
+
+        for (const key of Object.keys(stagedChanges)) delete stagedChanges[key];
+        stagedStorage.removeItem(stagedRecordKey('/config'));
+        otherStagedSummaries.delete('/config');
+        return true;
+    }
+
+    // applyStagedPages applies the given pages' staged changes: all table
+    // pages first as one batch, then config.json LAST (its reload bumps every
+    // table's version, which would make any not-yet-applied table changes stale).
+    // Returns true if the page is being reloaded after a full success.
+    async function applyStagedPages(paths) {
+        const tableResult = await applyTablePages(paths.filter(isTablePagePath));
+        if (!tableResult.ok) return false;
+
+        if (paths.includes('/config') && !(await applyConfigPage())) {
+            // Tables were already applied, so this page's rows are stale; a
+            // plain reload (still subject to the unpersisted-changes warning)
+            // refreshes them. Remaining config changes are restored from storage.
+            if (tableResult.applied) location.reload();
             return false;
         }
 
-        persistJustAppliedIdentities(stagedTableChanges);
-        stagedTableChanges = [];
-        stagedStorage.removeItem(stagedStorageKey);
-        updateTableBanner();
         reloadPageBypassingUnsavedWarning();
         return true;
     }
 
+    function buildApplyConfirmMessage(paths) {
+        const lines = ['Apply the staged changes for: ' + paths.map(stagingLabel).join(', ') + '?'];
+
+        if (paths.some(isTablePagePath)) {
+            lines.push('', 'Table files are saved safely, with a ' + configBackupExt + ' backup of their old state created first.');
+        }
+        if (paths.includes('/config')) {
+            lines.push('', 'Applying config changes will overwrite ' + configFileName + ' and gracefully restart listeners. The existing ' +
+                configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.');
+            const leftover = stagedPagesNow().filter(page => page.path !== '/config' && !paths.includes(page.path));
+            if (leftover.length > 0) {
+                lines.push('', 'WARNING: a config reload invalidates staged changes on other pages, so the staged changes for ' +
+                    leftover.map(page => page.label).join(', ') + ' would be DISCARDED as stale. Cancel and use "Apply All & Reload" ' +
+                    '(or apply those pages first) to keep them.');
+            }
+        }
+        lines.push('', 'Proceed?');
+        return lines.join('\n');
+    }
+
+    async function runStagedApply(paths, button) {
+        if (stagedApplyInFlight || paths.length === 0) return;
+        if (!confirm(buildApplyConfirmMessage(paths))) return;
+
+        stagedApplyInFlight = true;
+        let success = false;
+        try {
+            success = await withApplyButtonBusy(button, 'Applying\u2026', () => applyStagedPages(paths));
+        } catch (err) {
+            console.error('Unexpected error while applying staged changes:', err);
+            alert('Unexpected error while applying staged changes:\n' + (err instanceof Error ? err.message : String(err)));
+        } finally {
+            if (!success) stagedApplyInFlight = false;
+        }
+    }
+
+    // ── Config page: staged value <-> row helpers ──
+
+    function configValueMatchesRowType(type, value) {
+        switch (type) {
+            case 'int': return typeof value === 'number';
+            case 'bool': return typeof value === 'boolean';
+            case 'string': return typeof value === 'string';
+            case '[]string': return Array.isArray(value);
+            default: return false;
+        }
+    }
+
+    function configDisplayValue(type, value) {
+        return type === '[]string' ? value.join(', ') : String(value);
+    }
+
+    function applyStagedConfigToRow(row, parsedVal, displayVal) {
+        row.querySelector('.display-value').innerText = displayVal;
+        row.dataset.original = displayVal;
+        if (row.dataset.type === '[]string') {
+            // Keep the JSON-backed value in sync with what was just staged,
+            // so re-opening Edit on this row before Apply shows the staged
+            // list instead of silently reverting to the pristine server value.
+            row.dataset.listJson = JSON.stringify(parsedVal);
+        }
+        row.classList.add('staged');
+    }
+
+    function restoreStagedConfigChanges() {
+        const record = readStoredConfigRecord();
+        if (!record) return;
+        currentPageFirstStagedAt = record.firstStagedAt;
+
+        for (const [key, value] of Object.entries(record.changes)) {
+            const row = document.getElementById('configRow_' + key);
+            if (!row || row.dataset.isPwd === 'true' || !configValueMatchesRowType(row.dataset.type, value)) {
+                console.warn('restoreStagedConfigChanges: skipping staged value that no longer fits any config row:', key);
+                continue;
+            }
+            stagedChanges[key] = value;
+            applyStagedConfigToRow(row, value, configDisplayValue(row.dataset.type, value));
+        }
+        applyConfigFilter();
+        updateBanner();
+    }
 
     // withApplyButtonBusy disables `button` and swaps in `busyLabel` for the
     // duration of the async `fn`, guarding against a second click firing a
@@ -2764,15 +3252,7 @@
 
             // Save to object, modify UI, flag it
             stagedChanges[key] = parsedVal;
-            row.querySelector('.display-value').innerText = displayVal;
-            row.dataset.original = displayVal;
-            if (type === '[]string') {
-                // Keep the JSON-backed value in sync with what was just staged,
-                // so re-opening Edit on this row before Apply shows the staged
-                // list instead of silently reverting to the pristine server value.
-                row.dataset.listJson = JSON.stringify(parsedVal);
-            }
-            row.classList.add('staged');
+            applyStagedConfigToRow(row, parsedVal, displayVal);
             row.classList.remove('being-edited');
 
             editRow.remove();
@@ -2866,39 +3346,9 @@
     }
 
     function updateBanner() {
-        const count = Object.keys(stagedChanges).length;
-        const banner = document.getElementById('stagedChangesBanner');
-        // Use the `hidden` attribute (matching updateTableBanner's approach
-        // for the Rules/Hosts/Blacklist staged-table banners) instead of an
-        // inline style, so the banner's default HTML state and its
-        // JS-driven state can never disagree — this is what was leaving
-        // "Unsaved Changes! 0 modification(s)" visible on first load and
-        // after Discard All (which reloads the page without ever calling
-        // this function).
-        banner.hidden = count === 0;
-        document.getElementById('stagedCount').innerText = count;
-        const applyBtn = document.getElementById('js-apply-config-btn');
-        if (applyBtn) applyBtn.disabled = count === 0;
-    }
-
-    async function applyConfigChanges(e) {
-        if (Object.keys(stagedChanges).length === 0) return;
-        if (!confirm('Applying changes will overwrite ' + configFileName + ' and gracefully restart listeners.\n\n' +
-            'The existing ' + configFileName + ' will be safely backed up to ' + configFileName + configBackupExt + ' first.\n\nProceed?')) return;
-
-        const success = await withApplyButtonBusy(e.currentTarget, 'Applying\u2026', () => postAdminForm(
-            '/config', {
-            'action': 'apply',
-            'payload': JSON.stringify(stagedChanges),
-            'config_version': configVersion
-        }, 'Failed to apply configuration'));
-
-        if (success) {
-            // Clear the object to disarm the beforeunload listener before reloading!
-            for (const key in stagedChanges) { delete stagedChanges[key]; }
-
-            reloadPageBypassingUnsavedWarning();
-        }
+        trackCurrentPageFirstStagedAt(Object.keys(stagedChanges).length);
+        persistStagedConfigChanges();
+        renderStagedStack();
     }
 
     // --- Column resize (drag) + double-click auto-fit, applied generically to
@@ -3505,10 +3955,11 @@
             // native "leave site?" prompt.
             if (suppressUnloadWarning) return;
 
-            const hasTableChanges = stagedTableChanges.length > 0;
-            const hasConfigChanges = Object.keys(stagedChanges).length > 0;
-
-            if (hasTableChanges || hasConfigChanges) {
+            // Staged changes survive navigation (sessionStorage, restored per
+            // page and shown in the staged stack on every page), so only warn
+            // about what would REALLY be lost: a staged WebUI password (never
+            // persisted) or changes whose storage write failed.
+            if (hasUnpersistedStagedChanges()) {
                 // Modern standard way to trigger the confirmation dialog
                 e.preventDefault();
 
@@ -3521,31 +3972,6 @@
 
         // Global Rules Table Event Delegation (Interceptors for Edit and Delete Actions)
         document.addEventListener('click', function (e) {
-            // Table-staging Apply / Discard buttons
-            if (e.target.closest('.js-discard-table-btn')) {
-                if (!confirm('Discard all staged changes?')) return;
-                stagedTableChanges = []; // Bypass the beforeunload block!
-                stagedStorage.removeItem(stagedStorageKey);
-                reloadPageBypassingUnsavedWarning();
-                return;
-            }
-            if (e.target.closest('.js-apply-table-btn')) {
-                const applyBtn = e.target.closest('.js-apply-table-btn');
-                if (!confirm('Apply all staged changes?\n(a .bak file will be created with the old state)')) return;
-                // applyStagedTableChanges() already handles every outcome on its
-                // own: it clears stagedTableChanges, clears sessionStorage,
-                // updates the banner, and reloads on full success; on a 409
-                // (version conflict) it leaves everything untouched so the user
-                // can manually refresh; on a 422 (partial failure) it filters
-                // out only the entries that succeeded, re-persists the rest,
-                // and deliberately does NOT reload, so the surviving staged
-                // entries aren't wiped out from under the user. Don't
-                // second-guess that here with an unconditional clear+reload.
-                withApplyButtonBusy(applyBtn, 'Applying\u2026', () => applyStagedTableChanges())
-                    .catch(err => console.error('Unexpected error while applying staged changes:', err));
-                return;
-            }
-
             // 1. Check if the element clicked (or its nested contents) matches our class
             const editBtn = e.target.closest('.btn-edit');
             if (editBtn) {
@@ -4448,22 +4874,6 @@
             });
         });
 
-        const applyConfigBtn = document.getElementById('js-apply-config-btn');
-        if (applyConfigBtn) {
-            applyConfigBtn.addEventListener('click', applyConfigChanges);
-        }
-
-        const discardConfigBtn = document.getElementById('js-discard-config-btn');
-        if (discardConfigBtn) {
-            discardConfigBtn.addEventListener('click', () => {
-                if (confirm('Discard all staged config changes?')) {
-                    // Empty the staged changes object safely, else beforeunload will prevent reload!
-                    for (const key in stagedChanges) { delete stagedChanges[key]; }
-                    reloadPageBypassingUnsavedWarning();
-                }
-            });
-        }
-
         setupTableFilterInput('configFilter', 'configTable_filter', applyConfigFilter);
 
         // ── Stats page: Shutdown ───
@@ -4767,35 +5177,36 @@
             }
         }
 
-        const restoredChanges = loadStoredStagedTableChanges();
-        if (restoredChanges) {
-            // Auto-restore without prompting: these changes were staged but
-            // never successfully applied (e.g. the tab was reloaded/closed
-            // mid-edit, or a previous Apply only partially succeeded and
-            // reloaded to show the remainder), so silently discarding them
-            // would be the more surprising and costlier mistake. If they
-            // aren't wanted, "Discard All" — shown as soon as the staged-table
-            // banner appears below — removes them just as easily as declining
-            // a prompt would have.
-            stagedTableChanges = restoredChanges;
-            for (const change of stagedTableChanges) {
-                renderStoredStagedChange(change);
+        // Summaries of the OTHER staging pages first, so the staged stack is
+        // complete the first time it renders.
+        initOtherStagedSummaries();
+
+        if (currentStagingPage && currentStagingPage.kind === 'tables') {
+            const record = readStoredTableRecord(tablePageKey);
+            if (record) {
+                // Auto-restore without prompting: these changes were staged but
+                // never successfully applied, so silently discarding them would
+                // be the costlier mistake; "Discard" in the staged stack removes them.
+                stagedTableChanges = record.changes;
+                currentPageFirstStagedAt = record.firstStagedAt;
+                for (const change of stagedTableChanges) {
+                    renderStoredStagedChange(change);
+                }
+                // A restored staged EDIT only updates that row's display and adds
+                // 'staged'; re-running the filters un-hides any restored row an
+                // earlier-restored filter had hidden (staged rows always show).
+                applyRulesFilter();
+                applyHostsFilter();
+                applyBlacklistFilter();
+                applyQueryBlocklistFilter();
+                updateTableBanner();
             }
-            // A restored staged EDIT of an existing row only updates that
-            // row's display and adds the 'staged' class — it never touches
-            // .filtered-out. If that row was hidden by a filter restored
-            // earlier in this same DOMContentLoaded pass (before this
-            // restore ran), it would otherwise stay invisible even though
-            // it's now staged and must always be shown. Re-running the
-            // filters clears .filtered-out on every staged row via the
-            // alwaysShowStaged branch above.
-            applyRulesFilter();
-            applyHostsFilter();
-            applyBlacklistFilter();
-            applyQueryBlocklistFilter();
-            updateTableBanner();
+        } else if (currentStagingPage && currentStagingPage.kind === 'config') {
+            restoreStagedConfigChanges();
         }
 
+        initStagedStack();
+        
         // --- Generic Sorting Framework Initialization ---
         function setupTableSorting(tableId, storageKeyPrefix, postSortCallback) {
             const table = document.getElementById(tableId);

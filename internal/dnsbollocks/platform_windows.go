@@ -74,7 +74,6 @@ import (
 	"github.com/patrickmn/go-cache"
 	"github.com/workturnedplay/dnsbollocks/templates"
 	"github.com/workturnedplay/wincoe"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/idna"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
@@ -9963,6 +9962,25 @@ func (ui *AdminUI) queryBlocklistVersionToken() string {
 	return tableVersionToken(ui.queryBlocklistStore.Generation(), ui.getConfig().QueryBlocklistFile)
 }
 
+// configVersionToken returns the optimistic-concurrency token for
+// config.json: its on-disk modification time in Unix nanoseconds, or "0" if
+// the file doesn't exist yet (first-time setup) or couldn't be stat-ed. The
+// WebUI sends it back on Apply (see configHandler) and also uses it to
+// invalidate staged config changes that were persisted before config.json
+// changed on disk.
+func (ui *AdminUI) configVersionToken() string {
+	fi, statErr := os.Stat(configFileName)
+	switch {
+	case statErr == nil:
+		return strconv.FormatInt(fi.ModTime().UnixNano(), 10)
+	case errors.Is(statErr, os.ErrNotExist):
+		return "0"
+	default:
+		ui.getLogger().Warn("configVersionToken: could not stat config file for version token", wincoe.SafeErr(statErr))
+		return "0"
+	}
+}
+
 func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageName string, data map[string]any) {
 	log := ui.getLogger()
 	data["Page"] = pageName //Page aka TemplateName (tho the latter isn't used, but AI might suggest it mistakenly)
@@ -9974,6 +9992,9 @@ func (ui *AdminUI) renderTemplate(w http.ResponseWriter, r *http.Request, pageNa
 	data["HostsVersion"] = tableVersionToken(ui.hostStore.Generation(), cfg.HostsFile)
 	data["BlacklistVersion"] = tableVersionToken(ui.blacklist.Generation(), cfg.BlacklistFile)
 	data["QueryBlocklistVersion"] = ui.queryBlocklistVersionToken()
+	// Needed on EVERY page (not just /config): app.js validates staged config
+	// changes persisted by the /config page against it, see tableVersionData in ui.html.
+	data["ConfigVersion"] = ui.configVersionToken()
 
 	// Inject the CSRF token into the map
 	if token, ok := r.Context().Value(csrfTokenKey{}).(string); ok {
@@ -12984,20 +13005,14 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 			// read side is intentionally generous (see computeUpstreamReadTimeoutDuration), this
 			// keeps handshake time bounded on its own instead of inheriting that laxity.
 			TLSHandshakeTimeout: secondsToDuration(cfg.UpstreamClientTimeoutSec),
-			Proxy:               nil,  // avoid proxy interference
-			ForceAttemptHTTP2:   true, // allow http2 negotiation via ALPN (needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC."
+			Proxy:               nil, // avoid proxy interference
+			// Explicit HTTP/1.1+HTTP/2 via ALPN (HTTP/2 is needed for 9.9.9.9 due to it saying this "This server implements RFC 8484 - DNS Queries over HTTP, and requires HTTP/2 in accordance with section 5.2 of the RFC.")
+			Protocols: newUpstreamTransportProtocols(),
+			// Proactive HTTP/2 health checks (PING after idle, evict zombie conns), see newUpstreamHTTP2Config.
+			HTTP2:               newUpstreamHTTP2Config(cfg),
 			IdleConnTimeout:     secondsToDuration(cfg.UpstreamIdleConnTimeoutSec),
 			MaxIdleConns:        cfg.UpstreamMaxIdleConns,
 			MaxIdleConnsPerHost: cfg.UpstreamMaxIdleConnsPerHost,
-		}
-		// --- NEW: Proactive HTTP/2 Health Checks ---
-		// This extracts the hidden HTTP/2 transport and configures PING frames.
-		t2, err := http2.ConfigureTransports(t)
-		if err == nil {
-			// If the connection is idle (no reads) for 5 seconds, send an HTTP/2 PING.
-			t2.ReadIdleTimeout = secondsToDuration(cfg.UpstreamH2ReadIdleTimeoutSec) //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the below t2.PingTimeout for any clamps?
-			// If the upstream doesn't ACK the PING within 2 seconds, destroy the zombie connection.
-			t2.PingTimeout = secondsToDuration(cfg.UpstreamH2PingTimeoutSec) //doneTODO: shall we make this configurable in config.json or base it on something that already exists and makes sense to be based on? and/or on the above t2.ReadIdleTimeout for any clamps? Also how does this fare with the dialer's KeepAlive of 15 sec from above? do we need to change things or their timeout values to make these work well together?
 		}
 
 		um.dohTransportsPtrs = append(um.dohTransportsPtrs, t)
@@ -13032,6 +13047,29 @@ func (um *UpstreamManager) buildSet(rebuild bool) *UpstreamSet {
 	return newSet
 }
 
+// newUpstreamTransportProtocols returns the protocol set every upstream DoH
+// transport uses: HTTP/1.1 and HTTP/2 (negotiated via ALPN, h2 preferred).
+// A fresh value is returned per transport so no two transports ever share a
+// mutable *http.Protocols.
+func newUpstreamTransportProtocols() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetHTTP2(true)
+	return p
+}
+
+// newUpstreamHTTP2Config builds the HTTP/2 health-check settings for an
+// upstream transport: after UpstreamH2ReadIdleTimeoutSec of silence an HTTP/2
+// PING is sent, and if no reply arrives within UpstreamH2PingTimeoutSec the
+// zombie connection is closed. (Replaces the deprecated
+// x/net/http2 ConfigureTransports + ReadIdleTimeout/PingTimeout fields.)
+func newUpstreamHTTP2Config(cfg *Config) *http.HTTP2Config {
+	return &http.HTTP2Config{
+		SendPingTimeout: secondsToDuration(cfg.UpstreamH2ReadIdleTimeoutSec),
+		PingTimeout:     secondsToDuration(cfg.UpstreamH2PingTimeoutSec),
+	}
+}
+
 // DoHForwarder is the testable seam around UpstreamManager.ForwardToDoH.
 // Swap in a mock to exercise handleDNSQuery without any real network calls.
 type DoHForwarder interface {
@@ -13060,7 +13098,7 @@ func (rl *ClientRateLimiter) UpdateConfig(cfg RateLimitConfig) {
 // per-request budget fires on every idle gap longer than that, tearing the connection down and
 // forcing a brand-new TCP+TLS+HTTP/2 handshake on the very next query, silently defeating
 // pooling. Dead/zombie connections are instead primarily detected by the HTTP/2 transport's own
-// ReadIdleTimeout+PingTimeout health check (configured via http2.ConfigureTransports below),
+// SendPingTimeout+PingTimeout health check (configured via http.Transport.HTTP2 below),
 // which pings after upstream_h2_read_idle_timeout_sec of silence and evicts the connection if no
 // PONG arrives within upstream_h2_ping_timeout_sec. That ping/pong traffic still flows through
 // this same wrapped Read(), so summing all three durations guarantees this raw deadline only
@@ -14403,22 +14441,10 @@ func (ui *AdminUI) configHandler(w http.ResponseWriter, r *http.Request) {
 	log := ui.getLogger()
 
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		// Optimistic-concurrency version token: embed the config file's mod-time
-		// so the browser can send it back on Apply and we can detect staleness.
-		var configVersion string
-		if fi, statErr := os.Stat(configFileName); statErr == nil {
-			configVersion = fmt.Sprintf("%d", fi.ModTime().UnixNano())
-		} else if os.IsNotExist(statErr) {
-			configVersion = "0" // file not yet created — first-time setup
-		} else {
-			log.Warn("configHandler: could not stat config file for version token", wincoe.SafeErr(statErr))
-			configVersion = "0"
-		}
-
+		// ConfigVersion (optimistic-concurrency token) is injected by renderTemplate.
 		data := map[string]any{
 			"Fields": ui.getConfigFields(),
 
-			"ConfigVersion":   configVersion,
 			"ConfigFileName":  configFileName,
 			"ConfigBackupExt": wincoe.BackupFileExtension,
 

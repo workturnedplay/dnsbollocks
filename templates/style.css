@@ -354,17 +354,10 @@ mark.filter-highlight {
     color: #dcdcdc;
 }
 
-/* Config Sub-view Specifics */
-.staged-changes-banner {
-    background: var(--accent);
-    color: white;
-    padding: 15px;
-    border-radius: 4px;
-    /* position: fixed removes the banner from normal document flow entirely,
-       so toggling its `hidden` attribute (when staged changes appear or
-       disappear) never shifts any other content on the page — it simply
-       floats above whatever currently occupies the top of the viewport
-       instead of reserving space inline. */
+/* Stack of "unsaved changes" items, one per WebUI page with staged changes
+   (see renderStagedStack in app.js). position: fixed removes it from normal
+   flow, so items appearing/disappearing never shifts other page content. */
+.staged-stack {
     position: fixed;
     top: 10px;
     left: 50%;
@@ -372,14 +365,49 @@ mark.filter-highlight {
     width: 95%;
     max-width: 2000px;
     min-width: 800px;
+    max-height: 60vh;
+    overflow-y: auto;
     box-sizing: border-box;
     z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.staged-stack-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    background: var(--accent);
+    color: white;
+    padding: 10px 15px;
+    border-radius: 4px;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
 
-.config-banner-actions {
-    float: right;
-    margin-top: -6px;
+.staged-stack-item-all {
+    background: var(--accent-hover);
+    border: 1px solid var(--text-strong);
+}
+
+.staged-stack-item-notice {
+    background: var(--warning);
+    color: #000;
+}
+
+.staged-stack-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.staged-stack-link {
+    color: white;
+    font-weight: 600;
+    text-decoration: underline;
+    margin-left: 8px;
 }
 
 .btn-padded {

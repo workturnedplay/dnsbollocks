@@ -27,7 +27,11 @@
     <div class="container">
         <h1>DNSbollocks <span class="version-badge" title="Build version">{{.Version}}</span></h1>
         <div id="tableVersionData" hidden data-rules-version="{{.RulesVersion}}" data-hosts-version="{{.HostsVersion}}"
-            data-blacklist-version="{{.BlacklistVersion}}" data-query-blocklist-version="{{.QueryBlocklistVersion}}">
+            data-blacklist-version="{{.BlacklistVersion}}" data-query-blocklist-version="{{.QueryBlocklistVersion}}"
+            data-config-version="{{.ConfigVersion}}">
+        </div>
+        {{/* Filled by app.js (renderStagedStack): one item per WebUI page with staged changes, plus an Apply All item when 2+ pages are staged. */}}
+        <div id="stagedStack" class="staged-stack" role="region" aria-label="Staged changes" aria-live="polite" hidden>
         </div>
         <nav>
             <a href="/query-blocklist" {{if eq .Page "query-blocklist" }} class="active" {{end}}>Query Blocklist</a>
@@ -78,15 +82,6 @@
 
 </html>
 
-{{define "staged-table-banner"}}
-<div class="staged-table-banner staged-changes-banner" hidden>
-    <strong>Unsaved Changes!</strong> You have staged <span class="staged-table-count">0</span> modification(s).
-    <div class="config-banner-actions">
-        <button type="button" class="btn-save btn-padded js-apply-table-btn" disabled>Apply &amp; Reload</button>
-        <button type="button" class="btn-discard-all js-discard-table-btn">Discard All</button>
-    </div>
-</div>
-{{end}}
 {{define "alert-banner"}}
 {{if .ErrorMessage}}
 <div class="alert-error">
@@ -142,7 +137,6 @@
 </div>
 
 <h2>Whitelist Rules</h2>
-{{template "staged-table-banner" .}}
 <table id="rulesTable">
     <colgroup>
         <col class="col-8" data-col-id="type">
@@ -560,7 +554,6 @@ setupRememberedDetails in app.js) --- */}}
 </div>
 
 <h2>Local Hosts</h2>
-{{template "staged-table-banner" .}}
 <table id="hostsTable">
     <colgroup>
         <col class="col-20" data-col-id="pattern">
@@ -714,7 +707,6 @@ setupRememberedDetails in app.js) --- */}}
 </div>
 
 <h2>Blacklisted IPs/CIDRs (in DNS replies)</h2>
-{{template "staged-table-banner" .}}
 <table id="blacklistTable">
     <colgroup>
         <col class="col-30" data-col-id="cidr">
@@ -843,7 +835,6 @@ setupRememberedDetails in app.js) --- */}}
 </div>
 
 <h2>Local Query-Blocklist Rules</h2>
-{{template "staged-table-banner" .}}
 <table id="queryBlocklistTable">
     <colgroup>
         <col class="col-8" data-col-id="category">
@@ -1117,14 +1108,6 @@ setupRememberedDetails in app.js) --- */}}
     Modify configuration parameters below. Changes are staged locally and must be committed via the "Apply & Reload"
     button. Modifying listener parameters will restart those listeners and may momentarily drop active connections.
 </p>
-
-<div id="stagedChangesBanner" class="staged-changes-banner" hidden>
-    <strong>Unsaved Changes!</strong> You have staged <span id="stagedCount">0</span> modification(s).
-    <div class="config-banner-actions">
-        <button class="btn-save btn-padded" id="js-apply-config-btn" disabled>Apply &amp; Reload</button>
-        <button id="js-discard-config-btn" class="btn-discard-all">Discard All</button>
-    </div>
-</div>
 
 <div class="mb-20 filter-row">
     <label class="filter-label" for="configFilter">Filter:</label>
