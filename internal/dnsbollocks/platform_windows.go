@@ -2606,6 +2606,12 @@ type BlockedQuery struct {
 	// timestamp. Computed on read (see populateBlockedQueryDisplayFields).
 	TimeDisplay string `json:"-"`
 
+	// TimeUnixNano is Time as a decimal Unix-nanosecond string (a string, not a
+	// number, so JS can parse it into a BigInt without precision loss). The
+	// /blocks and /allows pages use it to place the "already seen" separator.
+	// Computed on read (see populateBlockedQueryDisplayFields).
+	TimeUnixNano string `json:"-"`
+
 	// IsLowPriorityType marks record types (AAAA/HTTPS) that operators rarely
 	// act on, so the /blocks and /allows pages render them dimmed instead of
 	// hiding them. Computed on read (see isLowPriorityRecordType).
@@ -10065,6 +10071,7 @@ func isLowPriorityRecordType(qtype string) bool {
 func (ui *AdminUI) populateBlockedQueryDisplayFields(bq *BlockedQuery) {
 	bq.DomainDisplay, _ = punycodeDecodePatternForDisplay(bq.Domain)
 	bq.TimeDisplay = formatModifiedAt(bq.Time)
+	bq.TimeUnixNano = strconv.FormatInt(bq.Time.UnixNano(), 10)
 	bq.IsLowPriorityType = isLowPriorityRecordType(bq.Type)
 	ui.populateQueryBlocklistRowState(bq)
 }

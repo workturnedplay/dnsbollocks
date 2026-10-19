@@ -1393,7 +1393,7 @@
             }
             applyQueryBlocklistFilter();
             updateTableBanner();
-        }, { once: true });
+        }); // no { once: true }: a declined confirm() must leave Discard usable
 
         ensureRowMatchesTableOrder(editRow, document.getElementById('queryBlocklistTable'));
         row.after(clone);
@@ -1706,9 +1706,39 @@
         return pages;
     }
 
-    function buildStagedItem({ strongText, text, itemClass = '', href = '', buttons = [] }) {
+    // True while at least one inline-edit row is open on a staging page
+    // (Rules/Hosts/Blacklist/Query-Blocklist/Config). <template> contents are
+    // not part of the document, so the unopened edit templates never match.
+    function isInlineEditActive() {
+        return currentStagingPage !== null &&
+            document.querySelector('tr.edit-row, tr.edit-host-row') !== null;
+    }
+
+    // Edit-active state as of the last renderStagedStack call; lets the
+    // MutationObserver below skip redundant re-renders.
+    let stagedStackEditActive = false;
+
+    function stagedApplyAllButtonSpecs() {
+        return [
+            { className: 'btn-save btn-padded', label: 'Apply All & Reload', action: 'apply-all' },
+            { className: 'btn-discard-all', label: 'Discard All', action: 'discard-all' },
+        ];
+    }
+
+    function stagedPageButtonSpecs(path) {
+        return [
+            { className: 'btn-save btn-padded', label: 'Apply & Reload', action: 'apply', path },
+            { className: 'btn-discard-all', label: 'Discard', action: 'discard', path },
+        ];
+    }
+
+    // ghost=true builds a layout-only placeholder: same markup (so the same
+    // height) as the real item, but invisible+disabled buttons, hidden from
+    // assistive tech, and no data-staged-* hooks for the click handler.
+    function buildStagedItem({ strongText, text, itemClass = '', href = '', buttons = [], ghost = false }) {
         const item = document.createElement('div');
         item.className = ('staged-stack-item ' + itemClass).trim();
+        if (ghost) item.setAttribute('aria-hidden', 'true');
 
         const message = document.createElement('span');
         const strong = document.createElement('strong');
@@ -1725,15 +1755,20 @@
         item.appendChild(message);
 
         const actions = document.createElement('div');
-        actions.className = 'staged-stack-actions';
+        actions.className = 'staged-stack-actions' + (ghost ? ' staged-stack-actions-ghost' : '');
         for (const spec of buttons) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = spec.className;
             button.textContent = spec.label;
-            button.dataset.stagedAction = spec.action;
-            if (spec.path) button.dataset.stagedPath = spec.path;
-            if (spec.noticeIndex !== undefined) button.dataset.stagedNoticeIndex = String(spec.noticeIndex);
+            if (ghost) {
+                button.disabled = true;
+                button.tabIndex = -1;
+            } else {
+                button.dataset.stagedAction = spec.action;
+                if (spec.path) button.dataset.stagedPath = spec.path;
+                if (spec.noticeIndex !== undefined) button.dataset.stagedNoticeIndex = String(spec.noticeIndex);
+            }
             actions.appendChild(button);
         }
         item.appendChild(actions);
@@ -1745,8 +1780,19 @@
         if (!stack) return;
 
         const pages = stagedPagesNow();
+        const editActive = isInlineEditActive();
+        stagedStackEditActive = editActive;
+
+        // While editing, reserve the room the current page's staged item (and
+        // possibly the Apply All item) will need once the first Stage lands,
+        // so pressing Stage never makes the rows jump down. `pages` holds only
+        // OTHER pages here (the current one has nothing staged), so with
+        // exactly one of them, staging makes it two and Apply All appears.
+        const reserveCurrent = editActive && currentPageStagedCount() === 0;
+        const reserveApplyAll = reserveCurrent && pages.length === 1;
+
         stack.textContent = '';
-        stack.hidden = pages.length === 0 && stagingNotices.length === 0;
+        stack.hidden = pages.length === 0 && stagingNotices.length === 0 && !reserveCurrent;
 
         if (pages.length > 1) {
             const total = pages.reduce((sum, page) => sum + page.count, 0);
@@ -1754,10 +1800,15 @@
                 strongText: 'Unsaved changes on ' + pages.length + ' pages!',
                 text: total + ' staged modification(s) in total.',
                 itemClass: 'staged-stack-item-all',
-                buttons: [
-                    { className: 'btn-save btn-padded', label: 'Apply All & Reload', action: 'apply-all' },
-                    { className: 'btn-discard-all', label: 'Discard All', action: 'discard-all' },
-                ],
+                buttons: stagedApplyAllButtonSpecs(),
+            }));
+        } else if (reserveApplyAll) {
+            stack.appendChild(buildStagedItem({
+                strongText: 'Apply All:',
+                text: 'space reserved while Edit mode is active.',
+                itemClass: 'staged-stack-item-all staged-stack-item-placeholder',
+                buttons: stagedApplyAllButtonSpecs(),
+                ghost: true,
             }));
         }
 
@@ -1766,10 +1817,17 @@
                 strongText: page.label + ':',
                 text: page.count + ' staged modification(s), not applied yet.',
                 href: page.isCurrent ? '' : page.path,
-                buttons: [
-                    { className: 'btn-save btn-padded', label: 'Apply & Reload', action: 'apply', path: page.path },
-                    { className: 'btn-discard-all', label: 'Discard', action: 'discard', path: page.path },
-                ],
+                buttons: stagedPageButtonSpecs(page.path),
+            }));
+        }
+
+        if (reserveCurrent) {
+            stack.appendChild(buildStagedItem({
+                strongText: currentStagingPage.label + ':',
+                text: 'nothing staged yet; this space is reserved while Edit mode is active.',
+                itemClass: 'staged-stack-item-placeholder',
+                buttons: stagedPageButtonSpecs(currentStagingPage.path),
+                ghost: true,
             }));
         }
 
@@ -1781,6 +1839,22 @@
                 buttons: [{ className: 'btn-discard-all', label: 'Dismiss', action: 'dismiss-notice', noticeIndex: index }],
             }));
         });
+    }
+
+    // Edit rows are inserted into/removed from the tables' <tbody> by many
+    // different code paths (every Edit/Cancel/Stage/Discard handler, plus the
+    // sort and column-reorder code that clicks Cancel programmatically).
+    // Observing the tbodies once keeps the stack's reservation in sync with
+    // all of them. Re-rendering only when the edit-active state actually
+    // flips avoids churn from unrelated row insertions (staged Adds etc.).
+    function watchInlineEditForStackReservation() {
+        if (typeof MutationObserver !== 'function') return;
+        const tbodies = document.querySelectorAll('table tbody');
+        if (tbodies.length === 0) return;
+        const observer = new MutationObserver(() => {
+            if (isInlineEditActive() !== stagedStackEditActive) renderStagedStack();
+        });
+        tbodies.forEach(tbody => observer.observe(tbody, { childList: true }));
     }
 
     function initOtherStagedSummaries() {
@@ -1800,6 +1874,7 @@
         if (!stack) return;
         stack.addEventListener('click', onStagedStackClick);
         renderStagedStack();
+        watchInlineEditForStackReservation();
     }
 
     async function onStagedStackClick(e) {
@@ -2785,7 +2860,7 @@
             }
             applyHostsFilter();
             updateTableBanner();
-        }, { once: true });
+        }); // no { once: true }: a declined confirm() must leave Discard usable
 
         // 6. Insert cleanly into the DOM (cells aligned to current column order)
         ensureRowMatchesTableOrder(editRow, document.getElementById('hostsTable'));
@@ -2896,7 +2971,7 @@
             }
             applyBlacklistFilter();
             updateTableBanner();
-        }, { once: true });
+        }); // no { once: true }: a declined confirm() must leave Discard usable
 
         ensureRowMatchesTableOrder(editRow, document.getElementById('blacklistTable'));
         row.after(clone);
@@ -3961,12 +4036,66 @@
         update();
     }
 
+        // --- Recent Blocks / Recent Allows: "already seen" separator ---
+    // Entries are listed newest-first and a repeated entry gets a fresh
+    // timestamp (and moves to the top), so "seen on the previous view" is
+    // simply "timestamp <= the newest timestamp shown on the previous view".
+    // The line is inserted before the first such entry; anything above it is
+    // new or was updated since. The boundary is remembered per page
+    // (/blocks and /allows independently) in localStorage via uiStorage.
+
+    // parseTimeNs parses a decimal Unix-nanosecond string into a BigInt
+    // (nanosecond values exceed Number's exact-integer range); returns null for
+    // anything that is not a plain run of digits (BigInt('') would be 0n and
+    // BigInt('abc') would throw, so validate first).
+    function parseTimeNs(raw) {
+        if (typeof raw !== 'string' || !/^\d{1,30}$/.test(raw)) return null;
+        return BigInt(raw);
+    }
+
+    function setupSeenSeparator() {
+        const list = document.querySelector('ul.js-recent-entries-list');
+        if (!list) return;
+
+        const entries = [];
+        for (const li of list.querySelectorAll(':scope > li[data-time-ns]')) {
+            entries.push({ li, ns: parseTimeNs(li.dataset.timeNs) });
+        }
+        // Empty list ("No recent blocks."): keep whatever boundary is stored.
+        if (entries.length === 0) return;
+
+        const storageKey = 'recentSeenBoundary_' + tablePageKey;
+        const previousBoundary = parseTimeNs(uiStorage.getItem(storageKey));
+
+        let newest = null;
+        for (const { ns } of entries) {
+            if (ns !== null && (newest === null || ns > newest)) newest = ns;
+        }
+
+        if (previousBoundary !== null) {
+            const firstSeen = entries.find(({ ns }) => ns !== null && ns <= previousBoundary);
+            if (firstSeen) {
+                const separator = document.createElement('li');
+                separator.className = 'seen-separator';
+                separator.setAttribute('role', 'separator');
+                separator.textContent = '\u25B2 new or updated since your last view \u00B7 already seen on your last view \u25BC';
+                list.insertBefore(separator, firstSeen.li);
+            }
+        }
+
+        // The boundary only ever moves forward.
+        if (newest !== null && (previousBoundary === null || newest > previousBoundary)) {
+            uiStorage.setItem(storageKey, newest.toString());
+        }
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function () {
 
         setupRememberedDetails();
         setupCopyButtons();
         setupScrollButtons();
+        setupSeenSeparator();
 
         // Consolidated Keyboard Handler ensuring typing and Escape contexts operate precisely
         document.addEventListener('keydown', function (e) {
@@ -4189,7 +4318,7 @@
                     }
                     applyRulesFilter();
                     updateTableBanner();
-                }, { once: true });
+                }); // no { once: true }: a declined confirm() must leave Discard usable
 
                 // 6. Insert cleanly next to the original row (cells match column order)
                 ensureRowMatchesTableOrder(editRow, document.getElementById('rulesTable'));

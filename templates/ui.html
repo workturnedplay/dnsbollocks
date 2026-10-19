@@ -295,9 +295,9 @@ setupRememberedDetails in app.js) --- */}}
     </form>
 </div>
 
-<ul>
+<ul class="js-recent-entries-list">
     {{range .Blocks}}
-    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}data-time-ns="{{.TimeUnixNano}}">
         <span class="block-time"
             title="Most recent time this query was blocked (local time). Repeat blocks answered from the DNS cache do not refresh it.">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> {{template "copy-btn" .DomainDisplay}} <span class="tag-disabled">({{.Type}})</span>
@@ -424,9 +424,9 @@ setupRememberedDetails in app.js) --- */}}
     </form>
 </div>
 
-<ul>
+<ul class="js-recent-entries-list">
     {{range .Allowed}}
-    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}>
+    <li {{if .IsLowPriorityType}}class="block-entry-dim" {{end}}data-time-ns="{{.TimeUnixNano}}">
         <span class="block-time" title="Most recent time this query was allowed (local time).">{{.TimeDisplay}}</span>
         <code>{{.DomainDisplay}}</code> {{template "copy-btn" .DomainDisplay}} <span class="tag-disabled">({{.Type}})</span>
 

@@ -264,3 +264,59 @@ func TestAllowsHandler_RendersCopyButtonPerEntry(t *testing.T) {
 	}
 	assertCopyButtonsRendered(t, rec.Body.String(), "allowed.example.com")
 }
+
+func assertSeenSeparatorHooksRendered(t *testing.T, body string, wantTimes []string) {
+	t.Helper()
+	if !strings.Contains(body, `class="js-recent-entries-list"`) {
+		t.Error("expected the entries <ul> to carry the js-recent-entries-list hook")
+	}
+	if n := strings.Count(body, `data-time-ns="`); n != len(wantTimes) {
+		t.Errorf("want %d data-time-ns attributes, got %d", len(wantTimes), n)
+	}
+	for _, ts := range wantTimes {
+		if ts == "" {
+			t.Error("TimeUnixNano must never be empty")
+			continue
+		}
+		if !strings.Contains(body, `data-time-ns="`+ts+`"`) {
+			t.Errorf("missing data-time-ns=%q", ts)
+		}
+	}
+}
+
+func TestBlocksHandler_RendersSeenSeparatorHooks(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	ui.uiTemplates = uiTemplates0
+	ui.recentBlocks.Record("one.example.com", "A", 10)
+	ui.recentBlocks.Record("two.example.com", "AAAA", 10)
+
+	ui.blocksHandler(rec, httptest.NewRequest(http.MethodGet, "/blocks", http.NoBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var times []string
+	for _, b := range ui.getRecentBlocksCopy() {
+		times = append(times, b.TimeUnixNano)
+	}
+	assertSeenSeparatorHooksRendered(t, rec.Body.String(), times)
+}
+
+func TestAllowsHandler_RendersSeenSeparatorHooks(t *testing.T) {
+	ui, rec := setupTestAdminUI(t)
+	ui.uiTemplates = uiTemplates0
+	ui.recentAllowed = newRecentBlocksTracker()
+	ui.recentAllowed.Record("one.example.com", "A", 10)
+	ui.recentAllowed.Record("two.example.com", "A", 10)
+
+	ui.allowsHandler(rec, httptest.NewRequest(http.MethodGet, "/allows", http.NoBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var times []string
+	for _, a := range ui.getRecentAllowedCopy() {
+		times = append(times, a.TimeUnixNano)
+	}
+	assertSeenSeparatorHooksRendered(t, rec.Body.String(), times)
+}

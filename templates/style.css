@@ -387,6 +387,18 @@ mark.filter-highlight {
     color: #000;
 }
 
+/* Layout-only stand-in shown while an inline editor is open and nothing is
+   staged yet (see renderStagedStack in app.js): same height as the real item,
+   dimmed, with invisible (and disabled) buttons. */
+.staged-stack-item-placeholder {
+    opacity: 0.55;
+    box-shadow: none;
+}
+
+.staged-stack-actions-ghost {
+    visibility: hidden;
+}
+
 .staged-stack-actions {
     display: flex;
     align-items: center;
@@ -961,6 +973,19 @@ li.block-entry-dim {
 li.block-entry-dim:hover,
 li.block-entry-dim:focus-within {
     opacity: 0.9;
+}
+
+/* Recent Blocks/Allows: marks the boundary between entries that are new or
+   updated since the previous view (above) and ones already seen (below);
+   see setupSeenSeparator in app.js. */
+li.seen-separator {
+    list-style: none;
+    margin: 10px 0;
+    padding-top: 4px;
+    border-top: 2px dashed var(--accent);
+    color: var(--text-muted);
+    font-size: 0.8em;
+    text-align: center;
 }
 
 /* Add-forms whose pattern box should take all remaining horizontal space
