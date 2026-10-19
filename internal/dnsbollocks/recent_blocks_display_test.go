@@ -295,8 +295,9 @@ func TestBlocksHandler_RendersSeenSeparatorHooks(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var times []string
-	for _, b := range ui.getRecentBlocksCopy() {
+	blocks := ui.getRecentBlocksCopy()
+	times := make([]string, 0, len(blocks))
+	for _, b := range blocks {
 		times = append(times, b.TimeUnixNano)
 	}
 	assertSeenSeparatorHooksRendered(t, rec.Body.String(), times)
@@ -314,8 +315,9 @@ func TestAllowsHandler_RendersSeenSeparatorHooks(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var times []string
-	for _, a := range ui.getRecentAllowedCopy() {
+	allowed := ui.getRecentAllowedCopy()
+	times := make([]string, 0, len(allowed))
+	for _, a := range allowed {
 		times = append(times, a.TimeUnixNano)
 	}
 	assertSeenSeparatorHooksRendered(t, rec.Body.String(), times)
