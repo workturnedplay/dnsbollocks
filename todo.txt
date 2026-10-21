@@ -1,7 +1,5 @@
 my todos for dnsbollocks:
 
-* the text within filters when it is empty, should also be available in its tooltip
-
 * maybe move or copy fileWriter tests into wincoe since the impl. is there.
 
 * look for TODO and FIXME (not finished ones like doneTODO or nvmFIXME) and try to figure out how to fix. See this for v0.21.0: https://gemini.google.com/app/d9d0f04a416f0b41 from "Safety & Edge Cases" onwards.
@@ -64,3 +62,6 @@ goodenough4now//* log.Debug that a .bak file was created, and on webUI on Apply,
 //didntdothis//* get the msys64 ucrt64 info from my B drive and update README.md about it, since that's the gcc.exe that I'm using.
 
 done:
+//* the text within filters when it is empty, should also be available in its tooltip (setupFilterInputTooltips in app.js mirrors the placeholder into the title of every .table-filter-input)
+//* the text within webui's filters ie. the "Filter:" editbox on many pages, when it is empty(but also when not empty), should also be available in its mouse-hovering tooltip, otherwise it's necessary to temporarily empty it to see the filter rules text.
+

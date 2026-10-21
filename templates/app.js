@@ -4089,10 +4089,24 @@
         }
     }
 
+    // setupFilterInputTooltips mirrors every filter box's placeholder (the
+    // filter-syntax help text) into its tooltip. A placeholder is only visible
+    // while the box is empty, so without this the syntax help can only be read
+    // by temporarily clearing whatever filter is currently typed. An input
+    // that already carries its own explicit title is left untouched.
+    function setupFilterInputTooltips() {
+        document.querySelectorAll('input.table-filter-input').forEach(input => {
+            const hint = input.placeholder;
+            if (!hint || input.title) return;
+            input.title = 'Filter syntax: ' + hint;
+        });
+    }
+
     // --- Core Dynamic Initialization (DOMContentLoaded Closure Block) ---
     document.addEventListener('DOMContentLoaded', function () {
 
         setupRememberedDetails();
+        setupFilterInputTooltips();
         setupCopyButtons();
         setupScrollButtons();
         setupSeenSeparator();
