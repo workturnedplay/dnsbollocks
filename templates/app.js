@@ -4036,7 +4036,7 @@
         update();
     }
 
-        // --- Recent Blocks / Recent Allows: "already seen" separator ---
+    // --- Recent Blocks / Recent Allows: "already seen" separator ---
     // Entries are listed newest-first and a repeated entry gets a fresh
     // timestamp (and moves to the top), so "seen on the previous view" is
     // simply "timestamp <= the newest timestamp shown on the previous view".
@@ -5431,7 +5431,7 @@
         }
 
         initStagedStack();
-        
+
         // --- Generic Sorting Framework Initialization ---
         function setupTableSorting(tableId, storageKeyPrefix, postSortCallback) {
             const table = document.getElementById(tableId);
