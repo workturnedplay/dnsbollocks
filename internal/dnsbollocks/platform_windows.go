@@ -581,6 +581,46 @@ func (fs *FailoverSelector) getLogger() *slog.Logger {
 	return wincoe.GetLoggerOrFallback(fs.liveLogger, "FailoverSelector.liveLogger")
 }
 
+// errProbeSkipped is reported (instead of a real result) for a higher-priority
+// probe that was not started because an identical probe is already in flight.
+// It says nothing about that upstream's health.
+var errProbeSkipped = errors.New("skipped: probe already in flight")
+
+// upstreamFailureIsGenuine reports whether err is evidence that the upstream
+// itself is unhealthy, as opposed to our own cancellation: the caller (e.g. a
+// DoH client with a 5s budget) giving up, a server shutdown, or a skipped probe.
+func upstreamFailureIsGenuine(callerCtx context.Context, err error) bool {
+	if err == nil || errors.Is(err, errProbeSkipped) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return callerCtx.Err() == nil
+}
+
+// noteGenuineFailure records that the upstream at failedIdx genuinely failed.
+// If it is the currently active one, activeIndex advances to the next
+// upstream so subsequent queries stop paying its timeout (the failed ones
+// are then re-checked as parallel probes). Without this, a caller that gives
+// up before the sequential fallback finishes would leave activeIndex stuck at
+// 0 forever, and a total blackout could never be detected.
+func (fs *FailoverSelector) noteGenuineFailure(upstreams []Upstream, failedIdx int) {
+	fs.mu.Lock()
+	advanced := fs.activeIndex == failedIdx && failedIdx+1 < len(upstreams)
+	if advanced {
+		fs.activeIndex = failedIdx + 1
+	}
+	fs.mu.Unlock()
+
+	if advanced {
+		fs.getLogger().Warn("⚠️ Active upstream failed; subsequent queries will start from the next one (failed ones are re-probed in parallel)",
+			slog.Int("failed_index", failedIdx),
+			slog.String("failed_url", upstreams[failedIdx].URL.String()),
+			slog.String("failed_sni", upstreams[failedIdx].SNI),
+			slog.Int("new_index", failedIdx+1),
+			slog.String("new_url", upstreams[failedIdx+1].URL.String()),
+		)
+	}
+}
+
 func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, reqBytes []byte) (*dns.Msg, string, []string, error) {
 	log := fs.getLogger()
 
@@ -634,7 +674,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			//LoadOrStore(i, true): This atomically checks if an operation is already in progress for that index. If loaded is true, we immediately push a dummy error to the channel and continue, bypassing doSingleDoHRequest. This kills the log spam.
 			if _, loaded := fs.inFlightProbes.LoadOrStore(i, true); loaded {
 				// Already probing this failed upstream. Skip to prevent network and log spam.
-				resChan <- result{index: i, resp: nil, resolvedURL: upstreams[i].URL.String(), err: errors.New("skipped: probe already in flight")}
+				resChan <- result{index: i, resp: nil, resolvedURL: upstreams[i].URL.String(), err: errProbeSkipped}
 				continue
 			}
 		}
@@ -753,6 +793,9 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 
 			if res.index == currentIdx {
 				currentIdxAnswered = true
+				if upstreamFailureIsGenuine(ctx, res.err) {
+					fs.noteGenuineFailure(upstreams, res.index)
+				}
 			}
 		case <-ctx.Done():
 			// Caller gave up. Abandoned in-flight goroutines (including any
@@ -772,7 +815,7 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 	// 2. If ALL parallel attempts (0 through currentIdx) failed, only then do we
 	// step down the list sequentially to find the next working backup.
 	for i := currentIdx + 1; i < len(upstreams); i++ {
-		// FIX 2: Prevent the instant fallback loop spam during a Ctrl+C shutdown
+		// Prevent the instant fallback loop spam during a Ctrl+C shutdown
 		if ctx.Err() != nil {
 			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done): %w", ctx.Err() /*non-nil*/)
 		}
@@ -782,25 +825,27 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			fs.mu.Lock()
 			wasBlackout := fs.allFailed
 			fs.allFailed = false // Connectivity restored by a fallback!
-			// Only log if WE are the thread that is actively shifting the
-			// state away from the stale index we started with.
-			shouldLogFailover := !wasBlackout && (fs.activeIndex == currentIdx)
+			oldIdx := fs.activeIndex
 			fs.activeIndex = i
 			fs.mu.Unlock()
-			if wasBlackout { //nvmTODO: DRY(see the above copy)
+			if wasBlackout {
 				log.Warn("💚 Global blackout resolved; fallback upstream responding",
 					slog.String("url", resolvedURL),
 					slog.String("sni", target.SNI),
 					slog.Int("index", i),
 				)
-			} else if shouldLogFailover {
-				// if 2 concurrent requests happen this would've otherwise been logged twice
-				oldTarget := upstreams[currentIdx]
-				// ⚠️ New log line for the standard failover case
+			} else if oldIdx != i {
+				// Normally noteGenuineFailure already moved activeIndex to i (and logged it),
+				// so this only fires when something else moved it; if 2 concurrent
+				// requests succeed, only the one that actually changes the index logs.
+				var oldURL, oldSNI string
+				if oldIdx >= 0 && oldIdx < len(upstreams) {
+					oldURL, oldSNI = upstreams[oldIdx].URL.String(), upstreams[oldIdx].SNI
+				}
 				log.Warn("⚠️ Upstream failover; switching to a different(next in list) upstream DoH server",
-					slog.Int("old_index", currentIdx),
-					slog.String("old_url", oldTarget.URL.String()),
-					slog.String("old_sni", oldTarget.SNI),
+					slog.Int("old_index", oldIdx),
+					slog.String("old_url", oldURL),
+					slog.String("old_sni", oldSNI),
 					slog.Int("new_index", i),
 					slog.String("new_url", resolvedURL),
 					slog.String("sni", target.SNI),
@@ -808,19 +853,33 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			}
 			return resp, resolvedURL, failedUpstreams, nil
 		}
-		// FIX 3: Explicit log when a sequential fallback upstream fails
+		if ctx.Err() != nil {
+			// The caller gave up mid-request: that says nothing about this
+			// upstream's health, so don't list it as failed nor advance past it.
+			return nil, "", failedUpstreams, fmt.Errorf("caller gave up(context done) while querying fallback upstream %q: %w", resolvedURL, ctx.Err() /*non-nil*/)
+		}
 		log.Warn("⚠️ Fallback upstream failed; moving to next (if available)",
 			slog.String("url", resolvedURL),
 			slog.String("sni", target.SNI),
 			wincoe.SafeErr(err),
 		)
 		failedUpstreams = append(failedUpstreams, resolvedURL)
+		if upstreamFailureIsGenuine(ctx, err) {
+			fs.noteGenuineFailure(upstreams, i)
+		}
 	} //for
 	// If execution gets here, every single configured upstream failed
 	fs.mu.Lock()
+	wasAllFailed := fs.allFailed
 	fs.allFailed = true
 	fs.activeIndex = 0 // retry from the first one next time
 	fs.mu.Unlock()
+	if !wasAllFailed {
+		log.Error("🔴 Global blackout detected; every configured upstream failed to respond (is the internet down?)",
+			slog.Int("upstream_count", len(upstreams)),
+			SafeStringSlice("failed_upstreams", failedUpstreams),
+		)
+	}
 	return nil, "", failedUpstreams, errors.New("all upstreams failed to respond")
 }
 
@@ -6506,6 +6565,14 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 			continue //next try
 		} //if
 		// non-retryable error
+		if errors.Is(err4ClientDo, context.Canceled) {
+			// Not an upstream fault: the caller (or server shutdown) cancelled us.
+			log.Debug("Upstream DoH request aborted because the caller or server shutdown cancelled it",
+				slog.String("url", resolvedTargetURLStr),
+				slog.String("sni_used", u.SNI),
+				wincoe.SafeErr(err4ClientDo))
+			return nil, resolvedTargetURLStr, fmt.Errorf("upstream DoH request to %q cancelled: %w", resolvedTargetURLStr, err4ClientDo /*non-nil here*/)
+		}
 		// --- NEW DIAGNOSTIC BLOCK ---
 		if strings.Contains(err4ClientDo.Error(), "tls:") || strings.Contains(err4ClientDo.Error(), "x509:") {
 			log.Error("TLS verification failed when tried to query upstream DNS server",

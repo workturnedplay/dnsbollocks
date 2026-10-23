@@ -199,3 +199,63 @@ func TestFailoverSelector_Exchange(t *testing.T) {
 		}
 	})
 }
+
+func TestFailoverSelector_CallerGivingUpAdvancesActiveIndexAndLaterDetectsBlackout(t *testing.T) {
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger)
+	fs := NewFailoverSelector(&liveLogger, nil)
+
+	var blockLast atomic.Bool
+	blockLast.Store(true)
+
+	failFast := func(_ *http.Request) (*http.Response, error) { return nil, errors.New("fail") }
+	mk := func(u string, h func(*http.Request) (*http.Response, error)) Upstream {
+		up := createMockUpstream(u, discardLogger, h)
+		up.UpstreamClientTimeoutDuration = time.Minute // mock default of 0 would expire the request ctx instantly
+		return up
+	}
+	upstreams := []Upstream{
+		mk("https://a.com", failFast),
+		mk("https://b.com", failFast),
+		mk("https://c.com", func(req *http.Request) (*http.Response, error) {
+			if blockLast.Load() {
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}
+			return nil, errors.New("fail")
+		}),
+	}
+
+	// Query 1: a and b fail on their own, the caller gives up while c is in flight.
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	_, _, failedURLs, err := fs.Exchange(ctx, upstreams, []byte("dummy-dns-query"))
+	if err == nil {
+		t.Fatal("expected an error when the caller gives up")
+	}
+	if len(failedURLs) != 2 || failedURLs[0] != "https://a.com" || failedURLs[1] != "https://b.com" {
+		t.Errorf("expected only a.com and b.com as failed (c.com was merely cancelled), got %v", failedURLs)
+	}
+	fs.mu.RLock()
+	idx, allFailed := fs.activeIndex, fs.allFailed
+	fs.mu.RUnlock()
+	if idx != 2 {
+		t.Errorf("expected activeIndex to advance to 2, got %d", idx)
+	}
+	if allFailed {
+		t.Error("a caller giving up must not be reported as a blackout")
+	}
+
+	// Query 2: now c fails on its own too, so every upstream genuinely failed.
+	blockLast.Store(false)
+	if _, _, _, err2 := fs.Exchange(context.Background(), upstreams, []byte("dummy-dns-query")); err2 == nil {
+		t.Fatal("expected an error during a blackout")
+	}
+	fs.mu.RLock()
+	allFailed = fs.allFailed
+	fs.mu.RUnlock()
+	if !allFailed {
+		t.Error("expected allFailed=true once every upstream genuinely failed")
+	}
+}
