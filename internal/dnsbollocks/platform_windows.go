@@ -5142,11 +5142,11 @@ func (f *ClientMetadataFuture) TryExe() (exe string, ready bool) {
 	}
 }
 
-// Snapshot returns a copy of the metadata without ever blocking or racing
+// snapshot returns a copy of the metadata without ever blocking or racing
 // with the lookup goroutine. If the lookup hasn't finished yet, only the
 // fields written BEFORE that goroutine was started (protocol, clientAddr,
 // startTime) are populated and ready is false.
-func (f *ClientMetadataFuture) Snapshot() (info clientMetadata, ready bool) {
+func (f *ClientMetadataFuture) snapshot() (info clientMetadata, ready bool) {
 	select {
 	case <-f.done:
 		return f.info, true
@@ -7493,7 +7493,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 				// exeName remains its default fallback (e.g., "<unknown_exe>")
 			}
 			//if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
-			info, _ := future.Snapshot()
+			info, _ := future.snapshot()
 			elapsed := time.Since(info.startTime)
 			attrs = append(attrs,
 				slog.String("exe", exeName))
