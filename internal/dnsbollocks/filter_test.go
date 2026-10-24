@@ -231,4 +231,32 @@ func TestFilterResponse(t *testing.T) {
 			t.Errorf("expected remaining IP to be 8.8.8.8, got %v", ans.A)
 		}
 	})
+
+	t.Run("Zero IP with OPT in Extra is still fully filtered", func(t *testing.T) {
+		msg := new(dns.Msg)
+		msg.SetQuestion("example.com.", dns.TypeA)
+		msg.SetEdns0(1232, false)
+		msg.Answer = []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.ParseIP("0.0.0.0"),
+			},
+		}
+
+		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
+		if filtered != nil || reason != BlockedByUpstream {
+			t.Errorf("want (nil, %q), got (%v, %q)", BlockedByUpstream, filtered, reason)
+		}
+	})
+
+	t.Run("Genuine NODATA with only OPT is passed through, not blocked", func(t *testing.T) {
+		msg := new(dns.Msg)
+		msg.SetQuestion("example.com.", dns.TypeAAAA)
+		msg.SetEdns0(1232, false)
+
+		filtered, reason := filterResponse(dummyLog, msg, true, blacklist)
+		if filtered == nil || reason != NODATA {
+			t.Errorf("want (non-nil, %q), got (%v, %q)", NODATA, filtered, reason)
+		}
+	})
 }

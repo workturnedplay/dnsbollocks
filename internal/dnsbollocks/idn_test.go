@@ -4,15 +4,15 @@
 package dnsbollocks
 
 import (
+	"strings"
 	"testing"
-  "strings"
 )
 
 func TestIDNEncodeAndDecode(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         string
-		wantEncoded   string // partial match is fine for some
+		name           string
+		input          string
+		wantEncoded    string // partial match is fine for some
 		expectPunycode bool
 	}{
 		{"ascii unchanged", "example.com", "example.com", false},
@@ -50,9 +50,9 @@ func TestIDNEncodeAndDecode(t *testing.T) {
 
 func TestIDNHomographAndMixedScript(t *testing.T) {
 	dangerous := []string{
-		"аррӏе.com",     // Cyrillic + Latin lookalikes
+		"аррӏе.com",  // Cyrillic + Latin lookalikes
 		"ｇｏｏｇｌｅ.com", // full-width
-		"paypaI.com",    // capital I vs l
+		"paypaI.com", // capital I vs l
 	}
 
 	for _, d := range dangerous {

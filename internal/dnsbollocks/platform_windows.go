@@ -1429,6 +1429,9 @@ func (s *Server) loadLocalHosts() error {
 	var changed uint64
 	var removed uint64
 	seenPatterns := make(map[string]struct{}, len(rawEntries))
+	// One shared instant for every legacy-migrated entry, so their relative
+	// order (see the sort below) is decided by pattern, not map iteration luck.
+	migrationTime := time.Now()
 
 	for pat, rawEntry := range rawEntries {
 		hostEntry, enabledMigrated, parseErr := parseHostFileEntry(rawEntry)
@@ -1445,7 +1448,7 @@ func (s *Server) loadLocalHosts() error {
 			// Legacy entry (predates the "Last Modified" WebUI column, or a
 			// hand-edited file) — migrate it to a real timestamp so it sorts
 			// sensibly and the file gets rewritten in the current format.
-			modifiedAt = time.Now()
+			modifiedAt = migrationTime
 			changed++
 		}
 		if enabledMigrated {
@@ -1564,6 +1567,16 @@ func (s *Server) loadLocalHosts() error {
 
 		parsed = append(parsed, LocalHostRule{Pattern: normalizedPat, IPs: netIPs, Enabled: hostEntry.Enabled, ModifiedAt: modifiedAt, Comment: comment})
 	}
+
+	// Map iteration order is random. HostStore appends on every add/edit, so
+	// (ModifiedAt asc, Pattern asc) reproduces the runtime order and makes
+	// overlapping patterns resolve identically across restarts.
+	sort.SliceStable(parsed, func(i, j int) bool {
+		if !parsed[i].ModifiedAt.Equal(parsed[j].ModifiedAt) {
+			return parsed[i].ModifiedAt.Before(parsed[j].ModifiedAt)
+		}
+		return parsed[i].Pattern < parsed[j].Pattern
+	})
 
 	if cfg.ExtraSafety && removed > 0 {
 		log.Error("ExtraSafety: refusing to remove host rules due to potential typos "+
@@ -2458,6 +2471,17 @@ type queryFilterHandler struct {
 	slog.Handler
 }
 
+// WithAttrs/WithGroup must re-wrap, otherwise the promoted methods of the
+// embedded slog.Handler return the UNWRAPPED inner handler and the
+// category=query filter in Handle silently disappears after any .With(...).
+func (h queryFilterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return queryFilterHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h queryFilterHandler) WithGroup(name string) slog.Handler {
+	return queryFilterHandler{Handler: h.Handler.WithGroup(name)}
+}
+
 func (h queryFilterHandler) Handle(ctx context.Context, r slog.Record) error {
 	isQuery := false
 	r.Attrs(func(a slog.Attr) bool {
@@ -2474,7 +2498,7 @@ func (h queryFilterHandler) Handle(ctx context.Context, r slog.Record) error {
 	if err := h.Handler.Handle(ctx, r); err == nil {
 		return nil
 	} else {
-		return fmt.Errorf("handle query filter in webUI backend: %w", err)
+		return fmt.Errorf("queries-log filter handler: underlying Handle failed: %w", err)
 	}
 }
 
@@ -3899,12 +3923,17 @@ func OldMain() {
 		}
 
 		// Clean up the environment for any future sub-processes
-		os.Setenv("DNSBOLLOCKS_IS_RESTARTING", "0")
-		os.Setenv("DNSBOLLOCKS_PARENT_PID", "")
-		os.Setenv("DNSBOLLOCKS_SYNC_EVENT", "")
-		os.Setenv("DNSBOLLOCKS_BOOTSTRAP_LOG_DIR", "")
-		os.Setenv("DNSBOLLOCKS_BOOTSTRAP_LOG_FILE", "")
-		// os.Setenv("DNSBOLLOCKS_NO_WAIT", "")
+		for _, envName := range []string{
+			"DNSBOLLOCKS_IS_RESTARTING",
+			"DNSBOLLOCKS_PARENT_PID",
+			"DNSBOLLOCKS_SYNC_EVENT",
+			"DNSBOLLOCKS_BOOTSTRAP_LOG_DIR",
+			"DNSBOLLOCKS_BOOTSTRAP_LOG_FILE",
+		} {
+			if unsetErr := os.Unsetenv(envName); unsetErr != nil {
+				localLogger.Warn("new process: failed to unset restart environment variable", slog.String("name", envName), wincoe.SafeErr(unsetErr))
+			}
+		}
 	}
 
 	// wincoe.InstallCrashSink()
@@ -4049,7 +4078,9 @@ func OldMain() {
 
 	// Close the temporary bootstrap log file handle so the real LoggerManager can own it cleanly
 	if bootLogFile != nil {
-		bootLogFile.Close()
+		if closeErr := bootLogFile.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to close the bootstrap log file: %v\n", closeErr)
+		}
 	}
 
 	// Initialize full logging (file handlers, correct console level).
@@ -5111,6 +5142,23 @@ func (f *ClientMetadataFuture) TryExe() (exe string, ready bool) {
 	}
 }
 
+// Snapshot returns a copy of the metadata without ever blocking or racing
+// with the lookup goroutine. If the lookup hasn't finished yet, only the
+// fields written BEFORE that goroutine was started (protocol, clientAddr,
+// startTime) are populated and ready is false.
+func (f *ClientMetadataFuture) Snapshot() (info clientMetadata, ready bool) {
+	select {
+	case <-f.done:
+		return f.info, true
+	default:
+		return clientMetadata{
+			protocol:   f.info.protocol,
+			clientAddr: f.info.clientAddr,
+			startTime:  f.info.startTime,
+		}, false
+	}
+}
+
 // logIfSlowMetadataLookup logs a "slow lookup" warning via
 // wincoe.GetBugLogger if elapsed is at or above
 // cfg.ClientMetadataLookupSlowWarnThresholdMs. A configured threshold of 0
@@ -5154,13 +5202,19 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 				start := time.Now()
 				pid, exe, err = wincoe.PidAndExeForUDP(udpAddr)
 				logIfSlowMetadataLookup(cfg, "wincoe.PidAndExeForUDP()", time.Since(start))
+			} else {
+				err = fmt.Errorf("startMetadataLookup: protocol %q expected *net.UDPAddr, got %T", protocol, clientAddr)
 			}
 		case "TCP", "DoH":
 			if tcpAddr, ok := clientAddr.(*net.TCPAddr); ok {
 				start := time.Now()
 				pid, exe, err = wincoe.PidAndExeForTCP(tcpAddr)
 				logIfSlowMetadataLookup(cfg, "wincoe.PidAndExeForTCP()", time.Since(start))
+			} else {
+				err = fmt.Errorf("startMetadataLookup: protocol %q expected *net.TCPAddr, got %T", protocol, clientAddr)
 			}
+		default:
+			err = fmt.Errorf("startMetadataLookup: unknown protocol %q", protocol)
 		}
 
 		future.info.pid = pid
@@ -5182,7 +5236,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 			logIfSlowMetadataLookup(cfg, "wincoe.GetServiceNamesFromPIDCached()", time.Since(start))
 			future.info.services, future.info.err = services, err2
 			if err2 != nil {
-				serviceInfo = fmt.Sprintf("err=%v", err)
+				serviceInfo = fmt.Sprintf("err=%v", err2)
 			} else {
 				serviceInfo = fmt.Sprintf("%v", services)
 			}
@@ -5195,7 +5249,7 @@ func (s *Server) startMetadataLookup(ctx context.Context, protocol string, clien
 			slog.Int64("pid", int64(pid)),
 			slog.String("exe", exe),
 			slog.String("services", serviceInfo),
-			wincoe.SafeErr(err),
+			wincoe.SafeErr(future.info.err),
 		)
 	})
 
@@ -5321,7 +5375,7 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		log.Warn("invalid packet length in TCP DNS connection, thus dropped/ignored",
 			slog.Int("actual_length", length),
 			slog.Int("maxDNSTCPPacketSize", maxDNSTCPPacketSize),
-			slog.Int(getJSONTagByOffset(unsafe.Offsetof(Config{}.GlobalRateQPS)), cfg.DoHMaxRequestBodyBytes),
+			slog.Int(getJSONTagByOffset(unsafe.Offsetof(Config{}.DoHMaxRequestBodyBytes)), cfg.DoHMaxRequestBodyBytes),
 			slog.Int("min", 1))
 		return
 	}
@@ -5645,6 +5699,12 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	domain := strings.ToLower(strings.TrimSuffix(q.Name, ".")) //XXX: must lowercase it for matchPattern below! at least.
 	if domain == "" || !isValidDNSName(domain) {               // Edge: Empty domain
 		return formerrResponse(reqMsg)
+	}
+	// The cache key (domain:qtype) has no class component, and everything
+	// downstream (whitelist, upstream DoH) only models class IN: refuse the rest
+	// instead of letting a CH/ANY answer poison the shared IN cache entry.
+	if q.Qclass != dns.ClassINET {
+		return refusedResponse(reqMsg)
 	}
 	// Keep the client's original casing (root dot trimmed) for LOGGING ONLY;
 	// `domain` above stays lowercased for matching/caching. See queriedNameKey.
@@ -5974,7 +6034,15 @@ func (s *Server) handleDNSQuery(ctx context.Context, reqMsg *dns.Msg, clientAddr
 	}
 	if entry, inFlight := s.forwardInFlight[key]; inFlight {
 		s.forwardInFlightMu.Unlock()
-		<-entry.done
+		var ctxDone <-chan struct{} // nil channel (blocks forever) if ctx is nil
+		if ctx != nil {
+			ctxDone = ctx.Done()
+		}
+		select {
+		case <-entry.done:
+		case <-ctxDone:
+			return servfailResponse(reqMsg)
+		}
 		if cached, ok := cachee.Get(key); ok {
 			return s.respondFromCache(ctx, cached, reqMsg, clientAddr, domain, qtype, matchedID)
 		}
@@ -6413,10 +6481,10 @@ func (u *Upstream) doSingleDoHRequest(ctx context.Context, reqBytes []byte) (*dn
 						log.Warn("timed out waiting for client pid/exe metadata lookup; using placeholder exe name for {builtin:clientexe}",
 							slog.Duration("timeout", clientMetadataLookupTimeout))
 					}
-					if future.info.exe != "" {
+					if readyExe, ready := future.TryExe(); ready && readyExe != "" {
 						//// Optionally strip the .exe extension for cleaner NextDNS logs
 						//exeName = strings.TrimSuffix(future.info.exe, ".exe")
-						exeName = future.info.exe
+						exeName = readyExe
 
 						// URL-encode the executable name to prevent malformed requests
 						exeName = url.PathEscape(exeName)
@@ -6894,6 +6962,20 @@ const StrippedRRSIG string = "stripped_rrsig"
 
 const BlockedByUpstream string = "blockedByUpstream_ZeroIP"
 
+// nonOPTCount returns how many records in rrs are NOT EDNS0 OPT pseudo-records.
+// An OPT record is transport metadata, never "content", so it must not make an
+// otherwise empty (or fully filtered) response look non-empty.
+func nonOPTCount(rrs []dns.RR) int {
+	n := 0
+	for _, rr := range rrs {
+		if h := rr.Header(); h != nil && h.Rrtype == dns.TypeOPT {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // mutates the passed arg
 func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool, blacklist IPChecker) (*dns.Msg, string) {
 	//log := s.getLogger()
@@ -6909,7 +6991,7 @@ func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool,
 	qtype := dns.TypeToString[q.Qtype] // Map lookup
 
 	// If upstream naturally returned NOERROR with 0 answers (NODATA), let it through!
-	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && len(respMsg.Extra) == 0 {
+	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && nonOPTCount(respMsg.Extra) == 0 {
 		return respMsg, NODATA
 	}
 
@@ -6941,7 +7023,7 @@ func filterResponse(log *slog.Logger, respMsg *dns.Msg, removeHTTPSIPHints bool,
 	respMsg.Extra = filterSection(respMsg.Extra, "inExtra")
 
 	//if len(msg.Answer) == 0 { // this dropped HTTPS replies and they were thus not seen at all, so seen as blockedbyUpstream
-	if len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && len(respMsg.Extra) == 0 {
+	if len(dropReasons) > 0 && len(respMsg.Answer) == 0 && len(respMsg.Ns) == 0 && nonOPTCount(respMsg.Extra) == 0 {
 		// Log the name as queried (the upstream echoes our casing); only the
 		// IDN decoding needs the lowercased form.
 		queriedName := strings.TrimSuffix(q.Name, ".")
@@ -7411,7 +7493,7 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 				// exeName remains its default fallback (e.g., "<unknown_exe>")
 			}
 			//if info, ok := ctx.Value(clientInfoKey{}).(clientMetadata); ok {
-			info := future.info
+			info, _ := future.Snapshot()
 			elapsed := time.Since(info.startTime)
 			attrs = append(attrs,
 				slog.String("exe", exeName))
@@ -7500,24 +7582,28 @@ func (s *Server) logQuery(ctx context.Context, client, domain, typ, action, rule
 	})
 } //func
 
-func servfailResponse(reqMsg *dns.Msg) *dns.Msg {
-	// reqMsg.SetRcode(reqMsg, dns.RcodeServerFailure)
-	// reqMsg.RecursionAvailable = true
-	// return reqMsg
+// rcodeResponse builds a bare reply to reqMsg carrying the given rcode.
+func rcodeResponse(reqMsg *dns.Msg, rcode int) *dns.Msg {
 	resp := new(dns.Msg)
 	resp.SetReply(reqMsg)
-	resp.SetRcode(resp, dns.RcodeServerFailure)
+	resp.SetRcode(resp, rcode)
+	return resp
+}
+
+func servfailResponse(reqMsg *dns.Msg) *dns.Msg {
+	resp := rcodeResponse(reqMsg, dns.RcodeServerFailure)
+	resp.RecursionAvailable = true
+	return resp
+}
+
+func refusedResponse(reqMsg *dns.Msg) *dns.Msg {
+	resp := rcodeResponse(reqMsg, dns.RcodeRefused)
 	resp.RecursionAvailable = true
 	return resp
 }
 
 func formerrResponse(reqMsg *dns.Msg) *dns.Msg {
-	// reqMsg.SetRcode(reqMsg, dns.RcodeFormatError)
-	// return reqMsg
-	resp := new(dns.Msg)
-	resp.SetReply(reqMsg)
-	resp.SetRcode(resp, dns.RcodeFormatError)
-	return resp
+	return rcodeResponse(reqMsg, dns.RcodeFormatError)
 }
 
 func (ui *AdminUI) responseBlacklistHandler(w http.ResponseWriter, r *http.Request) {
@@ -8484,10 +8570,10 @@ func (ui *AdminUI) csrfMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), csrfTokenKey{}, token)
 		r = r.WithContext(ctx)
 
-		// 3. Validate the token on all state-changing POST requests
-		if r.Method == http.MethodPost { //"POST" {
+		// 3. Validate the token on every state-changing request (anything not a safe method)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 			formToken := r.FormValue("csrf_token")
-			if formToken == "" || formToken != token {
+			if formToken == "" || !hmac.Equal([]byte(formToken), []byte(token)) {
 				// Capture everything safely in local variables immediately (optional, but clean)
 				//because the request is completely isolated to this single thread of execution at this moment, you can read any field or header from r with zero risk of a data race.
 				clientIP := r.RemoteAddr
@@ -8954,6 +9040,9 @@ func (rs *RuleStore) SetEnabledByID(typ, id string, enabled bool, logger *slog.L
 	return rs.setEnabledWhere(typ, func(r RuleEntry) bool { return r.ID == id }, enabled, logger)
 }
 
+// errLocalHostNotFound is returned by HostStore edits whose old pattern no longer exists.
+var errLocalHostNotFound = errors.New("local host not found")
+
 // HostStore manages local hostname overrides.
 type HostStore struct {
 	mu         sync.RWMutex
@@ -9089,11 +9178,16 @@ func (hs *HostStore) editHost(oldPattern, newPattern string, ips []net.IP, enabl
 	}
 
 	var newComment string
+	foundOld := false
 	for _, rule := range hs.hosts {
 		if rule.Pattern == oldPattern {
 			newComment = rule.Comment
+			foundOld = true
 			break
 		}
+	}
+	if !foundOld {
+		return fmt.Errorf("%w: %q", errLocalHostNotFound, oldPattern)
 	}
 	if comment != nil {
 		newComment = *comment
@@ -11584,6 +11678,9 @@ func (s *Server) watchKeys(reloadFn func() error, exitFn func(code int)) {
 
 	buf := make([]byte, 3)
 
+	const maxConsecutiveStdinReadFailures = 20
+	consecutiveReadFailures := 0
+
 	for {
 		// 1. Check if an external fatal error triggered a shutdown
 		select {
@@ -11602,9 +11699,17 @@ func (s *Server) watchKeys(reloadFn func() error, exitFn func(code int)) {
 		log2 := s.getLogger()
 
 		if err != nil || n == 0 {
+			consecutiveReadFailures++
+			if consecutiveReadFailures >= maxConsecutiveStdinReadFailures {
+				log2.Warn("watchKeys: stdin keeps failing to read; giving up on console keyboard shortcuts (use the WebUI instead)",
+					wincoe.SafeErr(err), slog.Int("consecutive_failures", consecutiveReadFailures))
+				return
+			}
 			fmt.Print("?")
+			time.Sleep(100 * time.Millisecond) // never hot-spin on a persistently failing stdin
 			continue
 		}
+		consecutiveReadFailures = 0
 		// 2. Check AGAIN immediately after waking up
 		select {
 		case <-signalTheUnstick:
@@ -11672,7 +11777,9 @@ func (s *Server) watchKeys(reloadFn func() error, exitFn func(code int)) {
 				// fmt.Printf("VERSION: %s\n", GetVersion())
 				// fmt.Printf("========================================\n\n")
 
-				cfg := s.getConfig()
+				// RAW config on purpose: the resolved one carries expanded
+				// {env:...}/{file:...} secrets which must not reach logs.
+				cfg := s.getRawConfig()
 				t := reflect.TypeOf(*cfg)
 				v := reflect.ValueOf(*cfg)
 
@@ -13732,6 +13839,8 @@ func (s *Server) startDoHListenerInstance(params dohListenerParams) (*dohListene
 	tlsCfg := tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{s.getCert()}, // Use loaded cert, doneFIXME: ensure it was loaded or fail-fast here before tls.Listen(which would have to be torn down if this fails)
+		// Without "h2" here http.Server.Serve(tlsListener) never negotiates HTTP/2.
+		NextProtos: []string{"h2", "http/1.1"},
 	}
 	listener, err := tls.Listen(networkForIP(dohHost, "tcp"), addr, &tlsCfg)
 	if err != nil {
@@ -14301,12 +14410,22 @@ func (w *rotatingLogWriter) rotateYouHoldLock() {
 	// 2. Determine the dynamic backup name (.1, .2, etc.)
 	backupPath, err := getNextLogBackupName(w.path)
 	if err != nil {
-		w.logger.Error("Log rotation failed: could not get the next logfile name",
+		if backupPath == "" {
+			w.logger.Error("Log rotation failed: could not get the next logfile name",
+				wincoe.SafeErr(err),
+				slog.String("current_log", w.path),
+			)
+			return
+		}
+		// The numbered slots are exhausted; getNextLogBackupName hands back a
+		// unique timestamp-suffixed name precisely so we can still rotate
+		// instead of growing this file forever (and re-probing every slot on
+		// every single Write while holding w.mu).
+		w.logger.Error("Log rotation: numbered backup slots exhausted, using timestamp-suffixed fallback name; clean up old rotated logs",
 			wincoe.SafeErr(err),
 			slog.String("current_log", w.path),
-			slog.String("gotten_new_log_filename", backupPath),
+			slog.String("fallback_backup_name", backupPath),
 		)
-		return
 	}
 
 	// 1. Close the current file so Windows doesn't block the rename
@@ -15124,7 +15243,7 @@ func float64ToWholeInt64(n float64) (int64, error) {
 	if n != math.Trunc(n) {
 		return 0, fmt.Errorf("value %v is not a whole number", n)
 	}
-	if n < math.MinInt64 || n > math.MaxInt64 {
+	if n < math.MinInt64 || n >= math.MaxInt64 { // float64(MaxInt64) == 2^63, which itself overflows int64
 		return 0, fmt.Errorf("value %v is out of range for a 64-bit integer", n)
 	}
 	return int64(n), nil
@@ -15135,7 +15254,7 @@ func float64ToWholeUint64(n float64) (uint64, error) {
 	if n != math.Trunc(n) {
 		return 0, fmt.Errorf("value %v is not a whole number", n)
 	}
-	if n < 0 || n > math.MaxUint64 {
+	if n < 0 || n >= math.MaxUint64 { // float64(MaxUint64) == 2^64, which itself overflows uint64
 		return 0, fmt.Errorf("value %v is out of range for an unsigned 64-bit integer", n)
 	}
 	return uint64(n), nil
@@ -15308,6 +15427,20 @@ func millisToDuration(ms int) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// syncNormalizedStringToRaw propagates a normalization of a resolved string
+// field (lowercasing/trimming/alias canonicalization) onto its raw (on-disk)
+// counterpart, but ONLY when raw was a plain literal (raw == origResolved).
+// If raw is a {file:...}/{env:...} template, resolved != raw by construction
+// and raw must never be overwritten with the expanded value (which could
+// even be a secret). Returns true if raw was changed (i.e. a save is needed).
+func syncNormalizedStringToRaw(raw *string, origResolved, newResolved string) bool {
+	if *raw != origResolved || origResolved == newResolved {
+		return false
+	}
+	*raw = newResolved
+	return true
+}
+
 // clampIntField is the shared implementation behind sanitizeAndValidateConfig's many
 // "clamp this int field to a safe value and flag the config for saving" blocks. invalid
 // reports whether the field's current value is out of bounds; when it is, both resolved
@@ -15402,10 +15535,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		log.Error(msg, slog.String("webui_auth_session_mode", resolvedCfg.WebUIAuthSessionMode))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
-	if origWebUIAuthSessionMode != resolvedCfg.WebUIAuthSessionMode {
+	if syncNormalizedStringToRaw(&rawCfg.WebUIAuthSessionMode, origWebUIAuthSessionMode, resolvedCfg.WebUIAuthSessionMode) {
 		shouldSaveConfig = true
 	}
-	rawCfg.WebUIAuthSessionMode = resolvedCfg.WebUIAuthSessionMode
 
 	if clampIntField(log, getJSONTagByOffset(unsafe.Offsetof(Config{}.WebUIAuthSessionTimeoutMinutes)),
 		&resolvedCfg.WebUIAuthSessionTimeoutMinutes, &rawCfg.WebUIAuthSessionTimeoutMinutes,
@@ -15871,10 +16003,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	origLevel := resolvedCfg.ConsoleLogLevel
 	resolvedCfg.ConsoleLogLevel = strings.ToLower(strings.TrimSpace(resolvedCfg.ConsoleLogLevel))
-	//doneTODO: ^ if changed, then shouldSaveConfig = true
-	if origLevel != resolvedCfg.ConsoleLogLevel {
-		shouldSaveConfig = true
-	}
 	switch resolvedCfg.ConsoleLogLevel {
 	case consoleLogLevelDebug, "d", consoleLogLevelInfo, "i", consoleLogLevelWarn, "warning", "w", consoleLogLevelError, "e":
 		// Valid
@@ -15886,7 +16014,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		log.Error(msg, slog.String("console_log_level", resolvedCfg.ConsoleLogLevel))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
-	rawCfg.ConsoleLogLevel = resolvedCfg.ConsoleLogLevel
+	if syncNormalizedStringToRaw(&rawCfg.ConsoleLogLevel, origLevel, resolvedCfg.ConsoleLogLevel) {
+		shouldSaveConfig = true
+	}
 
 	origBlockMode := resolvedCfg.BlockMode
 	resolvedCfg.BlockMode = strings.ToLower(origBlockMode) //XXX: lowercasing this for future comparisons to be easier!
@@ -15900,7 +16030,6 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 
 	case "block_ip", "ipblock", "blockip": //aka aliases
 		resolvedCfg.BlockMode = blockModeIPBlock
-		shouldSaveConfig = true //known redundant
 
 	case blockModeDrop:
 		// already canonical
@@ -15916,10 +16045,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		log.Error(msg, slog.String("blockmode", resolvedCfg.BlockMode))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	} //switch
-	if resolvedCfg.BlockMode != origBlockMode {
+	if syncNormalizedStringToRaw(&rawCfg.BlockMode, origBlockMode, resolvedCfg.BlockMode) {
 		shouldSaveConfig = true
 	}
-	rawCfg.BlockMode = resolvedCfg.BlockMode
 	//apparentlynotTODO: see if I've to shouldSaveConfig for anything else here, above maybe?
 
 	// Validate UpstreamSelectionMode. Unknown values (e.g. from a hand-edited config) are
@@ -15941,10 +16069,9 @@ func sanitizeAndValidateConfig(log *slog.Logger, resolvedCfg, rawCfg, defaultCfg
 		log.Error(msg, slog.String("upstream_selection_mode", resolvedCfg.UpstreamSelectionMode))
 		return shouldSaveConfig, fmt.Errorf("%s", msg)
 	}
-	if origUpstreamSelectionMode != resolvedCfg.UpstreamSelectionMode {
+	if syncNormalizedStringToRaw(&rawCfg.UpstreamSelectionMode, origUpstreamSelectionMode, resolvedCfg.UpstreamSelectionMode) {
 		shouldSaveConfig = true
 	}
-	rawCfg.UpstreamSelectionMode = resolvedCfg.UpstreamSelectionMode
 
 	if len(resolvedCfg.UpstreamSNIHostnames) > len(resolvedCfg.UpstreamURLs) {
 		const msg = "there are more SNIs vs URLs for upstream, only the opposite is allowed ( >= URLs than SNIs which then inherit the SNI from URLs)"
@@ -16858,24 +16985,24 @@ func (w *AsyncLogWriter) Write(p []byte) (int, error) {
 
 func (w *AsyncLogWriter) recordDrop(wasClosed bool) {
 	total := w.dropped.Add(1)
-	var what, extra string
+
+	// Throttle BOTH kinds of drop notice, so neither a stalled disk nor a
+	// burst of late writes after Close() can flood stderr.
+	now := time.Now().UnixNano()
+	last := w.lastDropWarnNs.Load()
+	if now-last < asyncLogWriterDropWarnThrottle.Nanoseconds() {
+		return
+	}
+	if !w.lastDropWarnNs.CompareAndSwap(last, now) {
+		return // another goroutine already won the throttle window
+	}
+
+	what := "queue full"
+	extra := " (underlying sink is not keeping up, e.g. due to slow/contended disk)"
 	if wasClosed {
 		what = "was closed"
 		extra = ""
-	} else {
-		//only rate limit the "queue full" ones!
-		what = "queue full"
-		extra = " (underlying sink is not keeping up, e.g. due to slow/contended disk)"
-
-		now := time.Now().UnixNano()
-		last := w.lastDropWarnNs.Load()
-		if now-last < asyncLogWriterDropWarnThrottle.Nanoseconds() {
-			return
-		}
-		if !w.lastDropWarnNs.CompareAndSwap(last, now) {
-			return // another goroutine already won the throttle window
-		}
-	} // end of queue-full
+	}
 	fmt.Fprintf(os.Stderr,
 		"[asyncLogWriter %q] WARNING: log %q; %d line(s) dropped so far"+extra+"\n",
 		w.name, what, total)
@@ -17686,7 +17813,7 @@ func (ui *AdminUI) applyTablesHandler(w http.ResponseWriter, r *http.Request) {
 
 	changes := request.Changes
 
-	if decoder.Decode(&struct{}{}) != io.EOF {
+	if trailingErr := decoder.Decode(&struct{}{}); !errors.Is(trailingErr, io.EOF) {
 		http.Error(w, "invalid trailing JSON data", http.StatusBadRequest)
 		return
 	}
@@ -18368,6 +18495,10 @@ func (ui *AdminUI) processHostChange(fields map[string]string, invalidate func(p
 		err = ui.hostStore.AddHostWithComment(patternLowercased, netIPs, enabledBool, comment)
 	}
 
+	if errors.Is(err, errLocalHostNotFound) {
+		log.Warn("Failed to edit local host: it no longer exists", wincoe.SafeErr(err), slog.String("old_pattern", oldPatternLowercased))
+		return http.StatusNotFound, err
+	}
 	if err != nil {
 		log.Warn("Failed to add/edit local host:", wincoe.SafeErr(err),
 			slog.String("pattern", patternLowercased),
@@ -19861,11 +19992,10 @@ func quickToggleExactRule(store *RuleStore, typ, pattern, displayPattern string,
 		case found:
 			return fmt.Sprintf("Rule for %s (%s) is already active (%s).", displayPattern, typ, thingLabel), nil
 		}
-		newID, addErr := store.AddRuleWithComment(typ, pattern, true, quickActionComment("quick-unblocked", thingLabel), log)
+		_, addErr := store.AddRuleWithComment(typ, pattern, true, quickActionComment("quick-unblocked", thingLabel), log)
 		if addErr != nil {
 			return "", fmt.Errorf("quickToggleExactRule: AddRule unexpectedly failed for a pattern just confirmed absent (type=%q pattern=%q thing=%q): %w", typ, pattern, thingLabel, addErr)
 		}
-		_ = newID
 		return fmt.Sprintf("Successfully unblocked (%s): added new active rule for %s (%s).", thingLabel, displayPattern, typ), nil
 	}
 

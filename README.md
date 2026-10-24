@@ -14,7 +14,7 @@ Firefox connects to it via DoH (DNS over HTTPS), treating it like a normal DoH r
 
 * **Default Deny:** Everything is blocked unless a whitelist pattern matches the domain and DNS query type.
 * **Web UI (Port 8080 by default, HTTPS by default):** Manage whitelist rules, response-IP blacklist entries, local host overrides, view recent blocks for quick one-click unblocking, view system/query/simple-query logs in real-time, and edit `config.json` itself — all behind a password.
-* **Pattern Matching:** Supports wildcards (`*`, ``, `?`, `!`) for flexible domain whitelisting.
+* **Pattern Matching:** Supports wildcards (`*`, `**`, `{*}`, `{**}`, `?`, `!`) for flexible domain whitelisting.
 * **Local Hosts Overrides:** Map specific domains to local IPs (similar to a standard `hosts` file) directly from the Web UI.
 * **Hot Reloading:** Press `Ctrl+R` (or `Alt+R`) in the console window to reload `config.json`, whitelist, blacklist, and host files without dropping active connections.
 * **Client Tracking:** Tracks the connecting Windows process PID and Executable name (e.g., `firefox.exe`) in the query logs for easier debugging.

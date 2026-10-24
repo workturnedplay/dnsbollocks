@@ -2738,6 +2738,15 @@
         filterFn();
     }
 
+    // cancelAllOpenInlineEdits clicks Cancel ONLY on open inline-edit rows.
+    // A bare '.btn-cancel' selector also matches unrelated buttons (e.g. the
+    // Re-block (Pause) submit buttons and the search Clear button on
+    // /query-blocklist), which would fire real actions.
+    function cancelAllOpenInlineEdits() {
+        document.querySelectorAll('tr.edit-row .btn-cancel, tr.edit-host-row .btn-cancel')
+            .forEach(btn => btn.click());
+    }
+
     function cancelEdit(id) {
         cancelInlineRowEdit('editFormRow_' + id, 'rule-row-' + id, true, applyRulesFilter);
     }
@@ -3834,7 +3843,7 @@
             if (current.includes('actions')) withoutActions.push('actions');
 
             // Cancel any open inline edits before reshuffling cells under them.
-            document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+            cancelAllOpenInlineEdits();
 
             applyColumnOrderToTable(table, withoutActions);
             persistColumnOrder(storageKeyPrefix, withoutActions);
@@ -5523,7 +5532,7 @@
                 th.setAttribute('aria-sort', 'none');// none, asc, desc
                 button.addEventListener('click', () => {
                     // 1. Cancel any active inline edits so they don't break during sort
-                    document.querySelectorAll('.btn-cancel').forEach(btn => btn.click());
+                    cancelAllOpenInlineEdits();
                     const currentDir = th.dataset.sortDir;
                     const newDir = currentDir === 'none' ? 'asc' : currentDir === 'asc' ? 'desc' : 'none';
                     applySort(th, newDir);

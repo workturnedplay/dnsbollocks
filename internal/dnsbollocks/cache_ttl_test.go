@@ -1,12 +1,20 @@
+//go:build windows
+// +build windows
+
 package dnsbollocks
 
 import (
-	"github.com/miekg/dns"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 func TestCacheSetZeroTTL(t *testing.T) {
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
 	// Create a fast-expiring background janitor for the test
 	cacheStore := newGoCacheStore(1*time.Minute, 100, nil)
 
