@@ -80,7 +80,7 @@ echo Running go vet for shadowing ...
 set "shade=%USERPROFILE%\go\bin\shadow.exe"
 :: Check if shadow.exe exists, if not, install it
 if not exist "%shade%" (
-    echo [!] shadow.exe not found. Installing via go install...
+    echo [^^!] shadow.exe not found. Installing via go install...
     "%goexe%" install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest
     
     :: Double check if installation actually succeeded
@@ -107,7 +107,7 @@ rem this -v2.exe is what vscode runs! so we should too!
 set "lintexe=%USERPROFILE%\go\bin\golangci-lint-v2.exe"
 rem :: Check if golangci-lint.exe exists, if not, install it
 if not exist "%lintexev1%" (
-    echo [!] golangci-lint.exe not found. Installing via go install...
+    echo [^^!] golangci-lint.exe not found. Installing via go install...
     "%goexe%" install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
     
     :: Double check if installation actually succeeded
@@ -141,13 +141,13 @@ rem echo Running: go build ...
 rem "%goexe%" build !MOD_FLAG! -o bin\dnsbollocks.exe ./cmd/dnsbollocks
 rem if errorlevel 1 goto :fail
 
-echo Check succeeded.
-pause
+echo Check succeeded ^^!
+if NOT "%1" == "silent" pause
 goto :eof
 
 :fail
 echo.
 echo *** CHECK FAILED ***
-pause
+if NOT "%1" == "silent" pause
 exit /b 1
 
