@@ -6,7 +6,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/miekg/dns v1.1.73
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/workturnedplay/wincoe v0.11.1
+	github.com/workturnedplay/wincoe v0.12.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0

@@ -589,3 +589,68 @@ func TestSafeWriteFile_RefusesNonEmptyPreexistingStagingFile(t *testing.T) {
 		t.Errorf("expected target file to still be updated via fallback, got %q", got)
 	}
 }
+
+func TestSafeWriteFile_InPlaceWriteFailure_RetainsStagingCopy(t *testing.T) {
+	writers := map[string]func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter{
+		"generic": func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
+			return wincoe.NewGenericSafeFileWriter(true, 1, 10, lp)
+		},
+		"win11": func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
+			return wincoe.NewWin11SafeFileWriter(true, 1, 10, lp)
+		},
+	}
+	for name, mk := range writers {
+		t.Run(name, func(t *testing.T) {
+			defer restoreHooks()
+			wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
+				return fmt.Errorf("mock ReplaceFileW failure")
+			}
+
+			dir := t.TempDir()
+			target := filepath.Join(dir, "config.json")
+			// A directory at the target path makes the in-place open fail.
+			if err := os.Mkdir(target, 0700); err != nil {
+				t.Fatalf("setup Mkdir failed: %v", err)
+			}
+
+			var liveLogger atomic.Pointer[slog.Logger]
+			liveLogger.Store(discardLogger())
+			fw := mk(&liveLogger)
+
+			if err := fw.SafeWriteFile(target, []byte("new"), 0600); err == nil {
+				t.Fatal("expected an error when the in-place write cannot succeed")
+			}
+
+			got, err := os.ReadFile(target + wincoe.PowerlossFileExtension)
+			if err != nil {
+				t.Fatalf("staging copy (the only complete copy) must be retained: %v", err)
+			}
+			if string(got) != "new" {
+				t.Errorf("retained staging copy = %q, want %q", got, "new")
+			}
+		})
+	}
+}
+
+func TestSafeFileWriter_Generic_RefusesNonEmptyPreexistingStagingFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.json")
+	staging := target + wincoe.PowerlossFileExtension
+	if err := os.WriteFile(staging, []byte("something unexpected"), 0600); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := wincoe.NewGenericSafeFileWriter(true, 1, 10, &liveLogger)
+
+	if err := fw.SafeWriteFile(target, []byte("new"), 0600); err != nil {
+		t.Fatalf("expected in-place fallback to succeed, got: %v", err)
+	}
+	if got, err := os.ReadFile(staging); err != nil || string(got) != "something unexpected" {
+		t.Errorf("pre-existing staging file must stay untouched, got %q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "new" {
+		t.Errorf("target must still be updated, got %q err=%v", got, err)
+	}
+}
