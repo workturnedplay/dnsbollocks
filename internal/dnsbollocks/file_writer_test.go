@@ -590,43 +590,112 @@ func TestSafeWriteFile_RefusesNonEmptyPreexistingStagingFile(t *testing.T) {
 	}
 }
 
-func TestSafeWriteFile_InPlaceWriteFailure_RetainsStagingCopy(t *testing.T) {
-	writers := map[string]func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter{
-		"generic": func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
+type safeWriterFactory struct {
+	name string
+	make func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter
+}
+
+func safeWriterFactories() []safeWriterFactory {
+	return []safeWriterFactory{
+		{"generic", func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
 			return wincoe.NewGenericSafeFileWriter(true, 1, 10, lp)
-		},
-		"win11": func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
+		}},
+		{"win11", func(lp *atomic.Pointer[slog.Logger]) wincoe.FileWriter {
 			return wincoe.NewWin11SafeFileWriter(true, 1, 10, lp)
-		},
+		}},
 	}
-	for name, mk := range writers {
-		t.Run(name, func(t *testing.T) {
+}
+
+// setupRetainedStaging makes a SafeWriteFile whose in-place write fails (the
+// target path is a directory) and asserts the staging copy, the only complete
+// copy, was retained. The caller must `defer restoreHooks()` first, since this
+// mocks ReplaceFileW to fail. It returns the writer and the target path, which
+// is still a directory: os.Remove(target) "fixes" the problem.
+func setupRetainedStaging(t *testing.T, mk func(*atomic.Pointer[slog.Logger]) wincoe.FileWriter) (wincoe.FileWriter, string) {
+	t.Helper()
+	wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
+		return fmt.Errorf("mock ReplaceFileW failure")
+	}
+
+	target := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatalf("setup Mkdir failed: %v", err)
+	}
+
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger())
+	fw := mk(&liveLogger)
+
+	if err := fw.SafeWriteFile(target, []byte("new"), 0600); err == nil {
+		t.Fatal("expected an error when the in-place write cannot succeed")
+	}
+	got, err := os.ReadFile(target + wincoe.PowerlossFileExtension)
+	if err != nil {
+		t.Fatalf("staging copy (the only complete copy) must be retained: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("retained staging copy = %q, want %q", got, "new")
+	}
+	return fw, target
+}
+
+func TestSafeWriteFile_InPlaceWriteFailure_RetainsStagingCopy(t *testing.T) {
+	for _, f := range safeWriterFactories() {
+		t.Run(f.name, func(t *testing.T) {
 			defer restoreHooks()
-			wincoe.ReplaceFileFunc = func(_, _, _ string, _ uint32) error {
-				return fmt.Errorf("mock ReplaceFileW failure")
+			_, _ = setupRetainedStaging(t, f.make) // asserts the retention itself
+		})
+	}
+}
+
+func TestSafeWriteFile_RetainedStagingCopy_RemovedAfterLaterSuccessfulWrite(t *testing.T) {
+	for _, f := range safeWriterFactories() {
+		t.Run(f.name, func(t *testing.T) {
+			defer restoreHooks()
+			fw, target := setupRetainedStaging(t, f.make)
+			staging := target + wincoe.PowerlossFileExtension
+
+			// The operator fixes the problem (here: the directory in the way is gone) and retries.
+			if err := os.Remove(target); err != nil {
+				t.Fatalf("setup Remove failed: %v", err)
+			}
+			if err := fw.SafeWriteFile(target, []byte("newer"), 0600); err != nil {
+				t.Fatalf("retry must succeed: %v", err)
 			}
 
-			dir := t.TempDir()
-			target := filepath.Join(dir, "config.json")
-			// A directory at the target path makes the in-place open fail.
-			if err := os.Mkdir(target, 0700); err != nil {
-				t.Fatalf("setup Mkdir failed: %v", err)
+			if _, err := os.Stat(staging); !os.IsNotExist(err) {
+				t.Errorf("superseded retained staging copy must be removed after a successful write, stat err: %v", err)
+			}
+			if got, err := os.ReadFile(target); err != nil || string(got) != "newer" {
+				t.Errorf("target = %q err=%v, want %q", got, err, "newer")
+			}
+		})
+	}
+}
+
+func TestSafeWriteFile_RetainedStagingCopy_ModifiedCopyIsLeftAlone(t *testing.T) {
+	for _, f := range safeWriterFactories() {
+		t.Run(f.name, func(t *testing.T) {
+			defer restoreHooks()
+			fw, target := setupRetainedStaging(t, f.make)
+			staging := target + wincoe.PowerlossFileExtension
+
+			// Same length, different content: only the hash can tell it apart.
+			if err := os.WriteFile(staging, []byte("xyz"), 0600); err != nil {
+				t.Fatalf("setup tamper write failed: %v", err)
+			}
+			if err := os.Remove(target); err != nil {
+				t.Fatalf("setup Remove failed: %v", err)
+			}
+			if err := fw.SafeWriteFile(target, []byte("newer"), 0600); err != nil {
+				t.Fatalf("retry must succeed: %v", err)
 			}
 
-			var liveLogger atomic.Pointer[slog.Logger]
-			liveLogger.Store(discardLogger())
-			fw := mk(&liveLogger)
-
-			if err := fw.SafeWriteFile(target, []byte("new"), 0600); err == nil {
-				t.Fatal("expected an error when the in-place write cannot succeed")
+			if got, err := os.ReadFile(staging); err != nil || string(got) != "xyz" {
+				t.Errorf("a staging file that no longer matches what was retained must be left untouched, got %q err=%v", got, err)
 			}
-
-			got, err := os.ReadFile(target + wincoe.PowerlossFileExtension)
-			if err != nil {
-				t.Fatalf("staging copy (the only complete copy) must be retained: %v", err)
-			}
-			if string(got) != "new" {
-				t.Errorf("retained staging copy = %q, want %q", got, "new")
+			if got, err := os.ReadFile(target); err != nil || string(got) != "newer" {
+				t.Errorf("target = %q err=%v, want %q", got, err, "newer")
 			}
 		})
 	}
