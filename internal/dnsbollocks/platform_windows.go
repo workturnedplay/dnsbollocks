@@ -709,7 +709,13 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// lifetime.
 			var reqCtx context.Context
 			if wasProbe {
-				reqCtx = target.BackgroundCtx
+				// Detach from this Exchange call's cancellation/deadline (so the probe can
+				// outlive it) but KEEP its values: doSingleDoHRequest needs the
+				// clientInfoKey future to substitute {builtin:clientexe} with the real
+				// exe name. Server shutdown and the per-request timeout are still enforced
+				// inside doSingleDoHRequest via target.BackgroundCtx and
+				// UpstreamClientTimeoutDuration.
+				reqCtx = context.WithoutCancel(ctx)
 			} else {
 				reqCtx = exchangeCtx
 			}
@@ -788,8 +794,11 @@ func (fs *FailoverSelector) Exchange(ctx context.Context, upstreams []Upstream, 
 			// 	slog.String("sni", upstreams[res.index].SNI),
 			// 	wincoe.SafeErr(res.err),
 			// )
-			// Track the failure
-			failedUpstreams = append(failedUpstreams, res.resolvedURL)
+			// Track the failure; a skipped probe was never actually attempted (and its
+			// URL is still the raw template), so it isn't evidence of a failure.
+			if !errors.Is(res.err, errProbeSkipped) {
+				failedUpstreams = append(failedUpstreams, res.resolvedURL)
+			}
 
 			if res.index == currentIdx {
 				currentIdxAnswered = true

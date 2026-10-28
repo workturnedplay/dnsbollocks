@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -257,5 +258,46 @@ func TestFailoverSelector_CallerGivingUpAdvancesActiveIndexAndLaterDetectsBlacko
 	fs.mu.RUnlock()
 	if !allFailed {
 		t.Error("expected allFailed=true once every upstream genuinely failed")
+	}
+}
+
+func TestFailoverSelector_ProbeKeepsClientMetadataForClientExeTemplate(t *testing.T) {
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var liveLogger atomic.Pointer[slog.Logger]
+	liveLogger.Store(discardLogger)
+	fs := NewFailoverSelector(&liveLogger, nil)
+	fs.activeIndex = 1 // so index 0 is sent as a parallel probe
+
+	gotPath := make(chan string, 1)
+	primary := createMockUpstream("https://primary.com/"+templateClientExe, discardLogger, func(req *http.Request) (*http.Response, error) {
+		select {
+		case gotPath <- req.URL.Path:
+		default:
+		}
+		return makeDoHResponse(), nil
+	})
+	primary.UpstreamClientTimeoutDuration = time.Minute
+	secondary := createMockUpstream("https://secondary.com", discardLogger, func(_ *http.Request) (*http.Response, error) {
+		time.Sleep(50 * time.Millisecond) // let the probe win
+		return makeDoHResponse(), nil
+	})
+	secondary.UpstreamClientTimeoutDuration = time.Minute
+
+	future := &ClientMetadataFuture{done: make(chan struct{})}
+	future.info.exe = "firefox.exe"
+	close(future.done)
+	ctx := context.WithValue(context.Background(), clientInfoKey{}, future)
+
+	if _, _, _, err := fs.Exchange(ctx, []Upstream{primary, secondary}, []byte("dummy-dns-query")); err != nil {
+		t.Fatalf("Exchange failed: %v", err)
+	}
+
+	select {
+	case p := <-gotPath:
+		if !strings.Contains(p, "firefox.exe") {
+			t.Errorf("probe request path %q should contain the client exe name, not a placeholder", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the probe never reached the primary upstream")
 	}
 }
