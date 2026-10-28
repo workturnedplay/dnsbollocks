@@ -6,7 +6,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/miekg/dns v1.1.73
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/workturnedplay/wincoe v0.13.0
+	github.com/workturnedplay/wincoe v0.15.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
@@ -15,4 +15,4 @@ require (
 
 require golang.org/x/text v0.43.0 // indirect
 
-require golang.org/x/net v0.61.0 // indirect (for miekg/dns)
+require golang.org/x/net v0.62.0 // indirect (for miekg/dns)
